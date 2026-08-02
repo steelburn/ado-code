@@ -1,0 +1,92 @@
+import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider } from '../types';
+
+export class AnthropicProvider implements LlmProvider {
+  async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
+    // Anthropic uses a separate system prompt, not in messages array
+    const systemMessage = messages.find(m => m.role === 'system');
+    const nonSystemMessages = messages.filter(m => m.role !== 'system');
+
+    // Convert to Anthropic format; the Messages API REQUIRES strictly
+    // alternating user/assistant roles, so merge consecutive same-role turns.
+    const anthropicMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    for (const m of nonSystemMessages) {
+      const role = m.role as 'user' | 'assistant';
+      const last = anthropicMessages[anthropicMessages.length - 1];
+      if (last && last.role === role) {
+        last.content += '\n\n' + m.content;
+      } else {
+        anthropicMessages.push({ role, content: m.content });
+      }
+    }
+
+    // Normalize base URL: accept https://api.anthropic.com OR .../v1
+    const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+
+    const body: Record<string, any> = {
+      model: config.model,
+      max_tokens: 4096,
+      messages: anthropicMessages,
+      stream: true,
+    };
+
+    if (systemMessage) {
+      body.system = systemMessage.content;
+    }
+
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      signal,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Anthropic API error: ${response.status} ${await response.text()}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        const match = line.match(/^data: ?(.*)$/);
+        if (match) {
+          const data = match[1];
+          if (data === '[DONE]') {
+            yield { content: '', done: true };
+            return;
+          }
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'content_block_delta') {
+              const content = parsed.delta?.text || '';
+              if (content) {
+                yield { content, done: false };
+              }
+            } else if (parsed.type === 'message_stop') {
+              yield { content: '', done: true };
+              return;
+            }
+          } catch {
+            // Skip malformed JSON
+          }
+        }
+      }
+    }
+  }
+}
