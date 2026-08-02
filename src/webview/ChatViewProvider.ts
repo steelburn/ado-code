@@ -1,13 +1,17 @@
 import * as vscode from 'vscode';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext } from '../shared/messages';
 import { Services } from '../services';
-import { getSettings, getActiveOrg } from '../config/settings';
+import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
+import { LlmClient } from '../llm/client';
+import { LlmMessage } from '../llm/types';
+import { buildSystemPrompt } from '../llm/prompts';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
   // Forward-declared for setServices (Task 24 wires the real runner/executor).
   private agentRunner?: any;
+  private executor?: any;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -54,13 +58,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       async (message: WebviewToExtensionMessage) => {
         switch (message.type) {
           case 'userMessage':
-            // Will be wired to LLM in later task; `done: true` is required by
-            // the typed protocol added in Task 4
-            webviewView.webview.postMessage({
-              type: 'assistantMessage',
-              content: 'Echo: ' + message.content,
-              done: true,
-            });
+            await this.handleUserMessage(message.content);
             break;
           case 'fetchWorkItems':
             await this.refreshWorkItems();
@@ -141,9 +139,79 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     vscode.window.showInformationMessage(`ADO Code: task ADO-${workItemId} picked up. Happy coding!`);
   }
 
-  /** Task 13 implements the real detail fetch; stub keeps Task 9 gate green. */
-  async selectWorkItem(_workItemId: number): Promise<void> {
-    // no-op until Task 13 wires the ADO detail + system-prompt chain
+  /** Task 13: real detail fetch + thread → activeWorkItem → system prompt. */
+  async selectWorkItem(workItemId: number): Promise<void> {
+    try {
+      const project = this.activeProject(); // H-4
+      const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+      this.activeWorkItem = {
+        id: detail.id,
+        title: detail.fields['System.Title'],
+        description: detail.fields['System.Description'] || '',
+        acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
+        tags: detail.fields['System.Tags'] || '',
+        comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
+      };
+      this.postMessage({ type: 'workItemDetail', item: {
+        id: this.activeWorkItem.id,
+        title: this.activeWorkItem.title,
+        state: detail.fields['System.State'],
+        assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
+        workItemType: detail.fields['System.WorkItemType'],
+        description: this.activeWorkItem.description,
+        acceptanceCriteria: this.activeWorkItem.acceptanceCriteria,
+        tags: this.activeWorkItem.tags,
+        areaPath: detail.fields['System.AreaPath'] ?? '',
+        iterationPath: detail.fields['System.IterationPath'] ?? '',
+        comments: this.activeWorkItem.comments ?? [],
+      }});
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage({ type: 'error', message });
+    }
+  }
+
+  // ── Task 13: LLM wiring ────────────────────────────────────────────
+  private llmAbort?: AbortController;
+  // `conversation` is extended in Task 26 (multi-turn); declared here for Task 24.
+  private conversation: LlmMessage[] = [];
+
+  /** Fresh client from current settings (avoids stale config after changes). */
+  private llmClient(): LlmClient {
+    return new LlmClient(llmConfigFromSettings());
+  }
+
+  private async handleUserMessage(content: string): Promise<void> {
+    // Cancel any in-flight stream before starting a new one
+    this.llmAbort?.abort();
+    const abort = new AbortController();
+    this.llmAbort = abort;
+
+    const messages: LlmMessage[] = [
+      { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
+      { role: 'user', content },
+    ];
+
+    try {
+      for await (const chunk of this.llmClient().streamChat(messages, abort.signal)) {
+        this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
+        if (chunk.done) break;
+      }
+    } catch (err) {
+      if (abort.signal.aborted) return; // cancelled by a newer message
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage({ type: 'error', message });
+    }
+  }
+
+  /** Mode selector (Q8) — updates the setting AND the executor when wired (Task 24). */
+  public async pickMode(): Promise<void> {
+    const pick = await vscode.window.showQuickPick(['inline', 'plan', 'act'], { placeHolder: `Mode: ${getSettings().mode}` });
+    if (pick) {
+      await vscode.workspace.getConfiguration('adoCode').update('mode', pick, vscode.ConfigurationTarget.Global);
+      this.executor?.setMode(pick as any); // executor wired in Task 24; optional here
+      this.postMessage({ type: 'modeChanged', mode: pick as any });
+    }
   }
 
   /** Update a work item's state; on Done/Closed, run the changelog completion hook. */

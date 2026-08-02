@@ -93,3 +93,14 @@ export function getActiveOrgBaseUrl(settings: AdoCodeSettings, activeName?: stri
   if (settings.adoServerUrl) return settings.adoServerUrl;
   return `https://dev.azure.com/${activeName ?? settings.adoOrganization}`;
 }
+
+/** Build an LlmConfig from current settings (Task 13). */
+export function llmConfigFromSettings(): any {
+  const s = getSettings();
+  return {
+    provider: s.llmProvider,
+    apiUrl: s.llmApiUrl,
+    apiKey: s.llmApiKey,
+    model: s.llmModel,
+  };
+}
