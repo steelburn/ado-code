@@ -182,6 +182,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleUserMessage(content: string): Promise<void> {
+    // Task 14: slash-command parsing BEFORE sending to the LLM
+    const statusMatch = content.match(/^\/status\s+(\S+)/);
+    if (statusMatch) {
+      if (this.activeWorkItem) {
+        await this.updateWorkItemState(this.activeWorkItem.id, statusMatch[1]);
+      } else {
+        vscode.window.showWarningMessage('ADO Code: select a work item first (tree view → Select Work Item).');
+      }
+      return; // do not send slash command to the LLM
+    }
+
+    const commentMatch = content.match(/^\/comment\s+([\s\S]+)/);
+    if (commentMatch) {
+      if (this.activeWorkItem) {
+        const project = this.activeProject(); // H-4
+        await this.services.ado.addComment(project, this.activeWorkItem.id, commentMatch[1].trim());
+        vscode.window.showInformationMessage(`ADO Code: comment added to ADO-${this.activeWorkItem.id}.`);
+      } else {
+        vscode.window.showWarningMessage('ADO Code: select a work item first.');
+      }
+      return;
+    }
+
     // Cancel any in-flight stream before starting a new one
     this.llmAbort?.abort();
     const abort = new AbortController();
