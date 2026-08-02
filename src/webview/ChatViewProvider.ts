@@ -107,6 +107,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Task 10 implements the real git-branch flow; stub keeps Task 9 gate green. */
+  async startTask(_workItemId: number, _title: string): Promise<void> {
+    vscode.window.showInformationMessage('ADO Code: task pickup flow lands in Task 10.');
+  }
+
+  /** Task 13 implements the real detail fetch; stub keeps Task 9 gate green. */
+  async selectWorkItem(_workItemId: number): Promise<void> {
+    // no-op until Task 13 wires the ADO detail + system-prompt chain
+  }
+
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, 'webview-ui-dist', 'webview.js')

@@ -13,7 +13,41 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [],
+    "commands": [
+      {
+        "command": "adoCode.selectWorkItem",
+        "title": "Select Work Item"
+      },
+      {
+        "command": "adoCode.startTask",
+        "title": "Start Task",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "adoCode.switchOrganization",
+        "title": "Switch Organization…",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.refreshWorkItems",
+        "title": "Refresh Work Items",
+        "category": "ADO Code"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "adoCode.startTask",
+          "when": "viewItem == workItemNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.selectWorkItem",
+          "when": "viewItem == workItemNode",
+          "group": "inline"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -29,6 +63,11 @@
           "type": "webview",
           "id": "adoCode.chat",
           "name": "Chat"
+        },
+        {
+          "id": "adoCode.workItems",
+          "name": "My Work Items",
+          "type": "tree"
         }
       ]
     },

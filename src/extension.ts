@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ChatViewProvider } from './webview/ChatViewProvider';
-import { WorkItemsTreeProvider } from './ado/WorkItemsTreeProvider';
+import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
 import { selectActiveOrganization } from './config/settings';
 
@@ -28,6 +28,17 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.refreshWorkItems', () => {
       chatProvider.refreshWorkItems();
+    })
+  );
+
+  // Task 9: tree-item commands (node-first signature — H4). The methods they
+  // dispatch to land in Task 10 (startTask) and Task 13 (selectWorkItem).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.selectWorkItem', (node: WorkItemNode) => {
+      chatProvider.selectWorkItem(node.workItemId);
+    }),
+    vscode.commands.registerCommand('adoCode.startTask', (node: WorkItemNode) => {
+      chatProvider.startTask(node.workItemId, node.workItemTitle);
     })
   );
 
