@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext } from '../shared/messages';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
@@ -381,7 +382,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       // M10 fix: check gh is installed + authenticated before offering the PR path.
-      const { execFile } = require('child_process') as typeof import('child_process');
       if (choice === 'Push branch & create PR') {
         await new Promise<void>((resolve, reject) => {
           execFile('gh', ['auth', 'status'], { cwd: this.services.git.workspaceRoot }, err => err ? reject(new Error('gh not installed or not authenticated — run `gh auth login`')) : resolve());
