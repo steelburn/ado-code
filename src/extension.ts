@@ -60,6 +60,30 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('adoCode.chat.focus', () => chatProvider.focus())
   );
 
+  // Task 25: delegate / assign-to-agent commands (context menu on work item nodes)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.delegateToAgent', async (node?: WorkItemNode) => {
+      if (!node) return;
+      await chatProvider.startTaskWithAgent(node.workItemId, undefined);
+    }),
+    vscode.commands.registerCommand('adoCode.startTaskWithAgent', async (node?: WorkItemNode) => {
+      if (!node) return;
+      // QuickPick of installed agents, then hand off
+      const installed = await services.agents.getInstalled();
+      if (installed.length === 0) {
+        vscode.window.showWarningMessage('ADO Code: no external agent CLIs installed (claude, codex, opencode, hermes, pi, openclaw, aider, gemini, cursor-agent).');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        installed.map(a => ({ label: `${a.displayName} (${a.name})`, description: a.version })),
+        { placeHolder: 'Which agent should implement this task?' }
+      );
+      if (!pick) return;
+      const agentName = installed.find(a => `${a.displayName} (${a.name})` === pick.label)?.name;
+      await chatProvider.startTaskWithAgent(node.workItemId, agentName);
+    })
+  );
+
   // Task 17: status-bar branch indicator
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.command = 'adoCode.refreshWorkItems';

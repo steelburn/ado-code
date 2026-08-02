@@ -5,7 +5,7 @@ import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage } from '../llm/types';
-import { buildSystemPrompt } from '../llm/prompts';
+import { buildSystemPrompt, buildAgentPrompt } from '../llm/prompts';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -67,9 +67,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'delegateToAgent':
         await this.delegateToAgent(message.prompt, message.agent);
         break;
-      case 'agentFollowUp':
-        await this.agentRunner?.followUp(message.runId, message.prompt);
+      case 'agentFollowUp': {
+        // Empty runId from the webview means "most recent run".
+        let runId = message.runId;
+        if (!runId) {
+          const runs = this.agentRunner?.listRuns() ?? [];
+          const last = runs[runs.length - 1];
+          if (!last) break;
+          runId = last.id;
+        }
+        await this.agentRunner?.followUp(runId, message.prompt);
         break;
+      }
       case 'agentCancel':
         this.agentRunner?.cancel(message.runId);
         break;
@@ -237,6 +246,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const ok = await this.ensureGitReady(workItemId);
     if (!ok) return;
     vscode.window.showInformationMessage(`ADO Code: task ADO-${workItemId} picked up. Happy coding!`);
+  }
+
+  /** Task 25: one-click handoff — git pre-flight, fetch detail+thread, build prompt, delegate. */
+  async startTaskWithAgent(workItemId: number, agent?: string): Promise<void> {
+    // 1) Git: repo check + branch creation (reuse Task 10 flow)
+    const gitOk = await this.ensureGitReady(workItemId);
+    if (!gitOk) return;
+
+    // 2) Fetch the full work item + discussion thread (clarification Q&A included)
+    const project = this.activeProject(); // H-4
+    const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+    this.activeWorkItem = {
+      id: detail.id,
+      title: detail.fields['System.Title'],
+      state: detail.fields['System.State'],
+      description: detail.fields['System.Description'] || '',
+      acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
+      tags: detail.fields['System.Tags'] || '',
+      comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
+    };
+
+    // 3) Build the prompt — includes the thread, so the agent gets the
+    //    clarified spec the developer collected via Task 28
+    const branch = await this.services.git.getCurrentBranch();
+    const prompt = buildAgentPrompt(this.activeWorkItem, branch ?? 'unknown');
+
+    // 4) Delegate (Task 24) — status + result stream back to the webview.
+    // H-3 fix: the runner is wired via setAgentRunner (Task 24), NOT on Services.
+    if (!this.agentRunner) throw new Error('agent runner not wired yet (Task 24)');
+    await this.agentRunner.delegate(workItemId, prompt, agent as any);
   }
 
   /** Task 13: real detail fetch + thread → activeWorkItem → system prompt. */

@@ -28,6 +28,10 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
   const [form, setForm] = useState({ adoOrganization: '', adoProject: '', adoPat: '', llmProvider: 'openai', llmApiUrl: 'https://api.openai.com/v1', llmApiKey: '', llmModel: 'gpt-4o' });
+  // Task 24/25: agent picker + follow-up UI
+  const [agents, setAgents] = useState<{name: string; displayName: string; installed: boolean}[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState('');
+  const [followUp, setFollowUp] = useState('');
 
   useEffect(() => {
     window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
@@ -61,9 +65,14 @@ function App() {
         case 'config':
           setConfig(msg.config as unknown as SanitizedConfig);
           break;
+        case 'agentList':
+          setAgents(msg.agents.map(a => ({ name: a.name, displayName: a.displayName, installed: a.installed })));
+          if (!selectedAgent && msg.agents.length > 0) setSelectedAgent(msg.agents[0].name);
+          break;
       }
     });
     vscode.postMessage({ type: 'getConfig' });
+    vscode.postMessage({ type: 'listAgents' });
   }, []);
 
   const saveSetup = () => {
@@ -138,10 +147,24 @@ function App() {
         {loading && <LoadingSpinner />}
       </div>
       <div style={{ display: 'flex', gap: '4px' }}>
+        <select value={selectedAgent} onChange={e => setSelectedAgent(e.target.value)}
+          style={{ maxWidth: '110px' }} title="Agent for delegation">
+          {agents.map(a => (
+            <option key={a.name} value={a.name} disabled={!a.installed}>
+              {a.displayName}{a.installed ? '' : ' (not installed)'}
+            </option>
+          ))}
+        </select>
         <input value={input} onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && sendMessage()}
           style={{ flex: 1 }} placeholder="Ask anything... (try /status Done or /comment ...)" />
         <button onClick={sendMessage}>Send</button>
+      </div>
+      <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+        <input value={followUp} onChange={e => setFollowUp(e.target.value)}
+          style={{ flex: 1 }} placeholder="Follow-up to last agent run (if it supports sessions)..." />
+        <button onClick={() => { vscode.postMessage({ type: 'agentFollowUp', runId: '', prompt: followUp }); setFollowUp(''); }}
+          title="Follow-up — uses the most recent run's session">Follow-up</button>
       </div>
     </div>
   );

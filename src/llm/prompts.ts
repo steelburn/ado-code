@@ -1,5 +1,43 @@
 import { WorkItemContext } from '../shared/messages';
 
+export function buildAgentPrompt(
+  workItem: WorkItemContext & { state?: string },
+  branch: string,
+  projectContext?: string
+): string {
+  const lines = [
+    `You are working on Azure DevOps work item #${workItem.id}: ${workItem.title}`,
+    ``,
+    `State: ${workItem.state || 'N/A'}`,
+    `Description:`,
+    workItem.description || '(none)',
+    ``,
+    `Acceptance criteria:`,
+    workItem.acceptanceCriteria || '(none)',
+    ``,
+    `Tags: ${workItem.tags || '(none)'}`,
+  ];
+
+  // Include the discussion thread — especially clarification Q&A the developer
+  // collected before handoff (Task 28). This is the whole point of the
+  // review-and-clarify step: the agent must build against the clarified spec.
+  if (workItem.comments && workItem.comments.length > 0) {
+    lines.push(``, `Discussion thread (clarifications, latest first):`);
+    for (const c of workItem.comments.slice().reverse()) {
+      lines.push(`- ${c.author}: ${c.text}`);
+    }
+  }
+
+  lines.push(
+    projectContext ? `\nProject context:\n${projectContext}` : '',
+    ``,
+    `Working branch: ${branch}`,
+    `When finished: run the project's tests/lint if present, then summarize what you changed and why. Do NOT commit unless asked.`
+  );
+
+  return lines.join('\n');
+}
+
 export function buildSystemPrompt(activeWorkItem?: WorkItemContext): string {
   let prompt = `You are ADO Code, an AI coding assistant integrated into VS Code.
 You help developers write, understand, and debug code.

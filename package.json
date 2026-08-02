@@ -36,6 +36,14 @@
       {
         "command": "adoCode.chat.focus",
         "title": "Focus Chat"
+      },
+      {
+        "command": "adoCode.delegateToAgent",
+        "title": "Delegate to Agent…"
+      },
+      {
+        "command": "adoCode.startTaskWithAgent",
+        "title": "Assign to Agent…"
       }
     ],
     "keybindings": [
@@ -59,6 +67,11 @@
         },
         {
           "command": "adoCode.selectWorkItem",
+          "when": "viewItem == workItemNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.startTaskWithAgent",
           "when": "viewItem == workItemNode",
           "group": "inline"
         }
