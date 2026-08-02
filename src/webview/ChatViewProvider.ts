@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { WebviewToExtensionMessage, WorkItemSummary } from '../shared/messages';
+import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext } from '../shared/messages';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
 
@@ -107,9 +107,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Task 10 implements the real git-branch flow; stub keeps Task 9 gate green. */
-  async startTask(_workItemId: number, _title: string): Promise<void> {
-    vscode.window.showInformationMessage('ADO Code: task pickup flow lands in Task 10.');
+  // C-4 fix: declared HERE (Task 10), once — Tasks 11/13 refine it but must
+  // NOT re-declare (TS2300 duplicate member).
+  private activeWorkItem?: WorkItemContext;
+
+  /** H3: git pre-flight shared by startTask (Task 10) and startTaskWithAgent (Task 25).
+   *  Returns true if it's safe to proceed. */
+  private async ensureGitReady(workItemId: number): Promise<boolean> {
+    const settings = getSettings();
+    // 1) Git repo required?
+    if (settings.gitRequireGitRepo && !(await this.services.git.isGitRepo())) {
+      vscode.window.showWarningMessage('ADO Code requires a git-enabled workspace. Open a folder inside a git repository to pick up tasks.');
+      return false;
+    }
+    // 2) Uncommitted changes?
+    if (settings.gitRequireCleanTree && await this.services.git.hasUncommittedChanges()) {
+      const choice = await vscode.window.showWarningMessage('ADO Code: you have uncommitted changes. Switch branches anyway?', { modal: true }, 'Yes');
+      if (choice !== 'Yes') return false;
+    }
+    // 3) Create the task branch
+    if (settings.gitCreateBranchOnTaskStart) {
+      const title = this.activeWorkItem?.title ?? `Work item ${workItemId}`;
+      const created = await this.services.git.createTaskBranch(workItemId, title);
+      this.postMessage({ type: 'gitStatus', isGitRepo: true, currentBranch: await this.services.git.getCurrentBranch(), branchCreated: created });
+    }
+    return true;
+  }
+
+  async startTask(workItemId: number, title: string): Promise<void> {
+    this.activeWorkItem = this.activeWorkItem ?? { id: workItemId, title };
+    const ok = await this.ensureGitReady(workItemId);
+    if (!ok) return;
+    vscode.window.showInformationMessage(`ADO Code: task ADO-${workItemId} picked up. Happy coding!`);
   }
 
   /** Task 13 implements the real detail fetch; stub keeps Task 9 gate green. */

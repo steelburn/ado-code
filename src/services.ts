@@ -1,16 +1,10 @@
 import * as vscode from 'vscode';
 import { AdoClient } from './ado/client';
+import { GitService } from './git/GitService';
 import { getSettings, getActiveOrg } from './config/settings';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
-export class GitService {
-  constructor(public readonly workspaceRoot: string) {}
-  async isGitRepo(): Promise<boolean> { return false; }
-  async getCurrentBranch(): Promise<string | null> { return null; }
-  async getShortCommitHash(): Promise<string | null> { return null; }
-  async hasUncommittedChanges(): Promise<boolean> { return true; }
-  async createTaskBranch(_id: number, _title: string): Promise<string | null> { return null; }
-}
+// GitService stub REMOVED in Task 10 — real class imported from ./git/GitService.
 
 export class ChangelogService {
   constructor(private workspaceRoot: string) {}
