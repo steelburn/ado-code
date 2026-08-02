@@ -87,8 +87,21 @@ export class AgentRegistry {
 
   async detect(): Promise<AgentCapability[]> {
     if (this.cache) return this.cache;
+    // M3/M17: honor adoCode.agents.enabled — disabled agents are never probed.
+    let enabled: string[] = [];
+    try {
+      const vscode = require('vscode') as typeof import('vscode');
+      enabled = vscode.workspace.getConfiguration('adoCode').get<string[]>('agents.enabled', []);
+    } catch {
+      // not running inside VS Code (tests) — probe everything
+      enabled = Object.keys(AGENT_SPECS);
+    }
     const caps: AgentCapability[] = [];
     for (const spec of Object.values(AGENT_SPECS)) {
+      if (enabled.length > 0 && !enabled.includes(spec.name)) {
+        caps.push({ name: spec.name, displayName: spec.displayName, installed: false, version: undefined, modes: ['one-shot'] });
+        continue;
+      }
       try {
         // M12 fix: on Windows, npm-installed CLIs ship as .cmd shims.
         // M-7 fix: execFile can't execute .cmd without shell:true — probe with
