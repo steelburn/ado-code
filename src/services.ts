@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient } from './ado/client';
 import { GitService } from './git/GitService';
 import { ChangelogService } from './changelog/ChangelogService';
+import { AgentRegistry } from './agents/registry';
 import { getSettings, getActiveOrg } from './config/settings';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
@@ -12,6 +13,7 @@ export interface Services {
   ado: AdoClient;
   git: GitService;
   changelog: ChangelogService;
+  agents: AgentRegistry;
 }
 
 /**
@@ -47,5 +49,6 @@ export function createServices(context: vscode.ExtensionContext): Services {
     ado,
     git: new GitService(workspaceRoot),
     changelog: new ChangelogService(workspaceRoot),
+    agents: new AgentRegistry(),
   };
 }
