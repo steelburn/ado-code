@@ -1,0 +1,56 @@
+/* Markdown rendering styles (Task 15) */
+.markdown-body {
+  font-size: var(--vscode-font-size);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.markdown-body pre {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.markdown-body code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.95em;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: none;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 20px;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid var(--vscode-textBlockQuote-border);
+  margin: 6px 0;
+  padding: 4px 12px;
+  background: var(--vscode-textBlockQuote-background);
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 4px 8px;
+}

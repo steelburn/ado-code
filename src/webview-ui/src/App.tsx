@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types';
+import { MarkdownRenderer } from './components/MarkdownRenderer';
+import './styles/markdown.css';
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: WebviewToExtensionMessage): void;
@@ -50,7 +52,8 @@ function App() {
         {messages.map((m, i) => (
           <div key={i} style={{ margin: '4px 0', padding: '8px', borderRadius: '4px',
             background: m.role === 'user' ? 'var(--vscode-editor-background)' : 'var(--vscode-sideBar-background)' }}>
-            <strong>{m.role === 'user' ? 'You' : 'ADO Code'}:</strong> {m.content}
+            <strong>{m.role === 'user' ? 'You' : 'ADO Code'}:</strong>{' '}
+            {m.role === 'user' ? m.content : <MarkdownRenderer content={m.content} />}
           </div>
         ))}
       </div>
