@@ -140,6 +140,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             break;
+          case 'reviewTaskDetail':
+            await this.reviewTaskDetail(message.workItemId);
+            break;
+          case 'requestClarification':
+            await this.requestClarification(message.workItemId, message.question, message.mentionCreator);
+            break;
+          case 'checkTaskReplies':
+            await this.checkTaskReplies(message.workItemId);
+            break;
         }
       },
       undefined,
@@ -227,6 +236,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  Returns true if it's safe to proceed. */
   private async ensureGitReady(workItemId: number): Promise<boolean> {
     const settings = getSettings();
+    // Task 28 (M16): pre-flight guard — underspecified task warning FIRST.
+    const specified = await this.ensureTaskSpecified(workItemId);
+    if (!specified) return false;
     // 1) Git repo required?
     if (settings.gitRequireGitRepo && !(await this.services.git.isGitRepo())) {
       vscode.window.showWarningMessage('ADO Code requires a git-enabled workspace. Open a folder inside a git repository to pick up tasks.');
@@ -307,12 +319,126 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         tags: this.activeWorkItem.tags,
         areaPath: detail.fields['System.AreaPath'] ?? '',
         iterationPath: detail.fields['System.IterationPath'] ?? '',
+        creator: detail.fields['System.CreatedBy']?.displayName ?? '',
         comments: this.activeWorkItem.comments ?? [],
       }});
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
     }
+  }
+
+  /** Task 28: full-detail review — fetch work item + discussion, post both to the webview. */
+  async reviewTaskDetail(workItemId: number): Promise<void> {
+    this.postMessage({ type: 'loading', loading: true });
+    try {
+      const project = this.activeProject(); // H-4
+      const { detail, comments, creator } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+      this.activeWorkItem = {
+        id: detail.id,
+        title: detail.fields['System.Title'],
+        description: detail.fields['System.Description'] || '',
+        acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
+        tags: detail.fields['System.Tags'] || '',
+        comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
+      };
+      this.postMessage({
+        type: 'workItemDetail',
+        item: {
+          id: detail.id,
+          title: detail.fields['System.Title'],
+          state: detail.fields['System.State'],
+          assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
+          workItemType: detail.fields['System.WorkItemType'],
+          description: detail.fields['System.Description'] ?? '',
+          acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ?? '',
+          tags: detail.fields['System.Tags'] ?? '',
+          areaPath: detail.fields['System.AreaPath'] ?? '',
+          iterationPath: detail.fields['System.IterationPath'] ?? '',
+          creator: creator?.displayName ?? '',
+          comments: this.activeWorkItem.comments ?? [],
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage({ type: 'error', message });
+    } finally {
+      this.postMessage({ type: 'loading', loading: false });
+    }
+  }
+
+  /** Task 28: ask the creator (or whoever) for clarification on the discussion thread. */
+  async requestClarification(workItemId: number, question: string, mentionCreator = true): Promise<void> {
+    const project = this.activeProject(); // H-4
+    const { creator } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+
+    // Mention syntax: ADO renders `<@uniqueName>` as a clickable @mention in the
+    // web UI discussion. Fall back to plain displayName + email if mention fails.
+    const mention = creator && mentionCreator
+      ? `@${creator.displayName} <@${creator.uniqueName}>`
+      : '';
+
+    const text = [
+      mention ? `**Clarification requested from ${creator?.displayName ?? 'the task owner'}:**` : '**Clarification requested:**',
+      ``,
+      // The mention itself must be IN the comment for the @-notification to fire.
+      mention,
+      question,
+      ``,
+      `_Requested via ADO Code — please reply on this thread._`,
+    ].join('\n');
+
+    await this.services.ado.addComment(project, workItemId, text);
+
+    // Optionally move to a "needs info" state so it shows up in triage
+    const needsInfoState = vscode.workspace.getConfiguration('adoCode').get<string>('ado.clarificationState', 'Blocked');
+    if (needsInfoState) {
+      try {
+        // C9 fix: System.History is read-only; only patch System.State.
+        await this.services.ado.updateWorkItem(project, workItemId, [
+          { op: 'add', path: '/fields/System.State', value: needsInfoState },
+        ]);
+      } catch (err) {
+        // State change is best-effort (may not be a valid transition for this
+        // work item type/process template); the comment is the source of truth.
+        vscode.window.showWarningMessage(`ADO Code: comment posted, but state change to '${needsInfoState}' failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    vscode.window.showInformationMessage(`ADO Code: clarification request posted to ADO-${workItemId}.`);
+  }
+
+  /** Task 28: check back for replies on the thread. */
+  async checkTaskReplies(workItemId: number): Promise<void> {
+    const project = this.activeProject(); // H-4
+    const comments = await this.services.ado.getComments(project, workItemId);
+    this.postMessage({ type: 'taskReplies', workItemId, comments });
+    // Refresh the active work item's thread so the next system prompt / agent
+    // prompt picks up the clarification Q&A that just arrived.
+    if (this.activeWorkItem?.id === workItemId) {
+      this.activeWorkItem.comments = comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate }));
+    }
+  }
+
+  /** Task 28 (M16): warn before starting an underspecified task (no desc AND no AC). */
+  private async ensureTaskSpecified(workItemId: number): Promise<boolean> {
+    const settings = getSettings();
+    if (!settings.adoWarnOnSparseTask) return true;
+    const detail = await this.services.ado.getWorkItemDetail(this.activeProject(), workItemId).catch(() => undefined); // H-4
+    const hasDesc = !!detail?.fields['System.Description']?.trim();
+    const hasAc = !!detail?.fields['Microsoft.VSTS.Common.AcceptanceCriteria']?.trim();
+    if (hasDesc || hasAc) return true;
+    const choice = await vscode.window.showQuickPick(
+      ['Review Detail', 'Request Clarification…', 'Start Anyway', 'Cancel'],
+      { placeHolder: 'This task looks underspecified (no description/acceptance criteria). Review detail or request clarification before starting?' }
+    );
+    if (choice === 'Review Detail') { await this.reviewTaskDetail(workItemId); return false; }
+    if (choice === 'Request Clarification…') {
+      const q = await vscode.window.showInputBox({ prompt: 'What do you need clarified?', ignoreFocusOut: true });
+      if (q) await this.requestClarification(workItemId, q);
+      return false;
+    }
+    return choice === 'Start Anyway'; // Cancel → false
   }
 
   // ── Task 13: LLM wiring ────────────────────────────────────────────

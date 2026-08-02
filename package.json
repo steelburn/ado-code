@@ -44,6 +44,18 @@
       {
         "command": "adoCode.startTaskWithAgent",
         "title": "Assign to Agent…"
+      },
+      {
+        "command": "adoCode.reviewTaskDetail",
+        "title": "Review Task Detail"
+      },
+      {
+        "command": "adoCode.requestClarification",
+        "title": "Request Clarification…"
+      },
+      {
+        "command": "adoCode.checkTaskReplies",
+        "title": "Check Replies"
       }
     ],
     "keybindings": [
@@ -72,6 +84,21 @@
         },
         {
           "command": "adoCode.startTaskWithAgent",
+          "when": "viewItem == workItemNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.reviewTaskDetail",
+          "when": "viewItem == workItemNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.requestClarification",
+          "when": "viewItem == workItemNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.checkTaskReplies",
           "when": "viewItem == workItemNode",
           "group": "inline"
         }

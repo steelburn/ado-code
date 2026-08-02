@@ -84,6 +84,20 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Task 28: review/clarification commands (context menu on work item nodes)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.reviewTaskDetail', (node: WorkItemNode) => chatProvider.reviewTaskDetail(node.workItemId)),
+    vscode.commands.registerCommand('adoCode.requestClarification', async (node: WorkItemNode) => {
+      const question = await vscode.window.showInputBox({
+        prompt: `Clarification request for ADO-${node.workItemId}: what detail do you need?`,
+        placeHolder: 'e.g. What is the expected behavior when the user cancels?',
+        ignoreFocusOut: true,
+      });
+      if (question) await chatProvider.requestClarification(node.workItemId, question);
+    }),
+    vscode.commands.registerCommand('adoCode.checkTaskReplies', (node: WorkItemNode) => chatProvider.checkTaskReplies(node.workItemId))
+  );
+
   // Task 17: status-bar branch indicator
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.command = 'adoCode.refreshWorkItems';

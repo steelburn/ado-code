@@ -15,7 +15,11 @@ export type WebviewToExtensionMessage =
   | { type: 'agentFollowUp'; runId: string; prompt: string }
   | { type: 'agentCancel'; runId: string }
   | { type: 'listAgents' }
-  | { type: 'clearConversation' };
+  | { type: 'clearConversation' }
+  // Task 28: task detail review + clarification
+  | { type: 'reviewTaskDetail'; workItemId: number }
+  | { type: 'requestClarification'; workItemId: number; question: string; mentionCreator: boolean }
+  | { type: 'checkTaskReplies'; workItemId: number };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -37,7 +41,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'agentResult'; run: AgentRun; summary: string }
   | { type: 'agentList'; agents: AgentCapability[] }
   // Task 26: history restore (Q4)
-  | { type: 'historyRestored'; messages: { role: string; content: string }[] };
+  | { type: 'historyRestored'; messages: { role: string; content: string }[] }
+  // Task 28: task detail review + clarification
+  | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] };
 
 // Shared types
 export interface MessageContext {
@@ -60,6 +66,7 @@ export interface WorkItemDetail extends WorkItemSummary {
   tags: string;
   areaPath: string;
   iterationPath: string;
+  creator?: string; // Task 28: displayName of the work item creator
   comments: WorkItemComment[];
 }
 

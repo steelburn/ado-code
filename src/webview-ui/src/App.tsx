@@ -32,6 +32,9 @@ function App() {
   const [agents, setAgents] = useState<{name: string; displayName: string; installed: boolean}[]>([]);
   const [selectedAgent, setSelectedAgent] = useState('');
   const [followUp, setFollowUp] = useState('');
+  // Task 28: task detail panel
+  const [detail, setDetail] = useState<any>(null);
+  const [clarifyQuestion, setClarifyQuestion] = useState('');
 
   useEffect(() => {
     window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
@@ -71,6 +74,14 @@ function App() {
           break;
         case 'historyRestored':
           setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
+          break;
+        case 'workItemDetail':
+          setDetail(msg.item);
+          break;
+        case 'taskReplies':
+          if (detail && detail.id === msg.workItemId) {
+            setDetail({ ...detail, comments: msg.comments });
+          }
           break;
       }
     });
@@ -146,6 +157,39 @@ function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '8px' }}>
       <div style={{ flex: 1, overflow: 'auto' }}>
+        {detail && (
+          <div style={{ margin: '4px 0 12px', padding: '8px', borderRadius: '4px', border: '1px solid var(--vscode-panel-border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>ADO-{detail.id}: {detail.title}</strong>
+              <span style={{ fontSize: '11px', background: 'var(--vscode-badge-background)', color: 'var(--vscode-badge-foreground)', padding: '1px 6px', borderRadius: '8px' }}>{detail.state}</span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>
+              {detail.workItemType} · {detail.assignedTo}{detail.creator ? ` · created by ${detail.creator}` : ''}
+            </div>
+            {detail.description && <p style={{ margin: '6px 0' }}><strong>Description:</strong> {detail.description}</p>}
+            {detail.acceptanceCriteria && <p style={{ margin: '6px 0' }}><strong>Acceptance criteria:</strong> {detail.acceptanceCriteria}</p>}
+            {detail.tags && <p style={{ margin: '6px 0', fontSize: '11px' }}><strong>Tags:</strong> {detail.tags}</p>}
+            {detail.comments && detail.comments.length > 0 && (
+              <div style={{ marginTop: '6px' }}>
+                <strong>Discussion:</strong>
+                {detail.comments.map((c: any, i: number) => (
+                  <div key={i} style={{ fontSize: '12px', margin: '2px 0' }}>— {c.createdBy?.displayName ?? c.author}: {c.text}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+              <input value={clarifyQuestion} onChange={e => setClarifyQuestion(e.target.value)}
+                style={{ flex: 1 }} placeholder="Question for the creator…" />
+              <button onClick={() => {
+                if (clarifyQuestion.trim()) {
+                  vscode.postMessage({ type: 'requestClarification', workItemId: detail.id, question: clarifyQuestion, mentionCreator: true });
+                  setClarifyQuestion('');
+                }
+              }}>Request Clarification</button>
+              <button onClick={() => vscode.postMessage({ type: 'checkTaskReplies', workItemId: detail.id })}>Check Replies</button>
+            </div>
+          </div>
+        )}
         {error && (
           <div style={{ padding: '8px', margin: '4px 0', borderRadius: '4px',
             background: 'var(--vscode-inputValidation-errorBackground)', color: 'var(--vscode-inputValidation-errorForeground)' }}>
