@@ -33,16 +33,20 @@ suite('AgentRegistry', () => {
     assert.notStrictEqual(first, third); // fresh array after clear
   });
 
-  test('AGENT_SPECS supportsSession drives modes', async () => {
+  test('AGENT_SPECS supportsSession drives modes (for installed agents)', async () => {
     const registry = new AgentRegistry();
     const caps = await registry.detect();
     for (const spec of Object.values(AGENT_SPECS)) {
       const cap = caps.find(c => c.name === spec.name)!;
       assert.ok(cap);
-      if (spec.supportsSession) {
-        assert.deepStrictEqual(cap.modes, ['one-shot', 'session']);
-      } else {
-        assert.deepStrictEqual(cap.modes, ['one-shot']);
+      // Uninstalled agents report ['one-shot'] (no session without a binary);
+      // installed agents follow the spec.
+      if (cap.installed) {
+        if (spec.supportsSession) {
+          assert.deepStrictEqual(cap.modes, ['one-shot', 'session']);
+        } else {
+          assert.deepStrictEqual(cap.modes, ['one-shot']);
+        }
       }
     }
   });
