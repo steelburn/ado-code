@@ -1,0 +1,37 @@
+{
+  "name": "ado-code",
+  "displayName": "ADO Code",
+  "description": "AI coding assistant with Azure DevOps integration",
+  "version": "0.0.1",
+  "publisher": "steelburn",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [],
+    "configuration": {
+      "title": "ADO Code",
+      "properties": {}
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "build:webview": "cd src/webview-ui && npm install && npm run build",
+    "build:all": "npm run compile && npm run build:webview",
+    "watch:webview": "cd src/webview-ui && npm run watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  }
+}
