@@ -45,9 +45,14 @@ export class GitService {
       .slice(0, 40);
     const branchName = `feature/ADO-${workItemId}-${slug}`;
 
-    // `git branch --list` lists the branch even when it's UNBORN (fresh repo,
-    // no commits yet) — `git rev-parse --verify` can't resolve unborn refs, so
-    // it would wrongly report "does not exist" and try to re-create the branch.
+    // Exists-check for unborn branches: in a repo with NO commits, the branch
+    // is "unborn" — `git branch --list` shows nothing and `git checkout -b`
+    // on the same name SUCCEEDS (git treats it as re-choosing the unborn ref).
+    // The reliable signal is `git branch --show-current` matching the target.
+    const current = await this.getCurrentBranch();
+    if (current === branchName) {
+      return null; // already on this (possibly unborn) branch
+    }
     try {
       const { stdout } = await execFile('git', ['branch', '--list', branchName], {
         cwd: this.workspaceRoot,
@@ -59,8 +64,15 @@ export class GitService {
       // fall through and try to create
     }
 
-    await execFile('git', ['checkout', '-b', branchName], { cwd: this.workspaceRoot });
-    return branchName;
+    try {
+      await execFile('git', ['checkout', '-b', branchName], { cwd: this.workspaceRoot });
+      return branchName;
+    } catch (err) {
+      // Belt-and-braces: if checkout reports it already exists, treat as exists.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('already exists')) return null;
+      throw err;
+    }
   }
 
   /** Check for uncommitted changes that would block a clean branch switch. */
