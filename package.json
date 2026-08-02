@@ -10,7 +10,19 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:adoCode.chat",
+    "onView:adoCode.workItems",
+    "onCommand:adoCode.chat.focus",
+    "onCommand:adoCode.refreshWorkItems",
+    "onCommand:adoCode.startTask",
+    "onCommand:adoCode.selectWorkItem",
+    "onCommand:adoCode.delegateToAgent",
+    "onCommand:adoCode.startTaskWithAgent",
+    "onCommand:adoCode.reviewTaskDetail",
+    "onCommand:adoCode.requestClarification",
+    "onCommand:adoCode.checkTaskReplies"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
