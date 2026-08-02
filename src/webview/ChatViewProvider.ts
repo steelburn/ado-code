@@ -146,6 +146,100 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // no-op until Task 13 wires the ADO detail + system-prompt chain
   }
 
+  /** Update a work item's state; on Done/Closed, run the changelog completion hook. */
+  async updateWorkItemState(workItemId: number, newState: string): Promise<void> {
+    const settings = getSettings();
+    const project = this.activeProject(); // H-4: active org project, not stale settings
+
+    // C9 fix: System.History is READ-ONLY in the ADO work-item API (it's the
+    // system revision log) — PATCHing it returns 400. Only patch System.State;
+    // the "state changed" note goes in a discussion comment instead.
+    await this.services.ado.updateWorkItem(project, workItemId, [
+      { op: 'add', path: '/fields/System.State', value: newState },
+    ]);
+    await this.services.ado.addComment(project, workItemId, `ADO Code: state changed to **${newState}**.`);
+
+    if (newState !== 'Done' && newState !== 'Closed') {
+      this.postMessage({ type: 'workItemDetail', item: undefined as any }); // refresh not needed
+      return;
+    }
+
+    // ── completion hook ─────────────────────────────────────────────
+    // Q6: resolve implementing branch + short commit hash at completion time.
+    const [branch, commitHash] = await Promise.all([
+      this.services.git.getCurrentBranch().catch(() => null),
+      this.services.git.getShortCommitHash().catch(() => null),
+    ]);
+    const entry = {
+      workItemId,
+      title: this.activeWorkItem?.title ?? `Work item ${workItemId}`,
+      state: newState,
+      date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
+      workItemUrl: `https://dev.azure.com/${settings.adoOrganization}/${project}/_workitems/edit/${workItemId}`,
+      branch: branch ?? undefined,
+      commitHash: commitHash ?? undefined,
+    };
+
+    // 1) Local CHANGELOG.md (idempotent via hasEntry)
+    if (settings.changelogEnabled && !this.services.changelog.hasEntry(workItemId)) {
+      const filePath = await this.services.changelog.addEntry(entry);
+      if (settings.changelogAutoCommit) {
+        await this.services.git.commitChangelog(filePath, workItemId, entry.title);
+      }
+    }
+
+    // 2) Post entry to ADO discussion thread (independent of local changelog;
+    //    idempotent via comment-marker check)
+    if (settings.changelogPostToAdo) {
+      const comments = await this.services.ado.getComments(project, workItemId);
+      const alreadyPosted = comments.some(c => c.text.includes('Changelog entry added'));
+      if (!alreadyPosted) {
+        await this.services.ado.addComment(project, workItemId, this.services.changelog.formatForAdo(entry));
+      }
+    }
+
+    // 3) Q5: offer to push the branch + create a PR via gh CLI (opt-in)
+    if (settings.gitPrOnCompletion) {
+      await this.offerPushAndPr(workItemId, entry.title, branch);
+    }
+
+    this.postMessage({ type: 'changelogUpdated', filePath: 'CHANGELOG.md' });
+    vscode.window.showInformationMessage(`ADO Code: ADO-${workItemId} completed — changelog updated.`);
+  }
+
+  /** Q5: push current branch and offer to create a PR (gh CLI). */
+  private async offerPushAndPr(workItemId: number, title: string, branch: string | null): Promise<void> {
+    if (!branch) return;
+    const choice = await vscode.window.showQuickPick(['Push branch & create PR', 'Push only', 'Skip'], {
+      placeHolder: `Branch '${branch}' ready. Push / create PR?`,
+      ignoreFocusOut: true,
+    });
+    if (!choice || choice === 'Skip') return;
+
+    try {
+      // M10 fix: check gh is installed + authenticated before offering the PR path.
+      const { execFile } = require('child_process') as typeof import('child_process');
+      if (choice === 'Push branch & create PR') {
+        await new Promise<void>((resolve, reject) => {
+          execFile('gh', ['auth', 'status'], { cwd: this.services.git.workspaceRoot }, err => err ? reject(new Error('gh not installed or not authenticated — run `gh auth login`')) : resolve());
+        });
+      }
+      await new Promise<void>((resolve, reject) => {
+        execFile('git', ['push', '-u', 'origin', branch], { cwd: this.services.git.workspaceRoot }, err => err ? reject(err) : resolve());
+      });
+      if (choice === 'Push branch & create PR') {
+        await new Promise<void>((resolve, reject) => {
+          execFile('gh', ['pr', 'create', '--title', `ADO-${workItemId}: ${title}`, '--body', `Completes ADO-${workItemId} — see work item for details.`], { cwd: this.services.git.workspaceRoot }, err => err ? reject(err) : resolve());
+        });
+        vscode.window.showInformationMessage(`ADO Code: pushed ${branch} and created PR.`);
+      } else {
+        vscode.window.showInformationMessage(`ADO Code: pushed ${branch}.`);
+      }
+    } catch (err) {
+      vscode.window.showWarningMessage(`ADO Code: push/PR failed — do it manually (${err instanceof Error ? err.message : err}).`);
+    }
+  }
+
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, 'webview-ui-dist', 'webview.js')

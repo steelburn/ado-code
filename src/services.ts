@@ -1,17 +1,12 @@
 import * as vscode from 'vscode';
 import { AdoClient } from './ado/client';
 import { GitService } from './git/GitService';
+import { ChangelogService } from './changelog/ChangelogService';
 import { getSettings, getActiveOrg } from './config/settings';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
-// GitService stub REMOVED in Task 10 — real class imported from ./git/GitService.
-
-export class ChangelogService {
-  constructor(private workspaceRoot: string) {}
-  async addEntry(_entry: any): Promise<string> { return `${this.workspaceRoot}/CHANGELOG.md`; }
-  hasEntry(_id: number): boolean { return false; }
-  formatForAdo(_entry: any): string { return ''; }
-}
+// GitService + ChangelogService stubs REMOVED in Tasks 10/11 — real classes
+// imported above.
 
 export interface Services {
   ado: AdoClient;

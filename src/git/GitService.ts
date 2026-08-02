@@ -98,4 +98,18 @@ export class GitService {
       return null;
     }
   }
+
+  /** Stage and commit the changelog update with a work-item reference. */
+  async commitChangelog(filePath: string, workItemId: number, title: string): Promise<void> {
+    const message = `docs: update changelog for ADO-${workItemId} (${title})`;
+    // SECURITY: use execFile with arg arrays — never interpolate the work-item
+    // title into a shell string (title is attacker-controllable ADO data).
+    // Also commit with a pathspec so pre-staged unrelated files aren't swept in.
+    await execFile('git', ['add', filePath], {
+      cwd: this.workspaceRoot,
+    });
+    await execFile('git', ['commit', '-m', message, '--', filePath], {
+      cwd: this.workspaceRoot,
+    });
+  }
 }
