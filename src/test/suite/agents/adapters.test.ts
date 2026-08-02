@@ -23,7 +23,7 @@ function stubSpawn(stdoutData: string, exitCode: number) {
     stderr: { on: (e: string, cb: any) => { (listeners[`stderr:${e}`] ??= []).push(cb); } },
     on: (e: string, cb: any) => { (listeners[e] ??= []).push(cb); },
   };
-  (cp as any).spawn = (_bin: string, args: string[], _opts: any) => {
+  const stub = (_bin: string, args: string[], _opts: any) => {
     fakeChild.args = args;
     fakeChild.bin = _bin;
     // emit asynchronously
@@ -33,6 +33,9 @@ function stubSpawn(stdoutData: string, exitCode: number) {
     }, 0);
     return fakeChild;
   };
+  // Node 23 child_process exports spawn as a getter-only property — must use
+  // defineProperty to replace it.
+  Object.defineProperty(cp, 'spawn', { value: stub, configurable: true, writable: true });
   return fakeChild;
 }
 
@@ -77,16 +80,20 @@ suite('AgentAdapters', () => {
   });
 
   test('spawn failure resolves exitCode 1 with message', async () => {
-    (cp as any).spawn = (_bin: string, _args: string[], _opts: any) => {
-      const listeners: Record<string, ((...args: any[]) => void)[]> = {};
-      const fakeChild: any = {
-        stdout: { on: (_e: string, cb: any) => { (listeners['stdout:data'] ??= []).push(cb); } },
-        stderr: { on: (_e: string, cb: any) => { (listeners['stderr:data'] ??= []).push(cb); } },
-        on: (e: string, cb: any) => { (listeners[e] ??= []).push(cb); },
-      };
-      setTimeout(() => { (listeners['error'] ?? []).forEach(cb => cb(new Error('ENOENT'))); }, 0);
-      return fakeChild;
-    };
+    Object.defineProperty(cp, 'spawn', {
+      value: (_bin: string, _args: string[], _opts: any) => {
+        const listeners: Record<string, ((...args: any[]) => void)[]> = {};
+        const fakeChild: any = {
+          stdout: { on: (_e: string, cb: any) => { (listeners['stdout:data'] ??= []).push(cb); } },
+          stderr: { on: (_e: string, cb: any) => { (listeners['stderr:data'] ??= []).push(cb); } },
+          on: (e: string, cb: any) => { (listeners[e] ??= []).push(cb); },
+        };
+        setTimeout(() => { (listeners['error'] ?? []).forEach(cb => cb(new Error('ENOENT'))); }, 0);
+        return fakeChild;
+      },
+      configurable: true,
+      writable: true,
+    });
     const adapter = new GenericAdapter('pi');
     const result = await adapter.runTask(makeRun('pi'), 'x');
     assert.strictEqual(result.exitCode, 1);
