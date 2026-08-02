@@ -107,8 +107,22 @@ export class OpenAiProvider implements LlmProvider {
     const toolCalls: ToolCall[] = (message?.tool_calls ?? []).map((tc: any) => ({
       id: tc.id,
       name: tc.function?.name,
-      arguments: JSON.parse(tc.function?.arguments ?? '{}'),
+      // Defensive: some gateways emit `arguments: ""` (empty string) at the
+      // token limit — JSON.parse('') throws. Fall back to {} for anything
+      // unparseable.
+      arguments: parseToolArguments(tc.function?.arguments),
     }));
     return { text, toolCalls };
+  }
+}
+
+/** Robust tool-arguments parse: empty/unparseable → {} instead of throwing. */
+function parseToolArguments(raw: unknown): Record<string, any> {
+  if (typeof raw !== 'string' || raw.trim() === '') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
 }

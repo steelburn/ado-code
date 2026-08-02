@@ -117,7 +117,13 @@ export class AnthropicProvider implements LlmProvider {
       if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
         const content: any[] = [{ type: 'text', text: m.content }];
         for (const tc of m.toolCalls) {
-          content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: JSON.parse(tc.arguments) });
+          // Defensive: toolCalls.arguments is a JSON string; empty/unparseable
+          // must not throw (some gateways emit "" at the token limit).
+          let input: any = {};
+          if (typeof tc.arguments === 'string' && tc.arguments.trim() !== '') {
+            try { input = JSON.parse(tc.arguments); } catch { input = {}; }
+          }
+          content.push({ type: 'tool_use', id: tc.id, name: tc.name, input });
         }
         anthropicMessages.push({ role, content });
         continue;
