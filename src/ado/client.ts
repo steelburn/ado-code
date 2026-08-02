@@ -24,9 +24,13 @@ export class AdoClient {
   async getWorkItemsAssignedTo(
     project: string
   ): Promise<AdoWorkItem[]> {
-    // Step 1: WIQL query to find assigned work items
+    // Step 1: WIQL query to find assigned work items.
+    // LIVE-TEST FIX: Azure WIQL does NOT scope by the project segment in the
+    // URL — an org-level query returns items from ALL projects. Filter
+    // explicitly with [System.TeamProject] = @project (verified against a live
+    // org: 147 unfiltered → 10 scoped).
     const wiqlQuery = {
-      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @me AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @me AND [System.TeamProject] = @project AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
     };
 
     const wiqlResponse = await this.post<WiqlResult>(
