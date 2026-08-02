@@ -205,6 +205,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Task 16: inject active file + selection context into the user message
+    const contextBlock = this.buildEditorContext();
+    const finalContent = contextBlock ? `${contextBlock}\n\n[User message:]\n${content}` : content;
+
     // Cancel any in-flight stream before starting a new one
     this.llmAbort?.abort();
     const abort = new AbortController();
@@ -212,7 +216,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
-      { role: 'user', content },
+      { role: 'user', content: finalContent },
     ];
 
     try {
@@ -225,6 +229,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
     }
+  }
+
+  /** Task 16: format the active editor file + selection as an LLM context block. */
+  private buildEditorContext(): string | null {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return null;
+    const doc = editor.document;
+    const parts: string[] = [];
+    parts.push(`[Context: file: ${vscode.workspace.asRelativePath(doc.uri)}, language: ${doc.languageId}]`);
+    if (!editor.selection.isEmpty) {
+      parts.push(`[Selected code:]`);
+      parts.push(doc.getText(editor.selection));
+      parts.push(`[/Selected code]`);
+    }
+    return parts.join('\n');
+  }
+
+  /** Task 17 (H12 fix): reveal the adoCode view container + focus the chat view. */
+  public focus(): void {
+    vscode.commands.executeCommand('workbench.view.extension.adoCode');
+    this._view?.show?.(true);
   }
 
   /** Mode selector (Q8) — updates the setting AND the executor when wired (Task 24). */

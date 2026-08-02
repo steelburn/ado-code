@@ -54,6 +54,29 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Task 17: chat focus command (keybinding target)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.chat.focus', () => chatProvider.focus())
+  );
+
+  // Task 17: status-bar branch indicator
+  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  statusBar.command = 'adoCode.refreshWorkItems';
+  statusBar.tooltip = 'ADO Code: current task branch';
+  statusBar.show();
+
+  // Update it whenever the git branch changes (poll on window focus + workspace events)
+  async function updateBranchStatus(): Promise<void> {
+    const branch = await services.git.getCurrentBranch();
+    statusBar.text = branch ? `$(git-branch) ${branch}` : '$(git-branch) (no repo)';
+  }
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState(() => updateBranchStatus()),
+    vscode.workspace.onDidChangeConfiguration(() => updateBranchStatus())
+  );
+  void updateBranchStatus();
+
   // Keep services in sync with settings / workspace changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {

@@ -32,6 +32,22 @@
         "command": "adoCode.refreshWorkItems",
         "title": "Refresh Work Items",
         "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.chat.focus",
+        "title": "Focus Chat"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "adoCode.chat.focus",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "adoCode.refreshWorkItems",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
       }
     ],
     "menus": {
