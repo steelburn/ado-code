@@ -12,11 +12,22 @@ declare function acquireVsCodeApi(): {
 
 const vscode = acquireVsCodeApi();
 
+interface SanitizedConfig {
+  adoOrganization: string;
+  adoProject: string;
+  llmProvider: string;
+  llmApiUrl: string;
+  llmModel: string;
+  configured: boolean;
+}
+
 function App() {
   const [messages, setMessages] = useState<{role: string; content: string}[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [config, setConfig] = useState<SanitizedConfig | null>(null);
+  const [form, setForm] = useState({ adoOrganization: '', adoProject: '', adoPat: '', llmProvider: 'openai', llmApiUrl: 'https://api.openai.com/v1', llmApiKey: '', llmModel: 'gpt-4o' });
 
   useEffect(() => {
     window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
@@ -47,9 +58,25 @@ function App() {
           setError(msg.message);
           setLoading(false);
           break;
+        case 'config':
+          setConfig(msg.config as unknown as SanitizedConfig);
+          break;
       }
     });
+    vscode.postMessage({ type: 'getConfig' });
   }, []);
+
+  const saveSetup = () => {
+    vscode.postMessage({ type: 'updateConfig', config: {
+      adoOrganization: form.adoOrganization,
+      adoProject: form.adoProject,
+      adoPat: form.adoPat,
+      llmProvider: form.llmProvider,
+      llmApiUrl: form.llmApiUrl,
+      llmApiKey: form.llmApiKey,
+      llmModel: form.llmModel,
+    } });
+  };
 
   const sendMessage = () => {
     if (!input.trim()) return;
@@ -57,6 +84,40 @@ function App() {
     vscode.postMessage({ type: 'userMessage', content: input });
     setInput('');
   };
+
+  // Welcome screen when not configured
+  if (config && !config.configured) {
+    return (
+      <div style={{ padding: '16px', overflow: 'auto', height: '100vh' }}>
+        <h2>Welcome to ADO Code</h2>
+        <p>Connect Azure DevOps and your LLM to get started.</p>
+
+        <h3>Azure DevOps</h3>
+        <label>Organization <input value={form.adoOrganization} onChange={e => setForm({...form, adoOrganization: e.target.value})} placeholder="mycompany" style={{ width: '100%' }} /></label>
+        <label>Project <input value={form.adoProject} onChange={e => setForm({...form, adoProject: e.target.value})} placeholder="MyProject" style={{ width: '100%' }} /></label>
+        <label>PAT <input value={form.adoPat} type="password" onChange={e => setForm({...form, adoPat: e.target.value})} placeholder="Azure DevOps Personal Access Token (vso.work_write)" style={{ width: '100%' }} /></label>
+        <p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)' }}>
+          Create a PAT at <a href="https://dev.azure.com">dev.azure.com</a> → User settings → Personal Access Tokens, with <code>Work Items (Read, Write &amp; Manage)</code> scope.
+        </p>
+
+        <h3>LLM</h3>
+        <label>Provider
+          <select value={form.llmProvider} onChange={e => setForm({...form, llmProvider: e.target.value})} style={{ width: '100%' }}>
+            <option value="openai">OpenAI-compatible</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </label>
+        <label>API URL <input value={form.llmApiUrl} onChange={e => setForm({...form, llmApiUrl: e.target.value})} style={{ width: '100%' }} /></label>
+        <label>API Key <input value={form.llmApiKey} type="password" onChange={e => setForm({...form, llmApiKey: e.target.value})} style={{ width: '100%' }} /></label>
+        <label>Model <input value={form.llmModel} onChange={e => setForm({...form, llmModel: e.target.value})} style={{ width: '100%' }} /></label>
+        <p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)' }}>
+          Self-hosted: Ollama <code>http://localhost:11434/v1</code>, LM Studio <code>http://localhost:1234/v1</code>, or any OpenAI-compatible endpoint.
+        </p>
+
+        <button onClick={saveSetup} style={{ marginTop: '12px', width: '100%' }}>Save Settings</button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '8px' }}>
@@ -79,7 +140,7 @@ function App() {
       <div style={{ display: 'flex', gap: '4px' }}>
         <input value={input} onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && sendMessage()}
-          style={{ flex: 1 }} placeholder="Ask anything..." />
+          style={{ flex: 1 }} placeholder="Ask anything... (try /status Done or /comment ...)" />
         <button onClick={sendMessage}>Send</button>
       </div>
     </div>

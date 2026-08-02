@@ -53,6 +53,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
+    // Task 19: React app decides welcome-vs-chat from the sanitized config payload
+    this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(
       async (message: WebviewToExtensionMessage) => {
@@ -63,6 +66,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'fetchWorkItems':
             await this.refreshWorkItems();
             break;
+          case 'getConfig':
+            this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            break;
+          case 'updateConfig':
+            await this.applyConfigUpdate(message.config);
+            this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            break;
         }
       },
       undefined,
@@ -72,6 +82,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public postMessage(message: any) {
     this._view?.webview.postMessage(message);
+  }
+
+  /** Task 19: never send adoPat/llmApiKey to the webview — secrets stay in the host. */
+  private _sanitizedConfig() {
+    const s = getSettings();
+    return {
+      adoOrganization: s.adoOrganization,
+      adoProject: s.adoProject,
+      llmProvider: s.llmProvider,
+      llmApiUrl: s.llmApiUrl,
+      llmModel: s.llmModel,
+      configured: Boolean(s.adoOrganization && s.adoProject && s.adoPat && s.llmApiKey),
+    };
+  }
+
+  /** Task 19: persist config from the welcome screen (never echo secrets back). */
+  private async applyConfigUpdate(config: any): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('adoCode');
+    const keys: Array<[string, string]> = [
+      ['adoOrganization', 'adoOrganization'],
+      ['adoProject', 'adoProject'],
+      ['adoPat', 'adoPat'],
+      ['llmProvider', 'llmProvider'],
+      ['llmApiUrl', 'llmApiUrl'],
+      ['llmApiKey', 'llmApiKey'],
+      ['llmModel', 'llmModel'],
+      ['git.requireGitRepo', 'gitRequireGitRepo'],
+      ['git.createBranchOnTaskStart', 'gitCreateBranchOnTaskStart'],
+      ['changelog.enabled', 'changelogEnabled'],
+      ['changelog.postToAdo', 'changelogPostToAdo'],
+    ];
+    for (const [settingKey, prop] of keys) {
+      const value = (config as any)[prop];
+      if (value !== undefined) {
+        await cfg.update(settingKey, value, vscode.ConfigurationTarget.Global);
+      }
+    }
   }
 
   async refreshWorkItems(): Promise<void> {
