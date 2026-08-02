@@ -1,5 +1,28 @@
 // Messages from Webview → Extension Host
-import { AgentRun, AgentCapability } from '../agents/types';
+// Task 24: webview copy of AgentRun/AgentCapability (host imports from
+// src/agents/types; the webview project can't resolve that path).
+export type AgentName = 'claude' | 'codex' | 'opencode' | 'hermes' | 'pi' | 'openclaw' | 'aider' | 'gemini' | 'cursor-agent';
+
+export interface AgentCapability {
+  name: AgentName;
+  displayName: string;
+  installed: boolean;
+  version?: string;
+  modes: ('one-shot' | 'session')[];
+}
+
+export interface AgentRun {
+  id: string;
+  workItemId?: number;
+  agent: AgentName;
+  sessionId?: string;
+  workdir: string;
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+  startedAt: string;
+  finishedAt?: string;
+  outputFile?: string;
+  summary?: string;
+}
 
 export type WebviewToExtensionMessage =
   | { type: 'userMessage'; content: string; context?: MessageContext }
