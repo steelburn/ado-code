@@ -24,6 +24,22 @@ suite('Thread-aware prompts', () => {
     assert.ok(prompt.includes('Jane BA: Please clarify X'));
   });
 
+  test('thread order is preserved as given (ADO returns newest-first — no reverse)', () => {
+    // LIVE-TEST FIX: ADO comments come back NEWEST-FIRST (id 21076637 before
+    // 21076636); the prompts must NOT reverse them.
+    const item = {
+      ...baseItem,
+      comments: [
+        { author: 'Newer', text: 'second comment', date: '2026-08-02' },
+        { author: 'Older', text: 'first comment', date: '2026-08-01' },
+      ],
+    };
+    const sys = buildSystemPrompt(item);
+    assert.ok(sys.indexOf('Newer: second comment') < sys.indexOf('Older: first comment'), 'system prompt keeps newest-first order');
+    const agent = buildAgentPrompt(item, 'feature/ADO-7-add-feature');
+    assert.ok(agent.indexOf('Newer: second comment') < agent.indexOf('Older: first comment'), 'agent prompt keeps newest-first order');
+  });
+
   test('buildAgentPrompt includes clarifications for the agent', () => {
     const item = { ...baseItem, comments: [{ author: 'Jane BA', text: 'Use the cancel flow from spec v2', date: '2026-08-02' }] };
     const prompt = buildAgentPrompt(item, 'feature/ADO-7-add-feature');

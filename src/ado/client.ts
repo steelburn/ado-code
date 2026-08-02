@@ -75,10 +75,14 @@ export class AdoClient {
     project: string,
     workItemId: number
   ): Promise<AdoComment[]> {
-    const response = await this.get<{ value: AdoComment[] }>(
+    // LIVE-TEST FIX: the ADO comments API returns { totalCount, count,
+    // comments: [...] } — NOT { value: [...] } like most list endpoints.
+    // Reading .value always yielded an empty thread (verified live: comment
+    // posted with id 21076636 never appeared in getComments).
+    const response = await this.get<{ comments: AdoComment[] }>(
       `/${project}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.4`
     );
-    return response.value || [];
+    return response.comments || [];
   }
 
   /** H1 fix: detail + discussion in one call (used by Tasks 13/21/28 — defined HERE in Task 7). */

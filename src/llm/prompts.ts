@@ -22,8 +22,9 @@ export function buildAgentPrompt(
   // collected before handoff (Task 28). This is the whole point of the
   // review-and-clarify step: the agent must build against the clarified spec.
   if (workItem.comments && workItem.comments.length > 0) {
+    // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST — do NOT reverse.
     lines.push(``, `Discussion thread (clarifications, latest first):`);
-    for (const c of workItem.comments.slice().reverse()) {
+    for (const c of workItem.comments) {
       lines.push(`- ${c.author}: ${c.text}`);
     }
   }
@@ -52,8 +53,11 @@ Acceptance Criteria: ${activeWorkItem.acceptanceCriteria || 'N/A'}
 Tags: ${activeWorkItem.tags || 'N/A'}`;
 
     if (activeWorkItem.comments && activeWorkItem.comments.length > 0) {
+      // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST (verified live:
+      // id 21076637 precedes 21076636). Do NOT reverse — the thread is
+      // already in the order the header claims.
       prompt += `\n\nDiscussion thread (latest first):`;
-      for (const c of activeWorkItem.comments.slice().reverse()) {
+      for (const c of activeWorkItem.comments) {
         prompt += `\n- ${c.author}: ${c.text}`;
       }
     }
