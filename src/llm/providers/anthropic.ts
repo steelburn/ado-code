@@ -1,4 +1,4 @@
-import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider } from '../types';
+import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
 
 export class AnthropicProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
@@ -88,5 +88,87 @@ export class AnthropicProvider implements LlmProvider {
         }
       }
     }
+  }
+
+  /** C1: tool-calling round-trip (non-streaming). C-7: merge consecutive tool_result messages. */
+  async chatWithTools(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{ text: string; toolCalls: ToolCall[] }> {
+    const systemMessage = messages.find(m => m.role === 'system');
+    const nonSystemMessages = messages.filter(m => m.role !== 'system');
+
+    // Translate generic messages → Anthropic native shapes:
+    // - role:'tool' + toolCallId → a `user` message with a tool_result block
+    // - role:'assistant' + toolCalls → text + tool_use blocks
+    // C-7: merge CONSECUTIVE translated user/tool_result messages into ONE user
+    // message whose content array holds all blocks (Anthropic 400s on
+    // consecutive same-role messages; never string-concat the blocks).
+    const anthropicMessages: Array<{ role: 'user' | 'assistant'; content: any }> = [];
+    for (const m of nonSystemMessages) {
+      if (m.role === 'tool' && m.toolCallId) {
+        const block = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
+        const last = anthropicMessages[anthropicMessages.length - 1];
+        if (last && last.role === 'user') {
+          last.content = last.content.concat([block]);
+        } else {
+          anthropicMessages.push({ role: 'user', content: [block] });
+        }
+        continue;
+      }
+      const role = m.role as 'user' | 'assistant';
+      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+        const content: any[] = [{ type: 'text', text: m.content }];
+        for (const tc of m.toolCalls) {
+          content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: JSON.parse(tc.arguments) });
+        }
+        anthropicMessages.push({ role, content });
+        continue;
+      }
+      const last = anthropicMessages[anthropicMessages.length - 1];
+      if (last && last.role === role && typeof last.content === 'string') {
+        last.content += '\n\n' + m.content;
+      } else {
+        anthropicMessages.push({ role, content: m.content });
+      }
+    }
+
+    // Anthropic requires the first message to be `user` — drop a leading
+    // assistant-only turn if present.
+    while (anthropicMessages.length > 0 && anthropicMessages[0].role === 'assistant') {
+      anthropicMessages.shift();
+    }
+
+    const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+    const body: Record<string, any> = {
+      model: config.model,
+      max_tokens: 4096,
+      messages: anthropicMessages,
+      tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })),
+    };
+    if (systemMessage) {
+      body.system = systemMessage.content;
+    }
+
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      signal,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Anthropic API error: ${response.status} ${await response.text()}`);
+    }
+
+    const parsed = (await response.json()) as any;
+    const toolCalls: ToolCall[] = [];
+    let text = '';
+    for (const block of parsed.content ?? []) {
+      if (block.type === 'text') text += block.text ?? '';
+      if (block.type === 'tool_use') toolCalls.push({ id: block.id, name: block.name, arguments: block.input });
+    }
+    return { text, toolCalls };
   }
 }

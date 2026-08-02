@@ -73,8 +73,10 @@ export async function selectActiveOrganization(context: vscode.ExtensionContext)
 
 /** Resolve the ACTIVE org + project (workspaceState first, settings fallback). */
 export function getActiveOrg(context: vscode.ExtensionContext, settings: AdoCodeSettings): { name: string; project: string; url: string } {
-  const name = context.workspaceState.get<string>('adoCode.activeOrgName', settings.adoOrganization);
-  const project = context.workspaceState.get<string>('adoCode.activeProject', settings.adoProject);
+  // Defensive: workspaceState may be undefined in test environments.
+  const ws = context.workspaceState;
+  const name = ws?.get<string>('adoCode.activeOrgName', settings.adoOrganization) ?? settings.adoOrganization;
+  const project = ws?.get<string>('adoCode.activeProject', settings.adoProject) ?? settings.adoProject;
   const configured = settings.organizations.find(o => o.name === name);
   return {
     name,

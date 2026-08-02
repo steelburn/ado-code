@@ -23,4 +23,41 @@ export interface LlmConfig {
 
 export interface LlmProvider {
   streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk>;
+  /** Chat with tool-calling support (non-streaming agentic turns). */
+  chatWithTools?(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{
+    text: string;
+    toolCalls: ToolCall[];
+  }>;
+}
+
+export interface LlmToolParameter {
+  type: string;
+  description?: string;
+  enum?: string[];
+  properties?: Record<string, LlmToolParameter>;
+  required?: string[];
+}
+
+export interface LlmTool {
+  name: string;
+  description: string;
+  parameters: LlmToolParameter; // JSON Schema
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+}
+
+export interface ToolResult {
+  toolCallId: string;
+  name: string;
+  content: string; // stringified JSON or text back to the model
+}
+
+export interface LlmAgenticResult {
+  text: string;                 // final assistant text
+  toolCalls: ToolCall[];        // all calls made during the loop
+  iterations: number;
 }
