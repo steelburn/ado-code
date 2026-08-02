@@ -64,7 +64,8 @@ suite('AgentAdapters', () => {
   test('claude resumeTask requires a session id', async () => {
     const { spawnFn } = fakeSpawn('', 0);
     const adapter = new ClaudeAdapter(spawnFn);
-    await assert.rejects(adapter.resumeTask!(makeRun('claude'), 'follow up'), /no session id/);
+    // Throws synchronously (guard before returning the promise) — use assert.throws.
+    assert.throws(() => adapter.resumeTask!(makeRun('claude'), 'follow up'), /no session id/);
   });
 
   test('gemini adapter builds -p and -c resume args', async () => {
