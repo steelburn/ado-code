@@ -135,6 +135,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'listAgents':
             await this.handleAgentMessage(message);
             break;
+          case 'clearConversation':
+            this.conversation = [];
+            this.persistConversation();
+            this.postMessage({ type: 'historyRestored', messages: [] });
+            break;
         }
       },
       undefined,
@@ -315,6 +320,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // `conversation` is extended in Task 26 (multi-turn); declared here for Task 24.
   private conversation: LlmMessage[] = [];
 
+  /** Task 26: persist conversation to workspaceState (Q4), keyed by folder. */
+  private persistConversation(): void {
+    const capped = this.conversation.slice(-50);
+    // M8 fix: key by folder fsPath (names collide across machines/folders).
+    // H-8 fix: use this._context (the provider's field), not a bare `context`.
+    const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+    this._context.workspaceState.update(`adoCode.chatHistory:${key}`, capped);
+  }
+
+  /** Task 26: restore persisted history (Q4 "Continue previous session?"). */
+  public restoreConversation(history: LlmMessage[]): void {
+    this.conversation = history.slice(-50);
+    this.postMessage({ type: 'historyRestored', messages: this.conversation });
+  }
+
+  /** Task 26: trim the conversation to ~20 turns (drop oldest non-system). */
+  private trimConversation(): void {
+    const MAX_TURNS = 20;
+    // Count turns (user messages) — keep system + the last MAX_TURNS user turns.
+    const userIdx: number[] = [];
+    this.conversation.forEach((m, i) => { if (m.role === 'user') userIdx.push(i); });
+    if (userIdx.length <= MAX_TURNS) return;
+    const cutoff = userIdx[userIdx.length - MAX_TURNS];
+    this.conversation = this.conversation.slice(cutoff);
+  }
+
   /** Fresh client from current settings (avoids stale config after changes). */
   private llmClient(): LlmClient {
     return new LlmClient(llmConfigFromSettings());
@@ -361,14 +392,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       const budget = getSettings().actToolBudget;
-      // conversation is [] for now; Task 26 extends it with history.
+      // Task 26: multi-turn — append this turn to the persisted conversation.
+      this.conversation.push({ role: 'user', content: finalContent });
+      this.trimConversation();
       const messages: LlmMessage[] = [
         { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
-        { role: 'user', content: finalContent },
+        ...this.conversation,
       ];
       try {
         const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget);
         this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
+        this.conversation.push({ role: 'assistant', content: result.text });
+        this.trimConversation();
+        this.persistConversation();
         if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
       } catch (err) {
         if (abort.signal.aborted) return;
@@ -378,17 +414,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    // inline mode: plain streaming chat (Task 13)
+    // inline mode: plain streaming chat (Task 13), multi-turn (Task 26)
+    this.conversation.push({ role: 'user', content: finalContent });
+    this.trimConversation();
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
-      { role: 'user', content: finalContent },
+      ...this.conversation,
     ];
 
     try {
+      let assistantText = '';
       for await (const chunk of this.llmClient().streamChat(messages, abort.signal)) {
+        assistantText += chunk.content;
         this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
         if (chunk.done) break;
       }
+      // Task 26: record the turn + persist history
+      if (assistantText) {
+        this.conversation.push({ role: 'assistant', content: assistantText });
+        this.trimConversation();
+      }
+      this.persistConversation();
     } catch (err) {
       if (abort.signal.aborted) return; // cancelled by a newer message
       const message = err instanceof Error ? err.message : String(err);

@@ -14,7 +14,8 @@ export type WebviewToExtensionMessage =
   | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
   | { type: 'agentFollowUp'; runId: string; prompt: string }
   | { type: 'agentCancel'; runId: string }
-  | { type: 'listAgents' };
+  | { type: 'listAgents' }
+  | { type: 'clearConversation' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -34,7 +35,9 @@ export type ExtensionToWebviewMessage =
   // Task 24: agent delegation protocol
   | { type: 'agentStatus'; run: AgentRun; delta: string }
   | { type: 'agentResult'; run: AgentRun; summary: string }
-  | { type: 'agentList'; agents: AgentCapability[] };
+  | { type: 'agentList'; agents: AgentCapability[] }
+  // Task 26: history restore (Q4)
+  | { type: 'historyRestored'; messages: { role: string; content: string }[] };
 
 // Shared types
 export interface MessageContext {

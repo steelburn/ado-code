@@ -69,11 +69,26 @@ function App() {
           setAgents(msg.agents.map(a => ({ name: a.name, displayName: a.displayName, installed: a.installed })));
           if (!selectedAgent && msg.agents.length > 0) setSelectedAgent(msg.agents[0].name);
           break;
+        case 'historyRestored':
+          setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
+          break;
       }
     });
+
+    // Q4 (webview side): restore history across sidebar re-opens (Task 4 APIs)
+    const saved = vscode.getState()?.history;
+    if (Array.isArray(saved) && saved.length > 0) {
+      setMessages(saved);
+    }
+
     vscode.postMessage({ type: 'getConfig' });
     vscode.postMessage({ type: 'listAgents' });
   }, []);
+
+  // Q4: persist webview history on every change
+  useEffect(() => {
+    vscode.setState({ history: messages });
+  }, [messages]);
 
   const saveSetup = () => {
     vscode.postMessage({ type: 'updateConfig', config: {
@@ -159,6 +174,7 @@ function App() {
           onKeyDown={e => e.key === 'Enter' && sendMessage()}
           style={{ flex: 1 }} placeholder="Ask anything... (try /status Done or /comment ...)" />
         <button onClick={sendMessage}>Send</button>
+        <button onClick={() => vscode.postMessage({ type: 'clearConversation' })} title="Clear chat history">Clear</button>
       </div>
       <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
         <input value={followUp} onChange={e => setFollowUp(e.target.value)}

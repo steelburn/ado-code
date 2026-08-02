@@ -118,6 +118,16 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   chatProvider.setAgentRunner(agentRunner);
 
+  // Q4: offer to restore persisted chat history (keyed by folder fsPath).
+  const historyKey = `adoCode.chatHistory:${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default'}`;
+  const savedHistory = context.workspaceState.get<import('./llm/types').LlmMessage[]>(historyKey, []);
+  if (savedHistory.length > 0) {
+    const pick = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Continue previous chat session?' });
+    if (pick === 'Yes') {
+      chatProvider.restoreConversation(savedHistory);
+    }
+  }
+
   // Q7: offer to resume interrupted runs (with a session id) after reload.
   const interrupted = agentRunner.listRuns().filter(r => r.status === 'interrupted' && r.sessionId);
   if (interrupted.length > 0) {
