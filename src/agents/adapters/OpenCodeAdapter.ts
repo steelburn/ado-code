@@ -9,7 +9,7 @@ export type SpawnFn = (bin: string, args: string[], opts: any) => any;
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = 'opencode';
 
-  constructor(private spawnFn: typeof cp.spawn = cp.spawn) {}
+  constructor(private spawnFn: SpawnFn = cp.spawn) {}
 
   private spawn(args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
