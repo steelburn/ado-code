@@ -1,4 +1,6 @@
 // Messages from Webview → Extension Host
+import { AgentRun, AgentCapability } from '../agents/types';
+
 export type WebviewToExtensionMessage =
   | { type: 'userMessage'; content: string; context?: MessageContext }
   | { type: 'fetchWorkItems' }
@@ -7,7 +9,12 @@ export type WebviewToExtensionMessage =
   | { type: 'updateWorkItem'; workItemId: number; fields: Record<string, any> }
   | { type: 'addComment'; workItemId: number; text: string }
   | { type: 'getConfig' }
-  | { type: 'updateConfig'; config: Partial<ExtensionConfig> };
+  | { type: 'updateConfig'; config: Partial<ExtensionConfig> }
+  // Task 24: agent delegation protocol
+  | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
+  | { type: 'agentFollowUp'; runId: string; prompt: string }
+  | { type: 'agentCancel'; runId: string }
+  | { type: 'listAgents' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -23,7 +30,11 @@ export type ExtensionToWebviewMessage =
   | { type: 'planReady'; plan: string } // plan mode: "Begin implementation" button
   | { type: 'config'; config: ExtensionConfig }
   | { type: 'error'; message: string }
-  | { type: 'loading'; loading: boolean };
+  | { type: 'loading'; loading: boolean }
+  // Task 24: agent delegation protocol
+  | { type: 'agentStatus'; run: AgentRun; delta: string }
+  | { type: 'agentResult'; run: AgentRun; summary: string }
+  | { type: 'agentList'; agents: AgentCapability[] };
 
 // Shared types
 export interface MessageContext {

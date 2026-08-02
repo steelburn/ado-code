@@ -112,4 +112,28 @@ export class GitService {
       cwd: this.workspaceRoot,
     });
   }
+
+  /** Task 24: porcelain status (agent work verification). */
+  async getStatusPorcelain(): Promise<string> {
+    try {
+      const { stdout } = await execFile('git', ['status', '--porcelain'], {
+        cwd: this.workspaceRoot,
+      });
+      return stdout;
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Task 24: diff stat (bounded by the caller). */
+  async getDiffStat(): Promise<string> {
+    try {
+      const { stdout } = await execFile('git', ['diff', '--stat'], {
+        cwd: this.workspaceRoot,
+      });
+      return stdout;
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
+  }
 }

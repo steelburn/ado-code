@@ -6,13 +6,17 @@ import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/sett
 import { LlmClient } from '../llm/client';
 import { LlmMessage } from '../llm/types';
 import { buildSystemPrompt } from '../llm/prompts';
+import { createToolExecutor, ToolExecutor } from '../llm/tools';
+import { runAgenticChat } from '../llm/agentic';
+import { AgentRunner } from '../agents/AgentRunner';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
-  // Forward-declared for setServices (Task 24 wires the real runner/executor).
-  private agentRunner?: any;
-  private executor?: any;
+  // Task 24 (H5): wired via setAgentRunner AFTER both exist (services built
+  // before the provider in activate()).
+  private agentRunner?: AgentRunner;
+  private executor?: ToolExecutor;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -30,9 +34,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.agentRunner) this.setAgentRunner(this.agentRunner);
   }
 
-  /** Task 24 wires the agent runner here (forward declaration). */
-  public setAgentRunner(runner: any): void {
+  /** H10 fix: wire the tool executor concretely once the runner exists. */
+  public setAgentRunner(runner: AgentRunner): void {
     this.agentRunner = runner;
+    // Executor depends on the runner — build it once both are available.
+    this.executor = createToolExecutor(this.services, this._context, {
+      onUpdateState: (id, state) => this.updateWorkItemState(id, state),
+      onDelegate: (prompt, agent) => this.delegateToAgent(prompt, agent),
+      onApprove: async (name, args) => {
+        const pick = await vscode.window.showQuickPick(['Approve', 'Reject'], {
+          placeHolder: `Allow tool '${name}' with ${JSON.stringify(args)}?`,
+        });
+        return pick === 'Approve';
+      },
+    });
+    this.executor.setMode(getSettings().mode);
+  }
+
+  /** Task 24 (M-4): delegate to an external agent; result streams async via webview. */
+  async delegateToAgent(prompt: string, agent?: string): Promise<string> {
+    if (!this.agentRunner) throw new Error('agent runner not wired');
+    if (!this.activeWorkItem) throw new Error('select a work item first');
+    const run = await this.agentRunner.delegate(this.activeWorkItem.id, prompt, agent as any);
+    // Result is delivered async via agentStatus/agentResult messages; return a
+    // placeholder so the tool executor sees the run started.
+    return JSON.stringify({ ok: true, runId: run.id, status: run.status });
+  }
+
+  /** Task 24: agent-related message handlers. */
+  public async handleAgentMessage(message: WebviewToExtensionMessage): Promise<void> {
+    switch (message.type) {
+      case 'delegateToAgent':
+        await this.delegateToAgent(message.prompt, message.agent);
+        break;
+      case 'agentFollowUp':
+        await this.agentRunner?.followUp(message.runId, message.prompt);
+        break;
+      case 'agentCancel':
+        this.agentRunner?.cancel(message.runId);
+        break;
+      case 'listAgents': {
+        const agents = await this.services.agents.detect();
+        this.postMessage({ type: 'agentList', agents });
+        break;
+      }
+    }
   }
 
   /** H-4 fix: resolve the ACTIVE project from workspaceState (org switch). */
@@ -73,6 +119,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'updateConfig':
             await this.applyConfigUpdate(message.config);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            break;
+          case 'delegateToAgent':
+          case 'agentFollowUp':
+          case 'agentCancel':
+          case 'listAgents':
+            await this.handleAgentMessage(message);
             break;
         }
       },
@@ -262,6 +314,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const abort = new AbortController();
     this.llmAbort = abort;
 
+    // ── Task 24: mode-aware dispatch (Q8) ────────────────────────────
+    const mode = getSettings().mode;
+    if (mode === 'plan' || mode === 'act') {
+      if (!this.executor) {
+        this.postMessage({ type: 'error', message: 'Tool executor not wired — run the extension from a fresh activation.' });
+        return;
+      }
+      const budget = getSettings().actToolBudget;
+      // conversation is [] for now; Task 26 extends it with history.
+      const messages: LlmMessage[] = [
+        { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
+        { role: 'user', content: finalContent },
+      ];
+      try {
+        const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget);
+        this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
+        if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
+      } catch (err) {
+        if (abort.signal.aborted) return;
+        const message = err instanceof Error ? err.message : String(err);
+        this.postMessage({ type: 'error', message });
+      }
+      return;
+    }
+
+    // inline mode: plain streaming chat (Task 13)
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
       { role: 'user', content: finalContent },

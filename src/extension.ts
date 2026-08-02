@@ -3,6 +3,7 @@ import { ChatViewProvider } from './webview/ChatViewProvider';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
 import { selectActiveOrganization } from './config/settings';
+import { AgentRunner } from './agents/AgentRunner';
 
 let chatProvider: ChatViewProvider;
 let treeProvider: WorkItemsTreeProvider;
@@ -76,6 +77,32 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeConfiguration(() => updateBranchStatus())
   );
   void updateBranchStatus();
+
+  // Task 24 (H5): construct AgentRunner AFTER both services and chatProvider
+  // exist, then hand it to the provider (which builds the tool executor).
+  const agentRunner = new AgentRunner(
+    services.agents,
+    services.git,
+    {
+      onStatus: (run, delta) => chatProvider.postMessage({ type: 'agentStatus', run, delta }),
+      onComplete: (run, summary) => chatProvider.postMessage({ type: 'agentResult', run, summary }),
+    },
+    {
+      save: runs => context.workspaceState.update('adoCode.agentRuns', runs),
+      load: () => context.workspaceState.get<import('./agents/types').AgentRun[]>('adoCode.agentRuns', []),
+    }
+  );
+  chatProvider.setAgentRunner(agentRunner);
+
+  // Q7: offer to resume interrupted runs (with a session id) after reload.
+  const interrupted = agentRunner.listRuns().filter(r => r.status === 'interrupted' && r.sessionId);
+  if (interrupted.length > 0) {
+    const pick = await vscode.window.showQuickPick(
+      interrupted.map(r => ({ label: `Resume ADO-${r.workItemId} (${r.agent})`, description: r.id })),
+      { placeHolder: 'An agent run was interrupted by the restart. Resume it?' }
+    );
+    if (pick) agentRunner.resumeInterrupted(pick.description!, 'Continue where you left off and report status.');
+  }
 
   // Keep services in sync with settings / workspace changes
   context.subscriptions.push(
