@@ -34,7 +34,144 @@
     },
     "configuration": {
       "title": "ADO Code",
-      "properties": {}
+      "properties": {
+        "adoCode.organizations": {
+          "type": "array",
+          "default": [],
+          "description": "ADO organizations the developer works with: [{ \"name\": \"mycompany\", \"url\": \"https://dev.azure.com/mycompany\", \"project\": \"MyProject\" }]. The ACTIVE org is picked per workspace (workspaceState), see adoCode.adoOrganization/adoCode.adoProject (Q1 resolution)."
+        },
+        "adoCode.adoOrganization": {
+          "type": "string",
+          "default": "",
+          "description": "Active Azure DevOps organization name for this workspace (e.g., 'mycompany')"
+        },
+        "adoCode.adoProject": {
+          "type": "string",
+          "default": "",
+          "description": "Active Azure DevOps project name for this workspace"
+        },
+        "adoCode.adoServerUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional ADO Server (on-premises) base URL, e.g. 'https://ado.corp.local/tfs/DefaultCollection'. Empty = cloud ADO Services (https://dev.azure.com/{org}). Used verbatim when set (Q2 resolution)."
+        },
+        "adoCode.adoPat": {
+          "type": "string",
+          "default": "",
+          "description": "Azure DevOps Personal Access Token",
+          "format": "password"
+        },
+        "adoCode.llmProvider": {
+          "type": "string",
+          "default": "openai",
+          "enum": ["openai", "anthropic"],
+          "enumDescriptions": [
+            "OpenAI-compatible API (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, etc. — not Azure OpenAI; see M13)",
+            "Anthropic Messages API (Claude, Amazon Bedrock, self-hosted Anthropic-compatible)"
+          ],
+          "description": "LLM provider type — determines API format and authentication"
+        },
+        "adoCode.llmApiUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "LLM API base URL. For Anthropic: use https://api.anthropic.com. For self-hosted: use your local endpoint."
+        },
+        "adoCode.llmApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "LLM API key",
+          "format": "password"
+        },
+        "adoCode.llmModel": {
+          "type": "string",
+          "default": "gpt-4o",
+          "description": "LLM model name (e.g., gpt-4o, claude-sonnet-4-20250514, llama3, etc.)"
+        },
+        "adoCode.git.requireGitRepo": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block task pickup when the workspace is not inside a git repository"
+        },
+        "adoCode.git.createBranchOnTaskStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create a feature/ADO-<id>-<slug> branch when picking up a work item"
+        },
+        "adoCode.git.requireCleanTree": {
+          "type": "boolean",
+          "default": false,
+          "description": "Warn and require confirmation when switching branches with uncommitted changes"
+        },
+        "adoCode.git.prOnCompletion": {
+          "type": "boolean",
+          "default": false,
+          "description": "On task completion, offer to push the branch and create a PR via gh CLI (Q5 resolution — opt-in)"
+        },
+        "adoCode.mode": {
+          "type": "string",
+          "default": "inline",
+          "enum": ["inline", "plan", "act"],
+          "enumDescriptions": [
+            "Streaming answer; tool calls shown inline, mutating tools require approval",
+            "Read-only tools only; produces a plan; 'Begin implementation' switches to act",
+            "Autonomous agentic loop with auto-approval of mutating tools (tool budget + terminal allowlist)"
+          ],
+          "description": "LLM tool-use mode (Q8 resolution)"
+        },
+        "adoCode.act.toolBudget": {
+          "type": "number",
+          "default": 25,
+          "description": "Max tool calls per act-mode turn"
+        },
+        "adoCode.act.terminalAllowlist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["npm test", "npm run lint", "git diff", "git status"],
+          "description": "Allowed command prefixes for run_terminal_command in act mode"
+        },
+        "adoCode.changelog.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create/update CHANGELOG.md when a work item is completed (state Done/Closed)"
+        },
+        "adoCode.changelog.autoCommit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Commit the CHANGELOG.md update automatically on task completion"
+        },
+        "adoCode.changelog.postToAdo": {
+          "type": "boolean",
+          "default": true,
+          "description": "Post the changelog entry as a comment on the Azure DevOps work item when it is completed"
+        },
+        "adoCode.ado.clarificationState": {
+          "type": "string",
+          "default": "Blocked",
+          "description": "State to set on a work item when clarification is requested. Empty string = do not change state. (Must be a valid state for your process template.)"
+        },
+        "adoCode.ado.warnOnSparseTask": {
+          "type": "boolean",
+          "default": true,
+          "description": "Before starting a task with no description AND no acceptance criteria, warn and offer to review detail or request clarification"
+        },
+        "adoCode.agents.enabled": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"] },
+          "default": ["claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"],
+          "description": "Which external agents ADO Code may delegate to (Q9: aider, gemini, cursor-agent added). M17: default includes all registered agents; users can prune."
+        },
+        "adoCode.agents.verifyCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Shell command run after an agent finishes to verify work (e.g. 'npm test'). Empty = skip."
+        },
+        "adoCode.agents.autoSelect": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"],
+          "description": "Default agent for delegation when none is specified (M-9: includes all 9 registered agents)"
+        }
+      }
     }
   },
   "scripts": {
