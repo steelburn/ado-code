@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { WebviewToExtensionMessage } from '../shared/messages';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -22,7 +23,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(
-      async (message) => {
+      async (message: WebviewToExtensionMessage) => {
         switch (message.type) {
           case 'userMessage':
             // Will be wired to LLM in later task; `done: true` is required by
