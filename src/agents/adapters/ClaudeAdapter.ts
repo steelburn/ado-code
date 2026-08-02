@@ -2,18 +2,24 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 
+/** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
+export type SpawnFn = (bin: string, args: string[], opts: any) => any;
+
 export class ClaudeAdapter implements AgentAdapter {
   readonly name = 'claude';
 
+  // Inject spawn for tests (Node 23 exposes cp.spawn as non-configurable getter).
+  constructor(private spawnFn: SpawnFn = cp.spawn) {}
+
   private spawn(args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = cp.spawn('claude', args, { cwd, signal });
+      const child = this.spawnFn('claude', args, { cwd, signal }) as any;
       let output = '';
-      child.stdout.on('data', d => { output += d.toString(); });
-      child.stderr.on('data', d => { output += d.toString(); });
-      child.on('error', err => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
+      child.stdout.on('data', (d: any) => { output += d.toString(); });
+      child.stderr.on('data', (d: any) => { output += d.toString(); });
+      child.on('error', (err: any) => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
       // H7 fix: keep `code` as-is (null on abort) — the runner maps null → cancelled.
-      child.on('close', code => resolve({ exitCode: code, output }));
+      child.on('close', (code: number | null) => resolve({ exitCode: code, output }));
     });
   }
 

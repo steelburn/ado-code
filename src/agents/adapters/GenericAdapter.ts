@@ -2,6 +2,9 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentName, AgentRun } from '../types';
 
+/** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
+export type SpawnFn = (bin: string, args: string[], opts: any) => any;
+
 /**
  * Generic one-shot adapter for pi, openclaw, aider, cursor-agent.
  * These agents' CLI contracts vary; best-effort per the registry spec.
@@ -9,18 +12,18 @@ import { AgentName, AgentRun } from '../types';
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;
 
-  constructor(name: AgentName) {
+  constructor(name: AgentName, private spawnFn: SpawnFn = cp.spawn) {
     this.name = name;
   }
 
   private spawn(bin: string, args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = cp.spawn(bin, args, { cwd, signal });
+      const child = this.spawnFn(bin, args, { cwd, signal }) as any;
       let output = '';
-      child.stdout.on('data', d => { output += d.toString(); });
-      child.stderr.on('data', d => { output += d.toString(); });
-      child.on('error', err => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
-      child.on('close', code => resolve({ exitCode: code, output }));
+      child.stdout.on('data', (d: any) => { output += d.toString(); });
+      child.stderr.on('data', (d: any) => { output += d.toString(); });
+      child.on('error', (err: any) => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
+      child.on('close', (code: number | null) => resolve({ exitCode: code, output }));
     });
   }
 

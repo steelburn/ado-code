@@ -1,19 +1,24 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
-import { AgentRun } from '../types';
+import { AgentName, AgentRun } from '../types';
+
+/** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
+export type SpawnFn = (bin: string, args: string[], opts: any) => any;
 
 /** Codex CLI: `codex exec --sandbox workspace-write "<prompt>"`. No session resume — follow-ups re-run with prior context. */
 export class CodexAdapter implements AgentAdapter {
   readonly name = 'codex';
 
+  constructor(private spawnFn: typeof cp.spawn = cp.spawn) {}
+
   private spawn(args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = cp.spawn('codex', args, { cwd, signal });
+      const child = this.spawnFn('codex', args, { cwd, signal }) as any;
       let output = '';
-      child.stdout.on('data', d => { output += d.toString(); });
-      child.stderr.on('data', d => { output += d.toString(); });
-      child.on('error', err => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
-      child.on('close', code => resolve({ exitCode: code, output }));
+      child.stdout.on('data', (d: any) => { output += d.toString(); });
+      child.stderr.on('data', (d: any) => { output += d.toString(); });
+      child.on('error', (err: any) => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
+      child.on('close', (code: number | null) => resolve({ exitCode: code, output }));
     });
   }
 

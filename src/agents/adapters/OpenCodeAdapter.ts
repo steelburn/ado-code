@@ -1,19 +1,24 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
-import { AgentRun } from '../types';
+import { AgentName, AgentRun } from '../types';
+
+/** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
+export type SpawnFn = (bin: string, args: string[], opts: any) => any;
 
 /** OpenCode: `opencode run "<prompt>" --format json`; resume with `opencode run "<followUp>" -s <id>`. */
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = 'opencode';
 
+  constructor(private spawnFn: typeof cp.spawn = cp.spawn) {}
+
   private spawn(args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = cp.spawn('opencode', args, { cwd, signal });
+      const child = this.spawnFn('opencode', args, { cwd, signal }) as any;
       let output = '';
-      child.stdout.on('data', d => { output += d.toString(); });
-      child.stderr.on('data', d => { output += d.toString(); });
-      child.on('error', err => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
-      child.on('close', code => resolve({ exitCode: code, output }));
+      child.stdout.on('data', (d: any) => { output += d.toString(); });
+      child.stderr.on('data', (d: any) => { output += d.toString(); });
+      child.on('error', (err: any) => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
+      child.on('close', (code: number | null) => resolve({ exitCode: code, output }));
     });
   }
 
