@@ -1,3 +1,14 @@
+export interface AdoProject {
+  id: string;
+  name: string;
+  state: string;
+  url: string;
+  description?: string;
+  revision?: number;
+  visibility?: string;
+  lastUpdateTime?: string;
+}
+
 export interface AdoWorkItem {
   id: number;
   fields: {
@@ -15,6 +26,9 @@ export interface AdoWorkItem {
     'System.CreatedBy'?: { displayName: string; uniqueName: string };
     'System.CreatedDate'?: string;
     'System.ChangedDate'?: string;
+    // Bug-specific fields
+    'Microsoft.VSTS.TCM.ReproSteps'?: string;
+    'Microsoft.VSTS.TCM.SystemInfo'?: string;
   };
   _links: {
     self: { href: string };

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
-import { selectActiveOrganization } from './config/settings';
+import { selectActiveOrganization, getSettings } from './config/settings';
 import { AgentRunner } from './agents/AgentRunner';
 
 let chatProvider: ChatViewProvider;
@@ -122,8 +122,20 @@ export async function activate(context: vscode.ExtensionContext) {
     services.agents,
     services.git,
     {
-      onStatus: (run, delta) => chatProvider.postMessage({ type: 'agentStatus', run, delta }),
-      onComplete: (run, summary) => chatProvider.postMessage({ type: 'agentResult', run, summary }),
+      onStatus: (run, delta) => {
+        chatProvider.postMessage({ type: 'agentStatus', run, delta });
+        // Update tree view with agent status
+        if (run.workItemId) {
+          treeProvider.updateAgentStatus(run.workItemId, run.agent, run.status);
+        }
+      },
+      onComplete: (run, summary) => {
+        chatProvider.postMessage({ type: 'agentResult', run, summary });
+        // Clear agent status from tree view
+        if (run.workItemId) {
+          treeProvider.updateAgentStatus(run.workItemId, run.agent, 'completed');
+        }
+      },
     },
     {
       save: runs => context.workspaceState.update('adoCode.agentRuns', runs),
@@ -150,6 +162,12 @@ export async function activate(context: vscode.ExtensionContext) {
       { placeHolder: 'An agent run was interrupted by the restart. Resume it?' }
     );
     if (pick) agentRunner.resumeInterrupted(pick.description!, 'Continue where you left off and report status.');
+  }
+
+  // Auto-fetch work items on activation if already configured
+  const settings = getSettings();
+  if (settings.adoOrganization && settings.adoProject && settings.adoPat) {
+    chatProvider.refreshWorkItems();
   }
 
   // Keep services in sync with settings / workspace changes

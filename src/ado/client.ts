@@ -66,9 +66,17 @@ export class AdoClient {
     text: string
   ): Promise<AdoComment> {
     return this.post<AdoComment>(
-      `/${project}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.4`,
+      `/_apis/wit/workitems/${workItemId}/comments?api-version=7.0`,
       { text }
     );
+  }
+
+  /** List all projects in the organization the authenticated user has access to. */
+  async getProjects(): Promise<import('./types').AdoProject[]> {
+    const response = await this.get<{ value: import('./types').AdoProject[] }>(
+      `/_apis/projects?stateFilter=WellFormed&api-version=7.1`
+    );
+    return response.value || [];
   }
 
   async getComments(

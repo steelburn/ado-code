@@ -82,7 +82,9 @@ export class AgentRunner {
     // Fire and forget; result delivered via callback
     void (async () => {
       try {
-        const { exitCode, output } = await adapter.runTask(run, prompt, abort.signal);
+        const { exitCode, output } = await adapter.runTask(run, prompt, abort.signal, (chunk) => {
+          this.callbacks.onStatus(run, chunk);
+        });
         // H7 fix: if cancelled mid-run, do NOT overwrite the status or run verifyWork.
         if (run.status === 'cancelled') return;
         run.sessionId = adapter.extractSessionId?.(output);
@@ -136,13 +138,17 @@ export class AgentRunner {
       try {
         let result: { exitCode: number | null; output: string };
         if (adapter.resumeTask && run.sessionId) {
-          result = await adapter.resumeTask(run, followUpPrompt, abort.signal);
+          result = await adapter.resumeTask(run, followUpPrompt, abort.signal, (chunk) => {
+            this.callbacks.onStatus(run, chunk);
+          });
         } else {
           // H13 fix: synthesized follow-up for agents without session resume
           // (codex, aider, pi, openclaw, cursor-agent): re-run one-shot with
           // the previous summary + the follow-up prompt as context.
           const context = `[Previous run summary]\n${run.summary ?? '(no summary)'}\n\n[Follow-up request]\n${followUpPrompt}`;
-          result = await adapter.runTask(run, context, abort.signal);
+          result = await adapter.runTask(run, context, abort.signal, (chunk) => {
+            this.callbacks.onStatus(run, chunk);
+          });
         }
         if (run.status === 'cancelled') return;
         run.finishedAt = new Date().toISOString();

@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -83,6 +83,13 @@
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "adoCode.refreshWorkItems",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
           "command": "adoCode.startTask",
@@ -92,27 +99,27 @@
         {
           "command": "adoCode.selectWorkItem",
           "when": "viewItem == workItemNode",
-          "group": "inline"
-        },
-        {
-          "command": "adoCode.startTaskWithAgent",
-          "when": "viewItem == workItemNode",
-          "group": "inline"
+          "group": "1_workItem@1"
         },
         {
           "command": "adoCode.reviewTaskDetail",
           "when": "viewItem == workItemNode",
-          "group": "inline"
+          "group": "1_workItem@2"
+        },
+        {
+          "command": "adoCode.startTaskWithAgent",
+          "when": "viewItem == workItemNode",
+          "group": "2_agent@1"
         },
         {
           "command": "adoCode.requestClarification",
           "when": "viewItem == workItemNode",
-          "group": "inline"
+          "group": "3_communication@1"
         },
         {
           "command": "adoCode.checkTaskReplies",
           "when": "viewItem == workItemNode",
-          "group": "inline"
+          "group": "3_communication@2"
         }
       ]
     },

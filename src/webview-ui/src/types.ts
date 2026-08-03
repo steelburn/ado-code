@@ -42,7 +42,13 @@ export type WebviewToExtensionMessage =
   // Task 28: task detail review + clarification
   | { type: 'reviewTaskDetail'; workItemId: number }
   | { type: 'requestClarification'; workItemId: number; question: string; mentionCreator: boolean }
-  | { type: 'checkTaskReplies'; workItemId: number };
+  | { type: 'checkTaskReplies'; workItemId: number }
+  | { type: 'pickMode' }
+  | { type: 'rerunWizard' }
+  | { type: 'openSettings' }
+  | { type: 'cycleMode' }
+  | { type: 'fetchProjects' }
+  | { type: 'selectProject'; projectName: string };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -66,7 +72,9 @@ export type ExtensionToWebviewMessage =
   // Task 26: history restore (Q4)
   | { type: 'historyRestored'; messages: { role: string; content: string }[] }
   // Task 28: task detail review + clarification
-  | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] };
+  | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
+  // Project selection
+  | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> };
 
 // Shared types
 export interface MessageContext {
@@ -91,6 +99,8 @@ export interface WorkItemDetail extends WorkItemSummary {
   iterationPath: string;
   creator?: string; // Task 28: displayName of the work item creator
   comments: WorkItemComment[];
+  reproSteps?: string;
+  systemInfo?: string;
 }
 
 export interface WorkItemComment {

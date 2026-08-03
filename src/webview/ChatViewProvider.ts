@@ -17,6 +17,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // before the provider in activate()).
   private agentRunner?: AgentRunner;
   private executor?: ToolExecutor;
+  // Auto-refresh timer for work items
+  private refreshTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -85,6 +87,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'listAgents': {
         const agents = await this.services.agents.detect();
         this.postMessage({ type: 'agentList', agents });
+        // Auto-select agent if only one installed, or prompt for default if multiple
+        const installed = agents.filter(a => a.installed);
+        const cfg = vscode.workspace.getConfiguration('adoCode');
+        const currentDefault = cfg.get<string>('agents.autoSelect', '');
+        if (installed.length === 1 && !currentDefault) {
+          // Only one agent installed — auto-select it
+          await cfg.update('agents.autoSelect', installed[0].name, vscode.ConfigurationTarget.Global);
+        } else if (installed.length > 1 && !currentDefault) {
+          // Multiple agents, no default set — prompt user
+          const pick = await vscode.window.showQuickPick(
+            installed.map(a => ({ label: a.displayName, description: a.name })),
+            { placeHolder: 'Multiple agents installed. Select a default agent for delegation.' }
+          );
+          if (pick) {
+            await cfg.update('agents.autoSelect', pick.description, vscode.ConfigurationTarget.Global);
+          }
+        }
         break;
       }
     }
@@ -112,6 +131,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Task 19: React app decides welcome-vs-chat from the sanitized config payload
     this.postMessage({ type: 'config', config: this._sanitizedConfig() });
 
+    // Auto-refresh work items every 5 minutes if configured
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.refreshTimer = setInterval(() => {
+      const s = getSettings();
+      if (s.adoOrganization && s.adoProject && s.adoPat) {
+        this.refreshWorkItems();
+      }
+    }, 5 * 60 * 1000);
+
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(
       async (message: WebviewToExtensionMessage) => {
@@ -128,6 +156,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'updateConfig':
             await this.applyConfigUpdate(message.config);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            // Auto-fetch work items after config save if fully configured
+            if (this._sanitizedConfig().configured) {
+              await this.refreshWorkItems();
+            }
             break;
           case 'delegateToAgent':
           case 'agentFollowUp':
@@ -149,6 +181,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'checkTaskReplies':
             await this.checkTaskReplies(message.workItemId);
             break;
+          case 'pickMode':
+            await this.pickMode();
+            break;
+          case 'rerunWizard':
+            // Reset config so the welcome screen re-appears
+            this.postMessage({ type: 'config', config: { ...this._sanitizedConfig(), configured: false } });
+            break;
+          case 'openSettings':
+            vscode.commands.executeCommand('workbench.action.openSettings', 'adoCode');
+            break;
+          case 'cycleMode': {
+            const modes = ['inline', 'plan', 'act'] as const;
+            const current = getSettings().mode;
+            const next = modes[(modes.indexOf(current) + 1) % modes.length];
+            await vscode.workspace.getConfiguration('adoCode').update('mode', next, vscode.ConfigurationTarget.Global);
+            this.executor?.setMode(next);
+            this.postMessage({ type: 'modeChanged', mode: next });
+            break;
+          }
+          case 'fetchProjects': {
+            try {
+              const projects = await this.services.ado.getProjects();
+              this.postMessage({
+                type: 'projectList',
+                projects: projects.map(p => ({ id: p.id, name: p.name, state: p.state })),
+              });
+            } catch (err) {
+              this.postMessage({ type: 'error', message: `Failed to fetch projects: ${err instanceof Error ? err.message : err}` });
+            }
+            break;
+          }
+          case 'selectProject': {
+            await vscode.workspace.getConfiguration('adoCode').update('adoProject', message.projectName, vscode.ConfigurationTarget.Global);
+            this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            // Auto-refresh work items with new project
+            await this.refreshWorkItems();
+            break;
+          }
         }
       },
       undefined,
@@ -357,6 +427,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           iterationPath: detail.fields['System.IterationPath'] ?? '',
           creator: creator?.displayName ?? '',
           comments: this.activeWorkItem.comments ?? [],
+          reproSteps: detail.fields['Microsoft.VSTS.TCM.ReproSteps'] ?? '',
+          systemInfo: detail.fields['Microsoft.VSTS.TCM.SystemInfo'] ?? '',
         },
       });
     } catch (err) {

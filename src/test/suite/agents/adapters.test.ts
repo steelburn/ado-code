@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { ClaudeAdapter } from '../../../agents/adapters/ClaudeAdapter';
 import { GeminiAdapter } from '../../../agents/adapters/GeminiAdapter';
 import { GenericAdapter } from '../../../agents/adapters/GenericAdapter';
+import { HermesAdapter } from '../../../agents/adapters/HermesAdapter';
 import { AgentName, AgentRun } from '../../../agents/types';
 
 function makeRun(agent: AgentName): AgentRun {
@@ -97,5 +98,28 @@ suite('AgentAdapters', () => {
     const result = await adapter.runTask(makeRun('pi'), 'x');
     assert.strictEqual(result.exitCode, 1);
     assert.ok(result.output.includes('ENOENT'));
+  });
+
+  test('hermes adapter builds chat -q args and streams via onChunk', async () => {
+    const { spawnFn, captured } = fakeSpawn('streaming output', 0);
+    const adapter = new HermesAdapter(spawnFn);
+    const chunks: string[] = [];
+    const result = await adapter.runTask(makeRun('hermes'), 'hello', undefined, (c) => chunks.push(c));
+    assert.strictEqual(captured.bin, 'hermes');
+    assert.deepStrictEqual(captured.args, ['chat', '-q', 'hello']);
+    assert.strictEqual(result.exitCode, 0);
+    assert.ok(chunks.length > 0, 'onChunk should have been called');
+    assert.ok(chunks.join('').includes('streaming output'));
+  });
+
+  test('hermes resumeTask builds --continue args and streams via onChunk', async () => {
+    const { spawnFn, captured } = fakeSpawn('resumed', 0);
+    const adapter = new HermesAdapter(spawnFn);
+    const chunks: string[] = [];
+    const run = makeRun('hermes');
+    run.sessionId = 'sess-456';
+    await adapter.resumeTask!(run, 'follow up', undefined, (c) => chunks.push(c));
+    assert.deepStrictEqual(captured.args, ['chat', '-q', 'follow up', '--continue']);
+    assert.ok(chunks.join('').includes('resumed'));
   });
 });
