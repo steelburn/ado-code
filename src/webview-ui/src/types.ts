@@ -47,8 +47,12 @@ export type WebviewToExtensionMessage =
   | { type: 'rerunWizard' }
   | { type: 'openSettings' }
   | { type: 'cycleMode' }
-  | { type: 'fetchProjects' }
-  | { type: 'selectProject'; projectName: string };
+  | { type: 'fetchProjects'; organization?: string; pat?: string }
+  | { type: 'fetchModels'; provider?: string; apiUrl?: string; apiKey?: string }
+  | { type: 'selectProject'; projectName: string }
+  // Input-bar tools: inject active-editor context / attach a file into the draft
+  | { type: 'getEditorContext' }
+  | { type: 'pickFiles' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -74,7 +78,12 @@ export type ExtensionToWebviewMessage =
   // Task 28: task detail review + clarification
   | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
   // Project selection
-  | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> };
+  | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> }
+  // Wizard model picker
+  | { type: 'modelList'; models: string[] }
+  // Input-bar tools: active-editor context block / attached file contents
+  | { type: 'editorContext'; text: string }
+  | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> };
 
 // Shared types
 export interface MessageContext {

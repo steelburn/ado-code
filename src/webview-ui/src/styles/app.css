@@ -115,6 +115,40 @@ code {
   border-color: var(--vscode-focusBorder);
 }
 
+/* Inline row: input/select + icon button (wizard model picker, etc.) */
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-row .form-input,
+.form-row .form-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-icon {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  font-size: 0.9em;
+  line-height: 1;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.btn-icon:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn-icon:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .form-input::placeholder {
   color: var(--vscode-input-placeholderForeground);
   opacity: 0.7;
@@ -891,6 +925,66 @@ code {
   font-size: 0.8em;
   font-weight: 600;
   color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+/* ── Project Switcher ──────────────────────────────────────────── */
+.project-switcher {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  justify-content: flex-start;
+  gap: 4px;
+  margin: 0 8px;
+  /* The select must never overflow this box: at narrow sidebar widths an
+     overflowing <select> slides over the kebab menu and hides it. */
+  overflow: hidden;
+}
+
+.project-switcher-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 240px;
+  padding: 2px 6px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.78em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+  /* Long project names truncate instead of widening the header. */
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.project-switcher-select:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.project-switcher-loading {
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.project-switcher-refresh {
+  /* Never shrink or get pushed out of the header by the select's text. */
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.project-switcher-refresh:hover {
+  color: var(--vscode-textLink-foreground);
+  border-color: var(--vscode-textLink-foreground);
 }
 
 /* ── Kebab Menu ────────────────────────────────────────────────── */
@@ -902,6 +996,7 @@ code {
   font-size: 16px;
   letter-spacing: 2px;
   padding: 2px 6px;
+  flex-shrink: 0;
 }
 
 .kebab-dropdown {

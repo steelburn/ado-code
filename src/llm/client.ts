@@ -28,4 +28,15 @@ export class LlmClient {
     }
     return this.provider.chatWithTools(messages, this.config, tools, signal);
   }
+
+  /**
+   * Model ids available at the configured endpoint (setup-wizard model
+   * picker). Delegates to the provider's listModels.
+   */
+  async listModels(): Promise<string[]> {
+    if (!this.provider.listModels) {
+      throw new Error(`provider ${this.config.provider} does not support listing models`);
+    }
+    return this.provider.listModels(this.config);
+  }
 }

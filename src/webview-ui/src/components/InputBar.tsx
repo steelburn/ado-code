@@ -1,15 +1,18 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 
 interface Props {
   mode: string;
+  value: string;
+  onValueChange: (value: string) => void;
   onSend: (content: string) => void;
   onClear: () => void;
   onModeChange: () => void;
-  loading: string; // 'inline' | 'plan' | 'act'
+  onAddContext: () => void;
+  onAttachFiles: () => void;
+  loading: string; // 'inline' | 'plan' | 'act' | ''
 }
 
-export function InputBar({ mode, onSend, onClear, onModeChange, loading }: Props) {
-  const [input, setInput] = useState('');
+export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeChange, onAddContext, onAttachFiles, loading }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -21,13 +24,12 @@ export function InputBar({ mode, onSend, onClear, onModeChange, loading }: Props
       el.style.height = 'auto';
       el.style.height = Math.min(el.scrollHeight, 160) + 'px';
     }
-  }, [input]);
+  }, [value]);
 
   const handleSend = () => {
-    const trimmed = input.trim();
+    const trimmed = value.trim();
     if (!trimmed || loading) return;
     onSend(trimmed);
-    setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
@@ -47,7 +49,7 @@ export function InputBar({ mode, onSend, onClear, onModeChange, loading }: Props
     onClear();
   };
 
-  const canSend = input.trim().length > 0 && !loading;
+  const canSend = value.trim().length > 0 && !loading;
 
   return (
     <>
@@ -57,8 +59,8 @@ export function InputBar({ mode, onSend, onClear, onModeChange, loading }: Props
           <textarea
             ref={textareaRef}
             className="input-field"
-            value={input}
-            onChange={e => setInput(e.target.value)}
+            value={value}
+            onChange={e => onValueChange(e.target.value)}
             onKeyDown={handleKeyDown}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
@@ -81,13 +83,23 @@ export function InputBar({ mode, onSend, onClear, onModeChange, loading }: Props
         {/* Toolbar row */}
         <div className="input-toolbar">
           <div className="toolbar-left">
-            <button className="toolbar-btn" title="Add context (@)">
+            <button
+              className="toolbar-btn"
+              title="Add context (@)"
+              onClick={onAddContext}
+              disabled={!!loading}
+            >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
                 <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
               </svg>
             </button>
-            <button className="toolbar-btn" title="Attach files">
+            <button
+              className="toolbar-btn"
+              title="Attach files"
+              onClick={onAttachFiles}
+              disabled={!!loading}
+            >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
                 <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>

@@ -1,18 +1,33 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
-import { selectActiveOrganization, getSettings } from './config/settings';
+import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
+import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { AgentRunner } from './agents/AgentRunner';
+import { AgentRun } from './agents/types';
 
 let chatProvider: ChatViewProvider;
 let treeProvider: WorkItemsTreeProvider;
+let unassignedTreeProvider: WorkItemsTreeProvider;
 
 // H-10 fix: activate is async — the Q7 resume QuickPick (Task 24) awaits it,
 // and VS Code supports returning a Promise from activate().
 export async function activate(context: vscode.ExtensionContext) {
   let services = createServices(context);
-  chatProvider = new ChatViewProvider(context.extensionUri, services, context, (items) => treeProvider?.refresh(items));
+  // Per-project cache of work-item-type states — fetched once per project,
+  // refreshable via the state picker's "Refresh states from ADO" entry.
+  // The lazy getter re-reads `services` so an org switch picks up the new
+  // AdoClient without rebuilding the cache.
+  const statesCache = new WorkItemStatesCache(() => services.ado);
+  chatProvider = new ChatViewProvider(
+    context.extensionUri,
+    services,
+    context,
+    (items) => treeProvider?.refresh(items),
+    (items) => unassignedTreeProvider?.refresh(items)
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
@@ -23,6 +38,13 @@ export async function activate(context: vscode.ExtensionContext) {
   treeProvider = new WorkItemsTreeProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('adoCode.workItems', treeProvider)
+  );
+
+  // Unassigned Work Items: same provider class, distinct node contextValue so
+  // its context menu (Take Ownership, Reassign…) is gated to this view.
+  unassignedTreeProvider = new WorkItemsTreeProvider('unassignedWorkItemNode');
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('adoCode.unassignedWorkItems', unassignedTreeProvider)
   );
 
   // Register command to refresh work items
@@ -50,6 +72,7 @@ export async function activate(context: vscode.ExtensionContext) {
       await selectActiveOrganization(context);
       services = createServices(context);
       chatProvider.setServices(services);
+      statesCache.clearAll();
       await chatProvider.refreshWorkItems();
       vscode.window.showInformationMessage('ADO Code: switched organization.');
     })
@@ -98,6 +121,111 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('adoCode.checkTaskReplies', (node: WorkItemNode) => chatProvider.checkTaskReplies(node.workItemId))
   );
 
+  // Change Item Status: fetch the item TYPE's states from ADO (cached once per
+  // project), pick one, PATCH the work item, then refresh the tree.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.changeWorkItemState', async (node?: WorkItemNode) => {
+      if (!node) return;
+      const active = getActiveOrg(context, getSettings());
+      if (!active.name || !active.project || !getSettings().adoPat) {
+        vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
+        return;
+      }
+      try {
+        for (;;) {
+          const states = await statesCache.getStates(active.project, node.workItemType);
+          const refreshEntry: vscode.QuickPickItem = {
+            label: '$(refresh) Refresh states from ADO',
+            description: 're-fetch from the server (clears the per-project cache)',
+          };
+          const pick = await vscode.window.showQuickPick(
+            [
+              ...states.map(s => ({
+                label: s,
+                description: s === node.state ? '✓ current' : undefined,
+              })),
+              refreshEntry,
+            ],
+            { placeHolder: `Set state for #${node.workItemId} (${node.workItemType}) — currently ${node.state}` }
+          );
+          if (!pick) return; // cancelled
+          if (pick === refreshEntry) {
+            statesCache.refresh(active.project, node.workItemType);
+            continue;
+          }
+          if (pick.label === node.state) {
+            vscode.window.showInformationMessage(`ADO Code: #${node.workItemId} is already in '${node.state}'.`);
+            return;
+          }
+          await services.ado.updateWorkItem(active.project, node.workItemId, [
+            { op: 'add', path: '/fields/System.State', value: pick.label },
+          ]);
+          vscode.window.showInformationMessage(`ADO Code: #${node.workItemId} → ${pick.label}`);
+          await chatProvider.refreshWorkItems();
+          return;
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: failed to change state for #${node.workItemId}: ${err instanceof Error ? err.message : err}`);
+      }
+    })
+  );
+
+  // Take Ownership (Unassigned Work Items): assign the item to the
+  // authenticated user, then refresh both trees (it moves from Unassigned to
+  // My Work Items).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.takeOwnership', async (node?: WorkItemNode) => {
+      if (!node) return;
+      const active = getActiveOrg(context, getSettings());
+      if (!active.name || !active.project || !getSettings().adoPat) {
+        vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
+        return;
+      }
+      try {
+        const me = await services.ado.getMe();
+        await services.ado.updateWorkItem(active.project, node.workItemId, [
+          { op: 'add', path: '/fields/System.AssignedTo', value: me.emailAddress },
+        ]);
+        vscode.window.showInformationMessage(`ADO Code: #${node.workItemId} assigned to ${me.displayName} (you).`);
+        await chatProvider.refreshWorkItems();
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: failed to take ownership of #${node.workItemId}: ${err instanceof Error ? err.message : err}`);
+      }
+    })
+  );
+
+  // Reassign To… (both trees): pick a project member, reassign, refresh.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.reassignWorkItem', async (node?: WorkItemNode) => {
+      if (!node) return;
+      const active = getActiveOrg(context, getSettings());
+      if (!active.name || !active.project || !getSettings().adoPat) {
+        vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
+        return;
+      }
+      try {
+        const members = await services.ado.getProjectTeamMembers(active.project);
+        if (members.length === 0) {
+          vscode.window.showWarningMessage(`ADO Code: no team members found for project '${active.project}'.`);
+          return;
+        }
+        const pick = await vscode.window.showQuickPick(
+          members.map(m => ({ label: m.displayName, description: m.uniqueName })),
+          { placeHolder: `Reassign #${node.workItemId} (${node.workItemType}) to…` }
+        );
+        if (!pick) return; // cancelled
+        const member = members.find(m => m.uniqueName === pick.description)!;
+        await services.ado.updateWorkItem(active.project, node.workItemId, [
+          { op: 'add', path: '/fields/System.AssignedTo', value: member.uniqueName },
+        ]);
+        vscode.window.showInformationMessage(`ADO Code: #${node.workItemId} → ${member.displayName}`);
+        await chatProvider.refreshWorkItems();
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: failed to reassign #${node.workItemId}: ${err instanceof Error ? err.message : err}`);
+      }
+    })
+  );
+
   // Task 17: status-bar branch indicator
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.command = 'adoCode.refreshWorkItems';
@@ -135,6 +263,9 @@ export async function activate(context: vscode.ExtensionContext) {
         if (run.workItemId) {
           treeProvider.updateAgentStatus(run.workItemId, run.agent, 'completed');
         }
+        // Open the agent's summary in the editor area so the result is
+        // visible outside the chat panel (markdown tab, preview mode).
+        void openSummaryInEditor(run, summary);
       },
     },
     {
@@ -182,3 +313,28 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {}
+
+/**
+ * Write the agent's completion summary to a per-run markdown file and open it
+ * in the editor area (preview tab, column beside the active editor) so the
+ * result is readable outside the chat panel.
+ */
+async function openSummaryInEditor(run: AgentRun, summary: string): Promise<void> {
+  if (!summary) return;
+  try {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.tmpdir();
+    const dir = vscode.Uri.joinPath(vscode.Uri.file(root), '.ado-code', 'runs');
+    await vscode.workspace.fs.createDirectory(dir);
+    const file = vscode.Uri.joinPath(dir, `${run.id}-summary.md`);
+    const heading = run.workItemId ? `# Agent summary — ADO-${run.workItemId}\n\n` : `# Agent summary\n\n`;
+    await vscode.workspace.fs.writeFile(file, Buffer.from(heading + summary, 'utf8'));
+    await vscode.window.showTextDocument(file, {
+      preview: true,
+      viewColumn: vscode.ViewColumn.Beside,
+    });
+  } catch (err) {
+    vscode.window.showWarningMessage(
+      `ADO Code: could not open the agent summary in the editor — ${err instanceof Error ? err.message : err}`
+    );
+  }
+}

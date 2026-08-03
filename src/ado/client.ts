@@ -3,6 +3,8 @@ import { AdoWorkItem, AdoWorkItemReference, WiqlResult, AdoComment } from './typ
 export class AdoClient {
   private baseUrl: string;
   private headers: Record<string, string>;
+  // Profile "me" lives on the vssps host (cloud) or the server root (on-prem).
+  private profileBaseUrl: string;
 
   constructor(organization: string, pat: string, serverUrl?: string) {
     if (!organization || !pat) {
@@ -10,9 +12,26 @@ export class AdoClient {
     }
     // Q2 resolution: serverUrl (on-prem ADO Server) wins when provided;
     // otherwise build the cloud URL from the org name.
-    this.baseUrl = serverUrl && serverUrl.trim()
-      ? serverUrl.replace(/\/+$/, '')
+    const trimmed = serverUrl?.trim();
+    this.baseUrl = trimmed
+      ? trimmed.replace(/\/+$/, '')
       : `https://dev.azure.com/${organization}`;
+    // LIVE-TEST FIX: profile "me" lives on the vssps host for CLOUD orgs
+    // (dev.azure.com / *.visualstudio.com); on-prem ADO Server keeps it under
+    // the server root. Truthiness of serverUrl is NOT enough to tell them
+    // apart — createServices always passes active.url, which falls back to
+    // the cloud URL (https://dev.azure.com/{org}), so the old check sent
+    // getMe() to dev.azure.com → 404 → Take Ownership always failed
+    // (verified live: dev.azure.com/_apis/profile/profiles/me = 404,
+    // vssps.dev.azure.com/... = 200). Match the HOST instead.
+    let host = '';
+    try { host = new URL(this.baseUrl).hostname; } catch { /* unparseable */ }
+    const isCloud = !trimmed
+      || host === 'dev.azure.com'
+      || host.endsWith('.visualstudio.com');
+    this.profileBaseUrl = isCloud
+      ? `https://vssps.dev.azure.com/${organization}`
+      : this.baseUrl;
     const encodedPat = Buffer.from(`:${pat}`).toString('base64');
     this.headers = {
       'Authorization': `Basic ${encodedPat}`,
@@ -25,12 +44,16 @@ export class AdoClient {
     project: string
   ): Promise<AdoWorkItem[]> {
     // Step 1: WIQL query to find assigned work items.
-    // LIVE-TEST FIX: Azure WIQL does NOT scope by the project segment in the
-    // URL — an org-level query returns items from ALL projects. Filter
-    // explicitly with [System.TeamProject] = @project (verified against a live
-    // org: 147 unfiltered → 10 scoped).
+    // LIVE-TEST FIX (round 2): Azure WIQL does NOT scope by the project
+    // segment in the URL — an org-level query returns items from ALL
+    // projects. The previous @project-macro approach silently matched NOTHING
+    // at the org-level endpoint (verified live: [System.AssignedTo] = @me →
+    // 149 items; adding [System.TeamProject] = @project → 0). Interpolate the
+    // project name as a WIQL string literal instead — single quotes doubled —
+    // and keep the explicit [System.TeamProject] filter.
+    const projectLiteral = project.replace(/'/g, "''");
     const wiqlQuery = {
-      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @me AND [System.TeamProject] = @project AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @me AND [System.TeamProject] = '${projectLiteral}' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
     };
 
     const wiqlResponse = await this.post<WiqlResult>(
@@ -42,13 +65,97 @@ export class AdoClient {
       return [];
     }
 
-    // Step 2: Fetch full details for each work item
-    const ids = wiqlResponse.workItems.map(wi => wi.id).join(',');
-    const batchResponse = await this.get<{ value: AdoWorkItem[] }>(
-      `/_apis/wit/workitems?ids=${ids}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType&api-version=7.1-preview.3`
+    // Step 2: Fetch full details for each work item (chunked — ADO 404s on
+    // batch URLs with too many ids, e.g. ~688 ids ≈ 5.5KB URL).
+    return this.fetchWorkItemsByIds(wiqlResponse.workItems.map(wi => wi.id));
+  }
+
+  /**
+   * Batch-fetch work item details by id. Chunks to keep the URL short: ADO
+   * returns 404 for oversized batch URLs (verified live: 688 ids ≈ 5.5KB URL
+   * → 404; 100-id chunks work).
+   */
+  private async fetchWorkItemsByIds(ids: number[]): Promise<AdoWorkItem[]> {
+    const results: AdoWorkItem[] = [];
+    const CHUNK = 100;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK).join(',');
+      const batchResponse = await this.get<{ value: AdoWorkItem[] }>(
+        `/_apis/wit/workitems?ids=${chunk}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType&api-version=7.1-preview.3`
+      );
+      results.push(...(batchResponse.value || []));
+    }
+    return results;
+  }
+
+  /**
+   * Open work items with NO assignee in the project — the "pickup pool" for
+   * the Unassigned Work Items tree. Same WIQL-shape discipline as
+   * getWorkItemsAssignedTo: literal project name (the @project macro silently
+   * matches nothing at the org-level endpoint), unassigned = empty AssignedTo.
+   */
+  async getUnassignedWorkItems(project: string): Promise<AdoWorkItem[]> {
+    const projectLiteral = project.replace(/'/g, "''");
+    const wiqlQuery = {
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.AssignedTo] = '' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
+    };
+
+    const wiqlResponse = await this.post<WiqlResult>(
+      `/${project}/_apis/wit/wiql?api-version=7.1-preview.2`,
+      wiqlQuery
     );
 
-    return batchResponse.value || [];
+    if (!wiqlResponse.workItems || wiqlResponse.workItems.length === 0) {
+      return [];
+    }
+
+    return this.fetchWorkItemsByIds(wiqlResponse.workItems.map(wi => wi.id));
+  }
+
+  /**
+   * People in the project (all project teams' members, deduped) for the
+   * reassign picker. Org-level teams endpoint carries projectName; members
+   * carry identity.uniqueName (email) which the AssignedTo PATCH accepts.
+   */
+  async getProjectTeamMembers(project: string): Promise<import('./types').AdoTeamMember[]> {
+    const teams = await this.get<{ value: Array<{ id: string; projectId: string; projectName: string }> }>(
+      `/_apis/teams?api-version=7.1-preview.3`
+    );
+    const projectTeams = (teams.value || []).filter(t => t.projectName === project);
+
+    const seen = new Set<string>();
+    const members: import('./types').AdoTeamMember[] = [];
+    for (const team of projectTeams) {
+      try {
+        const res = await this.get<{ value: Array<{ identity: { displayName: string; uniqueName: string } }> }>(
+          `/_apis/projects/${team.projectId}/teams/${team.id}/members?api-version=7.1-preview.2`
+        );
+        for (const m of res.value || []) {
+          const { displayName, uniqueName } = m.identity || {};
+          if (!uniqueName || seen.has(uniqueName)) continue;
+          seen.add(uniqueName);
+          members.push({ displayName: displayName || uniqueName, uniqueName });
+        }
+      } catch {
+        // A team failing to list members shouldn't kill the whole picker.
+      }
+    }
+    return members.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+
+  /**
+   * The authenticated user (for "Take Ownership"). Cloud: vssps profile API.
+   * On-prem: best-effort profile endpoint under the server URL.
+   */
+  async getMe(): Promise<{ displayName: string; emailAddress: string }> {
+    const response = await fetch(
+      `${this.profileBaseUrl}/_apis/profile/profiles/me?api-version=7.1-preview.3`,
+      { headers: this.headers }
+    );
+    if (!response.ok) {
+      throw new Error(`ADO API error: ${response.status} ${await response.text()}`);
+    }
+    return response.json() as Promise<{ displayName: string; emailAddress: string }>;
   }
 
   async getWorkItemDetail(
@@ -65,8 +172,12 @@ export class AdoClient {
     workItemId: number,
     text: string
   ): Promise<AdoComment> {
+    // LIVE-TEST FIX: the comments endpoint REQUIRES the project segment —
+    // /_apis/wit/workitems/{id}/comments 404s, /{project}/_apis/wit/workItems/
+    // {id}/comments returns 200 (verified live on zencomputersystems: ids 10,
+    // 20, 100 → 404 without project, 200 with).
     return this.post<AdoComment>(
-      `/_apis/wit/workitems/${workItemId}/comments?api-version=7.0`,
+      `/${project}/_apis/wit/workItems/${workItemId}/comments?api-version=7.0`,
       { text }
     );
   }
@@ -75,6 +186,22 @@ export class AdoClient {
   async getProjects(): Promise<import('./types').AdoProject[]> {
     const response = await this.get<{ value: import('./types').AdoProject[] }>(
       `/_apis/projects?stateFilter=WellFormed&api-version=7.1`
+    );
+    return response.value || [];
+  }
+
+  /**
+   * States available for a work item TYPE in a project, in workflow order
+   * (e.g. Task: Proposed → New → Active → Resolved → Closed → Removed).
+   * Response shape: { count, value: [{ name, color, category }] } — category
+   * is Proposed | InProgress | Completed | Removed.
+   */
+  async getWorkItemTypeStates(
+    project: string,
+    workItemType: string
+  ): Promise<import('./types').AdoWorkItemTypeState[]> {
+    const response = await this.get<{ value: import('./types').AdoWorkItemTypeState[] }>(
+      `/${project}/_apis/wit/workitemtypes/${workItemType}/states?api-version=7.1-preview.1`
     );
     return response.value || [];
   }

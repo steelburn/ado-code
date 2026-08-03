@@ -28,6 +28,8 @@ export interface LlmProvider {
     text: string;
     toolCalls: ToolCall[];
   }>;
+  /** Model ids available at this endpoint (wizard model picker). */
+  listModels?(config: LlmConfig): Promise<string[]>;
 }
 
 export interface LlmToolParameter {

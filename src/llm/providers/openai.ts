@@ -114,6 +114,10 @@ export class OpenAiProvider implements LlmProvider {
     }));
     return { text, toolCalls };
   }
+
+  async listModels(config: LlmConfig): Promise<string[]> {
+    return listModelsOpenAi(config);
+  }
 }
 
 /** Robust tool-arguments parse: empty/unparseable → {} instead of throwing. */
@@ -125,4 +129,17 @@ function parseToolArguments(raw: unknown): Record<string, any> {
   } catch {
     return {};
   }
+}
+
+/** Model ids via the standard OpenAI-compatible GET /models endpoint. */
+export async function listModelsOpenAi(config: LlmConfig): Promise<string[]> {
+  const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/models`, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${config.apiKey}` },
+  });
+  if (!response.ok) {
+    throw new Error(`OpenAI API error: ${response.status} ${await response.text()}`);
+  }
+  const parsed = (await response.json()) as { data?: Array<{ id: string }> };
+  return (parsed.data ?? []).map(m => m.id).filter(Boolean);
 }

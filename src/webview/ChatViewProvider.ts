@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext } from '../shared/messages';
+import { AdoClient } from '../ado/client';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
 import { LlmClient } from '../llm/client';
-import { LlmMessage } from '../llm/types';
+import { LlmMessage, LlmProviderType } from '../llm/types';
 import { buildSystemPrompt, buildAgentPrompt } from '../llm/prompts';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
@@ -26,7 +27,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // H11: the provider needs ExtensionContext for workspaceState (Q4 history,
     // org switching) and for the tree-refresh callback (C7).
     private readonly _context: vscode.ExtensionContext,
-    private readonly onItemsFetched?: (items: any[]) => void
+    private readonly onItemsFetched?: (items: any[]) => void,
+    // Unassigned Work Items tree: fed by the same refresh cycle.
+    private readonly onUnassignedFetched?: (items: any[]) => void
   ) {}
 
   /** C10: swap the services bundle after org switch / config change. */
@@ -168,18 +171,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.handleAgentMessage(message);
             break;
           case 'clearConversation':
+            // Full reset: abort any in-flight LLM stream and clear the loading
+            // state too — a stuck spinner must not leave the input bar dead
+            // after clearing.
+            this.llmAbort?.abort();
             this.conversation = [];
             this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
+            this.postMessage({ type: 'loading', loading: false });
             break;
           case 'reviewTaskDetail':
             await this.reviewTaskDetail(message.workItemId);
             break;
           case 'requestClarification':
-            await this.requestClarification(message.workItemId, message.question, message.mentionCreator);
+            try {
+              await this.requestClarification(message.workItemId, message.question, message.mentionCreator);
+            } catch (err) {
+              this.postMessage({ type: 'error', message: `Failed to post clarification: ${err instanceof Error ? err.message : err}` });
+            }
             break;
           case 'checkTaskReplies':
-            await this.checkTaskReplies(message.workItemId);
+            try {
+              await this.checkTaskReplies(message.workItemId);
+            } catch (err) {
+              this.postMessage({ type: 'error', message: `Failed to check replies: ${err instanceof Error ? err.message : err}` });
+            }
+            break;
+          case 'getEditorContext':
+            this.postMessage({ type: 'editorContext', text: this.buildEditorContext() ?? '' });
+            break;
+          case 'pickFiles':
+            await this.pickFilesForChat();
             break;
           case 'pickMode':
             await this.pickMode();
@@ -202,7 +224,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           case 'fetchProjects': {
             try {
-              const projects = await this.services.ado.getProjects();
+              const projects = await this.fetchProjects(message);
               this.postMessage({
                 type: 'projectList',
                 projects: projects.map(p => ({ id: p.id, name: p.name, state: p.state })),
@@ -212,8 +234,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             break;
           }
+          case 'fetchModels': {
+            try {
+              const models = await this.fetchModels(message);
+              this.postMessage({ type: 'modelList', models });
+            } catch (err) {
+              this.postMessage({ type: 'error', message: `Failed to fetch models: ${err instanceof Error ? err.message : err}` });
+            }
+            break;
+          }
           case 'selectProject': {
             await vscode.workspace.getConfiguration('adoCode').update('adoProject', message.projectName, vscode.ConfigurationTarget.Global);
+            // Keep workspaceState in sync: getActiveOrg (used by
+            // refreshWorkItems) reads 'adoCode.activeProject' from
+            // workspaceState FIRST — after the org-switcher command has run,
+            // a stale stored value would silently override the setting.
+            await this._context.workspaceState.update('adoCode.activeProject', message.projectName);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
             // Auto-refresh work items with new project
             await this.refreshWorkItems();
@@ -230,6 +266,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
   }
 
+  /**
+   * Resolve the org project list. The welcome wizard types org+PAT BEFORE
+   * saving them, so `services.ado` (built from saved settings) would throw
+   * "AdoClient requires organization and PAT". When the webview supplies
+   * unsaved credentials, fetch with a temporary client built from those;
+   * otherwise fall back to the configured client.
+   */
+  private async fetchProjects(message: { organization?: string; pat?: string }) {
+    if (message.organization && message.pat) {
+      const temp = new AdoClient(message.organization, message.pat);
+      return temp.getProjects();
+    }
+    return this.services.ado.getProjects();
+  }
+
+  /**
+   * Resolve model ids for the wizard's model picker. Like fetchProjects, the
+   * wizard types provider/URL/key BEFORE saving them, so use the typed values
+   * when supplied; otherwise fall back to saved settings.
+   */
+  private async fetchModels(message: { provider?: string; apiUrl?: string; apiKey?: string }): Promise<string[]> {
+    const s = getSettings();
+    const config = {
+      provider: (message.provider as LlmProviderType) || s.llmProvider,
+      apiUrl: message.apiUrl || s.llmApiUrl,
+      apiKey: message.apiKey || s.llmApiKey,
+      model: s.llmModel,
+    };
+    return new LlmClient(config).listModels();
+  }
+
   /** Task 19: never send adoPat/llmApiKey to the webview — secrets stay in the host. */
   private _sanitizedConfig() {
     const s = getSettings();
@@ -239,6 +306,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       llmProvider: s.llmProvider,
       llmApiUrl: s.llmApiUrl,
       llmModel: s.llmModel,
+      mode: s.mode,
       configured: Boolean(s.adoOrganization && s.adoProject && s.adoPat && s.llmApiKey),
     };
   }
@@ -265,6 +333,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await cfg.update(settingKey, value, vscode.ConfigurationTarget.Global);
       }
     }
+    // Wizard saves must also write workspaceState so getActiveOrg (workspaceState
+    // first) resolves the same project the wizard just chose.
+    if ((config as any).adoProject !== undefined) {
+      await this._context.workspaceState.update('adoCode.activeProject', (config as any).adoProject);
+    }
   }
 
   async refreshWorkItems(): Promise<void> {
@@ -275,10 +348,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.postMessage({ type: 'loading', loading: true });
-    try {
-      const items = await this.services.ado.getWorkItemsAssignedTo(active.project);
+    // Both trees are fed from one refresh cycle — fetch assigned + unassigned
+    // in parallel; a failure in one branch doesn't sink the other.
+    const [assignedResult, unassignedResult] = await Promise.allSettled([
+      this.services.ado.getWorkItemsAssignedTo(active.project),
+      this.services.ado.getUnassignedWorkItems(active.project),
+    ]);
+
+    if (assignedResult.status === 'fulfilled') {
       // M5 fix: map AdoWorkItem → WorkItemSummary (protocol shape) before posting.
-      const summaries: WorkItemSummary[] = items.map(i => ({
+      const summaries: WorkItemSummary[] = assignedResult.value.map(i => ({
         id: i.id,
         title: i.fields['System.Title'] ?? '',
         state: i.fields['System.State'] ?? '',
@@ -289,13 +368,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'workItems', items: summaries });
       // To the sidebar tree view (built in Task 9) — via injected callback (C7)
       this.onItemsFetched?.(summaries);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.postMessage({ type: 'error', message });
-      vscode.window.showErrorMessage(`ADO Code: ${message}`);
-    } finally {
-      this.postMessage({ type: 'loading', loading: false });
+    } else {
+      this.postMessage({ type: 'error', message: `Failed to fetch assigned work items: ${assignedResult.reason instanceof Error ? assignedResult.reason.message : assignedResult.reason}` });
     }
+
+    if (unassignedResult.status === 'fulfilled') {
+      const unassignedSummaries: WorkItemSummary[] = unassignedResult.value.map(i => ({
+        id: i.id,
+        title: i.fields['System.Title'] ?? '',
+        state: i.fields['System.State'] ?? '',
+        assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
+        workItemType: i.fields['System.WorkItemType'] ?? '',
+      }));
+      this.onUnassignedFetched?.(unassignedSummaries);
+    } else {
+      this.postMessage({ type: 'error', message: `Failed to fetch unassigned work items: ${unassignedResult.reason instanceof Error ? unassignedResult.reason.message : unassignedResult.reason}` });
+    }
+
+    this.postMessage({ type: 'loading', loading: false });
   }
 
   // C-4 fix: declared HERE (Task 10), once — Tasks 11/13 refine it but must
@@ -622,10 +712,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       let assistantText = '';
+      let streamEnded = false;
       for await (const chunk of this.llmClient().streamChat(messages, abort.signal)) {
         assistantText += chunk.content;
         this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
-        if (chunk.done) break;
+        if (chunk.done) {
+          streamEnded = true;
+          break;
+        }
+      }
+      // Robustness: some OpenAI-compatible gateways close the SSE stream
+      // WITHOUT a [DONE]/message_stop marker, so the provider never yields a
+      // done chunk and the webview's loading spinner would stick. Always
+      // emit the final done chunk ourselves.
+      if (!streamEnded) {
+        this.postMessage({ type: 'assistantMessage', content: '', done: true });
       }
       // Task 26: record the turn + persist history
       if (assistantText) {
@@ -653,6 +754,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       parts.push(`[/Selected code]`);
     }
     return parts.join('\n');
+  }
+
+  /**
+   * "Attach files" toolbar tool: let the user pick workspace files; read their
+   * contents (bounded per file) and hand them to the webview so they can be
+   * inserted into the chat draft. Reads are read-only — nothing is written.
+   */
+  private async pickFilesForChat(): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    try {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: true,
+        openLabel: 'Attach to chat',
+        defaultUri: root,
+        title: 'Attach file(s) to the chat message',
+      });
+      if (!picked || picked.length === 0) return;
+      const MAX = 8000;
+      const files: Array<{ name: string; content: string }> = [];
+      for (const uri of picked) {
+        try {
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          let content = Buffer.from(bytes).toString('utf8');
+          if (content.length > MAX) {
+            content = content.slice(0, MAX) + `\n… [truncated: file is longer than ${MAX} chars]`;
+          }
+          files.push({ name: vscode.workspace.asRelativePath(uri), content });
+        } catch (err) {
+          this.postMessage({ type: 'error', message: `Failed to read ${uri.fsPath}: ${err instanceof Error ? err.message : err}` });
+        }
+      }
+      if (files.length > 0) {
+        this.postMessage({ type: 'attachedFiles', files });
+      }
+    } catch (err) {
+      // showOpenDialog can reject if the dialog is cancelled weirdly — not fatal.
+      this.postMessage({ type: 'error', message: `File picker failed: ${err instanceof Error ? err.message : err}` });
+    }
   }
 
   /** Task 17 (H12 fix): reveal the adoCode view container + focus the chat view. */

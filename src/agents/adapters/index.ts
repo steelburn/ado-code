@@ -4,6 +4,7 @@ import { CodexAdapter } from './CodexAdapter';
 import { OpenCodeAdapter } from './OpenCodeAdapter';
 import { HermesAdapter } from './HermesAdapter';
 import { GeminiAdapter } from './GeminiAdapter';
+import { PiAdapter } from './PiAdapter';
 import { GenericAdapter } from './GenericAdapter';
 import { AgentName } from '../types';
 
@@ -14,6 +15,7 @@ export function createAdapter(name: AgentName): AgentAdapter {
     case 'opencode': return new OpenCodeAdapter();
     case 'hermes': return new HermesAdapter();
     case 'gemini': return new GeminiAdapter();
-    default: return new GenericAdapter(name); // pi, openclaw, aider, cursor-agent
+    case 'pi': return new PiAdapter();
+    default: return new GenericAdapter(name); // openclaw, aider, cursor-agent
   }
 }

@@ -6,8 +6,9 @@ import { AgentName, AgentRun } from '../types';
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
 
 /**
- * Generic one-shot adapter for pi, openclaw, aider, cursor-agent.
+ * Generic one-shot adapter for openclaw, aider, cursor-agent.
  * These agents' CLI contracts vary; best-effort per the registry spec.
+ * (pi has its own adapter — PiAdapter — for JSON-mode live progress.)
  */
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;

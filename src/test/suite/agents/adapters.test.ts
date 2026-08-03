@@ -3,6 +3,7 @@ import { ClaudeAdapter } from '../../../agents/adapters/ClaudeAdapter';
 import { GeminiAdapter } from '../../../agents/adapters/GeminiAdapter';
 import { GenericAdapter } from '../../../agents/adapters/GenericAdapter';
 import { HermesAdapter } from '../../../agents/adapters/HermesAdapter';
+import { PiAdapter } from '../../../agents/adapters/PiAdapter';
 import { AgentName, AgentRun } from '../../../agents/types';
 
 function makeRun(agent: AgentName): AgentRun {
@@ -121,5 +122,58 @@ suite('AgentAdapters', () => {
     await adapter.resumeTask!(run, 'follow up', undefined, (c) => chunks.push(c));
     assert.deepStrictEqual(captured.args, ['chat', '-q', 'follow up', '--continue']);
     assert.ok(chunks.join('').includes('resumed'));
+  });
+
+  test('pi adapter uses json mode and streams live progress, returns clean final text', async () => {
+    const events = [
+      { type: 'agent_start' },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_start' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hel' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'lo' } },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'agent_end' },
+    ].map(e => JSON.stringify(e)).join('\n');
+    const { spawnFn, captured } = fakeSpawn(events, 0);
+    const adapter = new PiAdapter(spawnFn);
+    const chunks: string[] = [];
+    const result = await adapter.runTask(makeRun('pi'), 'hi', undefined, (c) => chunks.push(c));
+    assert.strictEqual(captured.bin, 'pi');
+    assert.deepStrictEqual(captured.args, ['-p', '--mode', 'json', 'hi']);
+    assert.strictEqual(result.exitCode, 0);
+    // output is the CLEAN final answer — no JSON, no progress lines
+    assert.strictEqual(result.output, 'Hello');
+    const live = chunks.join('');
+    assert.ok(live.includes('⟳ pi: starting'), 'agent_start progress line');
+    assert.ok(live.includes('⟳ thinking'), 'thinking indicator');
+    assert.ok(live.includes('Hel') && live.includes('lo'), 'text deltas streamed live');
+    assert.ok(!live.includes('"type"'), 'no raw JSON in the panel stream');
+  });
+
+  test('pi adapter surfaces tool execution progress and non-JSON noise', async () => {
+    const events = [
+      { type: 'agent_start' },
+      { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'bash', args: { cmd: 'ls' } },
+      { type: 'tool_execution_end', toolCallId: 'c1', result: 'ok' },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ].map(e => JSON.stringify(e)).join('\n') + '\nplain noise line';
+    const { spawnFn } = fakeSpawn(events, 0);
+    const adapter = new PiAdapter(spawnFn);
+    const chunks: string[] = [];
+    const result = await adapter.runTask(makeRun('pi'), 'ls', undefined, (c) => chunks.push(c));
+    assert.strictEqual(result.output, 'done');
+    const live = chunks.join('');
+    assert.ok(live.includes('⟳ tool bash'), 'tool start line');
+    assert.ok(live.includes('✓ bash done'), 'tool end line');
+    assert.ok(live.includes('plain noise line'), 'non-JSON line forwarded raw');
+  });
+
+  test('pi adapter surfaces LLM error as output when no text answer', async () => {
+    const events = [
+      { type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'rate limited' } },
+    ].map(e => JSON.stringify(e)).join('\n');
+    const { spawnFn } = fakeSpawn(events, 0);
+    const adapter = new PiAdapter(spawnFn);
+    const result = await adapter.runTask(makeRun('pi'), 'hi');
+    assert.strictEqual(result.output, 'rate limited');
   });
 });

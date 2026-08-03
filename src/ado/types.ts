@@ -1,3 +1,14 @@
+export interface AdoWorkItemTypeState {
+  name: string;
+  color?: string;
+  category?: string;
+}
+
+export interface AdoTeamMember {
+  displayName: string;
+  uniqueName: string;
+}
+
 export interface AdoProject {
   id: string;
   name: string;

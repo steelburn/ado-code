@@ -177,4 +177,25 @@ export class AnthropicProvider implements LlmProvider {
     }
     return { text, toolCalls };
   }
+
+  async listModels(config: LlmConfig): Promise<string[]> {
+    return listModelsAnthropic(config);
+  }
+}
+
+/** Model ids via Anthropic's GET /v1/models endpoint. */
+export async function listModelsAnthropic(config: LlmConfig): Promise<string[]> {
+  const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+  const response = await fetch(`${baseUrl}/v1/models`, {
+    method: 'GET',
+    headers: {
+      'x-api-key': config.apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Anthropic API error: ${response.status} ${await response.text()}`);
+  }
+  const parsed = (await response.json()) as { data?: Array<{ id: string }> };
+  return (parsed.data ?? []).map(m => m.id).filter(Boolean);
 }

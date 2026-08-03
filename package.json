@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -21,7 +21,11 @@
     "onCommand:adoCode.startTaskWithAgent",
     "onCommand:adoCode.reviewTaskDetail",
     "onCommand:adoCode.requestClarification",
-    "onCommand:adoCode.checkTaskReplies"
+    "onCommand:adoCode.checkTaskReplies",
+    "onCommand:adoCode.changeWorkItemState",
+    "onView:adoCode.unassignedWorkItems",
+    "onCommand:adoCode.takeOwnership",
+    "onCommand:adoCode.reassignWorkItem"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -68,6 +72,21 @@
       {
         "command": "adoCode.checkTaskReplies",
         "title": "Check Replies"
+      },
+      {
+        "command": "adoCode.changeWorkItemState",
+        "title": "Change Item Status",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.takeOwnership",
+        "title": "Take Ownership",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.reassignWorkItem",
+        "title": "Reassign To…",
+        "category": "ADO Code"
       }
     ],
     "keybindings": [
@@ -87,6 +106,11 @@
         {
           "command": "adoCode.refreshWorkItems",
           "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.refreshWorkItems",
+          "when": "view == adoCode.unassignedWorkItems",
           "group": "navigation"
         }
       ],
@@ -120,6 +144,21 @@
           "command": "adoCode.checkTaskReplies",
           "when": "viewItem == workItemNode",
           "group": "3_communication@2"
+        },
+        {
+          "command": "adoCode.changeWorkItemState",
+          "when": "viewItem == workItemNode",
+          "group": "4_state@1"
+        },
+        {
+          "command": "adoCode.reassignWorkItem",
+          "when": "viewItem == workItemNode || viewItem == unassignedWorkItemNode",
+          "group": "4_state@2"
+        },
+        {
+          "command": "adoCode.takeOwnership",
+          "when": "viewItem == unassignedWorkItemNode",
+          "group": "1_workItem@1"
         }
       ]
     },
@@ -142,6 +181,11 @@
         {
           "id": "adoCode.workItems",
           "name": "My Work Items",
+          "type": "tree"
+        },
+        {
+          "id": "adoCode.unassignedWorkItems",
+          "name": "Unassigned Work Items",
           "type": "tree"
         }
       ]

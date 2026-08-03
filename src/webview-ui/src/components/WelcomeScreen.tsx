@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface Props {
   config: {
@@ -17,12 +17,15 @@ interface Props {
     llmApiKey: string;
     llmModel: string;
   }) => void;
-  onFetchProjects: () => void;
+  onFetchProjects: (organization?: string, pat?: string) => void;
   projects: Array<{ id: string; name: string; state: string }>;
   projectsLoading: boolean;
+  onFetchModels: (provider?: string, apiUrl?: string, apiKey?: string) => void;
+  models: string[];
+  modelsLoading: boolean;
 }
 
-export function WelcomeScreen({ config, onSave, onFetchProjects, projects, projectsLoading }: Props) {
+export function WelcomeScreen({ config, onSave, onFetchProjects, projects, projectsLoading, onFetchModels, models, modelsLoading }: Props) {
   const [form, setForm] = useState({
     adoOrganization: config.adoOrganization || '',
     adoProject: config.adoProject || '',
@@ -36,12 +39,46 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
   const update = (field: string, value: string) =>
     setForm(prev => ({ ...prev, [field]: value }));
 
-  // Auto-fetch projects when org and PAT are filled
+  // Auto-fetch projects once org+PAT are filled, using the TYPED credentials
+  // (the host fetches with them before they're saved). Guard with a ref so a
+  // persistent failure (bad PAT, offline) can't re-trigger on every render —
+  // only a credential change re-fires. `projects.length === 0` keeps it from
+  // clobbering an already-populated list.
+  const lastFetchKey = useRef('');
   useEffect(() => {
-    if (form.adoOrganization && form.adoPat && projects.length === 0 && !projectsLoading) {
-      onFetchProjects();
+    const key = `${form.adoOrganization}::${form.adoPat}`;
+    if (
+      form.adoOrganization &&
+      form.adoPat &&
+      projects.length === 0 &&
+      !projectsLoading &&
+      lastFetchKey.current !== key
+    ) {
+      lastFetchKey.current = key;
+      onFetchProjects(form.adoOrganization, form.adoPat);
     }
-  }, [form.adoOrganization, form.adoPat]);
+  }, [form.adoOrganization, form.adoPat, projects.length, projectsLoading, onFetchProjects]);
+
+  // Auto-fetch the model list once API URL + API Key are filled (provider is
+  // part of the key too). Same ref-guard: only a credentials change re-fires;
+  // the Refresh button handles manual retries.
+  const lastModelsFetchKey = useRef('');
+  useEffect(() => {
+    const key = `${form.llmProvider}::${form.llmApiUrl}::${form.llmApiKey}`;
+    if (
+      form.llmApiUrl &&
+      form.llmApiKey &&
+      !modelsLoading &&
+      lastModelsFetchKey.current !== key
+    ) {
+      lastModelsFetchKey.current = key;
+      onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey);
+    }
+  }, [form.llmProvider, form.llmApiUrl, form.llmApiKey, modelsLoading, onFetchModels]);
+
+  const refreshModels = () => {
+    onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey);
+  };
 
   return (
     <div className="welcome">
@@ -105,7 +142,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
           )}
           {!projectsLoading && projects.length === 0 && form.adoOrganization && form.adoPat && (
             <div className="form-hint">
-              <a href="#" onClick={e => { e.preventDefault(); onFetchProjects(); }}>Refresh project list</a>
+              <a href="#" onClick={e => { e.preventDefault(); onFetchProjects(form.adoOrganization, form.adoPat); }}>Refresh project list</a>
             </div>
           )}
         </div>
@@ -151,12 +188,53 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
 
         <div className="form-group">
           <label className="form-label">Model</label>
-          <input
-            className="form-input"
-            value={form.llmModel}
-            onChange={e => update('llmModel', e.target.value)}
-            placeholder="gpt-4o"
-          />
+          {models.length > 0 ? (
+            <div className="form-row">
+              <select
+                className="form-select"
+                value={form.llmModel}
+                onChange={e => update('llmModel', e.target.value)}
+              >
+                <option value="">Select a model…</option>
+                {(models.includes(form.llmModel) ? models : [form.llmModel, ...models]).map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <button
+                className="btn-icon"
+                onClick={refreshModels}
+                title="Refresh model list"
+                disabled={modelsLoading || !form.llmApiUrl || !form.llmApiKey}
+              >
+                ↻
+              </button>
+            </div>
+          ) : (
+            <div className="form-row">
+              <input
+                className="form-input"
+                value={form.llmModel}
+                onChange={e => update('llmModel', e.target.value)}
+                placeholder={modelsLoading ? 'Fetching models…' : 'gpt-4o'}
+              />
+              <button
+                className="btn-icon"
+                onClick={refreshModels}
+                title="Refresh model list"
+                disabled={modelsLoading || !form.llmApiUrl || !form.llmApiKey}
+              >
+                ↻
+              </button>
+            </div>
+          )}
+          {modelsLoading && (
+            <div className="form-hint">Fetching models from the API…</div>
+          )}
+          {!modelsLoading && models.length === 0 && form.llmApiUrl && form.llmApiKey && (
+            <div className="form-hint">
+              <a href="#" onClick={e => { e.preventDefault(); refreshModels(); }}>Refresh model list</a>
+            </div>
+          )}
         </div>
       </div>
 

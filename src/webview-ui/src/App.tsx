@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
@@ -6,6 +6,7 @@ import { MessageList } from './components/MessageList';
 import { InputBar } from './components/InputBar';
 import { AgentBar } from './components/AgentBar';
 import { KebabMenu } from './components/KebabMenu';
+import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
 import './styles/app.css';
 import './styles/markdown.css';
@@ -24,6 +25,7 @@ interface SanitizedConfig {
   llmProvider: string;
   llmApiUrl: string;
   llmModel: string;
+  mode?: 'inline' | 'plan' | 'act';
   configured: boolean;
 }
 
@@ -65,6 +67,16 @@ function App() {
   const [agentOutput, setAgentOutput] = useState('');
   const [projects, setProjects] = useState<Array<{ id: string; name: string; state: string }>>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  // Input draft lives in App so toolbar tools (add context / attach files) can
+  // append to it; InputBar renders it controlled.
+  const [draft, setDraft] = useState('');
+  // Wizard model picker (LLM provider)
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  // Ensures the main-view project switcher fetches the org project list once
+  // per webview session (message-handler closures are stale, so a ref, not
+  // state, gates the one-shot fetch).
+  const projectsRequestedRef = useRef(false);
 
   // ── Message handler ────────────────────────────────────────────
   useEffect(() => {
@@ -72,12 +84,15 @@ function App() {
       const msg = event.data;
       switch (msg.type) {
         case 'assistantMessage':
+          // FIX: never drop done:true content — in plan/act mode the host
+          // posts the WHOLE result in a single done:true message. The old
+          // handler discarded it, so Plan/Act replies never rendered. (Inline
+          // streaming sends empty-content done chunks, so appending is a
+          // no-op there.)
+          if (msg.done) setLoading(false);
+          else setLoading(true);
+          if (!msg.content) break;
           setMessages(prev => {
-            if (msg.done) {
-              setLoading(false);
-              return prev;
-            }
-            setLoading(true);
             const last = prev[prev.length - 1];
             if (last && last.role === 'assistant') {
               const updated = [...prev];
@@ -95,11 +110,27 @@ function App() {
         case 'error':
           setError(msg.message);
           setLoading(false);
+          // A failed project/model fetch must not leave the wizard stuck on
+          // "Fetching…" forever (Refresh links are gated on !loading).
+          setProjectsLoading(false);
+          setModelsLoading(false);
           break;
 
-        case 'config':
-          setConfig(msg.config as unknown as SanitizedConfig);
+        case 'config': {
+          const cfg = msg.config as unknown as SanitizedConfig;
+          setConfig(cfg);
+          // Sync the Chat|Plan|Act toggle with the persisted setting (the
+          // webview reloads fresh, but the host kept the stored mode).
+          if (cfg.mode) setMode(cfg.mode);
+          // Project switcher: fetch the org project list once the wizard is
+          // configured (no creds in the message → host uses saved settings).
+          if (cfg.configured && !projectsRequestedRef.current) {
+            projectsRequestedRef.current = true;
+            setProjectsLoading(true);
+            vscode.postMessage({ type: 'fetchProjects' });
+          }
           break;
+        }
 
         case 'modeChanged':
           setMode(msg.mode);
@@ -151,6 +182,30 @@ function App() {
           setProjects(msg.projects);
           setProjectsLoading(false);
           break;
+
+        case 'modelList':
+          setModels(msg.models);
+          setModelsLoading(false);
+          break;
+
+        case 'editorContext':
+          // "Add context (@)" — host returns the active editor file +
+          // selection; append it to the draft.
+          if (msg.text) {
+            setDraft(prev => (prev ? prev + '\n\n' : '') + msg.text);
+          }
+          break;
+
+        case 'attachedFiles':
+          // "Attach files" — host returns picked file contents; insert them
+          // into the draft as fenced blocks.
+          if (msg.files.length > 0) {
+            setDraft(prev => {
+              const blocks = msg.files.map(f => `[Attached file: ${f.name}]\n${f.content}\n[/file]`);
+              return (prev ? prev + '\n\n' : '') + blocks.join('\n\n');
+            });
+          }
+          break;
       }
     };
 
@@ -177,11 +232,16 @@ function App() {
   const handleSend = useCallback((content: string) => {
     setMessages(prev => [...prev, { role: 'user', content }]);
     vscode.postMessage({ type: 'userMessage', content });
+    setDraft('');
   }, []);
 
   const handleClear = useCallback(() => {
     vscode.postMessage({ type: 'clearConversation' });
     setMessages([]);
+    // Clear must fully reset the input: a stuck spinner (hung LLM stream)
+    // would otherwise leave the send button dead after clearing.
+    setLoading(false);
+    setDraft('');
   }, []);
 
   const handleSaveConfig = useCallback((form: {
@@ -229,9 +289,27 @@ function App() {
     }
   }, []);
 
-  const handleFetchProjects = useCallback(() => {
+  const handleFetchProjects = useCallback((organization?: string, pat?: string) => {
     setProjectsLoading(true);
-    vscode.postMessage({ type: 'fetchProjects' });
+    // Pass the typed-but-unsaved credentials: the host fetches with these
+    // directly (saved settings are empty until "Save & Continue").
+    vscode.postMessage({ type: 'fetchProjects', organization, pat });
+  }, []);
+
+  const handleFetchModels = useCallback((provider?: string, apiUrl?: string, apiKey?: string) => {
+    // Drop any list from a previous endpoint so the picker can't show stale
+    // models while the new list loads.
+    setModels([]);
+    setModelsLoading(true);
+    // Same typed-but-unsaved pattern as projects: the host builds a temp
+    // LlmClient from these (falling back to saved settings when absent).
+    vscode.postMessage({ type: 'fetchModels', provider, apiUrl, apiKey });
+  }, []);
+
+  const handleSwitchProject = useCallback((projectName: string) => {
+    // Host persists the choice (settings + workspaceState) and refreshes work
+    // items (chat list + sidebar tree) for the new project.
+    vscode.postMessage({ type: 'selectProject', projectName });
   }, []);
 
   // ── Render ─────────────────────────────────────────────────────
@@ -246,6 +324,9 @@ function App() {
           onFetchProjects={handleFetchProjects}
           projects={projects}
           projectsLoading={projectsLoading}
+          onFetchModels={handleFetchModels}
+          models={models}
+          modelsLoading={modelsLoading}
         />
       </div>
     );
@@ -284,9 +365,16 @@ function App() {
         </div>
       )}
 
-      {/* Chat header with kebab menu */}
+      {/* Chat header with project switcher + kebab menu */}
       <div className="chat-header">
         <span className="chat-header-title">ADO Code</span>
+        <ProjectSwitcher
+          projects={projects}
+          current={config.adoProject}
+          loading={projectsLoading}
+          onSwitch={handleSwitchProject}
+          onRefresh={handleFetchProjects}
+        />
         <KebabMenu
           items={[
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
@@ -313,9 +401,13 @@ function App() {
       {/* Input */}
       <InputBar
         mode={mode}
+        value={draft}
+        onValueChange={setDraft}
         onSend={handleSend}
         onClear={handleClear}
         onModeChange={handleModeChange}
+        onAddContext={() => vscode.postMessage({ type: 'getEditorContext' })}
+        onAttachFiles={() => vscode.postMessage({ type: 'pickFiles' })}
         loading={loading ? mode : ''}
       />
     </div>
