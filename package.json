@@ -28,7 +28,14 @@
     "onCommand:adoCode.reassignWorkItem",
     "onCommand:adoCode.generateCommitMessage",
     "onView:adoCode.status",
-    "onCommand:adoCode.refreshStatus"
+    "onCommand:adoCode.refreshStatus",
+    "onCommand:adoCode.showMemory",
+    "onCommand:adoCode.editMemory",
+    "onCommand:adoCode.clearMemory",
+    "onCommand:adoCode.showWorkspaceMemory",
+    "onCommand:adoCode.setMode",
+    "onCommand:adoCode.listCheckpoints",
+    "onCommand:adoCode.showTokenUsage"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -101,6 +108,41 @@
         "command": "adoCode.refreshStatus",
         "title": "Refresh Status",
         "icon": "$(refresh)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showMemory",
+        "title": "Show Memory",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.editMemory",
+        "title": "Edit Memory Entry…",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.clearMemory",
+        "title": "Clear All Memory",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showWorkspaceMemory",
+        "title": "Show Workspace Memory",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.setMode",
+        "title": "Set Mode…",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.listCheckpoints",
+        "title": "List Checkpoints…",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showTokenUsage",
+        "title": "Show Token Usage",
         "category": "ADO Code"
       }
     ],

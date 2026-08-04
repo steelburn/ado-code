@@ -26,6 +26,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly consentBroker = createConsentBroker();
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
+  // Task 4.1: token usage status bar — wired via setTokenStatusBar from extension.ts
+  private tokenStatusBar?: vscode.StatusBarItem;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -43,6 +45,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     (this as any).services = services;
     // H-5 fix: rebuild the executor too — it captured the OLD services closure.
     if (this.agentRunner) this.setAgentRunner(this.agentRunner);
+  }
+
+  /** Task 4.1: wire the token-usage status bar after creation in extension.ts. */
+  public setTokenStatusBar(bar: vscode.StatusBarItem): void {
+    this.tokenStatusBar = bar;
   }
 
   /** H10 fix: wire the tool executor concretely once the runner exists. */
@@ -230,6 +237,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
+            break;
+          case 'stopGeneration':
+            // Abort any in-flight LLM stream and deny pending consent prompts
+            // so the agentic loop can finish instead of blocking on a missed
+            // prompt. The loading spinner is cleared immediately.
+            this.llmAbort?.abort();
+            this.consentBroker.rejectAll();
+            this.postMessage({ type: 'loading', loading: false });
+            logger.info('Chat: generation stopped by user');
             break;
           case 'reviewTaskDetail':
             await this.reviewTaskDetail(message.workItemId);
@@ -714,6 +730,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.conversation = this.conversation.slice(cutoff);
   }
 
+  /** Task 4.1: update the token-usage status bar after an LLM turn. */
+  private updateTokenStatusBar(messages: LlmMessage[]): void {
+    if (!this.tokenStatusBar) return;
+    try {
+      // Rough token count: ~4 chars per token (covers most English text + code)
+      const totalChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+      const estimatedTokens = Math.ceil(totalChars / 4);
+      // Context window is typically 128k; if we can't resolve, use 128k as default
+      const maxTokens = 128000;
+      const used = estimatedTokens;
+      const remaining = Math.max(0, maxTokens - used);
+      const percentage = Math.min(100, Math.round((used / maxTokens) * 100));
+      this.tokenStatusBar.text = `$(pulse) Tokens: ~${used.toLocaleString()}/${maxTokens.toLocaleString()}`;
+      this.tokenStatusBar.tooltip = `Token usage: ~${used.toLocaleString()} used, ${remaining.toLocaleString()} remaining (${percentage}%)`;
+    } catch {
+      // Token counting is best-effort; don't crash on errors
+    }
+  }
+
   /** Fresh client from current settings (avoids stale config after changes). */
   private llmClient(): LlmClient {
     return new LlmClient(llmConfigFromSettings());
@@ -766,6 +801,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.conversation.push({ role: 'assistant', content: result.text });
       this.trimConversation();
       this.persistConversation();
+      this.updateTokenStatusBar(messages);
       if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
     } catch (err) {
       if (abort.signal.aborted) return;
@@ -781,6 +817,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.trimConversation();
           }
           this.persistConversation();
+          this.updateTokenStatusBar(messages);
         } catch (streamErr) {
           if (abort.signal.aborted) return;
           const message = streamErr instanceof Error ? streamErr.message : String(streamErr);

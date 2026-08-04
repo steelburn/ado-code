@@ -54,6 +54,30 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Task 4.1: token usage status bar (right-aligned, shows approximate token count)
+  const tokenStatusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100
+  );
+  tokenStatusBar.text = '$(pulse) Tokens: —';
+  tokenStatusBar.tooltip = 'Token usage in current conversation';
+  tokenStatusBar.command = 'adoCode.showTokenUsage';
+  tokenStatusBar.show();
+  context.subscriptions.push(tokenStatusBar);
+  // Wire to the chat provider so it can update after each LLM turn
+  chatProvider.setTokenStatusBar(tokenStatusBar);
+
+  // Task 4.1: show token usage in the output channel
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.showTokenUsage', () => {
+      const channel = logger.getChannel();
+      if (channel) {
+        channel.appendLine(`[Token Usage] Mode: ${getSettings().mode}`);
+        channel.show();
+      }
+    })
+  );
+
   treeProvider = new WorkItemsTreeProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('adoCode.workItems', treeProvider)
@@ -186,6 +210,139 @@ Generate ONLY the commit message, nothing else.`;
   // Task 17: chat focus command (keybinding target)
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.chat.focus', () => chatProvider.focus())
+  );
+
+  // ── Task 3.1+3.2: memory commands ────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.showMemory', () => {
+      const entries = services.memory.getAll();
+      if (entries.length === 0) {
+        vscode.window.showInformationMessage('No user memory entries stored.');
+        return;
+      }
+      const items = entries.map(e => ({
+        label: e.key,
+        description: `[${e.category}]`,
+        detail: e.content,
+      }));
+      vscode.window.showQuickPick(items, {
+        placeHolder: 'Select a memory entry to view',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      });
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.editMemory', async () => {
+      const entries = services.memory.getAll();
+      if (entries.length === 0) {
+        vscode.window.showInformationMessage('No user memory entries to edit.');
+        return;
+      }
+      const items = entries.map(e => ({
+        label: e.key,
+        description: `[${e.category}]`,
+        entry: e,
+      }));
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Select a memory entry to edit',
+      });
+      if (!picked) return;
+      const newContent = await vscode.window.showInputBox({
+        prompt: `Edit memory "${picked.entry.key}"`,
+        value: picked.entry.content,
+      });
+      if (newContent !== undefined) {
+        services.memory.set(picked.entry.key, picked.entry.category, newContent);
+        vscode.window.showInformationMessage(`Memory "${picked.entry.key}" updated.`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.clearMemory', async () => {
+      const confirm = await vscode.window.showWarningMessage(
+        'Clear all user memory entries?',
+        { modal: true },
+        'Clear'
+      );
+      if (confirm === 'Clear') {
+        services.memory.clear();
+        vscode.window.showInformationMessage('All user memory cleared.');
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.showWorkspaceMemory', () => {
+      const keys = services.workspaceMemory.list();
+      if (keys.length === 0) {
+        vscode.window.showInformationMessage('No workspace memory entries.');
+        return;
+      }
+      const items = keys.map(key => ({
+        label: key,
+        detail: services.workspaceMemory.read(key) ?? '',
+      }));
+      vscode.window.showQuickPick(items, {
+        placeHolder: 'Select a workspace memory entry to view',
+      });
+    })
+  );
+
+  // ── Task 5.1: setMode command ────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.setMode', async () => {
+      const modes = [
+        { label: 'Inline', value: 'inline', description: 'Direct code edits with consent' },
+        { label: 'Plan', value: 'plan', description: 'Read-only planning, no edits' },
+        { label: 'Act', value: 'act', description: 'Full auto-approve mode' },
+      ];
+      const picked = await vscode.window.showQuickPick(modes, {
+        placeHolder: 'Select a mode',
+      });
+      if (picked) {
+        const config = vscode.workspace.getConfiguration('adoCode');
+        await config.update('mode', picked.value, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`Mode set to ${picked.label}`);
+      }
+    })
+  );
+
+  // ── Task 6.1: listCheckpoints command ────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.listCheckpoints', async () => {
+      const taskId = await vscode.window.showInputBox({
+        prompt: 'Enter task ID to list checkpoints for',
+        placeHolder: 'task-id',
+      });
+      if (!taskId) return;
+      const checkpoints = services.checkpoints.listCheckpoints(taskId);
+      if (checkpoints.length === 0) {
+        vscode.window.showInformationMessage('No checkpoints found for this task.');
+        return;
+      }
+      const items = checkpoints.map(cp => ({
+        label: cp.id,
+        description: `${Object.keys(cp.files).length} files`,
+        detail: new Date(cp.timestamp).toLocaleString(),
+        checkpoint: cp,
+      }));
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Select a checkpoint to restore',
+      });
+      if (!picked) return;
+      const confirm = await vscode.window.showWarningMessage(
+        `Restore checkpoint ${picked.checkpoint.id}? This will overwrite current files.`,
+        { modal: true },
+        'Restore'
+      );
+      if (confirm === 'Restore') {
+        const restored = services.checkpoints.restore(picked.checkpoint.id, taskId);
+        vscode.window.showInformationMessage(`Restored ${restored.length} files from checkpoint.`);
+      }
+    })
   );
 
   // Task 25: delegate / assign-to-agent commands (context menu on work item nodes)
