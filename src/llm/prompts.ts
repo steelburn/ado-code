@@ -39,7 +39,7 @@ export function buildAgentPrompt(
   return lines.join('\n');
 }
 
-export function buildSystemPrompt(activeWorkItem?: WorkItemContext, memoryPrompt?: string): string {
+export function buildSystemPrompt(activeWorkItem?: WorkItemContext, memoryPrompt?: string, workspaceMemoryPrompt?: string): string {
   let prompt = `You are ADO Code, an AI coding assistant integrated into VS Code.
 You help developers write, understand, and debug code.
 You have access to the developer's Azure DevOps work items.
@@ -65,6 +65,10 @@ Tags: ${activeWorkItem.tags || 'N/A'}`;
 
   if (memoryPrompt && memoryPrompt.trim().length > 0) {
     prompt += `\n\n${memoryPrompt.trim()}`;
+  }
+
+  if (workspaceMemoryPrompt && workspaceMemoryPrompt.trim().length > 0) {
+    prompt += `\n\n${workspaceMemoryPrompt.trim()}`;
   }
 
   return prompt;

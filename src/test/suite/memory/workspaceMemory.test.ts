@@ -119,8 +119,8 @@ suite('WorkspaceMemory', () => {
 
     // These should be written under the memory dir, not escape it
     const files = fs.readdirSync(memory.getDir());
-    // The key '../escape' becomes '_.._escape.md' and 'sub/key' becomes 'sub_key.md'
-    assert.ok(files.includes('_.._escape.md'), 'should sanitize ../ escape');
+    // The key '../escape' becomes '.._escape.md' and 'sub/key' becomes 'sub_key.md'
+    assert.ok(files.includes('.._escape.md'), 'should sanitize ../ escape');
     assert.ok(files.includes('sub_key.md'), 'should sanitize / to _');
     assert.ok(!files.includes('escape.md'), 'should not create file outside memory dir');
   });
