@@ -16,6 +16,7 @@ export type WebviewToExtensionMessage =
   | { type: 'agentCancel'; runId: string }
   | { type: 'listAgents' }
   | { type: 'clearConversation' }
+  | { type: 'stopGeneration' }
   // Task 28: task detail review + clarification
   | { type: 'reviewTaskDetail'; workItemId: number }
   | { type: 'requestClarification'; workItemId: number; question: string; mentionCreator: boolean }
