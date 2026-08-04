@@ -2,6 +2,11 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.1] - 2026-08-04
+
+### Bug Fixes
+- **Secondary Side Bar support**: Added `secondaryBar` views container registration so ADO Code views can be moved to the Secondary Side Bar via right-click context menu
+
 ## [0.5.0] - 2026-08-04
 
 ### Features
