@@ -2,6 +2,12 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.4.3] - 2026-08-04
+
+### Bug Fixes
+- **Blank webview fix**: Consolidated `acquireVsCodeApi()` into a single shared module (`src/webview-ui/src/vscode.ts`) — multiple calls crashed React before mount
+- Session initialization wrapped in try-catch so migration errors never break the webview
+
 ## [0.4.2] - 2026-08-04
 
 ### Session History
