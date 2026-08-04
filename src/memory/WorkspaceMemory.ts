@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { logger } from '../services/logger';
 
 /**
  * WorkspaceMemory provides persistent key-value storage scoped to the workspace.
@@ -41,6 +42,7 @@ export class WorkspaceMemory {
    * Write (or overwrite) a memory entry. Creates the memory directory if needed.
    */
   write(key: string, value: string): void {
+    logger.info('WorkspaceMemory: write "' + key + '"');
     this.init();
     const filePath = this.getFilePath(key);
     fs.writeFileSync(filePath, value, 'utf8');
@@ -51,6 +53,7 @@ export class WorkspaceMemory {
    * deleted, false if the key did not exist.
    */
   delete(key: string): boolean {
+    logger.info('WorkspaceMemory: deleted "' + key + '"');
     const filePath = this.getFilePath(key);
     if (!fs.existsSync(filePath)) {
       return false;

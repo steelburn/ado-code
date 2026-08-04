@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { McpClient } from './McpClient';
 import type { McpServerConfig } from './types';
 import type { LlmTool } from '../../llm/types';
+import { logger } from '../logger';
 
 /**
  * Manages multiple MCP server connections and dispatches tool calls
@@ -15,21 +16,27 @@ export class McpManager {
 
   /** Load server configs from VS Code settings and connect to all enabled servers. */
   async connectAll(): Promise<void> {
+    logger.info('MCP: connecting all servers...');
     const configs = vscode.workspace.getConfiguration('adoCode').get<McpServerConfig[]>('mcp.servers', []);
     for (const config of configs) {
       if (!config.name || !config.command) continue;
+      logger.info('MCP: connecting to ' + config.name + '...');
       const client = new McpClient(config);
       try {
         await client.connect();
+        const tools = await client.toLlmTools();
+        logger.info('MCP: connected to ' + config.name + ' (' + tools.length + ' tools)');
         this.clients.set(config.name, client);
       } catch (err) {
         console.error(`[McpManager] Failed to connect to ${config.name}: ${err instanceof Error ? err.message : err}`);
       }
     }
+    logger.info('MCP: all servers connected');
   }
 
   /** Disconnect all servers. */
   async disconnectAll(): Promise<void> {
+    logger.info('MCP: disconnecting all servers...');
     for (const client of this.clients.values()) {
       await client.disconnect();
     }
@@ -49,6 +56,7 @@ export class McpManager {
 
   /** Call a tool on the appropriate MCP server. Tool name format: mcp__<server>__<tool> */
   async callTool(prefixedName: string, args: Record<string, any>): Promise<string> {
+    logger.debug('MCP: callTool ' + prefixedName);
     const parts = prefixedName.split('__');
     if (parts.length < 3 || parts[0] !== 'mcp') {
       return JSON.stringify({ error: `invalid MCP tool name: ${prefixedName}` });

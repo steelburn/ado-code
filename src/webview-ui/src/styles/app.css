@@ -544,6 +544,16 @@ code {
 }
 
 /* ── Input Bar (Cline-style) ─────────────────────────────────── */
+.input-bar__stop-btn {
+  background: var(--vscode-errorForeground) !important;
+  color: var(--vscode-button-foreground) !important;
+  border-radius: 50% !important;
+  width: 28px !important;
+  height: 28px !important;
+}
+.input-bar__stop-btn:hover {
+  opacity: 0.8;
+}
 .input-section {
   padding: 8px 14px 8px;
   flex-shrink: 0;

@@ -39,6 +39,7 @@ interface Props {
   value: string;
   onValueChange: (value: string) => void;
   onSend: (content: string) => void;
+  onStop: () => void;
   onClear: () => void;
   onModeSelect: (mode: 'inline' | 'plan' | 'act') => void;
   onAddContext: () => void;
@@ -57,7 +58,7 @@ interface FileSuggestion {
   name: string;
 }
 
-export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSelect, onAddContext, onAttachFiles, loading }: Props) {
+export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, onModeSelect, onAddContext, onAttachFiles, loading }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -570,32 +571,53 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
             </div>
           )}
 
-          {/* Send button — uses Button primitive with loading spinner */}
-          <Button
-            variant="primary"
-            size="sm"
-            loading={isLoading}
-            disabled={!canSend}
-            onClick={handleSend}
-            title="Send message (Enter)"
-            style={{
-              position: 'absolute',
-              bottom: 6,
-              right: 6,
-              width: 28,
-              height: 28,
-              padding: 0,
-              borderRadius: 4,
-              minWidth: 'unset',
-              zIndex: 2,
-            }}
-          >
-            {!isLoading && (
+          {/* Send / Stop button */}
+          {isLoading ? (
+            <Button
+              onClick={onStop}
+              variant="ghost"
+              title="Stop generation"
+              className="input-bar__stop-btn"
+              style={{
+                position: 'absolute',
+                bottom: 6,
+                right: 6,
+                width: 28,
+                height: 28,
+                padding: 0,
+                borderRadius: '50%',
+                minWidth: 'unset',
+                zIndex: 2,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 4h8v8H4z"/>
+              </svg>
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!canSend}
+              onClick={handleSend}
+              title="Send message (Enter)"
+              style={{
+                position: 'absolute',
+                bottom: 6,
+                right: 6,
+                width: 28,
+                height: 28,
+                padding: 0,
+                borderRadius: 4,
+                minWidth: 'unset',
+                zIndex: 2,
+              }}
+            >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11ZM6.636 10.07l2.761 4.338L14.13 2.576 6.636 10.07Zm6.787-8.239L1.591 6.602l4.339 2.76 7.494-7.493Z"/>
               </svg>
-            )}
-          </Button>
+            </Button>
+          )}
         </div>
 
         {/* Toolbar row */}

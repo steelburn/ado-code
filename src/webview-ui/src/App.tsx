@@ -440,6 +440,10 @@ function App() {
         value={draft}
         onValueChange={setDraft}
         onSend={handleSend}
+        onStop={() => {
+          vscode.postMessage({ type: 'stopGeneration' });
+          setLoading(false);
+        }}
         onClear={handleClear}
         onModeSelect={handleModeSelect}
         onAddContext={() => vscode.postMessage({ type: 'getEditorContext' })}

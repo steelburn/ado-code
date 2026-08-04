@@ -7,6 +7,7 @@
  */
 
 import * as vscode from 'vscode';
+import { logger } from '../services/logger';
 
 /** Supported memory categories. */
 export type MemoryCategory = 'preference' | 'instruction' | 'correction' | 'context';
@@ -68,6 +69,7 @@ export class UserMemory {
    * If an entry with the same key exists, it is updated; otherwise created.
    */
   set(key: string, category: MemoryCategory, content: string): void {
+    logger.info('Memory: set "' + key + '" (' + category + ')');
     const entries = this.getAll();
     const existing = entries.findIndex((e) => e.key === key);
 
@@ -89,6 +91,7 @@ export class UserMemory {
 
   /** Delete a memory entry by key. Returns true if found and deleted. */
   delete(key: string): boolean {
+    logger.info('Memory: deleted "' + key + '"');
     const entries = this.getAll();
     const before = entries.length;
     const filtered = entries.filter((e) => e.key !== key);
@@ -100,6 +103,7 @@ export class UserMemory {
 
   /** Clear all memory entries. */
   clear(): void {
+    logger.info('Memory: cleared all user memory');
     this.context.globalState.update(GLOBAL_STATE_KEY, { entries: [] } satisfies MemoryStore);
   }
 }

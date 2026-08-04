@@ -26,7 +26,9 @@
     "onView:adoCode.unassignedWorkItems",
     "onCommand:adoCode.takeOwnership",
     "onCommand:adoCode.reassignWorkItem",
-    "onCommand:adoCode.generateCommitMessage"
+    "onCommand:adoCode.generateCommitMessage",
+    "onView:adoCode.status",
+    "onCommand:adoCode.refreshStatus"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -93,6 +95,12 @@
         "command": "adoCode.generateCommitMessage",
         "title": "Generate Commit Message",
         "icon": "$(sparkle)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.refreshStatus",
+        "title": "Refresh Status",
+        "icon": "$(refresh)",
         "category": "ADO Code"
       }
     ],
@@ -200,6 +208,11 @@
         {
           "id": "adoCode.unassignedWorkItems",
           "name": "Unassigned Work Items",
+          "type": "tree"
+        },
+        {
+          "id": "adoCode.status",
+          "name": "Status",
           "type": "tree"
         }
       ]

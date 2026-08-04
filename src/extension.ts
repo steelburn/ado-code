@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
+import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
@@ -19,6 +20,10 @@ let unassignedTreeProvider: WorkItemsTreeProvider;
 export async function activate(context: vscode.ExtensionContext) {
   logger.activate(context);
   let services = createServices(context);
+  // Connect MCP servers on startup (fire-and-forget; errors are logged)
+  services.mcp.connectAll().catch(err => {
+    logger.error('MCP: failed to connect servers', err);
+  });
   // Per-project cache of work-item-type states — fetched once per project,
   // refreshable via the state picker's "Refresh states from ADO" entry.
   // The lazy getter re-reads `services` so an org switch picks up the new

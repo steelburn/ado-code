@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { CheckpointManifest, CheckpointDiff } from './types';
+import { logger } from '../logger';
 
 export class CheckpointService {
   private workspaceRoot: string;
@@ -19,6 +20,7 @@ export class CheckpointService {
     const timestamp = Date.now();
     const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
     const id = `${timestamp}-${random}`;
+    logger.info('Checkpoint: saved ' + filePaths.length + ' files as ' + id);
 
     const files: Record<string, string> = {};
     for (const filePath of filePaths) {
@@ -63,6 +65,7 @@ export class CheckpointService {
       restoredPaths.push(relPath);
     }
 
+    logger.info('Checkpoint: restored ' + restoredPaths.length + ' files from ' + checkpointId);
     return restoredPaths;
   }
 

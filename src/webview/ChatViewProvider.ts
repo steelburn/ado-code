@@ -7,6 +7,7 @@ import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/sett
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType } from '../llm/types';
 import { buildSystemPrompt, buildAgentPrompt } from '../llm/prompts';
+import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { createConsentBroker } from '../llm/consent';
@@ -754,6 +755,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Task 26: multi-turn — append this turn to the persisted conversation.
     this.conversation.push({ role: 'user', content: finalContent });
     this.trimConversation();
+    logger.debug(`Chat: building system prompt with ${this.services.memory.getAll().length} user memories, ${this.services.workspaceMemory.list().length} workspace memories`);
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemPrompt(this.activeWorkItem, this.services.memory.toPromptString(), this.services.workspaceMemory.toPromptString()) },
       ...this.conversation,
