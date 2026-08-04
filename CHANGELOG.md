@@ -2,6 +2,33 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.4.2] - 2026-08-04
+
+### Session History
+- **Per-project sessions**: Chat sessions are now stored per workspace + ADO project, with the ability to switch between older sessions
+- **Session dropdown**: New 🕐 session history dropdown in the chat header — click to switch, double-click to rename, × to delete
+- **New Session button**: Create a fresh session from the dropdown
+- **Auto-naming**: Sessions are automatically named from the first user message
+- **Legacy migration**: Existing single-conversation history is auto-migrated to the session format
+
+### In-webview Configuration Page
+- **Full settings page**: New Configuration page accessible from the kebab menu (⋯ → Configuration) — shows all 9 setting categories (ADO, LLM, Mode, Git, Changelog, Work Items, Act Mode, Sessions, Agents)
+- **Live editing**: Toggle booleans, select enums, edit strings — all changes apply to VS Code settings on save
+- **Replaces VS Code settings**: "Configuration..." now opens the in-webview page instead of VS Code settings UI
+
+### Slash Command Parameters
+- Slash command autocomplete dropdown now shows usage/parameters for commands that accept them (e.g. `/status <state>`, `/mode [mode]`, `/assign <person>`)
+
+### Refresh to Kebab Menu
+- Moved "Refresh Work Items" button from the chat header into the kebab menu (⋯) to reduce header clutter
+- ProjectSwitcher's own refresh button unchanged (refreshes the project list, not work items)
+
+### New Settings
+- `adoCode.sessions.maxPerProject`: Maximum number of sessions to keep per project (default: 20, auto-pruned)
+
+### Bug Fixes
+- Fixed `persistConversation` test — updated to match new session-based persistence format
+
 ## [0.4.1] - 2026-08-04
 
 ### Feature Visibility Overhaul
