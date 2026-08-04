@@ -2,6 +2,26 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.3.0] - 2026-08-04
+
+### Checkpoint System
+- File-level checkpoint service for saving/restoring workspace files before AI edits
+- Auto-save checkpoint before mutating tool calls (edit_file, write_to_file, apply_diff)
+- `restore_checkpoint` tool for the LLM to undo file changes
+- Configurable max checkpoints per task (default 50, FIFO eviction)
+
+### MCP Integration
+- MCP (Model Context Protocol) client for connecting to external tool servers
+- Support for stdio-based MCP servers via JSON-RPC 2.0
+- `McpManager` for managing multiple MCP server connections
+- Tools exposed as `mcp__<server>__<tool>` in the agentic loop
+- Configuration via `adoCode.mcp.servers` setting
+
+### ADO API Version Update
+- Updated all Azure DevOps REST API calls to version 7.1 (GA)
+- Comments API updated from 6.0 to 7.1-preview.4 (latest available)
+- Removed all preview API version suffixes where GA versions exist
+
 ## [0.2.0] - 2026-08-04
 
 ### Phase 1: Core Architecture
