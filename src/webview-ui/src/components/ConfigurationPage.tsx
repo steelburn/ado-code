@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { vscode } from '../vscode';
 
 interface Props {
@@ -101,6 +101,74 @@ const SECTIONS: ConfigSection[] = [
   },
 ];
 
+/** Tag/chip input for array settings */
+function ArrayInput({ value, placeholder, onChange }: { value: string[]; placeholder?: string; onChange: (items: string[]) => void }) {
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const addItems = useCallback((text: string) => {
+    const parts = text.split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length === 0) return;
+    const merged = [...value];
+    for (const p of parts) {
+      if (!merged.includes(p)) merged.push(p);
+    }
+    onChange(merged);
+    setDraft('');
+  }, [value, onChange]);
+
+  const removeItem = useCallback((item: string) => {
+    onChange(value.filter(v => v !== item));
+  }, [value, onChange]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addItems(draft);
+    } else if (e.key === 'Backspace' && draft === '' && value.length > 0) {
+      onChange(value.slice(0, -1));
+    }
+  }, [draft, value, addItems, onChange]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const text = e.clipboardData.getData('text');
+    if (text.includes(',')) {
+      e.preventDefault();
+      addItems(text);
+    }
+  }, [addItems]);
+
+  const focusInput = useCallback(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="config-tag-input" ref={containerRef} onClick={focusInput}>
+      {value.map(item => (
+        <span key={item} className="config-tag">
+          <span className="config-tag-text">{item}</span>
+          <button
+            className="config-tag-remove"
+            onClick={e => { e.stopPropagation(); removeItem(item); }}
+            title={`Remove "${item}"`}
+            type="button"
+          >×</button>
+        </span>
+      ))}
+      <input
+        ref={inputRef}
+        className="config-tag-textbox"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
+        placeholder={value.length === 0 ? (placeholder || 'Type and press Enter…') : ''}
+      />
+    </div>
+  );
+}
+
 export function ConfigurationPage({ onBack }: Props) {
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
@@ -193,11 +261,10 @@ export function ConfigurationPage({ onBack }: Props) {
                     onChange={e => handleChange(setting.key, Number(e.target.value))}
                   />
                 ) : setting.type === 'array' ? (
-                  <input
-                    className="config-input"
-                    value={Array.isArray(config[setting.key]) ? config[setting.key].join(', ') : ''}
-                    onChange={e => handleChange(setting.key, e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
+                  <ArrayInput
+                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
                     placeholder={setting.placeholder}
+                    onChange={items => handleChange(setting.key, items)}
                   />
                 ) : (
                   <input

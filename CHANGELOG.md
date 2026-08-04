@@ -3,6 +3,11 @@
 All notable changes to ADO Code will be documented in this file.
 
 ## [0.5.1] - 2026-08-04
+## [0.5.2] - 2026-08-04
+
+### Improvements
+- **Tag/chip input for array settings**: Configuration page array fields (Terminal allowlist, Enabled agents) now use a visual tag/chip interface — type and press Enter or comma to add items, click × to remove
+
 
 ### Bug Fixes
 - **Secondary Side Bar support**: Added `secondaryBar` views container registration so ADO Code views can be moved to the Secondary Side Bar via right-click context menu

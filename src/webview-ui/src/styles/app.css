@@ -1721,3 +1721,91 @@ code {
   color: var(--vscode-descriptionForeground);
   font-size: 0.85em;
 }
+
+/* ── Tag / Chip Input (array settings) ──────────────────────── */
+.config-tag-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  min-height: 30px;
+  max-width: 360px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  cursor: text;
+  transition: border-color 0.15s;
+}
+
+.config-tag-input:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+
+.config-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px 1px 8px;
+  font-size: 0.8em;
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  border-radius: 3px;
+  max-width: 200px;
+  line-height: 1.4;
+  animation: tagFadeIn 0.1s ease-out;
+}
+
+@keyframes tagFadeIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.config-tag-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-tag-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0 -2px 0 2px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 1em;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.config-tag-remove:hover {
+  background: var(--vscode-inputValidation-errorBackground);
+  color: var(--vscode-inputValidation-errorForeground);
+}
+
+.config-tag-textbox {
+  flex: 1;
+  min-width: 80px;
+  padding: 2px 4px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.82em;
+  color: var(--vscode-input-foreground);
+  background: transparent;
+  border: none;
+  outline: none;
+  line-height: 1.4;
+}
+
+.config-tag-textbox::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+  opacity: 0.7;
+}
