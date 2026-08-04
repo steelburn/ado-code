@@ -5,7 +5,9 @@ import { ChangelogService } from './changelog/ChangelogService';
 import { AgentRegistry } from './agents/registry';
 import { CheckpointService } from './services/checkpoints/CheckpointService';
 import { McpManager } from './services/mcp/McpManager';
+import { WorkspaceMemory } from './memory/WorkspaceMemory';
 import { getSettings, getActiveOrg } from './config/settings';
+import { UserMemory } from './memory/UserMemory';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
 // GitService + ChangelogService stubs REMOVED in Tasks 10/11 — real classes
@@ -18,6 +20,8 @@ export interface Services {
   agents: AgentRegistry;
   checkpoints: CheckpointService;
   mcp: McpManager;
+  workspaceMemory: WorkspaceMemory;
+  memory: UserMemory;
 }
 
 /**
@@ -56,5 +60,7 @@ export function createServices(context: vscode.ExtensionContext): Services {
     agents: new AgentRegistry(),
     checkpoints: new CheckpointService(workspaceRoot),
     mcp: new McpManager(context),
+    workspaceMemory: new WorkspaceMemory(workspaceRoot),
+    memory: new UserMemory(context),
   };
 }

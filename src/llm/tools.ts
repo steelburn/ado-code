@@ -12,7 +12,7 @@ export interface ToolExecutor {
 }
 
 // Q8: read-only tools are always allowed (inline/plan/act).
-const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace']);
+const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
 const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file']);
@@ -159,6 +159,19 @@ export function createToolExecutor(
           taskId: { type: 'string', description: 'Task ID the checkpoint belongs to' },
         },
         required: ['checkpointId', 'taskId'],
+      },
+    },
+    {
+      name: 'set_memory',
+      description: 'Store a user memory (preference, instruction, correction, or context) that persists across sessions and is injected into future conversations',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Unique key for this memory (e.g. "code_style", "no_semicolons")' },
+          category: { type: 'string', enum: ['preference', 'instruction', 'correction', 'context'], description: 'Memory category' },
+          content: { type: 'string', description: 'The memory content to store' },
+        },
+        required: ['key', 'category', 'content'],
       },
     },
   ];

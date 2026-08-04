@@ -24,6 +24,7 @@ export type WebviewToExtensionMessage =
   | { type: 'rerunWizard' }
   | { type: 'openSettings' }
   | { type: 'cycleMode' }
+  | { type: 'selectMode'; mode: 'inline' | 'plan' | 'act' }
   | { type: 'fetchProjects'; organization?: string; pat?: string }
   | { type: 'fetchModels'; provider?: string; apiUrl?: string; apiKey?: string }
   | { type: 'selectProject'; projectName: string }

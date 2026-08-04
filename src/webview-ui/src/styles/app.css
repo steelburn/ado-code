@@ -684,6 +684,10 @@ code {
   transition: background 0.15s, color 0.15s;
 }
 
+.mode-option:not(.mode-active):hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
 .mode-active {
   background: var(--vscode-focusBorder);
   color: #fff;
@@ -919,6 +923,24 @@ code {
   border-bottom: 1px solid var(--vscode-panel-border);
   flex-shrink: 0;
   background: var(--vscode-sideBar-background);
+}
+
+.header-refresh-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 1em;
+  padding: 0 6px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+.header-refresh-btn:hover {
+  color: var(--vscode-textLink-foreground);
+  border-color: var(--vscode-textLink-foreground);
 }
 
 .chat-header-title {

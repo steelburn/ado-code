@@ -282,8 +282,8 @@ function App() {
     vscode.postMessage({ type: 'updateConfig', config: form });
   }, []);
 
-  const handleModeChange = useCallback(() => {
-    vscode.postMessage({ type: 'cycleMode' });
+  const handleModeSelect = useCallback((selectedMode: 'inline' | 'plan' | 'act') => {
+    vscode.postMessage({ type: 'selectMode', mode: selectedMode });
   }, []);
 
   const handleClarify = useCallback((workItemId: number, question: string) => {
@@ -330,6 +330,10 @@ function App() {
     // Same typed-but-unsaved pattern as projects: the host builds a temp
     // LlmClient from these (falling back to saved settings when absent).
     vscode.postMessage({ type: 'fetchModels', provider, apiUrl, apiKey });
+  }, []);
+
+  const handleRefreshWorkItems = useCallback(() => {
+    vscode.postMessage({ type: 'fetchWorkItems' });
   }, []);
 
   const handleSwitchProject = useCallback((projectName: string) => {
@@ -394,6 +398,7 @@ function App() {
       {/* Chat header with project switcher + kebab menu */}
       <div className="chat-header">
         <span className="chat-header-title">ADO Code</span>
+        <button className="header-refresh-btn" title="Refresh work items" onClick={handleRefreshWorkItems}>↻</button>
         <ProjectSwitcher
           projects={projects}
           current={config.adoProject}
@@ -436,7 +441,7 @@ function App() {
         onValueChange={setDraft}
         onSend={handleSend}
         onClear={handleClear}
-        onModeChange={handleModeChange}
+        onModeSelect={handleModeSelect}
         onAddContext={() => vscode.postMessage({ type: 'getEditorContext' })}
         onAttachFiles={() => vscode.postMessage({ type: 'pickFiles' })}
         loading={loading ? mode : ''}

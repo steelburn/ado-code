@@ -11,6 +11,7 @@ import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { createConsentBroker } from '../llm/consent';
 import { AgentRunner } from '../agents/AgentRunner';
+import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -288,6 +289,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await vscode.workspace.getConfiguration('adoCode').update('mode', next, vscode.ConfigurationTarget.Global);
             this.executor?.setMode(next);
             this.postMessage({ type: 'modeChanged', mode: next });
+            break;
+          }
+          case 'selectMode': {
+            const selected = message.mode;
+            await vscode.workspace.getConfiguration('adoCode').update('mode', selected, vscode.ConfigurationTarget.Global);
+            this.executor?.setMode(selected);
+            this.postMessage({ type: 'modeChanged', mode: selected });
             break;
           }
           case 'fetchProjects': {
@@ -711,27 +719,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleUserMessage(content: string): Promise<void> {
-    // Task 14: slash-command parsing BEFORE sending to the LLM
-    const statusMatch = content.match(/^\/status\s+(\S+)/);
-    if (statusMatch) {
-      if (this.activeWorkItem) {
-        await this.updateWorkItemState(this.activeWorkItem.id, statusMatch[1]);
-      } else {
-        vscode.window.showWarningMessage('ADO Code: select a work item first (tree view → Select Work Item).');
-      }
+    // Task 14: slash-command parsing BEFORE sending to the LLM.
+    // Delegates to executeSlashCommand() which handles all commands.
+    const parsed = parseSlashCommand(content);
+    if (parsed) {
+      await this.executeSlashCommand(parsed.command.name, parsed.args);
       return; // do not send slash command to the LLM
-    }
-
-    const commentMatch = content.match(/^\/comment\s+([\s\S]+)/);
-    if (commentMatch) {
-      if (this.activeWorkItem) {
-        const project = this.activeProject(); // H-4
-        await this.services.ado.addComment(project, this.activeWorkItem.id, commentMatch[1].trim());
-        vscode.window.showInformationMessage(`ADO Code: comment added to ADO-${this.activeWorkItem.id}.`);
-      } else {
-        vscode.window.showWarningMessage('ADO Code: select a work item first.');
-      }
-      return;
     }
 
     // Task 16: inject active file + selection context into the user message
@@ -881,6 +874,161 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public focus(): void {
     vscode.commands.executeCommand('workbench.view.extension.adoCode');
     this._view?.show?.(true);
+  }
+
+  /**
+   * Execute a parsed slash command. Central handler for all slash commands.
+   */
+  private async executeSlashCommand(name: string, args: string): Promise<void> {
+    switch (name) {
+      case 'status': {
+        if (!args) {
+          vscode.window.showWarningMessage('ADO Code: usage: /status <new-state>');
+          return;
+        }
+        if (this.activeWorkItem) {
+          await this.updateWorkItemState(this.activeWorkItem.id, args);
+        } else {
+          vscode.window.showWarningMessage('ADO Code: select a work item first (tree view → Select Work Item).');
+        }
+        break;
+      }
+      case 'comment': {
+        if (!args) {
+          vscode.window.showWarningMessage('ADO Code: usage: /comment <text>');
+          return;
+        }
+        if (this.activeWorkItem) {
+          const project = this.activeProject(); // H-4
+          await this.services.ado.addComment(project, this.activeWorkItem.id, args);
+          vscode.window.showInformationMessage(`ADO Code: comment added to ADO-${this.activeWorkItem.id}.`);
+        } else {
+          vscode.window.showWarningMessage('ADO Code: select a work item first.');
+        }
+        break;
+      }
+      case 'pick': {
+        await vscode.commands.executeCommand('adoCode.selectWorkItem');
+        break;
+      }
+      case 'assign': {
+        if (!args) {
+          vscode.window.showWarningMessage('ADO Code: usage: /assign <person>');
+          return;
+        }
+        if (this.activeWorkItem) {
+          const project = this.activeProject();
+          await this.services.ado.updateWorkItem(project, this.activeWorkItem.id, [
+            { op: 'add', path: '/fields/System.AssignedTo', value: args },
+          ]);
+          vscode.window.showInformationMessage(`ADO Code: ADO-${this.activeWorkItem.id} assigned to ${args}.`);
+        } else {
+          vscode.window.showWarningMessage('ADO Code: select a work item first.');
+        }
+        break;
+      }
+      case 'clear': {
+        this.llmAbort?.abort();
+        this.consentBroker.rejectAll();
+        this.conversation = [];
+        this.persistConversation();
+        this.postMessage({ type: 'historyRestored', messages: [] });
+        this.postMessage({ type: 'loading', loading: false });
+        vscode.window.showInformationMessage('ADO Code: chat cleared.');
+        break;
+      }
+      case 'mode': {
+        const modes = ['inline', 'plan', 'act'] as const;
+        const target = args.trim().toLowerCase();
+        if (target && modes.includes(target as any)) {
+          await vscode.workspace.getConfiguration('adoCode').update('mode', target, vscode.ConfigurationTarget.Global);
+          this.executor?.setMode(target as any);
+          this.postMessage({ type: 'modeChanged', mode: target as any });
+          vscode.window.showInformationMessage(`ADO Code: mode set to "${target}".`);
+        } else if (!target) {
+          await this.pickMode();
+        } else {
+          vscode.window.showWarningMessage(`ADO Code: unknown mode "${args}". Use: inline, plan, or act.`);
+        }
+        break;
+      }
+      case 'undo': {
+        // Undo last state change: revert to previous state if we have history
+        if (this.activeWorkItem) {
+          const project = this.activeProject();
+          const comments = await this.services.ado.getComments(project, this.activeWorkItem.id);
+          // Find the last "state changed" comment to identify the previous state
+          const stateChange = comments.reverse().find(c => c.text.includes('ADO Code: state changed to'));
+          if (stateChange) {
+            const match = stateChange.text.match(/state changed to \*\*(.+?)\*\*/);
+            if (match) {
+              await this.updateWorkItemState(this.activeWorkItem.id, match[1]);
+              vscode.window.showInformationMessage(`ADO Code: undone — reverted to "${match[1]}".`);
+            }
+          } else {
+            vscode.window.showWarningMessage('ADO Code: no state change to undo.');
+          }
+        } else {
+          vscode.window.showWarningMessage('ADO Code: select a work item first.');
+        }
+        break;
+      }
+      case 'help': {
+        const helpText = SLASH_COMMANDS.map(cmd =>
+          `**${cmd.usage}** — ${cmd.description}`
+        ).join('\n');
+        this.postMessage({ type: 'assistantMessage', content: helpText, done: true });
+        break;
+      }
+      case 'delegate': {
+        if (!this.activeWorkItem) {
+          vscode.window.showWarningMessage('ADO Code: select a work item first to delegate.');
+          return;
+        }
+        const prompt = args || 'Continue working on the current task.';
+        await this.delegateToAgent(prompt);
+        break;
+      }
+      case 'resume': {
+        // Resume the last conversation from workspaceState
+        const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+        const history = this._context.workspaceState.get<any[]>(`adoCode.chatHistory:${key}`, []);
+        if (history.length > 0) {
+          this.restoreConversation(history);
+          vscode.window.showInformationMessage(`ADO Code: resumed ${history.length} messages.`);
+        } else {
+          vscode.window.showWarningMessage('ADO Code: no previous session to resume.');
+        }
+        break;
+      }
+      case 'remember': {
+        if (!args) {
+          vscode.window.showWarningMessage('ADO Code: usage: /remember <note text>');
+          return;
+        }
+        // Store notes in workspaceState under a dedicated key
+        const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+        const existing = this._context.workspaceState.get<string[]>(`adoCode.notes:${key}`, []);
+        existing.push(args);
+        await this._context.workspaceState.update(`adoCode.notes:${key}`, existing);
+        vscode.window.showInformationMessage(`ADO Code: note saved (${existing.length} total).`);
+        break;
+      }
+      case 'forget': {
+        const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+        const existing = this._context.workspaceState.get<string[]>(`adoCode.notes:${key}`, []);
+        if (existing.length > 0) {
+          await this._context.workspaceState.update(`adoCode.notes:${key}`, []);
+          vscode.window.showInformationMessage(`ADO Code: ${existing.length} note(s) cleared.`);
+        } else {
+          vscode.window.showWarningMessage('ADO Code: no saved notes to clear.');
+        }
+        break;
+      }
+      default: {
+        vscode.window.showWarningMessage(`ADO Code: unknown command "/${name}". Type /help for available commands.`);
+      }
+    }
   }
 
   /** Mode selector (Q8) — updates the setting AND the executor when wired (Task 24). */

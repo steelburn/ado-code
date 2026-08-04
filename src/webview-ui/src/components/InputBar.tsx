@@ -14,7 +14,7 @@ interface Props {
   onValueChange: (value: string) => void;
   onSend: (content: string) => void;
   onClear: () => void;
-  onModeChange: () => void;
+  onModeSelect: (mode: 'inline' | 'plan' | 'act') => void;
   onAddContext: () => void;
   onAttachFiles: () => void;
   loading: string; // 'inline' | 'plan' | 'act' | ''
@@ -31,7 +31,7 @@ interface FileSuggestion {
   name: string;
 }
 
-export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeChange, onAddContext, onAttachFiles, loading }: Props) {
+export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSelect, onAddContext, onAttachFiles, loading }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -531,10 +531,10 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeCh
             />
           </div>
           <div className="toolbar-right">
-            <span className="mode-toggle" onClick={onModeChange} title="Click to change mode">
-              <span className={`mode-option ${mode === 'inline' ? 'mode-active' : ''}`}>Chat</span>
-              <span className={`mode-option ${mode === 'plan' ? 'mode-active' : ''}`}>Plan</span>
-              <span className={`mode-option ${mode === 'act' ? 'mode-active' : ''}`}>Act</span>
+            <span className="mode-toggle" title="Click to change mode">
+              <span className={`mode-option ${mode === 'inline' ? 'mode-active' : ''}`} onClick={() => onModeSelect('inline')}>Chat</span>
+              <span className={`mode-option ${mode === 'plan' ? 'mode-active' : ''}`} onClick={() => onModeSelect('plan')}>Plan</span>
+              <span className={`mode-option ${mode === 'act' ? 'mode-active' : ''}`} onClick={() => onModeSelect('act')}>Act</span>
             </span>
           </div>
         </div>
