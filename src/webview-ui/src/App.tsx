@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types';
+import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
 import { MessageList } from './components/MessageList';
@@ -9,6 +9,7 @@ import { KebabMenu } from './components/KebabMenu';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
 import { ConsentCard, ConsentRequest } from './components/ConsentCard';
+import { SessionHistory } from './components/SessionHistory';
 import './styles/app.css';
 import './styles/markdown.css';
 
@@ -80,6 +81,10 @@ function App() {
   // per webview session (message-handler closures are stale, so a ref, not
   // state, gates the one-shot fetch).
   const projectsRequestedRef = useRef(false);
+
+  // Session history
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   // ── Message handler ────────────────────────────────────────────
   useEffect(() => {
@@ -168,6 +173,15 @@ function App() {
           setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
           break;
 
+        case 'sessionList':
+          setSessions(msg.sessions);
+          setActiveSessionId(msg.activeId);
+          break;
+        case 'sessionSwitched':
+          setMessages(msg.session.messages.map(m => ({ role: m.role, content: m.content })));
+          setActiveSessionId(msg.session.id);
+          break;
+
         case 'workItemDetail':
           setDetail(msg.item as unknown as WorkItemDetail);
           if (msg.item) setShowAgentBar(true);
@@ -236,6 +250,7 @@ function App() {
 
     vscode.postMessage({ type: 'getConfig' });
     vscode.postMessage({ type: 'listAgents' });
+    vscode.postMessage({ type: 'listSessions' });
 
     return () => window.removeEventListener('message', handler);
   }, []);
@@ -303,9 +318,32 @@ function App() {
     setSelectedAgent(name);
   }, []);
 
+  // Session history callbacks
+  const handleSwitchSession = useCallback((sessionId: string) => {
+    vscode.postMessage({ type: 'switchSession', sessionId });
+  }, []);
+
+  const handleNewSession = useCallback(() => {
+    vscode.postMessage({ type: 'newSession' });
+    setMessages([]);
+    setLoading(false);
+    setDraft('');
+  }, []);
+
+  const handleRenameSession = useCallback((sessionId: string, name: string) => {
+    vscode.postMessage({ type: 'renameSession', sessionId, name });
+  }, []);
+
+  const handleDeleteSession = useCallback((sessionId: string) => {
+    vscode.postMessage({ type: 'deleteSession', sessionId });
+  }, []);
+
   // ── Kebab menu actions ───────────────────────────────────────
   const handleKebabAction = useCallback((action: string) => {
     switch (action) {
+      case 'refreshWorkItems':
+        vscode.postMessage({ type: 'fetchWorkItems' });
+        break;
       case 'rerunWizard':
         vscode.postMessage({ type: 'rerunWizard' });
         break;
@@ -330,10 +368,6 @@ function App() {
     // Same typed-but-unsaved pattern as projects: the host builds a temp
     // LlmClient from these (falling back to saved settings when absent).
     vscode.postMessage({ type: 'fetchModels', provider, apiUrl, apiKey });
-  }, []);
-
-  const handleRefreshWorkItems = useCallback(() => {
-    vscode.postMessage({ type: 'fetchWorkItems' });
   }, []);
 
   const handleSwitchProject = useCallback((projectName: string) => {
@@ -395,10 +429,17 @@ function App() {
         </div>
       )}
 
-      {/* Chat header with project switcher + kebab menu */}
+      {/* Chat header with session history, project switcher + kebab menu */}
       <div className="chat-header">
         <span className="chat-header-title">ADO Code</span>
-        <button className="header-refresh-btn" title="Refresh work items" onClick={handleRefreshWorkItems}>↻</button>
+        <SessionHistory
+          sessions={sessions}
+          activeId={activeSessionId}
+          onSwitch={handleSwitchSession}
+          onNew={handleNewSession}
+          onRename={handleRenameSession}
+          onDelete={handleDeleteSession}
+        />
         <ProjectSwitcher
           projects={projects}
           current={config.adoProject}
@@ -408,6 +449,7 @@ function App() {
         />
         <KebabMenu
           items={[
+            { label: 'Refresh Work Items', icon: '↻', action: 'refreshWorkItems' },
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
             { label: 'Configuration…', icon: '⚙', action: 'openSettings' },
           ]}

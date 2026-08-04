@@ -59,7 +59,13 @@ export type WebviewToExtensionMessage =
   // Consent: user answer to an agent consent request (inline mode mutating tool)
   | { type: 'consentResponse'; requestId: string; approved: boolean }
   // Stop generation: user clicks stop while LLM is streaming
-  | { type: 'stopGeneration' };
+  | { type: 'stopGeneration' }
+  // Session history
+  | { type: 'listSessions' }
+  | { type: 'switchSession'; sessionId: string }
+  | { type: 'newSession' }
+  | { type: 'renameSession'; sessionId: string; name: string }
+  | { type: 'deleteSession'; sessionId: string };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -94,7 +100,10 @@ export type ExtensionToWebviewMessage =
   // Consent: the agent requires user approval for a mutating tool (inline mode)
   | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> }
   // File search results for @ mentions
-  | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> };
+  | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
+  // Session history
+  | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
+  | { type: 'sessionSwitched'; session: Session };
 
 // Shared types
 export interface MessageContext {
@@ -167,4 +176,12 @@ export interface ExtensionConfig {
   changelogPostToAdo: boolean;
   adoClarificationState: string;
   adoWarnOnSparseTask: boolean;
+}
+
+// Session history
+export interface Session {
+  id: string;
+  name: string;
+  createdAt: string;
+  messages: Array<{ role: string; content: string }>;
 }
