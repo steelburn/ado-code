@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"

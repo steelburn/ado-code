@@ -2,25 +2,55 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.4.0] - 2026-08-04
+
+### Agent Reference Files
+- AGENTS.md: universal agent reference for coding assistants (Claude Code, Codex, Cursor, etc.)
+- Cross-platform structure analysis script (Node.js, runs on Windows/Linux/macOS)
+- Pre-commit quality gate script (compile + test)
+- 6 playbooks for common tasks (add tool, adapter, message, MCP, memory guides)
+
+### User Memory System
+- Persistent per-user preferences stored in VS Code globalState
+- Categories: preference, instruction, correction, context
+- set_memory tool for AI to learn from conversations
+- Auto-injected into LLM system prompt
+
+### Workspace Memory System
+- Per-project conventions stored in .ado-code/memory/*.md
+- Files: conventions, architecture, gotchas, custom
+- read/write/list_workspace_memory tools for LLM
+- Git-committable for team sharing
+
+### Slash Commands
+- 12 commands: /status, /comment, /pick, /assign, /clear, /mode, /undo, /help, /delegate, /resume, /remember, /forget
+- Autocomplete dropdown when typing /
+- Keyboard navigation (arrows + enter)
+
+### UI Improvements
+- Direct mode selection: click Chat/Plan/Act directly (no cycling)
+- Refresh icon in chat header for quick work item refresh
+- Hover effects on mode toggle options
+
+### Quality Gates
+- husky + lint-staged pre-commit hooks
+- Auto-run compile + test before every commit
+
 ## [0.3.0] - 2026-08-04
 
 ### Checkpoint System
 - File-level checkpoint service for saving/restoring workspace files before AI edits
-- Auto-save checkpoint before mutating tool calls (edit_file, write_to_file, apply_diff)
-- `restore_checkpoint` tool for the LLM to undo file changes
-- Configurable max checkpoints per task (default 50, FIFO eviction)
+- Auto-save checkpoint before mutating tool calls
+- restore_checkpoint tool for the LLM to undo file changes
 
 ### MCP Integration
-- MCP (Model Context Protocol) client for connecting to external tool servers
-- Support for stdio-based MCP servers via JSON-RPC 2.0
-- `McpManager` for managing multiple MCP server connections
-- Tools exposed as `mcp__<server>__<tool>` in the agentic loop
-- Configuration via `adoCode.mcp.servers` setting
+- MCP client for connecting to external tool servers via JSON-RPC over stdio
+- McpManager for managing multiple server connections
+- Tools exposed as mcp__<server>__<tool> in the agentic loop
 
 ### ADO API Version Update
-- Updated all Azure DevOps REST API calls to version 7.1 (GA)
-- Comments API updated from 6.0 to 7.1-preview.4 (latest available)
-- Removed all preview API version suffixes where GA versions exist
+- Updated all Azure DevOps REST API calls to version 7.1 GA
+- Comments API updated from 6.0 to 7.1-preview.4
 
 ## [0.2.0] - 2026-08-04
 
@@ -31,11 +61,7 @@ All notable changes to ADO Code will be documented in this file.
 - ContextProxy for workspace-safe context passing
 
 ### Phase 2: Tool Implementations
-- ReadTool: file reading with line ranges and offset support
-- SearchTool: content and filename search across workspace
-- EditTool: targeted find-and-replace edits with fuzzy matching
-- ExecuteTool: terminal command execution with timeout and working directory
-- ListTool: directory listing with glob filtering
+- ReadTool, SearchTool, EditTool, ExecuteTool, ListTool
 
 ### Phase 2: Provider Abstraction
 - OpenAI v2 provider with streaming support
@@ -48,22 +74,15 @@ All notable changes to ADO Code will be documented in this file.
 - Debug mode: diagnostic-focused with verbose output
 
 ### Phase 2: Context Management
-- Token counter for accurate context size estimation
-- Context manager with automatic windowing
-- Context condenser for long conversations
+- Token counter, context manager, condenser
 
 ### Phase 2: UI Components
 - Button, Tooltip, Dialog, Toggle, Badge, Card component library
 - Enhanced MessageList with markdown rendering and tool call cards
 - Enhanced InputBar with @file mention, image paste, and message history
 
-### Phase 2: @File Mention with Real Workspace Search
-- Type `@` in the input bar to search workspace files
-- Real-time file suggestions from the extension host via VS Code `findFiles` API
-- Keyboard navigation (arrow keys, Enter/Tab to select, Escape to dismiss)
-
 ### Security
-- Workspace boundary validation on all file tools (read, search, edit, list)
+- Workspace boundary validation on all file tools
 - Platform-safe process kill for WSL/Windows environments
 
 ## [0.1.3] - 2026-07-15

@@ -8,10 +8,13 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
 - Tool calling with agentic loop for autonomous coding tasks
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
-- Post completion status back to the ADO work item discussion thread
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, and more)
 - File checkpoints: auto-save before AI edits, restore on demand
 - MCP (Model Context Protocol) support for external tool servers
+- Slash commands with autocomplete (/help, /status, /clear, /mode, etc.)
+- User memory: AI remembers your preferences across sessions
+- Workspace memory: project-specific conventions in .ado-code/memory/
+- Direct mode selection: click Chat/Plan/Act to switch modes instantly
 
 ## Requirements
 
@@ -36,12 +39,56 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, or `act` |
 | `adoCode.mcp.servers` | MCP server configurations (array) |
 
+## Slash Commands
+
+Type `/` in the chat input to see available commands:
+
+| Command | Description |
+|---------|-------------|
+| `/status <state>` | Change work item state |
+| `/comment <text>` | Add a comment to the active work item |
+| `/pick` | Select a work item from the list |
+| `/assign <who>` | Reassign the active work item |
+| `/clear` | Clear chat history |
+| `/mode <mode>` | Switch mode (inline, plan, act) |
+| `/undo` | Restore files to the last checkpoint |
+| `/help` | Show available commands |
+| `/delegate [agent]` | Delegate to an external agent |
+| `/resume` | Resume an interrupted agent session |
+| `/remember <what>` | Remember a preference or instruction |
+| `/forget <key>` | Remove a memory entry |
+
+## Memory System
+
+### User Memory
+AI remembers your preferences across all sessions:
+- "Remember that I prefer conventional commits"
+- "Don't use var, only let/const"
+- Use `/remember` and `/forget` commands
+
+### Workspace Memory
+Project-specific conventions in `.ado-code/memory/`:
+- `conventions.md` — Coding style, naming patterns
+- `architecture.md` — Design decisions, rationale
+- `gotchas.md` — Known pitfalls, workarounds
+- `custom.md` — Anything else project-specific
+
+Commit `.ado-code/memory/` to share with your team.
+
 ## Release Notes
+
+### 0.4.0
+
+- Agent reference files (AGENTS.md, playbooks, structure scripts)
+- User memory and workspace memory systems
+- Slash commands with autocomplete
+- Direct mode selection (click to switch)
+- Pre-commit quality gates
 
 ### 0.3.0
 
-- Checkpoint system: auto-save before file edits, restore on demand
-- MCP integration: connect to external tool servers
+- Checkpoint system for file save/restore
+- MCP integration for external tool servers
 - ADO API version update to 7.1 GA
 
 ### 0.2.0
@@ -49,8 +96,7 @@ Configure in VS Code settings under `adoCode.*`:
 - Core architecture: BaseTool, BaseProvider, ToolRegistry
 - 5 file tools: read, search, edit, execute, list
 - Modes system: code, architect, ask, debug
-- Context management: token counting, windowing, condensation
-- UI component library and enhanced chat interface
+- Context management and UI components
 
 ### 0.1.3
 
