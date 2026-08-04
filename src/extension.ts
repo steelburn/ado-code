@@ -8,6 +8,7 @@ import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { GitService } from './git/GitService';
 import { AgentRunner } from './agents/AgentRunner';
 import { AgentRun } from './agents/types';
+import { logger } from './services/logger';
 
 let chatProvider: ChatViewProvider;
 let treeProvider: WorkItemsTreeProvider;
@@ -16,6 +17,7 @@ let unassignedTreeProvider: WorkItemsTreeProvider;
 // H-10 fix: activate is async — the Q7 resume QuickPick (Task 24) awaits it,
 // and VS Code supports returning a Promise from activate().
 export async function activate(context: vscode.ExtensionContext) {
+  logger.activate(context);
   let services = createServices(context);
   // Per-project cache of work-item-type states — fetched once per project,
   // refreshable via the state picker's "Refresh states from ADO" entry.

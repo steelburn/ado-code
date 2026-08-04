@@ -8,6 +8,7 @@ import { McpManager } from './services/mcp/McpManager';
 import { WorkspaceMemory } from './memory/WorkspaceMemory';
 import { getSettings, getActiveOrg } from './config/settings';
 import { UserMemory } from './memory/UserMemory';
+import { logger } from './services/logger';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
 // GitService + ChangelogService stubs REMOVED in Tasks 10/11 — real classes
@@ -22,6 +23,7 @@ export interface Services {
   mcp: McpManager;
   workspaceMemory: WorkspaceMemory;
   memory: UserMemory;
+  logger: typeof logger;
 }
 
 /**
@@ -62,5 +64,6 @@ export function createServices(context: vscode.ExtensionContext): Services {
     mcp: new McpManager(context),
     workspaceMemory: new WorkspaceMemory(workspaceRoot),
     memory: new UserMemory(context),
+    logger,
   };
 }
