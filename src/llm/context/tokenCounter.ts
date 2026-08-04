@@ -7,6 +7,7 @@
  */
 
 import type { LlmMessage } from "../types";
+import { messageText } from "../types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -82,7 +83,7 @@ export function countMessageTokens(messages: LlmMessage[]): number {
 
   for (const msg of messages) {
     // Base content tokens
-    total += countTokens(msg.content);
+    total += countTokens(messageText(msg.content));
 
     // Role / framing overhead
     total += ROLE_OVERHEAD_TOKENS;

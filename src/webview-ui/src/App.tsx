@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session } from './types';
+import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session, ImageAttachment } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
 import { MessageList } from './components/MessageList';
@@ -258,9 +258,12 @@ function App() {
   }, [messages]);
 
   // ── Actions ────────────────────────────────────────────────────
-  const handleSend = useCallback((content: string) => {
-    setMessages(prev => [...prev, { role: 'user', content }]);
-    vscode.postMessage({ type: 'userMessage', content });
+  const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
+    const displayContent = images?.length
+      ? (content ? `${content}\n\n${images.map(i => `[Image: ${i.name}]`).join(' ')}` : images.map(i => `[Image: ${i.name}]`).join(' '))
+      : content;
+    setMessages(prev => [...prev, { role: 'user', content: displayContent }]);
+    vscode.postMessage({ type: 'userMessage', content, images });
     setDraft('');
     setLoading(true); // Show loading indicator immediately
     // A new turn aborts any in-flight run — the host denies the pending

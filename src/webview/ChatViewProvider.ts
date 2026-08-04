@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session } from '../shared/messages';
+import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
 import { AdoClient } from '../ado/client';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
@@ -11,6 +11,7 @@ import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { createConsentBroker } from '../llm/consent';
+import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
 
@@ -74,7 +75,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         id: new Date().toISOString(),
         name: 'Migrated Session',
         createdAt: new Date().toISOString(),
-        messages: legacyHistory.map(m => ({ role: m.role, content: m.content })),
+        messages: legacyHistory.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' })),
       };
       await this.saveSessions([session]);
       await this.setActiveSessionId(session.id);
@@ -273,7 +274,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       async (message: WebviewToExtensionMessage) => {
         switch (message.type) {
           case 'userMessage':
-            await this.handleUserMessage(message.content);
+            await this.handleUserMessage(message.content, message.images);
             break;
           case 'fetchWorkItems':
             await this.refreshWorkItems();
@@ -852,7 +853,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sessions = this.getSessions();
     const session = sessions.find(s => s.id === activeId);
     if (!session) return;
-    session.messages = this.conversation.slice(-50).map(m => ({ role: m.role, content: m.content }));
+    session.messages = this.conversation.slice(-50).map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)' }));
     // Auto-name from first user message if still default
     if (session.name === 'New Session') {
       const firstUser = session.messages.find(m => m.role === 'user');
@@ -949,7 +950,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return new LlmClient(llmConfigFromSettings());
   }
 
-  private async handleUserMessage(content: string): Promise<void> {
+  private async handleUserMessage(content: string, images?: ImageAttachment[]): Promise<void> {
     // Task 14: slash-command parsing BEFORE sending to the LLM.
     // Delegates to executeSlashCommand() which handles all commands.
     const parsed = parseSlashCommand(content);
@@ -960,7 +961,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Task 16: inject active file + selection context into the user message
     const contextBlock = this.buildEditorContext();
-    const finalContent = contextBlock ? `${contextBlock}\n\n[User message:]\n${content}` : content;
+
+    // Build LLM content: string or ContentBlockParam[] if images present
+    let llmContent: string | ContentBlockParam[];
+    if (images && images.length > 0) {
+      const blocks: ContentBlockParam[] = [];
+      // Text block (with editor context prepended if available)
+      const textContent = contextBlock
+        ? `${contextBlock}\n\n[User message:]\n${content}`
+        : content;
+      if (textContent.trim()) {
+        blocks.push({ type: 'text', text: textContent });
+      }
+      // Image blocks
+      for (const img of images) {
+        const match = img.dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (match) {
+          blocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: match[1],
+              data: match[2],
+            },
+          });
+        }
+      }
+      llmContent = blocks;
+    } else {
+      llmContent = contextBlock
+        ? `${contextBlock}\n\n[User message:]\n${content}`
+        : content;
+    }
 
     // Cancel any in-flight stream before starting a new one
     this.llmAbort?.abort();
@@ -983,7 +1015,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const budget = getSettings().actToolBudget;
     // Task 26: multi-turn — append this turn to the persisted conversation.
-    this.conversation.push({ role: 'user', content: finalContent });
+    this.conversation.push({ role: 'user', content: llmContent });
     this.trimConversation();
     logger.debug(`Chat: building system prompt with ${this.services.memory.getAll().length} user memories, ${this.services.workspaceMemory.list().length} workspace memories`);
     const messages: LlmMessage[] = [

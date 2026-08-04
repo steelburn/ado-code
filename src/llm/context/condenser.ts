@@ -158,7 +158,7 @@ export class ConversationCondenser {
     const parts: string[] = [];
 
     for (const msg of messages) {
-      const content = msg.content;
+      const content = typeof msg.content === "string" ? msg.content : msg.content.map(b => b.type === "text" ? b.text : "").join("");
 
       // ---- File changes ----
       const filePatterns = [

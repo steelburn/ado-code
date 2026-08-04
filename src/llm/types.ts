@@ -1,8 +1,10 @@
 export type LlmProviderType = 'openai' | 'anthropic';
 
+import type { ContentBlockParam } from './providers/BaseProvider';
+
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | ContentBlockParam[];
   // C1 fix: tool-calling metadata carried on the generic message so the
   // provider can translate 1:1 to its native shape.
   toolCallId?: string;   // present on role:'tool' messages (OpenAI tool_call_id / Anthropic tool_use_id)
@@ -62,4 +64,18 @@ export interface LlmAgenticResult {
   text: string;                 // final assistant text
   toolCalls: ToolCall[];        // all calls made during the loop
   iterations: number;
+}
+
+/**
+ * Extract plain text from LlmMessage.content.
+ * Handles both string content and ContentBlockParam[] (image support).
+ */
+export function messageText(content: string | ContentBlockParam[]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("");
 }

@@ -1,7 +1,12 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
+import type { ContentBlockParam } from './BaseProvider';
 
 export class OpenAiProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
+    const openaiMessages = messages
+      .filter(m => m.role !== 'tool')
+      .map(m => ({ role: m.role, content: convertContent(m.content) }));
+
     const response = await fetch(`${config.apiUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -11,7 +16,7 @@ export class OpenAiProvider implements LlmProvider {
       signal,
       body: JSON.stringify({
         model: config.model,
-        messages,
+        messages: openaiMessages,
         stream: true,
       }),
     });
@@ -71,7 +76,7 @@ export class OpenAiProvider implements LlmProvider {
       if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
         return {
           role: 'assistant',
-          content: m.content,
+          content: convertContent(m.content),
           tool_calls: m.toolCalls.map(tc => ({
             id: tc.id,
             type: 'function',
@@ -79,7 +84,7 @@ export class OpenAiProvider implements LlmProvider {
           })),
         };
       }
-      return { role: m.role, content: m.content };
+      return { role: m.role, content: convertContent(m.content) };
     });
 
     const response = await fetch(`${config.apiUrl}/chat/completions`, {
@@ -129,6 +134,37 @@ function parseToolArguments(raw: unknown): Record<string, any> {
   } catch {
     return {};
   }
+}
+
+/** Convert ContentBlockParam[] to OpenAI content format (string or array of parts). */
+function convertContent(
+  content: string | ContentBlockParam[],
+): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
+  if (typeof content === 'string') {
+    return content;
+  }
+  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  for (const block of content) {
+    if (block.type === 'text') {
+      parts.push({ type: 'text', text: block.text });
+    } else if (block.type === 'image') {
+      const { source } = block;
+      let url: string | undefined;
+      if (source.type === 'base64' && source.data) {
+        url = `data:${source.media_type};base64,${source.data}`;
+      } else if (source.type === 'url' && source.url) {
+        url = source.url;
+      }
+      if (url) {
+        parts.push({ type: 'image_url', image_url: { url } });
+      }
+    }
+  }
+  // If only text parts, collapse to string for simpler API calls
+  if (parts.every(p => p.type === 'text')) {
+    return parts.map(p => p.text).join('\n');
+  }
+  return parts;
 }
 
 /** Model ids via the standard OpenAI-compatible GET /models endpoint. */

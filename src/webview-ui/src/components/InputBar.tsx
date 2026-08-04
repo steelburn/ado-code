@@ -33,7 +33,7 @@ interface Props {
   mode: string;
   value: string;
   onValueChange: (value: string) => void;
-  onSend: (content: string) => void;
+  onSend: (content: string, images?: ImageAttachment[]) => void;
   onStop: () => void;
   onClear: () => void;
   onModeSelect: (mode: 'inline' | 'plan' | 'act') => void;
@@ -259,15 +259,7 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
     if (!trimmed && images.length === 0) return;
     if (loading) return;
 
-    let content = trimmed;
-    if (images.length > 0) {
-      const imageRefs = images.map(img => `[Image: ${img.name}]`).join(' ');
-      content = images.length > 0 && trimmed
-        ? `${trimmed}\n\n${imageRefs}`
-        : imageRefs;
-    }
-
-    onSend(content);
+    onSend(trimmed, images.length > 0 ? images : undefined);
 
     // Add to history
     if (trimmed) {

@@ -24,8 +24,17 @@ export interface AgentRun {
   summary?: string;
 }
 
+/** An image pasted into the chat, carried as a base64 data URL. */
+export interface ImageAttachment {
+  id: string;
+  /** data:image/png;base64,<encoded> or data:image/jpeg;base64,<encoded> */
+  dataUrl: string;
+  /** Original filename or auto-generated name */
+  name: string;
+}
+
 export type WebviewToExtensionMessage =
-  | { type: 'userMessage'; content: string; context?: MessageContext }
+  | { type: 'userMessage'; content: string; context?: MessageContext; images?: ImageAttachment[] }
   | { type: 'fetchWorkItems' }
   | { type: 'selectWorkItem'; workItemId: number }
   | { type: 'startTask'; workItemId: number; title: string }

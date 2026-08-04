@@ -2,6 +2,16 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.0] - 2026-08-04
+
+### Features
+- **Vision / Image Support**: Paste images directly into the chat — the AI assistant can now see and discuss screenshots, diagrams, error messages, and design references
+  - Clipboard paste (Ctrl+V) captures images as base64 data URLs
+  - Images are sent as native content blocks to Anthropic and OpenAI APIs
+  - Anthropic: image blocks passed through to the Messages API natively
+  - OpenAI: converted to `image_url` format for Chat Completions API
+  - Session persistence stores text summaries when images are present
+
 ## [0.4.3] - 2026-08-04
 
 ### Bug Fixes

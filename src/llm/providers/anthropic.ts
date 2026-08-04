@@ -1,4 +1,5 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
+import type { ContentBlockParam } from './BaseProvider';
 
 export class AnthropicProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
@@ -8,12 +9,22 @@ export class AnthropicProvider implements LlmProvider {
 
     // Convert to Anthropic format; the Messages API REQUIRES strictly
     // alternating user/assistant roles, so merge consecutive same-role turns.
-    const anthropicMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    const anthropicMessages: Array<{ role: 'user' | 'assistant'; content: string | ContentBlockParam[] }> = [];
     for (const m of nonSystemMessages) {
       const role = m.role as 'user' | 'assistant';
       const last = anthropicMessages[anthropicMessages.length - 1];
       if (last && last.role === role) {
-        last.content += '\n\n' + m.content;
+        if (typeof last.content === 'string' && typeof m.content === 'string') {
+          last.content += '\n\n' + m.content;
+        } else {
+          const lastBlocks = typeof last.content === 'string'
+            ? [{ type: 'text' as const, text: last.content }]
+            : last.content;
+          const newBlocks = typeof m.content === 'string'
+            ? [{ type: 'text' as const, text: m.content }]
+            : m.content;
+          last.content = [...lastBlocks, ...newBlocks];
+        }
       } else {
         anthropicMessages.push({ role, content: m.content });
       }
@@ -129,8 +140,18 @@ export class AnthropicProvider implements LlmProvider {
         continue;
       }
       const last = anthropicMessages[anthropicMessages.length - 1];
-      if (last && last.role === role && typeof last.content === 'string') {
-        last.content += '\n\n' + m.content;
+      if (last && last.role === role) {
+        if (typeof last.content === 'string' && typeof m.content === 'string') {
+          last.content += '\n\n' + m.content;
+        } else {
+          const lastBlocks = typeof last.content === 'string'
+            ? [{ type: 'text' as const, text: last.content }]
+            : (Array.isArray(last.content) ? last.content : [last.content]);
+          const newBlocks = typeof m.content === 'string'
+            ? [{ type: 'text' as const, text: m.content }]
+            : (Array.isArray(m.content) ? m.content : [m.content]);
+          last.content = [...lastBlocks, ...newBlocks];
+        }
       } else {
         anthropicMessages.push({ role, content: m.content });
       }
