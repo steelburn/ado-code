@@ -1,12 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-
-declare function acquireVsCodeApi(): {
-  postMessage(msg: any): void;
-  getState(): any;
-  setState(state: any): void;
-};
-
-const vscode = acquireVsCodeApi();
+import { vscode } from '../vscode';
 
 interface Props {
   onBack: () => void;

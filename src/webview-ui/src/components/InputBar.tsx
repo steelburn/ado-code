@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Button } from './ui/Button';
 import { cn } from './ui/cn';
+import { vscode } from '../vscode';
 
 // ── Slash command definitions (mirrors src/shared/slashCommands.ts) ──
 interface SlashCommand {
@@ -27,12 +28,6 @@ const SLASH_COMMANDS: SlashCommand[] = [
 function matchSlashCommands(query: string): SlashCommand[] {
   return SLASH_COMMANDS.filter(cmd => cmd.name.startsWith(query.toLowerCase()));
 }
-
-declare function acquireVsCodeApi(): {
-  postMessage(msg: any): void;
-  getState(): any;
-  setState(state: any): void;
-};
 
 interface Props {
   mode: string;
@@ -90,7 +85,7 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
   // ── File search for @ mentions (wired to extension host via postMessage) ──
   const searchFiles = useCallback((_query: string): FileSuggestion[] => {
     // Send search request to extension host; results arrive via fileSearchResults message
-    acquireVsCodeApi().postMessage({ type: 'searchFiles', query: _query });
+    vscode.postMessage({ type: 'searchFiles', query: _query });
     return [];
   }, []);
 

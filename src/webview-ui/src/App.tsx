@@ -11,16 +11,9 @@ import { AgentOutputPanel } from './components/AgentOutputPanel';
 import { ConsentCard, ConsentRequest } from './components/ConsentCard';
 import { SessionHistory } from './components/SessionHistory';
 import { ConfigurationPage } from './components/ConfigurationPage';
+import { vscode } from './vscode';
 import './styles/app.css';
 import './styles/markdown.css';
-
-declare function acquireVsCodeApi(): {
-  postMessage(msg: WebviewToExtensionMessage): void;
-  getState(): any;
-  setState(state: any): void;
-};
-
-const vscode = acquireVsCodeApi();
 
 interface SanitizedConfig {
   adoOrganization: string;
