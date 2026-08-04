@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext } from '../shared/messages';
+import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session } from '../shared/messages';
 import { AdoClient } from '../ado/client';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
@@ -28,6 +28,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private refreshTimer?: ReturnType<typeof setInterval>;
   // Task 4.1: token usage status bar — wired via setTokenStatusBar from extension.ts
   private tokenStatusBar?: vscode.StatusBarItem;
+
+  // ── Session persistence (Task 2) ──────────────────────────────────
+  private get sessionKey(): string {
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+    const project = getSettings().adoProject || 'default';
+    return `${folder}:${project}`;
+  }
+
+  private get sessionsStorageKey(): string {
+    return `adoCode.sessions:${this.sessionKey}`;
+  }
+
+  private get activeSessionKey(): string {
+    return `adoCode.activeSessionId:${this.sessionKey}`;
+  }
+
+  private getSessions(): Session[] {
+    return this._context.workspaceState.get<Session[]>(this.sessionsStorageKey, []);
+  }
+
+  private async saveSessions(sessions: Session[]): Promise<void> {
+    await this._context.workspaceState.update(this.sessionsStorageKey, sessions);
+  }
+
+  private getActiveSessionId(): string | null {
+    return this._context.workspaceState.get<string | null>(this.activeSessionKey, null);
+  }
+
+  private async setActiveSessionId(id: string): Promise<void> {
+    await this._context.workspaceState.update(this.activeSessionKey, id);
+  }
+
+  /**
+   * Migrate legacy chatHistory:{folder} to the session-based storage.
+   * Wraps old messages into a single Session if no sessions exist yet.
+   */
+  private async migrateFromLegacyHistory(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+    const legacyKey = `adoCode.chatHistory:${folder}`;
+    const legacyHistory = this._context.workspaceState.get<LlmMessage[]>(legacyKey, []);
+    const existingSessions = this.getSessions();
+    if (legacyHistory.length > 0 && existingSessions.length === 0) {
+      const session: Session = {
+        id: new Date().toISOString(),
+        name: 'Migrated Session',
+        createdAt: new Date().toISOString(),
+        messages: legacyHistory.map(m => ({ role: m.role, content: m.content })),
+      };
+      await this.saveSessions([session]);
+      await this.setActiveSessionId(session.id);
+      // Clean up legacy key
+      await this._context.workspaceState.update(legacyKey, undefined);
+      logger.info('Chat: migrated legacy history to session storage');
+    }
+  }
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -170,7 +225,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return getActiveOrg(this._context, getSettings()).project;
   }
 
-  public resolveWebviewView(
+  public async resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
@@ -190,6 +245,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Task 19: React app decides welcome-vs-chat from the sanitized config payload
     this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+
+    // Task 2: migrate legacy history, send session list, restore active session
+    await this.migrateFromLegacyHistory();
+    this.sendSessionList();
+    const activeId = this.getActiveSessionId();
+    if (activeId) {
+      await this.loadSession(activeId);
+    }
 
     // Auto-refresh work items every 5 minutes if configured
     if (this.refreshTimer) clearInterval(this.refreshTimer);
@@ -234,7 +297,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.llmAbort?.abort();
             this.consentBroker.rejectAll();
             this.conversation = [];
-            this.persistConversation();
+            await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
             break;
@@ -351,6 +414,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'consentResponse':
             this.consentBroker.resolve(message.requestId, message.approved);
             break;
+          // Task 2: session management
+          case 'listSessions':
+            this.sendSessionList();
+            break;
+          case 'switchSession':
+            await this.loadSession(message.sessionId);
+            break;
+          case 'newSession':
+            await this.createNewSession();
+            break;
+          case 'renameSession': {
+            const allSessions = this.getSessions();
+            const target = allSessions.find(s => s.id === message.sessionId);
+            if (target) {
+              target.name = message.name;
+              await this.saveSessions(allSessions);
+              this.sendSessionList();
+            }
+            break;
+          }
+          case 'deleteSession': {
+            const updatedSessions = this.getSessions().filter(s => s.id !== message.sessionId);
+            await this.saveSessions(updatedSessions);
+            // If we deleted the active session, switch to the last remaining one
+            if (this.getActiveSessionId() === message.sessionId) {
+              const fallback = updatedSessions[updatedSessions.length - 1];
+              if (fallback) {
+                await this.loadSession(fallback.id);
+              } else {
+                await this.setActiveSessionId('');
+                this.conversation = [];
+                this.postMessage({ type: 'historyRestored', messages: [] });
+              }
+            }
+            this.sendSessionList();
+            break;
+          }
         }
       },
       undefined,
@@ -704,19 +804,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // `conversation` is extended in Task 26 (multi-turn); declared here for Task 24.
   private conversation: LlmMessage[] = [];
 
-  /** Task 26: persist conversation to workspaceState (Q4), keyed by folder. */
-  private persistConversation(): void {
-    const capped = this.conversation.slice(-50);
-    // M8 fix: key by folder fsPath (names collide across machines/folders).
-    // H-8 fix: use this._context (the provider's field), not a bare `context`.
-    const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
-    this._context.workspaceState.update(`adoCode.chatHistory:${key}`, capped);
+  /** Task 2: persist conversation to the active session in workspaceState. */
+  private async persistConversation(): Promise<void> {
+    const activeId = this.getActiveSessionId();
+    if (!activeId) return;
+    const sessions = this.getSessions();
+    const session = sessions.find(s => s.id === activeId);
+    if (!session) return;
+    session.messages = this.conversation.slice(-50).map(m => ({ role: m.role, content: m.content }));
+    // Auto-name from first user message if still default
+    if (session.name === 'New Session') {
+      const firstUser = session.messages.find(m => m.role === 'user');
+      if (firstUser) {
+        session.name = firstUser.content.slice(0, 60) + (firstUser.content.length > 60 ? '…' : '');
+      }
+    }
+    await this.saveSessions(sessions);
   }
 
-  /** Task 26: restore persisted history (Q4 "Continue previous session?"). */
+  /** Task 2: load a session's messages into the conversation and post to webview. */
+  private async loadSession(sessionId: string): Promise<void> {
+    const sessions = this.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) return;
+    this.conversation = session.messages.map(m => ({ role: m.role as LlmMessage['role'], content: m.content }));
+    await this.setActiveSessionId(sessionId);
+    this.postMessage({ type: 'historyRestored', messages: this.conversation });
+  }
+
+  /** Backward-compatible wrapper for extension.ts / tests that pass raw history. */
   public restoreConversation(history: LlmMessage[]): void {
     this.conversation = history.slice(-50);
     this.postMessage({ type: 'historyRestored', messages: this.conversation });
+  }
+
+  /** Task 2: create a new empty session, set it active, and clear the conversation. */
+  public async createNewSession(): Promise<void> {
+    const session: Session = {
+      id: new Date().toISOString(),
+      name: 'New Session',
+      createdAt: new Date().toISOString(),
+      messages: [],
+    };
+    const sessions = this.getSessions();
+    sessions.push(session);
+    await this.saveSessions(sessions);
+    await this.setActiveSessionId(session.id);
+    this.conversation = [];
+    this.postMessage({ type: 'historyRestored', messages: [] });
+    this.sendSessionList();
+  }
+
+  /** Task 2: post the full session list + active ID to the webview. */
+  public sendSessionList(): void {
+    const sessions = this.getSessions();
+    const activeId = this.getActiveSessionId();
+    this.postMessage({ type: 'sessionList', sessions, activeId });
   }
 
   /** Task 26: trim the conversation to ~20 turns (drop oldest non-system). */
@@ -800,7 +943,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
       this.conversation.push({ role: 'assistant', content: result.text });
       this.trimConversation();
-      this.persistConversation();
+      await this.persistConversation();
       this.updateTokenStatusBar(messages);
       if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
     } catch (err) {
@@ -816,7 +959,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.conversation.push({ role: 'assistant', content: text });
             this.trimConversation();
           }
-          this.persistConversation();
+          await this.persistConversation();
           this.updateTokenStatusBar(messages);
         } catch (streamErr) {
           if (abort.signal.aborted) return;
@@ -970,7 +1113,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.llmAbort?.abort();
         this.consentBroker.rejectAll();
         this.conversation = [];
-        this.persistConversation();
+        await this.persistConversation();
         this.postMessage({ type: 'historyRestored', messages: [] });
         this.postMessage({ type: 'loading', loading: false });
         vscode.window.showInformationMessage('ADO Code: chat cleared.');
@@ -1029,14 +1172,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'resume': {
-        // Resume the last conversation from workspaceState
-        const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
-        const history = this._context.workspaceState.get<any[]>(`adoCode.chatHistory:${key}`, []);
-        if (history.length > 0) {
-          this.restoreConversation(history);
-          vscode.window.showInformationMessage(`ADO Code: resumed ${history.length} messages.`);
-        } else {
-          vscode.window.showWarningMessage('ADO Code: no previous session to resume.');
+        // Task 2: show QuickPick of all sessions
+        const sessions = this.getSessions();
+        if (sessions.length === 0) {
+          vscode.window.showWarningMessage('ADO Code: no previous sessions to resume.');
+          return;
+        }
+        const picks = sessions.map(s => ({
+          label: s.name,
+          description: `${s.messages.length} messages — ${new Date(s.createdAt).toLocaleDateString()}`,
+          sessionId: s.id,
+        }));
+        const picked = await vscode.window.showQuickPick(picks, {
+          placeHolder: 'Select a session to resume',
+        });
+        if (picked) {
+          await this.loadSession(picked.sessionId);
+          vscode.window.showInformationMessage(`ADO Code: resumed session "${picked.label}".`);
         }
         break;
       }
