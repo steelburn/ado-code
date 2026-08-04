@@ -247,11 +247,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'config', config: this._sanitizedConfig() });
 
     // Task 2: migrate legacy history, send session list, restore active session
-    await this.migrateFromLegacyHistory();
-    this.sendSessionList();
-    const activeId = this.getActiveSessionId();
-    if (activeId) {
-      await this.loadSession(activeId);
+    // Wrap in try-catch so a migration/session error never breaks the webview.
+    try {
+      await this.migrateFromLegacyHistory();
+      this.sendSessionList();
+      const activeId = this.getActiveSessionId();
+      if (activeId) {
+        await this.loadSession(activeId);
+      }
+    } catch (err) {
+      logger.error('Chat: session init failed', err);
     }
 
     // Auto-refresh work items every 5 minutes if configured
