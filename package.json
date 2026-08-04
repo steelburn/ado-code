@@ -236,7 +236,10 @@
         "adoCode.llmProvider": {
           "type": "string",
           "default": "openai",
-          "enum": ["openai", "anthropic"],
+          "enum": [
+            "openai",
+            "anthropic"
+          ],
           "enumDescriptions": [
             "OpenAI-compatible API (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, etc. — not Azure OpenAI; see M13)",
             "Anthropic Messages API (Claude, Amazon Bedrock, self-hosted Anthropic-compatible)"
@@ -282,7 +285,11 @@
         "adoCode.mode": {
           "type": "string",
           "default": "inline",
-          "enum": ["inline", "plan", "act"],
+          "enum": [
+            "inline",
+            "plan",
+            "act"
+          ],
           "enumDescriptions": [
             "Streaming answer; tool calls shown inline, mutating tools require approval",
             "Read-only tools only; produces a plan; 'Begin implementation' switches to act",
@@ -297,8 +304,15 @@
         },
         "adoCode.act.terminalAllowlist": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["npm test", "npm run lint", "git diff", "git status"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "npm test",
+            "npm run lint",
+            "git diff",
+            "git status"
+          ],
           "description": "Allowed command prefixes for run_terminal_command in act mode"
         },
         "adoCode.changelog.enabled": {
@@ -328,8 +342,31 @@
         },
         "adoCode.agents.enabled": {
           "type": "array",
-          "items": { "type": "string", "enum": ["claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"] },
-          "default": ["claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"],
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex",
+              "opencode",
+              "hermes",
+              "pi",
+              "openclaw",
+              "aider",
+              "gemini",
+              "cursor-agent"
+            ]
+          },
+          "default": [
+            "claude",
+            "codex",
+            "opencode",
+            "hermes",
+            "pi",
+            "openclaw",
+            "aider",
+            "gemini",
+            "cursor-agent"
+          ],
           "description": "Which external agents ADO Code may delegate to (Q9: aider, gemini, cursor-agent added). M17: default includes all registered agents; users can prune."
         },
         "adoCode.agents.verifyCommand": {
@@ -340,7 +377,18 @@
         "adoCode.agents.autoSelect": {
           "type": "string",
           "default": "",
-          "enum": ["", "claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"],
+          "enum": [
+            "",
+            "claude",
+            "codex",
+            "opencode",
+            "hermes",
+            "pi",
+            "openclaw",
+            "aider",
+            "gemini",
+            "cursor-agent"
+          ],
           "description": "Default agent for delegation when none is specified (M-9: includes all 9 registered agents)"
         },
         "adoCode.mcp.servers": {
@@ -359,7 +407,13 @@
     "build:webview": "cd src/webview-ui && npm install && npm run build",
     "build:all": "npm run compile && npm run build:webview",
     "watch:webview": "cd src/webview-ui && npm run watch",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "node scripts/pre-commit.js"
+    ]
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",
@@ -370,9 +424,11 @@
     "@typescript-eslint/parser": "^7.0.0",
     "@vscode/test-electron": "^3.1.0",
     "eslint": "^8.56.0",
-    "zod": "^3.23.0",
     "glob": "^13.0.6",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.3.0",
     "mocha": "^11.7.6",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "zod": "^3.23.0"
   }
 }
