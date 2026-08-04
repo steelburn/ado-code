@@ -43,6 +43,17 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Status Panel: tree view showing mode, memory, MCP, and agent status.
+  const statusProvider = new StatusPanelProvider(services);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('adoCode.status', statusProvider)
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.refreshStatus', () => {
+      statusProvider.refresh();
+    })
+  );
+
   treeProvider = new WorkItemsTreeProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('adoCode.workItems', treeProvider)
@@ -401,6 +412,7 @@ Generate ONLY the commit message, nothing else.`;
       if (e.affectsConfiguration('adoCode')) {
         services = createServices(context);
         chatProvider.setServices(services);
+        statusProvider.refresh();
       }
     })
   );

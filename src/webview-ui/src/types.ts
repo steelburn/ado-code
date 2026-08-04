@@ -57,7 +57,9 @@ export type WebviewToExtensionMessage =
   // File search for @ mentions
   | { type: 'searchFiles'; query: string }
   // Consent: user answer to an agent consent request (inline mode mutating tool)
-  | { type: 'consentResponse'; requestId: string; approved: boolean };
+  | { type: 'consentResponse'; requestId: string; approved: boolean }
+  // Stop generation: user clicks stop while LLM is streaming
+  | { type: 'stopGeneration' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
