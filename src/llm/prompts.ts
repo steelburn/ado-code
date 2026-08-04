@@ -6,6 +6,8 @@ export function buildAgentPrompt(
   projectContext?: string
 ): string {
   const lines = [
+    `Read and follow AGENTS.md in the current directory — it contains the project structure, build commands, conventions, and constraints you must respect.`,
+    ``,
     `You are working on Azure DevOps work item #${workItem.id}: ${workItem.title}`,
     ``,
     `State: ${workItem.state || 'N/A'}`,

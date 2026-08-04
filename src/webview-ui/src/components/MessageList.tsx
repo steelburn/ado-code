@@ -288,13 +288,19 @@ export function MessageList({ messages, loading }: Props) {
         <p>Ask about your work items, request code changes, or delegate to an agent.</p>
         <div className="empty-state-hints">
           <div className="empty-state-hint">
-            <code>/status Done</code> — mark work item complete
+            <code>/status Active</code> — change work item state (Active, Done, Closed…)
           </div>
           <div className="empty-state-hint">
-            <code>/comment ...</code> — add a comment to active WI
+            <code>/comment Please clarify the requirements</code> — post a comment to the WI thread
           </div>
           <div className="empty-state-hint">
-            Select a WI from the tree to get context-aware help
+            <code>/assign john@company.com</code> — assign the active work item
+          </div>
+          <div className="empty-state-hint">
+            <code>/delegate claude Fix the failing tests</code> — hand off to an external agent
+          </div>
+          <div className="empty-state-hint">
+            <code>/help</code> — list all commands with usage
           </div>
         </div>
       </div>

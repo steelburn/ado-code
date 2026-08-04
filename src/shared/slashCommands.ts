@@ -19,18 +19,18 @@ export interface SlashCommand {
  * Order matters — this is the default display order in the autocomplete dropdown.
  */
 export const SLASH_COMMANDS: SlashCommand[] = [
-  { name: 'status',    description: 'Change work item state',        usage: '/status <state>',     requiresArgs: true },
-  { name: 'comment',   description: 'Add comment to work item',     usage: '/comment <text>',     requiresArgs: true },
-  { name: 'pick',      description: 'Pick a work item',             usage: '/pick',               requiresArgs: false },
-  { name: 'assign',    description: 'Assign work item',             usage: '/assign <person>',    requiresArgs: true },
-  { name: 'clear',     description: 'Clear chat history',           usage: '/clear',              requiresArgs: false },
-  { name: 'mode',      description: 'Switch mode (chat/plan/act)',  usage: '/mode [mode]',        requiresArgs: false },
-  { name: 'undo',      description: 'Undo last state change',       usage: '/undo',               requiresArgs: false },
-  { name: 'help',      description: 'Show available commands',      usage: '/help',               requiresArgs: false },
-  { name: 'delegate',  description: 'Delegate to an agent',         usage: '/delegate [agent] <prompt>', requiresArgs: true },
-  { name: 'resume',    description: 'Resume a previous session',    usage: '/resume',             requiresArgs: false },
-  { name: 'remember',  description: 'Save a note for context',      usage: '/remember <text>',    requiresArgs: true },
-  { name: 'forget',    description: 'Clear saved notes',            usage: '/forget',             requiresArgs: false },
+  { name: 'status',    description: 'Set work item state (e.g. Active, Done, Closed, Removed)',  usage: '/status <state>',     requiresArgs: true },
+  { name: 'comment',   description: 'Post a comment to the active work item discussion thread',   usage: '/comment <text>',     requiresArgs: true },
+  { name: 'pick',      description: 'Browse and select a work item from the tree to set as active context',  usage: '/pick',               requiresArgs: false },
+  { name: 'assign',    description: 'Assign the active work item to a team member (name or email)',  usage: '/assign <person>',    requiresArgs: true },
+  { name: 'clear',     description: 'Clear all chat messages and start fresh',                    usage: '/clear',              requiresArgs: false },
+  { name: 'mode',      description: 'Switch tool mode: inline (ask), plan (read-only), or act (full autonomy)',  usage: '/mode [mode]',        requiresArgs: false },
+  { name: 'undo',      description: 'Revert the last state change made to the active work item',  usage: '/undo',               requiresArgs: false },
+  { name: 'help',      description: 'List all available slash commands with usage examples',      usage: '/help',               requiresArgs: false },
+  { name: 'delegate',  description: 'Hand off the active task to an external agent (claude, codex, hermes, pi, gemini)',  usage: '/delegate [agent] <prompt>', requiresArgs: true },
+  { name: 'resume',    description: 'Switch to a previous chat session to continue where you left off',  usage: '/resume',             requiresArgs: false },
+  { name: 'remember',  description: 'Store a preference or instruction the AI will remember across sessions',  usage: '/remember <text>',    requiresArgs: true },
+  { name: 'forget',    description: 'Remove all saved notes and preferences',                     usage: '/forget',             requiresArgs: false },
 ];
 
 /**

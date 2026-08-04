@@ -4,11 +4,11 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
 import { MessageList } from './components/MessageList';
 import { InputBar } from './components/InputBar';
-import { AgentBar } from './components/AgentBar';
 import { KebabMenu } from './components/KebabMenu';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
 import { ConsentCard, ConsentRequest } from './components/ConsentCard';
+import { ConfirmationCard, ConfirmationRequest } from './components/ConfirmationCard';
 import { SessionHistory } from './components/SessionHistory';
 import { ConfigurationPage } from './components/ConfigurationPage';
 import { vscode } from './vscode';
@@ -57,8 +57,6 @@ function App() {
 
   // Agent state
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState('');
-  const [showAgentBar, setShowAgentBar] = useState(false);
   const [agentRun, setAgentRun] = useState<any>(null);
   const [agentOutput, setAgentOutput] = useState('');
   const [projects, setProjects] = useState<Array<{ id: string; name: string; state: string }>>([]);
@@ -68,6 +66,8 @@ function App() {
   const [draft, setDraft] = useState('');
   // Pending consent: the agent (inline mode) wants to run a mutating tool.
   const [consent, setConsent] = useState<ConsentRequest | null>(null);
+  // Pending confirmation: in-chat card replacing native VS Code dialogs.
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   // Wizard model picker (LLM provider)
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -135,6 +135,16 @@ function App() {
           });
           break;
 
+        case 'confirmationRequest':
+          // Generic in-chat confirmation card (replaces native dialogs).
+          setConfirmation({
+            requestId: msg.requestId,
+            title: msg.title,
+            description: msg.description,
+            options: msg.options,
+          });
+          break;
+
         case 'config': {
           const cfg = msg.config as unknown as SanitizedConfig;
           setConfig(cfg);
@@ -161,9 +171,7 @@ function App() {
             displayName: a.displayName,
             installed: a.installed,
           })));
-          if (!selectedAgent && msg.agents.length > 0) {
-            setSelectedAgent(msg.agents[0].name);
-          }
+
           break;
 
         case 'historyRestored':
@@ -181,7 +189,7 @@ function App() {
 
         case 'workItemDetail':
           setDetail(msg.item as unknown as WorkItemDetail);
-          if (msg.item) setShowAgentBar(true);
+
           break;
 
         case 'taskReplies':
@@ -192,7 +200,6 @@ function App() {
 
         case 'agentStatus':
           // Show agent bar when delegation is active
-          setShowAgentBar(true);
           setAgentRun(msg.run);
           // Append streaming output
           if (msg.delta) {
@@ -240,9 +247,12 @@ function App() {
     window.addEventListener('message', handler);
 
     // Restore state
-    const saved = vscode.getState()?.history;
-    if (Array.isArray(saved) && saved.length > 0) {
-      setMessages(saved);
+    const saved = vscode.getState();
+    if (saved?.history && Array.isArray(saved.history) && saved.history.length > 0) {
+      setMessages(saved.history);
+    }
+    if (saved?.detail) {
+      setDetail(saved.detail);
     }
 
     vscode.postMessage({ type: 'getConfig' });
@@ -252,10 +262,10 @@ function App() {
     return () => window.removeEventListener('message', handler);
   }, []);
 
-  // Persist history
+  // Persist history + task detail so the chat restores after panel collapse/reopen
   useEffect(() => {
-    vscode.setState({ history: messages });
-  }, [messages]);
+    vscode.setState({ history: messages, detail });
+  }, [messages, detail]);
 
   // ── Actions ────────────────────────────────────────────────────
   const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
@@ -274,6 +284,11 @@ function App() {
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
     setConsent(null);
     vscode.postMessage({ type: 'consentResponse', requestId, approved, scope });
+  }, []);
+
+  const handleConfirmationResponse = useCallback((requestId: string, value: string) => {
+    setConfirmation(null);
+    vscode.postMessage({ type: 'confirmationResponse', requestId, value });
   }, []);
 
   const handleClear = useCallback(() => {
@@ -311,12 +326,9 @@ function App() {
 
   const handleCloseDetail = useCallback(() => {
     setDetail(null);
-    setShowAgentBar(false);
   }, []);
 
-  const handleAgentSelect = useCallback((name: string) => {
-    setSelectedAgent(name);
-  }, []);
+
 
   // Session history callbacks
   const handleSwitchSession = useCallback((sessionId: string) => {
@@ -472,17 +484,14 @@ function App() {
       {/* Messages */}
       <MessageList messages={messages} loading={loading} />
 
-      {/* Agent bar (contextual — only when WI is active) */}
-      <AgentBar
-        agents={agents}
-        selectedAgent={selectedAgent}
-        onSelect={handleAgentSelect}
-        visible={showAgentBar}
-      />
-
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
       {consent && (
         <ConsentCard request={consent} onRespond={handleConsentResponse} />
+      )}
+
+      {/* Confirmation card — in-chat replacement for native VS Code dialogs */}
+      {confirmation && (
+        <ConfirmationCard request={confirmation} onRespond={handleConfirmationResponse} />
       )}
 
       {/* Input */}

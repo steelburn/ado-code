@@ -53,7 +53,7 @@ export class AdoClient {
     // and keep the explicit [System.TeamProject] filter.
     const projectLiteral = project.replace(/'/g, "''");
     const wiqlQuery = {
-      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @me AND [System.TeamProject] = '${projectLiteral}' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo], [System.Parent] FROM WorkItems WHERE [System.AssignedTo] = @me AND [System.TeamProject] = '${projectLiteral}' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
     };
 
     const wiqlResponse = await this.post<WiqlResult>(
@@ -81,7 +81,7 @@ export class AdoClient {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK).join(',');
       const batchResponse = await this.get<{ value: AdoWorkItem[] }>(
-        `/_apis/wit/workitems?ids=${chunk}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType&api-version=7.1`
+        `/_apis/wit/workitems?ids=${chunk}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType,System.Parent&api-version=7.1`
       );
       results.push(...(batchResponse.value || []));
     }
@@ -97,7 +97,7 @@ export class AdoClient {
   async getUnassignedWorkItems(project: string): Promise<AdoWorkItem[]> {
     const projectLiteral = project.replace(/'/g, "''");
     const wiqlQuery = {
-      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.AssignedTo] = '' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo], [System.Parent] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.AssignedTo] = '' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
     };
 
     const wiqlResponse = await this.post<WiqlResult>(

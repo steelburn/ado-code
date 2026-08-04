@@ -239,7 +239,9 @@ code {
 /* ── Task Detail Panel ─────────────────────────────────────────── */
 .task-detail {
   border-bottom: 1px solid var(--vscode-panel-border);
-  flex-shrink: 0;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .task-detail-header {
@@ -294,7 +296,8 @@ code {
 .task-detail-body {
   padding: 0 12px 12px;
   overflow-y: auto;
-  max-height: 50vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .task-detail-meta {
@@ -1831,4 +1834,86 @@ code {
 .config-tag-textbox::placeholder {
   color: var(--vscode-input-placeholderForeground);
   opacity: 0.7;
+}
+
+/* ── MCP Servers editor ─────────────────────────────────────────────── */
+.config-mcp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-mcp-empty {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  padding: 8px 0;
+}
+
+.config-mcp-server {
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--vscode.sideBarBackground, var(--vscode-editor-background));
+}
+
+.config-mcp-server-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.config-mcp-server-num {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  font-weight: 600;
+}
+
+.config-mcp-remove {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 1.1em;
+  padding: 0 4px;
+  line-height: 1;
+}
+.config-mcp-remove:hover {
+  color: var(--vscode-errorForeground);
+}
+
+.config-mcp-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-mcp-label {
+  min-width: 80px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.config-mcp-add {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed var(--vscode-widget-border);
+  border-radius: 6px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 6px 12px;
+  margin-top: 4px;
+}
+.config-mcp-add:hover {
+  border-color: var(--vscode-focusBorder);
+  color: var(--vscode-foreground);
 }

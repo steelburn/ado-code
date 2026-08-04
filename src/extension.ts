@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
+import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
@@ -39,6 +40,11 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
+      chatProvider
+    ),
+    // Secondary side bar: same chat provider, different view ID
+    vscode.window.registerWebviewViewProvider(
+      'adoCode.chatSecondary',
       chatProvider
     )
   );
@@ -380,7 +386,10 @@ Generate ONLY the commit message, nothing else.`;
       });
       if (question) await chatProvider.requestClarification(node.workItemId, question);
     }),
-    vscode.commands.registerCommand('adoCode.checkTaskReplies', (node: WorkItemNode) => chatProvider.checkTaskReplies(node.workItemId))
+    vscode.commands.registerCommand('adoCode.checkTaskReplies', (node: WorkItemNode) => chatProvider.checkTaskReplies(node.workItemId)),
+    vscode.commands.registerCommand('adoCode.showWorkItemDetail', (node: WorkItemNode) => {
+      WorkItemDetailPanel.show(context, services.ado, node.workItemId);
+    })
   );
 
   // Change Item Status: fetch the item TYPE's states from ADO (cached once per

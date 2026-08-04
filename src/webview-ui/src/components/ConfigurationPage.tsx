@@ -14,7 +14,7 @@ interface ConfigSection {
 interface ConfigSetting {
   key: string;
   label: string;
-  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array';
+  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp';
   description: string;
   options?: string[];
   placeholder?: string;
@@ -99,6 +99,13 @@ const SECTIONS: ConfigSection[] = [
       { key: 'agents.autoSelect', label: 'Default agent', type: 'enum', description: 'Default agent when none specified', options: ['', 'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent'] },
     ],
   },
+  {
+    title: 'MCP Servers',
+    icon: '🔌',
+    settings: [
+      { key: 'mcp.servers', label: 'Server configurations', type: 'mcp', description: 'Model Context Protocol server connections — each server exposes tools the AI can use' },
+    ],
+  },
 ];
 
 /** Tag/chip input for array settings */
@@ -165,6 +172,102 @@ function ArrayInput({ value, placeholder, onChange }: { value: string[]; placeho
         onPaste={handlePaste}
         placeholder={value.length === 0 ? (placeholder || 'Type and press Enter…') : ''}
       />
+    </div>
+  );
+}
+
+interface McpServer {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  timeout?: number;
+}
+
+/** Editor for MCP server configurations — add/remove servers with name, command, args, env. */
+function McpServersInput({ value, onChange }: { value: McpServer[]; onChange: (servers: McpServer[]) => void }) {
+  const addServer = () => {
+    onChange([...value, { name: '', command: '', args: [] }]);
+  };
+
+  const removeServer = (idx: number) => {
+    onChange(value.filter((_, i) => i !== idx));
+  };
+
+  const updateServer = (idx: number, field: keyof McpServer, fieldValue: any) => {
+    const updated = [...value];
+    updated[idx] = { ...updated[idx], [field]: fieldValue };
+    onChange(updated);
+  };
+
+  const updateArgs = (idx: number, argsStr: string) => {
+    const args = argsStr.split(',').map(s => s.trim()).filter(Boolean);
+    updateServer(idx, 'args', args.length > 0 ? args : undefined);
+  };
+
+  return (
+    <div className="config-mcp">
+      {value.length === 0 && (
+        <div className="config-mcp-empty">No MCP servers configured. Click + to add one.</div>
+      )}
+      {value.map((server, idx) => (
+        <div key={idx} className="config-mcp-server">
+          <div className="config-mcp-server-header">
+            <span className="config-mcp-server-num">#{idx + 1}</span>
+            <button
+              className="config-mcp-remove"
+              onClick={() => removeServer(idx)}
+              title="Remove server"
+              type="button"
+            >×</button>
+          </div>
+          <div className="config-mcp-fields">
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Name</label>
+              <input
+                className="config-input"
+                type="text"
+                value={server.name}
+                onChange={e => updateServer(idx, 'name', e.target.value)}
+                placeholder="my-server"
+              />
+            </div>
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Command</label>
+              <input
+                className="config-input"
+                type="text"
+                value={server.command}
+                onChange={e => updateServer(idx, 'command', e.target.value)}
+                placeholder="npx -y @modelcontextprotocol/server-..."
+              />
+            </div>
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Args</label>
+              <input
+                className="config-input"
+                type="text"
+                value={server.args?.join(', ') ?? ''}
+                onChange={e => updateArgs(idx, e.target.value)}
+                placeholder="arg1, arg2"
+              />
+            </div>
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Timeout (ms)</label>
+              <input
+                className="config-input"
+                type="number"
+                value={server.timeout ?? ''}
+                onChange={e => updateServer(idx, 'timeout', e.target.value ? Number(e.target.value) : undefined)}
+                placeholder="30000"
+              />
+            </div>
+          </div>
+        </div>
+      ))}
+      <button className="config-mcp-add" onClick={addServer} type="button">
+        + Add Server
+      </button>
     </div>
   );
 }
@@ -265,6 +368,11 @@ export function ConfigurationPage({ onBack }: Props) {
                     value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
                     placeholder={setting.placeholder}
                     onChange={items => handleChange(setting.key, items)}
+                  />
+                ) : setting.type === 'mcp' ? (
+                  <McpServersInput
+                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                    onChange={servers => handleChange(setting.key, servers)}
                   />
                 ) : (
                   <input

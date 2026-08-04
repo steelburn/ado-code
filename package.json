@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -74,6 +74,11 @@
       {
         "command": "adoCode.reviewTaskDetail",
         "title": "Review Task Detail"
+      },
+      {
+        "command": "adoCode.showWorkItemDetail",
+        "title": "Show Full Details",
+        "icon": "$(open-preview)"
       },
       {
         "command": "adoCode.requestClarification",
@@ -195,6 +200,11 @@
           "group": "1_workItem@2"
         },
         {
+          "command": "adoCode.showWorkItemDetail",
+          "when": "viewItem == workItemNode",
+          "group": "1_workItem@3"
+        },
+        {
           "command": "adoCode.startTaskWithAgent",
           "when": "viewItem == workItemNode",
           "group": "2_agent@1"
@@ -215,7 +225,12 @@
           "group": "4_state@1"
         },
         {
-          "command": "adoCode.reassignWorkItem",
+          "command": "adoCode.showWorkItemDetail",
+          "when": "viewItem == unassignedWorkItemNode",
+          "group": "1_workItem@3"
+        },
+        {
+          "command": "adoCode.selectWorkItem",
           "when": "viewItem == workItemNode || viewItem == unassignedWorkItemNode",
           "group": "4_state@2"
         },
@@ -236,8 +251,8 @@
       ],
       "secondaryBar": [
         {
-          "id": "adoCode",
-          "title": "ADO Code",
+          "id": "adoCodeSecondary",
+          "title": "ADO Code (Secondary)",
           "icon": "$(comment-discussion)"
         }
       ]

@@ -2,8 +2,32 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.4] - 2026-08-05
+
+### Bug Fixes
+- **Slash commands no longer leave chat stuck at "Thinking"**: `/comment`, `/status`, `/assign`, `/pick`, `/mode`, `/undo`, and `/help` now clear the loading spinner after execution
+- **Task detail panel persists across panel collapse/reopen**: The selected work item's detail panel now survives VS Code panel hide/show cycles via webview state persistence and host-side re-fetch
+- **Task detail panel no longer blocks chat input**: Detail panel is now constrained to 40vh max with internal scrolling, so the chat input is always accessible
+- **Removed dead AgentBar dropdown**: The agent selection dropdown in the chat was never wired to anything — agent delegation happens via context menu or `/delegate` command. Removed to reduce clutter
+- **Secondary side bar support**: Fixed container ID conflict and registered views so all panels (Chat, Work Items, Status) can be moved to the secondary side bar via right-click → "Move View"
+- **STATUS tree shows agents after load**: Agent list in the Status tree view now appears correctly — the tree refreshes after async agent detection completes
+- **Pi agent now receives project context**: Agent delegation injects AGENTS.md content into the prompt, so Pi (which doesn't auto-read project files) understands the codebase structure
+- **AGENTS.md generation prompt**: When opening a workspace without AGENTS.md, users are prompted to auto-generate it with detected build commands, project structure, and conventions
+- **Git init prompt**: Non-git workspaces are detected on load and users are offered to run `git init` with confirmation
+- **Empty workspace project scaffolding**: Empty directories trigger a setup wizard — choose project type (Node.js TS/JS, Python, PHP/Laravel, .NET C#), enter name, auto-generate files + optional git init
+- **Workspace-to-ADO project binding**: `.ado-code/config.json` ties the workspace to a specific ADO project/org. On load, mismatches are detected and the user is warned — prevents accidentally working on items from the wrong project. Binding prompt also appears when switching projects via the project switcher or configuration page
+
+### Improvements
+- **"Start Task" confirmation and detail panel**: Clicking the rocket icon on a work item now shows an in-chat confirmation card, changes ADO status to "Active", creates a feature branch, and displays the full task detail panel in the chat
+- **In-chat confirmation cards**: All user confirmations and selections (task start, uncommitted changes, underspecified task, mode switch, session resume, push/PR, agent default) now render as styled cards inside the chat instead of native VS Code popups — consistent with the existing consent card pattern
+- **MCP Servers in Configuration page**: New "MCP Servers" section in the Configuration page — add, edit, and remove Model Context Protocol server connections (name, command, args, timeout) with a card-based editor
+- **Hierarchical work item trees**: My Work Items and Unassigned Work Items now show parent-child hierarchy (Epic → Feature → User Story → Task) matching the ADO structure, with collapsible nodes and type-specific icons (layers, flag, checklist, bug, etc.)
+- **Full detail view in editor**: Right-click any work item → "Show Full Details" opens a formatted detail panel in the main editor area with metadata, description, acceptance criteria, bug fields, and discussion thread
+- **Slash command descriptions now include parameter hints**: `/assign`, `/status`, `/delegate` and others show what arguments they expect directly in the autocomplete dropdown
+- **Status panel only shows installed agents**: Non-installed agents are hidden from the Status tree view — no more "not found" clutter
+- **AGENTS.md check on new sessions**: Opening a workspace without AGENTS.md prompts the user to generate it with detected project structure
+
 ## [0.5.1] - 2026-08-04
-## [0.5.3] - 2026-08-04
 
 ### Features
 - **Terminal command permission prompts**: Non-allowlisted terminal commands now show a 4-option permission dialog instead of a hard block

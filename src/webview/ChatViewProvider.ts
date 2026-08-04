@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
+import * as path from 'path';
+import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
 import { AdoClient } from '../ado/client';
 import { Services } from '../services';
@@ -11,6 +13,7 @@ import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { createConsentBroker } from '../llm/consent';
+import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
 import { isCommandSessionApproved, addSessionCommandApproval, addToTerminalAllowlist } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -26,6 +29,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Consent broker for inline-mode mutating tools: tracks the in-flight
   // approve/reject request so the agentic loop never hangs on a missed prompt.
   private readonly consentBroker = createConsentBroker();
+  // Generic confirmation broker for in-chat cards (replaces native dialogs).
+  private readonly confirmBroker = createConfirmationBroker();
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
   // Task 4.1: token usage status bar — wired via setTokenStatusBar from extension.ts
@@ -166,6 +171,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return decision;
   }
 
+  /**
+   * Generic confirmation: renders an in-chat card with options and waits for
+   * the user to pick one. Falls back to a native QuickPick when the webview
+   * is unavailable. Returns the chosen value, or null on cancel/timeout.
+   */
+  async requestConfirmation(title: string, description: string, options: ConfirmationOption[]): Promise<string | null> {
+    const { requestId, decision } = this.confirmBroker.request({ title, description, options });
+    if (this._view) {
+      this.postMessage({ type: 'confirmationRequest', requestId, title, description, options });
+    } else {
+      // No webview: native QuickPick fallback.
+      const pick = await vscode.window.showQuickPick(
+        options.map(o => o.label),
+        { placeHolder: `${title} — ${description}` }
+      );
+      const chosen = options.find(o => o.label === pick);
+      this.confirmBroker.resolve(requestId, chosen?.value ?? '');
+      return chosen?.value ?? null;
+    }
+    return decision;
+  }
+
   /** Task 24 (M-4): delegate to an external agent; result streams async via webview. */
   async delegateToAgent(prompt: string, agent?: string): Promise<string> {
     if (!this.agentRunner) throw new Error('agent runner not wired');
@@ -209,12 +236,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await cfg.update('agents.autoSelect', installed[0].name, vscode.ConfigurationTarget.Global);
         } else if (installed.length > 1 && !currentDefault) {
           // Multiple agents, no default set — prompt user
-          const pick = await vscode.window.showQuickPick(
-            installed.map(a => ({ label: a.displayName, description: a.name })),
-            { placeHolder: 'Multiple agents installed. Select a default agent for delegation.' }
+          const pick = await this.requestConfirmation(
+            'Default Agent',
+            'Multiple agents installed. Select a default for delegation:',
+            [
+              ...installed.map(a => ({ label: a.displayName, value: a.name })),
+              { label: 'Skip', value: '', isDangerous: true },
+            ]
           );
           if (pick) {
-            await cfg.update('agents.autoSelect', pick.description, vscode.ConfigurationTarget.Global);
+            await cfg.update('agents.autoSelect', pick, vscode.ConfigurationTarget.Global);
           }
         }
         break;
@@ -236,7 +267,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // If the chat panel closes while the agent waits for consent, deny the
     // pending prompt so the agentic loop can finish (or abort) instead of
     // blocking until the 120s timeout.
-    webviewView.onDidDispose(() => this.consentBroker.rejectAll());
+    webviewView.onDidDispose(() => { this.consentBroker.rejectAll(); this.confirmBroker.rejectAll(); });
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -261,6 +292,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       logger.error('Chat: session init failed', err);
     }
 
+    // Restore the active work item detail so the task panel is visible after
+    // a webview refresh or tab switch. Re-fetch from ADO to get complete fields
+    // (assignedTo, workItemType, etc.) that WorkItemContext alone lacks.
+    if (this.activeWorkItem) {
+      try {
+        const project = this.activeProject();
+        const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, this.activeWorkItem.id);
+        this.postMessage({ type: 'workItemDetail', item: {
+          id: detail.id,
+          title: detail.fields['System.Title'],
+          state: detail.fields['System.State'],
+          assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
+          workItemType: detail.fields['System.WorkItemType'],
+          description: detail.fields['System.Description'] || '',
+          acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
+          tags: detail.fields['System.Tags'] || '',
+          areaPath: detail.fields['System.AreaPath'] ?? '',
+          iterationPath: detail.fields['System.IterationPath'] ?? '',
+          creator: detail.fields['System.CreatedBy']?.displayName ?? '',
+          comments: comments.map(c => ({ id: c.id, text: c.text, createdBy: c.createdBy.displayName, createdDate: c.createdDate })),
+        }});
+      } catch (err) {
+        logger.error('Chat: failed to restore active work item detail', err);
+      }
+    }
+
     // Auto-refresh work items every 5 minutes if configured
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = setInterval(() => {
@@ -269,6 +326,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.refreshWorkItems();
       }
     }, 5 * 60 * 1000);
+
+    // Check workspace state: empty dir, git init, AGENTS.md
+    this.checkWorkspaceInit();
 
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(
@@ -318,6 +378,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // after clearing. Any pending consent prompt is denied as well.
             this.llmAbort?.abort();
             this.consentBroker.rejectAll();
+            this.confirmBroker.rejectAll();
             this.conversation = [];
             await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
@@ -329,6 +390,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // prompt. The loading spinner is cleared immediately.
             this.llmAbort?.abort();
             this.consentBroker.rejectAll();
+            this.confirmBroker.rejectAll();
             this.postMessage({ type: 'loading', loading: false });
             logger.info('Chat: generation stopped by user');
             break;
@@ -429,6 +491,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // a stale stored value would silently override the setting.
             await this._context.workspaceState.update('adoCode.activeProject', message.projectName);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            // Re-check workspace binding after project switch
+            const root = this.services.git.workspaceRoot;
+            if (root) this.checkProjectBinding(root);
             // Auto-refresh work items with new project
             await this.refreshWorkItems();
             break;
@@ -450,6 +515,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             }
             this.consentBroker.resolve(message.requestId, message.approved);
+            break;
+          }
+          case 'confirmationResponse': {
+            this.confirmBroker.resolve(message.requestId, message.value);
             break;
           }
           // Task 2: session management
@@ -592,6 +661,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // first) resolves the same project the wizard just chose.
     if ((config as any).adoProject !== undefined) {
       await this._context.workspaceState.update('adoCode.activeProject', (config as any).adoProject);
+      // Re-check workspace binding after config save
+      const root = this.services.git.workspaceRoot;
+      if (root) this.checkProjectBinding(root);
     }
   }
 
@@ -618,6 +690,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         state: i.fields['System.State'] ?? '',
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
+        parentId: i.fields['System.Parent']?.id,
       }));
       // To webview (chat / task list)
       this.postMessage({ type: 'workItems', items: summaries });
@@ -634,6 +707,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         state: i.fields['System.State'] ?? '',
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
+        parentId: i.fields['System.Parent']?.id,
       }));
       this.onUnassignedFetched?.(unassignedSummaries);
     } else {
@@ -647,6 +721,432 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // NOT re-declare (TS2300 duplicate member).
   private activeWorkItem?: WorkItemContext;
 
+  // ── Workspace project binding ──────────────────────────────────────
+  /** Reads .ado-code/config.json (workspace-level ADO project binding). */
+  private readWorkspaceConfig(root: string): { adoProject?: string; adoOrganization?: string } | null {
+    try {
+      const configPath = path.join(root, '.ado-code', 'config.json');
+      if (!fs.existsSync(configPath)) return null;
+      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Writes .ado-code/config.json to bind this workspace to an ADO project. */
+  private writeWorkspaceConfig(root: string, config: { adoProject: string; adoOrganization: string }): void {
+    const dir = path.join(root, '.ado-code');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config, null, 2), 'utf8');
+  }
+
+  /**
+   * Check if the current ADO project is bound to this workspace.
+   * If not bound, offer to bind. If bound to a different project, warn.
+   */
+  private async checkProjectBinding(root: string): Promise<void> {
+    const settings = getSettings();
+    const currentProject = settings.adoProject;
+    const currentOrg = settings.adoOrganization;
+    if (!currentProject || !currentOrg) return;
+
+    const stored = this.readWorkspaceConfig(root);
+
+    if (!stored) {
+      // Not bound yet — offer to bind
+      const choice = await this.requestConfirmation(
+        'Bind ADO Project',
+        `Bind this workspace to ADO project "${currentProject}" (${currentOrg})? This prevents accidentally working on items from the wrong project.`,
+        [
+          { label: `Bind to ${currentProject}`, value: 'bind' },
+          { label: 'Skip', value: 'skip', isDangerous: true },
+        ]
+      );
+      if (choice === 'bind') {
+        this.writeWorkspaceConfig(root, { adoProject: currentProject, adoOrganization: currentOrg });
+        vscode.window.showInformationMessage(`ADO Code: workspace bound to ${currentOrg}/${currentProject}.`);
+      }
+      return;
+    }
+
+    // Bound — check for mismatch
+    if (stored.adoProject !== currentProject || stored.adoOrganization !== currentOrg) {
+      const choice = await this.requestConfirmation(
+        'Project Mismatch',
+        `This workspace is bound to "${stored.adoProject}" (${stored.adoOrganization}), but your active ADO project is "${currentProject}" (${currentOrg}). Working on items from the wrong project can cause issues.`,
+        [
+          { label: `Switch to ${currentProject}`, value: 'switch' },
+          { label: `Keep ${stored.adoProject}`, value: 'keep' },
+          { label: 'Unbind', value: 'unbind', isDangerous: true },
+        ]
+      );
+      if (choice === 'switch') {
+        this.writeWorkspaceConfig(root, { adoProject: currentProject, adoOrganization: currentOrg });
+        vscode.window.showInformationMessage(`ADO Code: workspace re-bound to ${currentOrg}/${currentProject}.`);
+      } else if (choice === 'unbind') {
+        fs.unlinkSync(path.join(root, '.ado-code', 'config.json'));
+        vscode.window.showInformationMessage('ADO Code: workspace project binding removed.');
+      }
+      // 'keep' — do nothing, continue with current project
+    }
+  }
+
+  /**
+   * Workspace init checks: empty directory, git init, AGENTS.md generation.
+   * Runs once on webview init — non-blocking.
+   */
+  private async checkWorkspaceInit(): Promise<void> {
+    try {
+      const root = this.services.git.workspaceRoot;
+      if (!root) return;
+
+      // 0) Bind ADO project to this workspace
+      await this.checkProjectBinding(root);
+
+      // 1) Empty directory — help user create a new project
+      const entries = fs.readdirSync(root, { withFileTypes: true });
+      const meaningful = entries.filter(e =>
+        !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== '__pycache__'
+      );
+      if (meaningful.length === 0) {
+        await this.handleEmptyDirectory(root);
+        return;
+      }
+
+      // 2) Not a git repo — offer to init
+      const isGit = await this.services.git.isGitRepo();
+      if (!isGit) {
+        await this.offerGitInit();
+      }
+
+      // 3) No AGENTS.md — offer to generate
+      const agentsMdPath = path.join(root, 'AGENTS.md');
+      if (!fs.existsSync(agentsMdPath)) {
+        await this.offerGenerateAgentsMd(root);
+      }
+    } catch (err) {
+      logger.error('Chat: workspace init check failed', err);
+    }
+  }
+
+  /** Handle an empty workspace — ask what the user wants to build. */
+  private async handleEmptyDirectory(root: string): Promise<void> {
+    const choice = await this.requestConfirmation(
+      'Empty Workspace',
+      'This directory is empty. Would you like to set up a new project?',
+      [
+        { label: 'Create New Project', value: 'create' },
+        { label: 'Open Existing Folder', value: 'open' },
+        { label: 'Skip', value: 'skip', isDangerous: true },
+      ]
+    );
+
+    if (choice === 'create') {
+      await this.scaffoldProject(root);
+    } else if (choice === 'open') {
+      vscode.commands.executeCommand('workbench.action.files.openFolder');
+    }
+  }
+
+  /** Scaffold a new project based on user selections. */
+  private async scaffoldProject(root: string): Promise<void> {
+    const projectType = await this.requestConfirmation(
+      'Project Type',
+      'What kind of project would you like to create?',
+      [
+        { label: 'Node.js (TypeScript)', value: 'node-ts' },
+        { label: 'Node.js (JavaScript)', value: 'node-js' },
+        { label: 'Python', value: 'python' },
+        { label: 'PHP (Laravel)', value: 'php-laravel' },
+        { label: 'PHP (Plain)', value: 'php' },
+        { label: '.NET (C# Web API)', value: 'dotnet-webapi' },
+        { label: '.NET (C# Console)', value: 'dotnet-console' },
+        { label: 'Cancel', value: '', isDangerous: true },
+      ]
+    );
+    if (!projectType) return;
+
+    const projectName = await vscode.window.showInputBox({
+      prompt: 'Project name?',
+      placeHolder: 'my-project',
+      ignoreFocusOut: true,
+    });
+    if (!projectName) return;
+
+    const projectDir = path.join(root, projectName);
+
+    try {
+      if (projectType === 'node-ts') {
+        await this.scaffoldNodeTs(projectDir, projectName);
+      } else if (projectType === 'node-js') {
+        await this.scaffoldNodeJs(projectDir, projectName);
+      } else if (projectType === 'python') {
+        await this.scaffoldPython(projectDir, projectName);
+      } else if (projectType === 'php-laravel') {
+        await this.scaffoldPhpLaravel(projectDir, projectName);
+      } else if (projectType === 'php') {
+        await this.scaffoldPhp(projectDir, projectName);
+      } else if (projectType === 'dotnet-webapi') {
+        await this.scaffoldDotNetWebApi(projectDir, projectName);
+      } else if (projectType === 'dotnet-console') {
+        await this.scaffoldDotNetConsole(projectDir, projectName);
+      }
+
+      const initGit = await this.requestConfirmation(
+        'Initialize Git',
+        `Initialize a git repository in ${projectName}?`,
+        [
+          { label: 'Yes, init git', value: 'yes' },
+          { label: 'No', value: 'no', isDangerous: true },
+        ]
+      );
+      if (initGit === 'yes') {
+        const { execFile: exec } = require('child_process');
+        await new Promise<void>((resolve, reject) => {
+          exec('git', ['init'], { cwd: projectDir }, (err: any) => err ? reject(err) : resolve());
+        });
+      }
+
+      vscode.window.showInformationMessage(`ADO Code: project "${projectName}" created.`);
+    } catch (err) {
+      vscode.window.showErrorMessage(`ADO Code: failed to create project: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  private async scaffoldNodeTs(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name, version: '0.1.0', description: '',
+      scripts: { build: 'tsc', start: 'node dist/index.js', test: 'echo "no tests"' },
+      devDependencies: { typescript: '^5.0.0', '@types/node': '^20.0.0' },
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({
+      compilerOptions: { target: 'ES2022', module: 'commonjs', outDir: 'dist', rootDir: 'src', strict: true, esModuleInterop: true },
+      include: ['src'], exclude: ['node_modules', 'dist'],
+    }, null, 2));
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'index.ts'), `console.log('Hello, ${name}!');\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\ndist/\n');
+  }
+
+  private async scaffoldNodeJs(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name, version: '0.1.0', description: '',
+      main: 'index.js',
+      scripts: { start: 'node index.js', test: 'echo "no tests"' },
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, 'index.js'), `console.log('Hello, ${name}!');\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
+  }
+
+  private async scaffoldPython(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    const modName = name.replace(/-/g, '_');
+    fs.writeFileSync(path.join(dir, 'pyproject.toml'), `[project]
+name = "${name}"
+version = "0.1.0"
+description = ""
+requires-python = ">=3.9"
+
+[project.scripts]
+${name} = "${modName}:main"
+`);
+    fs.writeFileSync(path.join(dir, `${modName}.py`), `def main():\n    print("Hello, ${name}!")\n\nif __name__ == "__main__":\n    main()\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), '__pycache__/\n*.pyc\n.env\nvenv/\n');
+  }
+
+  private async scaffoldPhpLaravel(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({
+      name: `app/${name}`,
+      description: '',
+      type: 'project',
+      require: {
+        php: '^8.1',
+        'laravel/framework': '^11.0',
+        'laravel/tinker': '^2.9',
+      },
+      'require-dev': {
+        'fakerphp/faker': '^1.23',
+        'laravel/pint': '^1.13',
+        'laravel/sail': '^1.26',
+        'mockery/mockery': '^1.6',
+        'nunomaduro/collision': '^8.0',
+        'phpunit/phpunit': '^11.0',
+      },
+      'autoload': { 'psr-4': { 'App\\\\': 'app/', 'Database\\\\Factories\\\\': 'database/factories/', 'Database\\\\Seeders\\\\': 'database/seeders/' } },
+      'autoload-dev': { 'psr-4': { 'Tests\\\\': 'tests/' } },
+      'scripts': { 'post-autoload-dump': ['@php artisan package:discover --ansi', '@php artisan vendor:publish --tag=assets --ansi --force'] },
+      'extra': { 'laravel': { 'dont-discover': [] } },
+      'config': { 'optimize-autoloader': true, 'preferred-install': 'dist', 'sort-packages': true, 'allow-plugins': { 'pestphp/pest-plugin': true, 'php-http/discovery': true } },
+      'minimum-stability': 'stable',
+      'prefer-stable': true,
+    }, null, 2));
+
+    // Basic Laravel structure
+    const dirs = ['app/Http/Controllers', 'app/Models', 'routes', 'config', 'database/migrations', 'database/seeders', 'resources/views', 'resources/css', 'public', 'tests/Feature', 'tests/Unit'];
+    for (const d of dirs) fs.mkdirSync(path.join(dir, d), { recursive: true });
+
+    fs.writeFileSync(path.join(dir, 'artisan'), `#!/usr/bin/env php\n<?php\n\nuse Symfony\Component\Console\Input\ArgvInput;\n\ndefine('LARAVEL_START', microtime(true));\n\nrequire __DIR__.'/vendor/autoload.php';\n\n\$app = require_once __DIR__.'/bootstrap/app.php';\n\n\$kernel = \$app->make(Illuminate\Contracts\Console\Kernel::class);\n\n\$status = \$kernel->handle(\$input = new ArgvInput, new Symfony\Component\Console\Output\ConsoleOutput);\n\n\$kernel->terminate(\$input, \$status);\n`);
+    fs.chmodSync(path.join(dir, 'artisan'), 0o755);
+
+    fs.writeFileSync(path.join(dir, 'routes', 'web.php'), `<?php\n\nuse Illuminate\Support\Facades\Route;\n\nRoute::get('/', function () {\n    return view('welcome');\n});\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), '/vendor/\n.env\n.env.backup\n.phpunit.result.cache\nHomestead.json\nHomestead.yaml\nauth.json\nnpm-debug.log\nyarn-error.log\n/.fleet\n/.idea\n/.vscode\n');
+  }
+
+  private async scaffoldPhp(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({
+      name: `app/${name}`,
+      description: '',
+      require: { php: '^8.1' },
+      'require-dev': { 'phpunit/phpunit': '^11.0', 'squizlabs/php_codesniffer': '^3.7' },
+      autoload: { 'psr-4': { 'App\\': 'src/' } },
+      'autoload-dev': { 'psr-4': { 'App\\Tests\\': 'tests/' } },
+    }, null, 2));
+
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'index.php'), `<?php\n\necho "Hello, ${name}!\n";\n`);
+    fs.writeFileSync(path.join(dir, 'phpunit.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<phpunit bootstrap="vendor/autoload.php" colors="true">\n    <testsuites>\n        <testsuite name="Unit">\n            <directory>tests</directory>\n        </testsuite>\n    </testsuites>\n</phpunit>\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), '/vendor/\ncomposer.lock\n.phpunit.result.cache\n');
+  }
+
+  private async scaffoldDotNetWebApi(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    const csproj = `<Project Sdk="Microsoft.NET.Sdk.Web">\n\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Nullable>enable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <RootNamespace>${name}</RootNamespace>\n  </PropertyGroup>\n\n  <ItemGroup>\n    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />\n    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />\n  </ItemGroup>\n\n</Project>\n`;
+    fs.writeFileSync(path.join(dir, `${name}.csproj`), csproj);
+    fs.writeFileSync(path.join(dir, `${name}.sln`), `\nMicrosoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\nVisualStudioVersion = 17.0.31903.59\nMinimumVisualStudioVersion = 10.0.40219.1\nProject("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "${name}", "${name}.csproj", "{GUID-HERE}"\nEndProject\nGlobal\n\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n\t\tDebug|Any CPU = Debug|Any CPU\n\t\tRelease|Any CPU = Release|Any CPU\n\tEndGlobalSection\nEndGlobal\n`);
+
+    fs.mkdirSync(path.join(dir, 'Controllers'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'Models'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'Program.cs'), `var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+`);
+    fs.writeFileSync(path.join(dir, 'appsettings.json'), JSON.stringify({
+      Logging: { LogLevel: { Default: 'Information', 'Microsoft.AspNetCore': 'Warning' } },
+      AllowedHosts: '*',
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, 'Controllers', 'WeatherForecastController.cs'), `using Microsoft.AspNetCore.Mvc;\n\nnamespace ${name}.Controllers;\n\n[ApiController]\n[Route("[controller]")]\npublic class WeatherForecastController : ControllerBase\n{\n    private static readonly string[] Summaries = [\n        "Freezing", "Bracing", "Chilly", "Cool", "Mild",\n        "Warm", "Balmy", "Hot", "Sweltering", "Scorching"\n    ];\n\n    private readonly ILogger<WeatherForecastController> _logger;\n\n    public WeatherForecastController(ILogger<WeatherForecastController> logger)\n    {\n        _logger = logger;\n    }\n\n    [HttpGet] public IEnumerable<object> Get() =>\n        Enumerable.Range(1, 5).Select(index => new\n        {\n            Date = DateOnly.FromDateTime(DateTime.Now.AddDays(index)),\n            TemperatureC = Random.Shared.Next(-20, 55),\n            Summary = Summaries[Random.Shared.Next(Summaries.Length)]\n        })\n        .ToArray();\n}\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), '/bin/\n/obj/\n/user/\n*.user\n*.suo\n*.userosscache\n*.sln.docstates\n');
+  }
+
+  private async scaffoldDotNetConsole(dir: string, name: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    const csproj = `<Project Sdk="Microsoft.NET.Sdk">\n\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net8.0</TargetFramework>\n    <Nullable>enable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <RootNamespace>${name}</RootNamespace>\n  </PropertyGroup>\n\n</Project>\n`;
+    fs.writeFileSync(path.join(dir, `${name}.csproj`), csproj);
+    fs.writeFileSync(path.join(dir, 'Program.cs'), `Console.WriteLine("Hello, ${name}!");\n`);
+    fs.writeFileSync(path.join(dir, '.gitignore'), '/bin/\n/obj/\n/user/\n*.user\n*.suo\n');
+  }
+
+  /** Offer to initialize git in the workspace. */
+  private async offerGitInit(): Promise<void> {
+    const choice = await this.requestConfirmation(
+      'Initialize Git',
+      'This workspace is not a git repository. Initialize one?',
+      [
+        { label: 'git init', value: 'init' },
+        { label: 'Skip', value: 'skip', isDangerous: true },
+      ]
+    );
+    if (choice !== 'init') return;
+
+    try {
+      const { execFile: exec } = require('child_process');
+      await new Promise<void>((resolve, reject) => {
+        exec('git', ['init'], { cwd: this.services.git.workspaceRoot }, (err: any) => err ? reject(err) : resolve());
+      });
+      vscode.window.showInformationMessage('ADO Code: git repository initialized.');
+    } catch (err) {
+      vscode.window.showErrorMessage(`ADO Code: git init failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /** Offer to generate AGENTS.md if missing. */
+  private async offerGenerateAgentsMd(root: string): Promise<void> {
+    const choice = await this.requestConfirmation(
+      'Missing AGENTS.md',
+      'No AGENTS.md found. This file helps coding agents (Claude, Codex, Hermes, Pi) understand your project. Generate it now?',
+      [
+        { label: 'Generate AGENTS.md', value: 'generate' },
+        { label: 'Skip', value: 'skip', isDangerous: true },
+      ]
+    );
+    if (choice === 'generate') {
+      await this.generateAgentsMd(root);
+      vscode.window.showInformationMessage('ADO Code: AGENTS.md generated.');
+    }
+  }
+
+  /** Generate a basic AGENTS.md template from the workspace structure. */
+  private async generateAgentsMd(root: string): Promise<void> {
+    const pkgPath = path.join(root, 'package.json');
+    let pkgName = 'project';
+    let pkgDesc = '';
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      pkgName = pkg.name || 'project';
+      pkgDesc = pkg.description || '';
+    } catch { /* no package.json */ }
+
+    const hasTs = fs.existsSync(path.join(root, 'tsconfig.json'));
+    const hasTests = fs.existsSync(path.join(root, 'src/test')) || fs.existsSync(path.join(root, '__tests__')) || fs.existsSync(path.join(root, 'test'));
+    const hasLint = fs.existsSync(path.join(root, '.eslintrc')) || fs.existsSync(path.join(root, '.eslintrc.js')) || fs.existsSync(path.join(root, '.eslintrc.json'));
+
+    const lines = [
+      `# AGENTS.md — ${pkgName}`,
+      '',
+      '## What This Is',
+      pkgDesc || 'Project workspace.',
+      '',
+      '## Build & Test',
+    ];
+
+    if (hasTs) lines.push('- `npm run compile` — TypeScript compilation');
+    if (hasTests) lines.push('- `npm test` — Run test suite');
+    if (hasLint) lines.push('- `npm run lint` — Linting');
+    lines.push('- `npm run build` — Full build');
+    lines.push('');
+    lines.push('## Project Structure');
+
+    try {
+      const dirEntries = fs.readdirSync(root, { withFileTypes: true });
+      const dirs = dirEntries.filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules');
+      for (const d of dirs) {
+        lines.push(`- \`${d.name}/\` — project directory`);
+      }
+    } catch { /* ignore */ }
+
+    lines.push('');
+    lines.push('## Conventions');
+    lines.push('- Follow existing code patterns in the project');
+    lines.push('- Run tests before committing');
+    lines.push('- Check lint passes');
+    lines.push('');
+    lines.push('## What NOT to Do');
+    lines.push('- Do not commit without running tests');
+    lines.push('- Do not add unnecessary dependencies');
+
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), lines.join('\n'), 'utf8');
+  }
   /** H3: git pre-flight shared by startTask (Task 10) and startTaskWithAgent (Task 25).
    *  Returns true if it's safe to proceed. */
   private async ensureGitReady(workItemId: number): Promise<boolean> {
@@ -661,8 +1161,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     // 2) Uncommitted changes?
     if (settings.gitRequireCleanTree && await this.services.git.hasUncommittedChanges()) {
-      const choice = await vscode.window.showWarningMessage('ADO Code: you have uncommitted changes. Switch branches anyway?', { modal: true }, 'Yes');
-      if (choice !== 'Yes') return false;
+      const choice = await this.requestConfirmation(
+        'Uncommitted Changes',
+        'You have uncommitted changes. Switch branches anyway?',
+        [
+          { label: 'Switch Branch', value: 'yes' },
+          { label: 'Cancel', value: 'cancel', isDangerous: true },
+        ]
+      );
+      if (choice !== 'yes') return false;
     }
     // 3) Create the task branch
     if (settings.gitCreateBranchOnTaskStart) {
@@ -674,9 +1181,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async startTask(workItemId: number, title: string): Promise<void> {
-    this.activeWorkItem = this.activeWorkItem ?? { id: workItemId, title };
+    // Fetch full detail so we can show the task panel and know the current state.
+    const project = this.activeProject(); // H-4
+    let detail;
+    let comments;
+    try {
+      const result = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+      detail = result.detail;
+      comments = result.comments;
+    } catch (err) {
+      this.postMessage({ type: 'error', message: `Failed to fetch work item: ${err instanceof Error ? err.message : err}` });
+      return;
+    }
+
+    const currentState = detail.fields['System.State'] as string;
+    const choice = await this.requestConfirmation(
+      `Start ADO-${workItemId}`,
+      `"${title}" — status will change from "${currentState}" to "Active" and a feature branch will be created.`,
+      [
+        { label: 'Start Task', value: 'start' },
+        { label: 'Cancel', value: 'cancel', isDangerous: true },
+      ]
+    );
+    if (choice !== 'start') return;
+
+    // Change ADO status to Active
+    await this.services.ado.updateWorkItem(project, workItemId, [
+      { op: 'add', path: '/fields/System.State', value: 'Active' },
+    ]);
+    await this.services.ado.addComment(project, workItemId, 'ADO Code: state changed to **Active**.');
+
+    // Set active work item with full detail
+    this.activeWorkItem = {
+      id: detail.id,
+      title: detail.fields['System.Title'],
+      description: detail.fields['System.Description'] || '',
+      acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
+      tags: detail.fields['System.Tags'] || '',
+      comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
+    };
+
+    // Git pre-flight (repo check, clean tree, branch creation)
     const ok = await this.ensureGitReady(workItemId);
     if (!ok) return;
+
+    // Show task detail panel in the chat
+    this.postMessage({ type: 'workItemDetail', item: {
+      id: this.activeWorkItem.id,
+      title: this.activeWorkItem.title,
+      state: 'Active',
+      assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
+      workItemType: detail.fields['System.WorkItemType'],
+      description: this.activeWorkItem.description,
+      acceptanceCriteria: this.activeWorkItem.acceptanceCriteria,
+      tags: this.activeWorkItem.tags,
+      areaPath: detail.fields['System.AreaPath'] ?? '',
+      iterationPath: detail.fields['System.IterationPath'] ?? '',
+      creator: detail.fields['System.CreatedBy']?.displayName ?? '',
+      comments: this.activeWorkItem.comments ?? [],
+    }});
+
     vscode.window.showInformationMessage(`ADO Code: task ADO-${workItemId} picked up. Happy coding!`);
   }
 
@@ -702,7 +1266,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 3) Build the prompt — includes the thread, so the agent gets the
     //    clarified spec the developer collected via Task 28
     const branch = await this.services.git.getCurrentBranch();
-    const prompt = buildAgentPrompt(this.activeWorkItem, branch ?? 'unknown');
+    // Inject AGENTS.md as project context so all agents (including Pi,
+    // which doesn't auto-read project files) understand the codebase.
+    let projectContext: string | undefined;
+    try {
+      const agentsMd = path.join(this.services.git.workspaceRoot, 'AGENTS.md');
+      projectContext = fs.readFileSync(agentsMd, 'utf8');
+    } catch {
+      // No AGENTS.md — agents still get the work item context.
+    }
+    const prompt = buildAgentPrompt(this.activeWorkItem, branch ?? 'unknown', projectContext);
 
     // 4) Delegate (Task 24) — status + result stream back to the webview.
     // H-3 fix: the runner is wired via setAgentRunner (Task 24), NOT on Services.
@@ -845,17 +1418,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const hasDesc = !!detail?.fields['System.Description']?.trim();
     const hasAc = !!detail?.fields['Microsoft.VSTS.Common.AcceptanceCriteria']?.trim();
     if (hasDesc || hasAc) return true;
-    const choice = await vscode.window.showQuickPick(
-      ['Review Detail', 'Request Clarification…', 'Start Anyway', 'Cancel'],
-      { placeHolder: 'This task looks underspecified (no description/acceptance criteria). Review detail or request clarification before starting?' }
+    const choice = await this.requestConfirmation(
+      'Underspecified Task',
+      'This task has no description or acceptance criteria. What would you like to do?',
+      [
+        { label: 'Review Detail', value: 'review' },
+        { label: 'Request Clarification', value: 'clarify' },
+        { label: 'Start Anyway', value: 'start' },
+        { label: 'Cancel', value: 'cancel', isDangerous: true },
+      ]
     );
-    if (choice === 'Review Detail') { await this.reviewTaskDetail(workItemId); return false; }
-    if (choice === 'Request Clarification…') {
+    if (choice === 'review') { await this.reviewTaskDetail(workItemId); return false; }
+    if (choice === 'clarify') {
       const q = await vscode.window.showInputBox({ prompt: 'What do you need clarified?', ignoreFocusOut: true });
       if (q) await this.requestClarification(workItemId, q);
       return false;
     }
-    return choice === 'Start Anyway'; // Cancel → false
+    return choice === 'start'; // Cancel/null → false
   }
 
   // ── Task 13: LLM wiring ────────────────────────────────────────────
@@ -973,6 +1552,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const parsed = parseSlashCommand(content);
     if (parsed) {
       await this.executeSlashCommand(parsed.command.name, parsed.args);
+      // Clear the loading spinner — slash commands are not LLM calls, so the
+      // "Thinking…" state set by the webview on send must be resolved here.
+      this.postMessage({ type: 'loading', loading: false });
       return; // do not send slash command to the LLM
     }
 
@@ -1213,6 +1795,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'clear': {
         this.llmAbort?.abort();
         this.consentBroker.rejectAll();
+        this.confirmBroker.rejectAll();
         this.conversation = [];
         await this.persistConversation();
         this.postMessage({ type: 'historyRestored', messages: [] });
@@ -1273,23 +1856,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'resume': {
-        // Task 2: show QuickPick of all sessions
+        // Task 2: show in-chat card of all sessions
         const sessions = this.getSessions();
         if (sessions.length === 0) {
           vscode.window.showWarningMessage('ADO Code: no previous sessions to resume.');
           return;
         }
-        const picks = sessions.map(s => ({
-          label: s.name,
-          description: `${s.messages.length} messages — ${new Date(s.createdAt).toLocaleDateString()}`,
-          sessionId: s.id,
+        const options = sessions.map(s => ({
+          label: `${s.name} (${s.messages.length} messages)`,
+          value: s.id,
         }));
-        const picked = await vscode.window.showQuickPick(picks, {
-          placeHolder: 'Select a session to resume',
-        });
+        options.push({ label: 'Cancel', value: '' });
+        const picked = await this.requestConfirmation(
+          'Resume Session',
+          'Select a session to resume:',
+          options
+        );
         if (picked) {
-          await this.loadSession(picked.sessionId);
-          vscode.window.showInformationMessage(`ADO Code: resumed session "${picked.label}".`);
+          const session = sessions.find(s => s.id === picked);
+          await this.loadSession(picked);
+          vscode.window.showInformationMessage(`ADO Code: resumed session "${session?.name ?? picked}".`);
         }
         break;
       }
@@ -1325,7 +1911,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Mode selector (Q8) — updates the setting AND the executor when wired (Task 24). */
   public async pickMode(): Promise<void> {
-    const pick = await vscode.window.showQuickPick(['inline', 'plan', 'act'], { placeHolder: `Mode: ${getSettings().mode}` });
+    const pick = await this.requestConfirmation(
+      'Switch Mode',
+      `Current mode: ${getSettings().mode}`,
+      [
+        { label: 'Inline', value: 'inline' },
+        { label: 'Plan', value: 'plan' },
+        { label: 'Act', value: 'act' },
+      ]
+    );
     if (pick) {
       await vscode.workspace.getConfiguration('adoCode').update('mode', pick, vscode.ConfigurationTarget.Global);
       this.executor?.setMode(pick as any); // executor wired in Task 24; optional here
@@ -1397,11 +1991,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Q5: push current branch and offer to create a PR (gh CLI). */
   private async offerPushAndPr(workItemId: number, title: string, branch: string | null): Promise<void> {
     if (!branch) return;
-    const choice = await vscode.window.showQuickPick(['Push branch & create PR', 'Push only', 'Skip'], {
-      placeHolder: `Branch '${branch}' ready. Push / create PR?`,
-      ignoreFocusOut: true,
-    });
-    if (!choice || choice === 'Skip') return;
+    const choice = await this.requestConfirmation(
+      'Push & PR',
+      `Branch '${branch}' is ready.`,
+      [
+        { label: 'Push & Create PR', value: 'push_pr' },
+        { label: 'Push Only', value: 'push' },
+        { label: 'Skip', value: 'skip', isDangerous: true },
+      ]
+    );
+    if (!choice || choice === 'skip') return;
 
     try {
       // M10 fix: check gh is installed + authenticated before offering the PR path.

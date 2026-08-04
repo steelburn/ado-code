@@ -37,6 +37,8 @@ export interface AdoWorkItem {
     'System.CreatedBy'?: { displayName: string; uniqueName: string };
     'System.CreatedDate'?: string;
     'System.ChangedDate'?: string;
+    // Parent link for hierarchy (Epic → Feature → User Story → Task)
+    'System.Parent'?: { id: number };
     // Bug-specific fields
     'Microsoft.VSTS.TCM.ReproSteps'?: string;
     'Microsoft.VSTS.TCM.SystemInfo'?: string;

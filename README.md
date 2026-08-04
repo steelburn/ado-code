@@ -15,6 +15,13 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - User memory: AI remembers your preferences across sessions
 - Workspace memory: project-specific conventions in .ado-code/memory/
 - Direct mode selection: click Chat/Plan/Act to switch modes instantly
+- In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
+- Hierarchical work item trees: parent-child view matching ADO structure (Epic → Feature → User Story → Task) with type-specific icons
+- Full detail view: right-click → "Show Full Details" opens a formatted panel in the editor with metadata, description, criteria, and discussion
+- Agent delegation injects AGENTS.md project context so all agents understand the codebase
+- Workspace scaffolding: new project wizard for Node.js, Python, PHP (Laravel), .NET C# with auto-generated files
+- Workspace-to-ADO project binding: prevents working on items from the wrong project
+- Enhanced slash command autocomplete with parameter hints and real-world examples
 
 ## Requirements
 
@@ -37,7 +44,7 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.llmApiKey` | LLM API key |
 | `adoCode.llmModel` | LLM model name |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, or `act` |
-| `adoCode.mcp.servers` | MCP server configurations (array) |
+| `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 
 ## Slash Commands
 

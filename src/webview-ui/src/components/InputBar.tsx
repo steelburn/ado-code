@@ -11,18 +11,18 @@ interface SlashCommand {
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
-  { name: 'status',    description: 'Change work item state',        usage: '/status <state>' },
-  { name: 'comment',   description: 'Add comment to work item',     usage: '/comment <text>' },
-  { name: 'pick',      description: 'Pick a work item',             usage: '/pick' },
-  { name: 'assign',    description: 'Assign work item',             usage: '/assign <person>' },
-  { name: 'clear',     description: 'Clear chat history',           usage: '/clear' },
-  { name: 'mode',      description: 'Switch mode (chat/plan/act)',  usage: '/mode [mode]' },
-  { name: 'undo',      description: 'Undo last state change',       usage: '/undo' },
-  { name: 'help',      description: 'Show available commands',      usage: '/help' },
-  { name: 'delegate',  description: 'Delegate to an agent',         usage: '/delegate [agent] <prompt>' },
-  { name: 'resume',    description: 'Resume a previous session',    usage: '/resume' },
-  { name: 'remember',  description: 'Save a note for context',      usage: '/remember <text>' },
-  { name: 'forget',    description: 'Clear saved notes',            usage: '/forget' },
+  { name: 'status',    description: 'Set work item state (e.g. Active, Done, Closed)',  usage: '/status <state>' },
+  { name: 'comment',   description: 'Post a comment to the active work item',           usage: '/comment <text>' },
+  { name: 'pick',      description: 'Select a work item to set as active context',      usage: '/pick' },
+  { name: 'assign',    description: 'Assign work item to a team member (name/email)',   usage: '/assign <person>' },
+  { name: 'clear',     description: 'Clear all chat messages',                          usage: '/clear' },
+  { name: 'mode',      description: 'Switch mode: inline, plan, or act',                usage: '/mode [mode]' },
+  { name: 'undo',      description: 'Revert last state change on active work item',     usage: '/undo' },
+  { name: 'help',      description: 'List all available slash commands',                 usage: '/help' },
+  { name: 'delegate',  description: 'Hand off task to agent (claude, codex, hermes…)',  usage: '/delegate [agent] <prompt>' },
+  { name: 'resume',    description: 'Switch to a previous chat session',                 usage: '/resume' },
+  { name: 'remember',  description: 'Store a preference the AI remembers across chats',  usage: '/remember <text>' },
+  { name: 'forget',    description: 'Remove all saved notes and preferences',            usage: '/forget' },
 ];
 
 function matchSlashCommands(query: string): SlashCommand[] {
@@ -553,9 +553,7 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
                 >
                   <span className="slash-name">/{cmd.name}</span>
                   <span className="slash-desc">{cmd.description}</span>
-                  {(cmd.usage.includes('<') || cmd.usage.includes('[')) && (
-                    <span className="slash-usage">{cmd.usage}</span>
-                  )}
+                  <span className="slash-usage">{cmd.usage}</span>
                 </div>
               ))}
             </div>

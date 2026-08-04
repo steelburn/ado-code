@@ -45,6 +45,8 @@ export type WebviewToExtensionMessage =
   | { type: 'searchFiles'; query: string }
   // Consent: user answer to an agent consent request (inline mode mutating tool)
   | { type: 'consentResponse'; requestId: string; approved: boolean; scope?: 'once' | 'session' | 'permanent' }
+  // Generic confirmation: user answer to an in-chat confirmation card
+  | { type: 'confirmationResponse'; requestId: string; value: string }
   // Session history
   | { type: 'listSessions' }
   | { type: 'switchSession'; sessionId: string }
@@ -87,6 +89,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
   // Consent: the agent requires user approval for a mutating tool (inline mode)
   | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> }
+  // Generic confirmation: ask the user to pick an option (replaces showQuickPick / showWarningMessage)
+  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }> }
   // File search results for @ mentions
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history
@@ -108,6 +112,7 @@ export interface WorkItemSummary {
   state: string;
   assignedTo: string;
   workItemType: string;
+  parentId?: number;
 }
 
 export interface WorkItemDetail extends WorkItemSummary {

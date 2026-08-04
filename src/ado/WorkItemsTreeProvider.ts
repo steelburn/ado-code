@@ -3,6 +3,29 @@ import { WorkItemSummary } from '../shared/messages';
 
 // H-6 fix: the tree consumes WorkItemSummary (what refreshWorkItems posts),
 // NOT raw AdoWorkItem — matches the onItemsFetched callback type.
+
+/** Map ADO work item types to VS Code theme icons. */
+const TYPE_ICONS: Record<string, string> = {
+  'Epic': 'layers',
+  'Feature': 'flag',
+  'User Story': 'account',
+  'Product Backlog Item': 'account',
+  'Task': 'checklist',
+  'Bug': 'bug',
+  'Issue': 'alert',
+  'Test Case': 'beaker',
+  'Test Suite': 'list-flat',
+  'Shared Step': 'references',
+  'Risk': 'warning',
+  'Impediment': 'circle-slash',
+  'Goal': 'target',
+  'Plan': 'project',
+};
+
+function iconForType(workItemType: string): string {
+  return TYPE_ICONS[workItemType] ?? 'circle-outline';
+}
+
 export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<WorkItemNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -10,6 +33,9 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   private workItems: WorkItemSummary[] = [];
   // Track which work items have active agent runs
   private activeAgentRuns = new Map<number, { agent: string; status: string }>();
+  // Parent → children index (built on refresh)
+  private childrenOf = new Map<number, WorkItemSummary[]>();
+  private roots: WorkItemSummary[] = [];
 
   // Data is pushed in via refresh() (called from ChatViewProvider.refreshWorkItems,
   // Task 8 Step 4). The provider itself never talks to ADO.
@@ -17,7 +43,58 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
 
   refresh(items: WorkItemSummary[]): void {
     this.workItems = items;
+    this.buildTree();
     this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Build parent→children index and root list from flat work item array. */
+  private buildTree(): void {
+    this.childrenOf.clear();
+    this.roots = [];
+
+    // Index all items by id for parent lookup
+    const byId = new Map<number, WorkItemSummary>();
+    for (const wi of this.workItems) {
+      byId.set(wi.id, wi);
+    }
+
+    // Partition into roots (no parent or parent not in the fetched set)
+    // and children (parent is in the fetched set)
+    for (const wi of this.workItems) {
+      const parentId = wi.parentId;
+      if (parentId && byId.has(parentId)) {
+        // This item's parent is in the fetched set → it's a child
+        const siblings = this.childrenOf.get(parentId) ?? [];
+        siblings.push(wi);
+        this.childrenOf.set(parentId, siblings);
+      } else {
+        // No parent, or parent not fetched → root node
+        this.roots.push(wi);
+      }
+    }
+
+    // Sort roots: by work item type hierarchy, then by title
+    const typeOrder = ['Epic', 'Feature', 'User Story', 'Product Backlog Item', 'Task', 'Bug', 'Issue'];
+    this.roots.sort((a, b) => {
+      const ai = typeOrder.indexOf(a.workItemType);
+      const bi = typeOrder.indexOf(b.workItemType);
+      const aOrder = ai === -1 ? 99 : ai;
+      const bOrder = bi === -1 ? 99 : bi;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return a.title.localeCompare(b.title);
+    });
+
+    // Sort children within each parent by type then title
+    for (const [, children] of this.childrenOf) {
+      children.sort((a, b) => {
+        const ai = typeOrder.indexOf(a.workItemType);
+        const bi = typeOrder.indexOf(b.workItemType);
+        const aOrder = ai === -1 ? 99 : ai;
+        const bOrder = bi === -1 ? 99 : bi;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return a.title.localeCompare(b.title);
+      });
+    }
   }
 
   /** Update agent run status for a work item. */
@@ -27,11 +104,7 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     } else {
       this.activeAgentRuns.delete(workItemId);
     }
-    // Refresh the specific node if it exists
-    const node = this.workItems.find(wi => wi.id === workItemId);
-    if (node) {
-      this._onDidChangeTreeData.fire(undefined);
-    }
+    this._onDidChangeTreeData.fire(undefined);
   }
 
   getWorkItemById(id: number): WorkItemSummary | undefined {
@@ -44,20 +117,36 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
 
   getChildren(element?: WorkItemNode): WorkItemNode[] {
     if (!element) {
-      return this.workItems.map(wi => {
-        const agentRun = this.activeAgentRuns.get(wi.id);
-        return new WorkItemNode(wi, agentRun, this.nodeContextValue);
-      });
+      // Root level: items with no parent (or parent not in fetched set)
+      return this.roots.map(wi => this.toNode(wi));
     }
-    return [];
+    // Children of this node
+    const children = this.childrenOf.get(element.workItemId) ?? [];
+    return children.map(wi => this.toNode(wi));
+  }
+
+  private toNode(wi: WorkItemSummary): WorkItemNode {
+    const agentRun = this.activeAgentRuns.get(wi.id);
+    const hasChildren = this.childrenOf.has(wi.id);
+    return new WorkItemNode(wi, agentRun, this.nodeContextValue, hasChildren);
   }
 }
 
 // HIGH fix: WorkItemNode must be EXPORTED — extension.ts types command args
 // with it (Task 9/28) and imports only WorkItemsTreeProvider.
 export class WorkItemNode extends vscode.TreeItem {
-  constructor(workItem: WorkItemSummary, agentRun?: { agent: string; status: string }, contextValue = 'workItemNode') {
-    super(workItem.title, vscode.TreeItemCollapsibleState.None);
+  constructor(
+    workItem: WorkItemSummary,
+    agentRun?: { agent: string; status: string },
+    contextValue = 'workItemNode',
+    hasChildren = false
+  ) {
+    super(
+      workItem.title,
+      hasChildren
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None
+    );
 
     if (agentRun) {
       // Show agent status in description
@@ -67,9 +156,7 @@ export class WorkItemNode extends vscode.TreeItem {
     } else {
       this.description = `#${workItem.id}`;
       this.tooltip = `${workItem.workItemType} - ${workItem.state}`;
-      this.iconPath = new vscode.ThemeIcon(
-        workItem.state === 'Active' ? 'circle-outline' : 'check'
-      );
+      this.iconPath = new vscode.ThemeIcon(iconForType(workItem.workItemType));
     }
 
     // NOTE: no `command` field here. Clicking a tree item fires the command

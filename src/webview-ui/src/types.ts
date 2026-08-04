@@ -108,6 +108,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
   // Consent: the agent requires user approval for a mutating tool (inline mode)
   | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> }
+  // Generic confirmation: in-chat card replacing native VS Code dialogs
+  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }> }
   // File search results for @ mentions
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history

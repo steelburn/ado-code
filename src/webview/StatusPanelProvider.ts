@@ -11,8 +11,9 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
   private agentCapabilities: AgentCapability[] = [];
 
   constructor(private services: Services) {
-    // Kick off initial async agent detection in the background.
-    void this.refreshAgents();
+    // Kick off initial async agent detection; fire tree refresh when done
+    // so the STATUS tree shows agents after the async probe completes.
+    void this.refreshAgents().then(() => this._onDidChangeTreeData.fire(undefined));
   }
 
   refresh(): void {
@@ -109,21 +110,22 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
 
     // ── Agents ────────────────────────────────────────────────────
     try {
-      const agentItem = new StatusItem('Agents', vscode.TreeItemCollapsibleState.Expanded);
-      agentItem.iconPath = new vscode.ThemeIcon('hubot');
-      for (const agent of this.agentCapabilities) {
-        const child = new StatusItem(
-          agent.displayName,
-          vscode.TreeItemCollapsibleState.None
-        );
-        child.iconPath = agent.installed
-          ? new vscode.ThemeIcon('check')
-          : new vscode.ThemeIcon('close');
-        child.description = agent.installed ? 'installed' : 'not found';
-        agentItem.children = agentItem.children ?? [];
-        agentItem.children.push(child);
+      const installed = this.agentCapabilities.filter(a => a.installed);
+      if (installed.length > 0) {
+        const agentItem = new StatusItem('Agents', vscode.TreeItemCollapsibleState.Expanded);
+        agentItem.iconPath = new vscode.ThemeIcon('hubot');
+        for (const agent of installed) {
+          const child = new StatusItem(
+            agent.displayName,
+            vscode.TreeItemCollapsibleState.None
+          );
+          child.iconPath = new vscode.ThemeIcon('check');
+          child.description = agent.version ?? 'installed';
+          agentItem.children = agentItem.children ?? [];
+          agentItem.children.push(child);
+        }
+        items.push(agentItem);
       }
-      items.push(agentItem);
     } catch {
       // agents not available
     }
