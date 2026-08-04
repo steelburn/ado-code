@@ -57,7 +57,7 @@ export class AdoClient {
     };
 
     const wiqlResponse = await this.post<WiqlResult>(
-      `/${project}/_apis/wit/wiql?api-version=7.1-preview.2`,
+      `/${project}/_apis/wit/wiql?api-version=7.1`,
       wiqlQuery
     );
 
@@ -81,7 +81,7 @@ export class AdoClient {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK).join(',');
       const batchResponse = await this.get<{ value: AdoWorkItem[] }>(
-        `/_apis/wit/workitems?ids=${chunk}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType&api-version=7.1-preview.3`
+        `/_apis/wit/workitems?ids=${chunk}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType&api-version=7.1`
       );
       results.push(...(batchResponse.value || []));
     }
@@ -101,7 +101,7 @@ export class AdoClient {
     };
 
     const wiqlResponse = await this.post<WiqlResult>(
-      `/${project}/_apis/wit/wiql?api-version=7.1-preview.2`,
+      `/${project}/_apis/wit/wiql?api-version=7.1`,
       wiqlQuery
     );
 
@@ -119,7 +119,7 @@ export class AdoClient {
    */
   async getProjectTeamMembers(project: string): Promise<import('./types').AdoTeamMember[]> {
     const teams = await this.get<{ value: Array<{ id: string; projectId: string; projectName: string }> }>(
-      `/_apis/teams?api-version=7.1-preview.3`
+      `/_apis/teams?api-version=7.1`
     );
     const projectTeams = (teams.value || []).filter(t => t.projectName === project);
 
@@ -128,7 +128,7 @@ export class AdoClient {
     for (const team of projectTeams) {
       try {
         const res = await this.get<{ value: Array<{ identity: { displayName: string; uniqueName: string } }> }>(
-          `/_apis/projects/${team.projectId}/teams/${team.id}/members?api-version=7.1-preview.2`
+          `/_apis/projects/${team.projectId}/teams/${team.id}/members?api-version=7.1`
         );
         for (const m of res.value || []) {
           const { displayName, uniqueName } = m.identity || {};
@@ -149,7 +149,7 @@ export class AdoClient {
    */
   async getMe(): Promise<{ displayName: string; emailAddress: string }> {
     const response = await fetch(
-      `${this.profileBaseUrl}/_apis/profile/profiles/me?api-version=7.1-preview.3`,
+      `${this.profileBaseUrl}/_apis/profile/profiles/me?api-version=7.1`,
       { headers: this.headers }
     );
     if (!response.ok) {
@@ -163,7 +163,7 @@ export class AdoClient {
     workItemId: number
   ): Promise<AdoWorkItem> {
     return this.get<AdoWorkItem>(
-      `/_apis/wit/workitems/${workItemId}?api-version=7.1-preview.3`
+      `/_apis/wit/workitems/${workItemId}?api-version=7.1`
     );
   }
 
@@ -177,7 +177,7 @@ export class AdoClient {
     // {id}/comments returns 200 (verified live on zencomputersystems: ids 10,
     // 20, 100 → 404 without project, 200 with).
     return this.post<AdoComment>(
-      `/${project}/_apis/wit/workItems/${workItemId}/comments?api-version=7.0`,
+      `/${project}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.4`,
       { text }
     );
   }
@@ -201,7 +201,7 @@ export class AdoClient {
     workItemType: string
   ): Promise<import('./types').AdoWorkItemTypeState[]> {
     const response = await this.get<{ value: import('./types').AdoWorkItemTypeState[] }>(
-      `/${project}/_apis/wit/workitemtypes/${workItemType}/states?api-version=7.1-preview.1`
+      `/${project}/_apis/wit/workitemtypes/${workItemType}/states?api-version=7.1`
     );
     return response.value || [];
   }
@@ -241,7 +241,7 @@ export class AdoClient {
     fields: Array<{ op: string; path: string; value: any }>
   ): Promise<any> {
     const response = await fetch(
-      `${this.baseUrl}/${project}/_apis/wit/workitems/${workItemId}?api-version=7.1-preview.3`,
+      `${this.baseUrl}/${project}/_apis/wit/workitems/${workItemId}?api-version=7.1`,
       {
         method: 'PATCH',
         headers: { ...this.headers, 'Content-Type': 'application/json-patch+json' },

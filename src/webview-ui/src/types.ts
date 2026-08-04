@@ -53,6 +53,8 @@ export type WebviewToExtensionMessage =
   // Input-bar tools: inject active-editor context / attach a file into the draft
   | { type: 'getEditorContext' }
   | { type: 'pickFiles' }
+  // File search for @ mentions
+  | { type: 'searchFiles'; query: string }
   // Consent: user answer to an agent consent request (inline mode mutating tool)
   | { type: 'consentResponse'; requestId: string; approved: boolean };
 
@@ -87,7 +89,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'editorContext'; text: string }
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
   // Consent: the agent requires user approval for a mutating tool (inline mode)
-  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> };
+  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> }
+  // File search results for @ mentions
+  | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> };
 
 // Shared types
 export interface MessageContext {

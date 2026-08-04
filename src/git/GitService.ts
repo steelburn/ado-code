@@ -136,4 +136,33 @@ export class GitService {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   }
+
+  /** Get the staged diff for commit message generation. */
+  async getStagedDiff(): Promise<string> {
+    try {
+      const { stdout } = await execFile('git', ['diff', '--cached', '--stat'], {
+        cwd: this.workspaceRoot,
+      });
+      if (!stdout.trim()) return '';
+
+      const { stdout: diff } = await execFile('git', ['diff', '--cached'], {
+        cwd: this.workspaceRoot,
+      });
+      return diff;
+    } catch {
+      return '';
+    }
+  }
+
+  /** Check if there are staged changes. */
+  async hasStagedChanges(): Promise<boolean> {
+    try {
+      const { stdout } = await execFile('git', ['diff', '--cached', '--name-only'], {
+        cwd: this.workspaceRoot,
+      });
+      return stdout.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
 }

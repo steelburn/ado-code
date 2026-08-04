@@ -15,7 +15,7 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file']);
 
 export function createToolExecutor(
   services: Services,
@@ -137,6 +137,30 @@ export function createToolExecutor(
         required: ['command'],
       },
     },
+    {
+      name: 'write_to_file',
+      description: 'Create or overwrite a file in the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Workspace-relative file path' },
+          content: { type: 'string', description: 'File content to write' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+    {
+      name: 'restore_checkpoint',
+      description: 'Restore workspace files to a previously saved checkpoint state (undo AI edits)',
+      parameters: {
+        type: 'object',
+        properties: {
+          checkpointId: { type: 'string', description: 'Checkpoint ID to restore' },
+          taskId: { type: 'string', description: 'Task ID the checkpoint belongs to' },
+        },
+        required: ['checkpointId', 'taskId'],
+      },
+    },
   ];
 
   const settings = getSettings();
@@ -184,6 +208,12 @@ export function createToolExecutor(
       // M4 fix: resolve the ACTIVE project lazily — only ADO-bound tools need
       // it, and org switches (Q1) take effect per-execute without recreating
       // the executor.
+      // Auto-checkpoint before file mutations
+      if (['edit_file', 'write_to_file', 'apply_diff'].includes(name) && args.path) {
+        try {
+          services.checkpoints.save('__auto__', [args.path]);
+        } catch { /* best-effort */ }
+      }
       const project = activeProject();
       try {
         switch (name) {
@@ -241,6 +271,12 @@ export function createToolExecutor(
           const files = await vscode.workspace.findFiles(args.glob ?? '**/*', '**/{node_modules,.git,dist,.vscode}/**', 500);
           return JSON.stringify(files.map(f => vscode.workspace.asRelativePath(f)));
         }
+        case 'write_to_file': {
+          const uri = resolveWorkspacePath(args.path); // C4: path confinement
+          const content = Buffer.from(args.content, 'utf8');
+          await vscode.workspace.fs.writeFile(uri, content);
+          return JSON.stringify({ ok: true, path: args.path, bytes: content.length });
+        }
         case 'apply_diff':
         case 'edit_file': {
           const uri = resolveWorkspacePath(args.path); // C4: path confinement
@@ -258,6 +294,10 @@ export function createToolExecutor(
           }
           await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
           return JSON.stringify({ ok: true, path: args.path });
+        }
+        case 'restore_checkpoint': {
+          const restored = services.checkpoints.restore(args.checkpointId, args.taskId);
+          return JSON.stringify({ ok: true, restored });
         }
         case 'run_terminal_command': {
           // C3 fix: execFile with arg array and NO shell — `sh -c` would give
@@ -285,6 +325,10 @@ export function createToolExecutor(
           return result.slice(0, 8000);
         }
         default:
+          // MCP tools use the mcp__<server>__<tool> prefix convention
+          if (name.startsWith('mcp__')) {
+            return await services.mcp.callTool(name, args);
+          }
           return JSON.stringify({ error: `unknown tool: ${name}` });
         }
       } catch (err) {

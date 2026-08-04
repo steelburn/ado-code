@@ -252,6 +252,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'pickFiles':
             await this.pickFilesForChat();
             break;
+          case 'searchFiles': {
+            const query = message.query.toLowerCase();
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders) {
+              this.postMessage({ type: 'fileSearchResults', results: [] });
+              break;
+            }
+            const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 200);
+            const results = files
+              .map(uri => {
+                const relativePath = vscode.workspace.asRelativePath(uri, false);
+                const name = relativePath.split('/').pop() || '';
+                return { path: relativePath, name };
+              })
+              .filter(f => f.name.toLowerCase().includes(query) || f.path.toLowerCase().includes(query))
+              .slice(0, 10);
+            this.postMessage({ type: 'fileSearchResults', results });
+            break;
+          }
           case 'pickMode':
             await this.pickMode();
             break;

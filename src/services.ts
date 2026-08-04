@@ -3,6 +3,8 @@ import { AdoClient } from './ado/client';
 import { GitService } from './git/GitService';
 import { ChangelogService } from './changelog/ChangelogService';
 import { AgentRegistry } from './agents/registry';
+import { CheckpointService } from './services/checkpoints/CheckpointService';
+import { McpManager } from './services/mcp/McpManager';
 import { getSettings, getActiveOrg } from './config/settings';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
@@ -14,6 +16,8 @@ export interface Services {
   git: GitService;
   changelog: ChangelogService;
   agents: AgentRegistry;
+  checkpoints: CheckpointService;
+  mcp: McpManager;
 }
 
 /**
@@ -50,5 +54,7 @@ export function createServices(context: vscode.ExtensionContext): Services {
     git: new GitService(workspaceRoot),
     changelog: new ChangelogService(workspaceRoot),
     agents: new AgentRegistry(),
+    checkpoints: new CheckpointService(workspaceRoot),
+    mcp: new McpManager(context),
   };
 }

@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -25,7 +25,8 @@
     "onCommand:adoCode.changeWorkItemState",
     "onView:adoCode.unassignedWorkItems",
     "onCommand:adoCode.takeOwnership",
-    "onCommand:adoCode.reassignWorkItem"
+    "onCommand:adoCode.reassignWorkItem",
+    "onCommand:adoCode.generateCommitMessage"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -87,6 +88,12 @@
         "command": "adoCode.reassignWorkItem",
         "title": "Reassign To…",
         "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.generateCommitMessage",
+        "title": "Generate Commit Message",
+        "icon": "$(sparkle)",
+        "category": "ADO Code"
       }
     ],
     "keybindings": [
@@ -102,6 +109,13 @@
       }
     ],
     "menus": {
+      "scm/title": [
+        {
+          "command": "adoCode.generateCommitMessage",
+          "when": "scmRepositoryHasChanges",
+          "group": "navigation"
+        }
+      ],
       "view/title": [
         {
           "command": "adoCode.refreshWorkItems",
@@ -328,6 +342,11 @@
           "default": "",
           "enum": ["", "claude", "codex", "opencode", "hermes", "pi", "openclaw", "aider", "gemini", "cursor-agent"],
           "description": "Default agent for delegation when none is specified (M-9: includes all 9 registered agents)"
+        },
+        "adoCode.mcp.servers": {
+          "type": "array",
+          "default": [],
+          "description": "MCP servers to connect to: [{ \"name\": \"myserver\", \"command\": \"npx\", \"args\": [\"-y\", \"@myorg/mcp-server\"] }]"
         }
       }
     }
@@ -351,6 +370,7 @@
     "@typescript-eslint/parser": "^7.0.0",
     "@vscode/test-electron": "^3.1.0",
     "eslint": "^8.56.0",
+    "zod": "^3.23.0",
     "glob": "^13.0.6",
     "mocha": "^11.7.6",
     "typescript": "^5.3.3"

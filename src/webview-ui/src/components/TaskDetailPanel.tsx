@@ -47,11 +47,21 @@ function getCommentDate(c: { date?: string; createdDate?: string }): string | un
 export function TaskDetailPanel({ detail, onClarify, onCheckReplies, onClose }: Props) {
   const [expanded, setExpanded] = useState(true);
   const [question, setQuestion] = useState('');
+  const [sending, setSending] = useState(false);
+  const [posted, setPosted] = useState(false);
 
   const handleClarify = () => {
-    if (question.trim()) {
+    if (question.trim() && !sending) {
+      setSending(true);
       onClarify(detail.id, question.trim());
       setQuestion('');
+
+      // Show confirmation briefly, then reset
+      setTimeout(() => {
+        setSending(false);
+        setPosted(true);
+        setTimeout(() => setPosted(false), 1500);
+      }, 600);
     }
   };
 
@@ -167,10 +177,24 @@ export function TaskDetailPanel({ detail, onClarify, onCheckReplies, onClose }: 
               onChange={e => setQuestion(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask the creator a question…"
+              disabled={sending}
             />
-            <button className="pill-btn" onClick={handleClarify} title="Post clarification request to ADO thread">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M5.255 5.786a.237.237 0 0 0 .241.247h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 0 0 .25.246h.811a.25.25 0 0 0 .25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286zm1.557 5.763c0 .533.425.927 1.01.927.609 0 1.028-.394 1.028-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94z"/></svg>
-              Clarify
+            <button
+              className="pill-btn"
+              onClick={handleClarify}
+              disabled={sending || !question.trim()}
+              title={posted ? '✓ Posted' : sending ? 'Posting…' : 'Post clarification request to ADO thread'}
+            >
+              {posted ? (
+                <>✓ Posted</>
+              ) : sending ? (
+                <>Posting…</>
+              ) : (
+                <>
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M5.255 5.786a.237.237 0 0 0 .241.247h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 0 0 .25.246h.811a.25.25 0 0 0 .25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286zm1.557 5.763c0 .533.425.927 1.01.927.609 0 1.028-.394 1.028-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94z"/></svg>
+                  Clarify
+                </>
+              )}
             </button>
             <button className="pill-btn" onClick={() => onCheckReplies(detail.id)} title="Check for new replies">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.451.004.08-.416c.287-.346.92-.598 1.465-.598.703 0 1.002.422.808 1.319zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>

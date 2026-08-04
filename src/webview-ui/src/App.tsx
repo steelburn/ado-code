@@ -250,6 +250,7 @@ function App() {
     setMessages(prev => [...prev, { role: 'user', content }]);
     vscode.postMessage({ type: 'userMessage', content });
     setDraft('');
+    setLoading(true); // Show loading indicator immediately
     // A new turn aborts any in-flight run — the host denies the pending
     // prompt; drop the card here too.
     setConsent(null);

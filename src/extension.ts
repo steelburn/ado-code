@@ -5,6 +5,7 @@ import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider
 import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
 import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
+import { GitService } from './git/GitService';
 import { AgentRunner } from './agents/AgentRunner';
 import { AgentRun } from './agents/types';
 
@@ -75,6 +76,92 @@ export async function activate(context: vscode.ExtensionContext) {
       statesCache.clearAll();
       await chatProvider.refreshWorkItems();
       vscode.window.showInformationMessage('ADO Code: switched organization.');
+    })
+  );
+
+  // Generate Commit Message: staged-diff → LLM → clipboard
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.generateCommitMessage', async () => {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders) {
+        vscode.window.showErrorMessage('ADO Code: No workspace open');
+        return;
+      }
+      const rootPath = workspaceFolders[0].uri.fsPath;
+      const git = new GitService(rootPath);
+
+      const hasStaged = await git.hasStagedChanges();
+      if (!hasStaged) {
+        vscode.window.showWarningMessage('ADO Code: No staged changes. Stage files first.');
+        return;
+      }
+
+      const diff = await git.getStagedDiff();
+      if (!diff) {
+        vscode.window.showWarningMessage('ADO Code: Could not read staged diff.');
+        return;
+      }
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.SourceControl,
+        title: 'Generating commit message...',
+        cancellable: false,
+      }, async () => {
+        const settings = getSettings();
+        const apiUrl = settings.llmApiUrl || 'https://api.openai.com/v1';
+        const apiKey = settings.llmApiKey;
+        const model = settings.llmModel || 'gpt-4o';
+
+        if (!apiKey) {
+          vscode.window.showErrorMessage('ADO Code: No API key configured. Set llmApiKey in settings.');
+          return;
+        }
+
+        const prompt = `Generate a concise git commit message for the following staged changes.
+
+Rules:
+- Use conventional commits format: type(scope): description
+- Types: feat, fix, docs, style, refactor, test, chore, perf, ci, build
+- Keep the subject line under 72 characters
+- Use imperative mood ("add feature" not "added feature")
+- Don't include a body unless the changes are complex
+- Focus on WHAT changed and WHY, not HOW
+
+Staged changes:
+${diff.substring(0, 8000)}
+
+Generate ONLY the commit message, nothing else.`;
+
+        try {
+          const response = await fetch(`${apiUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              messages: [{ role: 'user', content: prompt }],
+              max_tokens: 200,
+              temperature: 0.3,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+          }
+
+          const data: any = await response.json();
+          const message = data.choices?.[0]?.message?.content?.trim();
+
+          if (message) {
+            await vscode.env.clipboard.writeText(message);
+            vscode.window.showInformationMessage(`ADO Code: Commit message copied to clipboard: ${message}`);
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`ADO Code: Failed to generate commit message: ${err instanceof Error ? err.message : err}`);
+        }
+      });
     })
   );
 
