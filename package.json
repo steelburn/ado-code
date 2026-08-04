@@ -485,5 +485,11 @@
     "mocha": "^11.7.6",
     "typescript": "^5.3.3",
     "zod": "^3.23.0"
+  },
+  "overrides": {
+    "mocha": {
+      "diff": "^9.0.0",
+      "serialize-javascript": "^7.0.7"
+    }
   }
 }
