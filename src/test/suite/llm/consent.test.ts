@@ -1,5 +1,10 @@
 import * as assert from 'assert';
 import { createConsentBroker } from '../../../llm/consent';
+import {
+  isCommandSessionApproved,
+  addSessionCommandApproval,
+  clearSessionAutoApprovals,
+} from '../../../llm/tool-approval-ui';
 
 suite('ConsentBroker', () => {
   test('approve resolves the decision to true', async () => {
@@ -60,5 +65,38 @@ suite('ConsentBroker', () => {
     assert.deepStrictEqual(broker.pending?.tool, 'edit_file');
     assert.deepStrictEqual(broker.pending?.args, args);
     assert.ok(broker.pending?.requestId);
+  });
+});
+
+suite('Session command approval cache', () => {
+  setup(() => {
+    clearSessionAutoApprovals();
+  });
+
+  test('command is not session-approved by default', () => {
+    assert.strictEqual(isCommandSessionApproved('git difftool'), false);
+  });
+
+  test('addSessionCommandApproval makes command session-approved', () => {
+    addSessionCommandApproval('git difftool');
+    assert.strictEqual(isCommandSessionApproved('git difftool'), true);
+  });
+
+  test('session approval is exact-match (different command not approved)', () => {
+    addSessionCommandApproval('git diff');
+    assert.strictEqual(isCommandSessionApproved('git diff'), true);
+    assert.strictEqual(isCommandSessionApproved('git status'), false);
+  });
+
+  test('clearSessionAutoApprovals clears command cache', () => {
+    addSessionCommandApproval('npm run build');
+    assert.strictEqual(isCommandSessionApproved('npm run build'), true);
+    clearSessionAutoApprovals();
+    assert.strictEqual(isCommandSessionApproved('npm run build'), false);
+  });
+
+  test('session approval trims whitespace', () => {
+    addSessionCommandApproval('  git log  ');
+    assert.strictEqual(isCommandSessionApproved('git log'), true);
   });
 });

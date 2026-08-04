@@ -3,6 +3,17 @@
 All notable changes to ADO Code will be documented in this file.
 
 ## [0.5.1] - 2026-08-04
+## [0.5.3] - 2026-08-04
+
+### Features
+- **Terminal command permission prompts**: Non-allowlisted terminal commands now show a 4-option permission dialog instead of a hard block
+  - **Allow Once** — execute this command one time
+  - **Allow for Session** — execute and auto-approve this exact command for the rest of the session
+  - **Allow Permanently** — execute and add the command to the permanent allow list (`adoCode.act.terminalAllowlist`)
+  - **Deny** — reject the command
+  - Works in both `act` and `inline` modes
+  - Session approvals reset when chat is cleared or a new session starts
+
 ## [0.5.2] - 2026-08-04
 
 ### Improvements

@@ -271,9 +271,9 @@ function App() {
     setConsent(null);
   }, []);
 
-  const handleConsentResponse = useCallback((requestId: string, approved: boolean) => {
+  const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
     setConsent(null);
-    vscode.postMessage({ type: 'consentResponse', requestId, approved });
+    vscode.postMessage({ type: 'consentResponse', requestId, approved, scope });
   }, []);
 
   const handleClear = useCallback(() => {

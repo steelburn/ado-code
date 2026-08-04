@@ -49,9 +49,17 @@ suite('ToolExecutor security', () => {
     assert.ok(String(evil3).includes('not allowed'));
   });
 
-  test('allowlist: git difftool is rejected (not exact argv match)', async () => {
+  test('allowlist: non-allowlisted command routes through approval hook', async () => {
     const ex = makeExecutor('act');
-    const res = await ex.execute('run_terminal_command', { command: 'git difftool' });
+    // "echo test" is not in the default allowlist → approval hook is called.
+    // The stub onApprove returns true, so the command proceeds (no "not allowed").
+    const res = await ex.execute('run_terminal_command', { command: 'echo test' });
+    assert.ok(!String(res).includes('not allowed'));
+  });
+
+  test('act mode: non-allowlisted command without approval hook is rejected', async () => {
+    const ex = makeExecutor('act', false);
+    const res = await ex.execute('run_terminal_command', { command: 'echo test' });
     assert.ok(String(res).includes('not allowed'));
   });
 

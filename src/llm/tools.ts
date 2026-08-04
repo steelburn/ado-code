@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LlmTool } from './types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
+import { isCommandSessionApproved } from './tool-approval-ui';
 
 export interface ToolExecutor {
   tools: LlmTool[];
@@ -237,11 +238,21 @@ export function createToolExecutor(
         }
         // C3 fix: act mode still enforces the terminal allowlist on
         // run_terminal_command (tokenized, operator-free — see helper below).
+        // Commands not in the allowlist are routed through the approval hook
+        // so the user can allow once, per-session, or permanently.
         if (name === 'run_terminal_command' && state.mode === 'act') {
           const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
           const command = String(args.command ?? '');
           if (!isAllowlistedCommand(command, allowlist)) {
-            return JSON.stringify({ error: `command not allowed in act mode (allowlist + no shell operators): ${command}` });
+            // Check session cache first (user chose "Allow for Session" earlier)
+            if (!isCommandSessionApproved(command)) {
+              // Not in allowlist and not session-approved — ask user
+              if (!hooks?.onApprove) {
+                return JSON.stringify({ error: `command not allowed in act mode (allowlist + no shell operators): ${command}` });
+              }
+              const ok = await hooks.onApprove(name, args);
+              if (!ok) return JSON.stringify({ error: `command rejected by user: ${command}` });
+            }
           }
         }
       }

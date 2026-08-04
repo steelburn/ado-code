@@ -1285,6 +1285,17 @@ code {
   gap: 8px;
 }
 
+.consent-card-actions--terminal {
+  flex-wrap: wrap;
+}
+
+.consent-card-actions--terminal .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.85em;
+  padding: 5px 10px;
+}
+
 .btn-approve {
   background: var(--vscode-testing-iconPassed, #388a34);
   color: #ffffff;
@@ -1294,6 +1305,18 @@ code {
 
 .btn-approve:hover {
   background: var(--vscode-testing-iconPassed, #388a34);
+  opacity: 0.85;
+}
+
+.btn-reject {
+  background: var(--vscode-testing-iconFailed, #c24038);
+  color: #ffffff;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.btn-reject:hover {
+  background: var(--vscode-testing-iconFailed, #c24038);
   opacity: 0.85;
 }
 

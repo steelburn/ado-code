@@ -79,14 +79,54 @@ export function isSessionAutoApproved(toolName: string): boolean {
 }
 
 /**
- * Clear all session-wide auto-approvals.
- * Call this when starting a new task or clearing the chat.
- */
-export function clearSessionAutoApprovals(): void {
-  sessionAutoApprove.clear()
-}
+ /** Clear all session-wide auto-approvals.
+  * Call this when starting a new task or clearing the chat.
+  */
+ export function clearSessionAutoApprovals(): void {
+   sessionAutoApprove.clear()
+   sessionCommandApprove.clear()
+ }
 
-// ─── Core approval function ─────────────────────────────────────────────────
+ // ─── Per-command session approval (terminal command allowlist) ──────────────
+
+ /**
+  * Tracks exact terminal commands the user chose to "allow for session".
+  * Key is the trimmed command string. Reset when the chat is cleared.
+  */
+ const sessionCommandApprove = new Set<string>()
+
+ /** Check if a terminal command has been session-approved. */
+ export function isCommandSessionApproved(command: string): boolean {
+   return sessionCommandApprove.has(command.trim())
+ }
+
+ /** Add a terminal command to the session approval cache. */
+ export function addSessionCommandApproval(command: string): void {
+   sessionCommandApprove.add(command.trim())
+ }
+
+ // ─── Permanent allowlist update ────────────────────────────────────────────
+
+ /**
+  * Add a command to the VS Code setting `adoCode.act.terminalAllowlist`.
+  * This persists across sessions so the command auto-executes in act mode.
+  */
+ export async function addToTerminalAllowlist(command: string): Promise<void> {
+   const cfg = vscode.workspace.getConfiguration('adoCode')
+   const current = cfg.get<string[]>('act.terminalAllowlist', [
+     'npm test', 'npm run lint', 'git diff', 'git status',
+   ])
+   const trimmed = command.trim()
+   if (!current.includes(trimmed)) {
+     await cfg.update(
+       'act.terminalAllowlist',
+       [...current, trimmed],
+       vscode.ConfigurationTarget.Global,
+     )
+   }
+ }
+
+ // ─── Core approval function ─────────────────────────────────────────────────
 
 /**
  * Ask the user to approve (or reject) a tool execution.

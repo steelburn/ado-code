@@ -11,6 +11,7 @@ import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { createConsentBroker } from '../llm/consent';
+import { isCommandSessionApproved, addSessionCommandApproval, addToTerminalAllowlist } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
@@ -432,9 +433,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.refreshWorkItems();
             break;
           }
-          case 'consentResponse':
+          case 'consentResponse': {
+            // Process scope before resolving — the broker clears pending on resolve.
+            if (message.approved && message.scope && this.consentBroker.pending) {
+              const pending = this.consentBroker.pending;
+              if (pending.tool === 'run_terminal_command') {
+                const cmd = String(pending.args.command ?? '').trim();
+                if (message.scope === 'session') {
+                  addSessionCommandApproval(cmd);
+                } else if (message.scope === 'permanent') {
+                  // Fire-and-forget: update setting in background
+                  addToTerminalAllowlist(cmd).catch(err =>
+                    logger.error(`[tool-approval] failed to update allowlist: ${err}`),
+                  );
+                }
+              }
+            }
             this.consentBroker.resolve(message.requestId, message.approved);
             break;
+          }
           // Task 2: session management
           case 'listSessions':
             this.sendSessionList();

@@ -6,9 +6,11 @@ export interface ConsentRequest {
   args: Record<string, any>;
 }
 
+type ConsentScope = 'once' | 'session' | 'permanent';
+
 interface Props {
   request: ConsentRequest;
-  onRespond: (requestId: string, approved: boolean) => void;
+  onRespond: (requestId: string, approved: boolean, scope?: ConsentScope) => void;
 }
 
 /** One-line human summary of what the tool is about to do (args → hint). */
@@ -35,8 +37,12 @@ function summarize(tool: string, args: Record<string, any>): string {
  * Inline consent card: the agent (LLM) wants to run a mutating tool and the
  * user must approve before it executes (inline mode). Rendered above the
  * input bar so it can't be missed; Approve/Reject posts consentResponse.
+ *
+ * For run_terminal_command, shows 4 options: Allow Once, Allow for Session,
+ * Allow Permanently, Deny — so users can grant progressive permission levels.
  */
 export function ConsentCard({ request, onRespond }: Props) {
+  const isTerminal = request.tool === 'run_terminal_command';
   const argsText = Object.keys(request.args).length > 0
     ? JSON.stringify(request.args, null, 2)
     : '{}';
@@ -46,7 +52,11 @@ export function ConsentCard({ request, onRespond }: Props) {
         <span className="consent-card-icon">🔐</span>
         <div className="consent-card-title">
           <span className="consent-card-heading">Consent required</span>
-          <span className="consent-card-sub">The agent wants to run a mutating tool</span>
+          <span className="consent-card-sub">
+            {isTerminal
+              ? 'Terminal command not in allow list'
+              : 'The agent wants to run a mutating tool'}
+          </span>
         </div>
       </div>
       <div className="consent-card-body">
@@ -54,19 +64,53 @@ export function ConsentCard({ request, onRespond }: Props) {
         <div className="consent-card-summary">{summarize(request.tool, request.args)}</div>
         <pre className="consent-card-args">{argsText}</pre>
       </div>
-      <div className="consent-card-actions">
-        <button
-          className="btn btn-approve"
-          onClick={() => onRespond(request.requestId, true)}
-        >
-          Approve
-        </button>
-        <button
-          className="btn btn-secondary"
-          onClick={() => onRespond(request.requestId, false)}
-        >
-          Reject
-        </button>
+      <div className={`consent-card-actions${isTerminal ? ' consent-card-actions--terminal' : ''}`}>
+        {isTerminal ? (
+          <>
+            <button
+              className="btn btn-approve"
+              onClick={() => onRespond(request.requestId, true)}
+              title="Allow this command to run one time"
+            >
+              Allow Once
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => onRespond(request.requestId, true, 'session')}
+              title="Allow this exact command for the rest of this session"
+            >
+              Allow for Session
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => onRespond(request.requestId, true, 'permanent')}
+              title="Add this command to the permanent allow list"
+            >
+              Allow Permanently
+            </button>
+            <button
+              className="btn btn-reject"
+              onClick={() => onRespond(request.requestId, false)}
+            >
+              Deny
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              className="btn btn-approve"
+              onClick={() => onRespond(request.requestId, true)}
+            >
+              Approve
+            </button>
+            <button
+              className="btn btn-reject"
+              onClick={() => onRespond(request.requestId, false)}
+            >
+              Reject
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
