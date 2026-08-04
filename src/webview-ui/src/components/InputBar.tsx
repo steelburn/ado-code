@@ -2,6 +2,32 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Button } from './ui/Button';
 import { cn } from './ui/cn';
 
+// ── Slash command definitions (mirrors src/shared/slashCommands.ts) ──
+interface SlashCommand {
+  name: string;
+  description: string;
+  usage: string;
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { name: 'status',    description: 'Change work item state',        usage: '/status <state>' },
+  { name: 'comment',   description: 'Add comment to work item',     usage: '/comment <text>' },
+  { name: 'pick',      description: 'Pick a work item',             usage: '/pick' },
+  { name: 'assign',    description: 'Assign work item',             usage: '/assign <person>' },
+  { name: 'clear',     description: 'Clear chat history',           usage: '/clear' },
+  { name: 'mode',      description: 'Switch mode (chat/plan/act)',  usage: '/mode [mode]' },
+  { name: 'undo',      description: 'Undo last state change',       usage: '/undo' },
+  { name: 'help',      description: 'Show available commands',      usage: '/help' },
+  { name: 'delegate',  description: 'Delegate to an agent',         usage: '/delegate [agent] <prompt>' },
+  { name: 'resume',    description: 'Resume a previous session',    usage: '/resume' },
+  { name: 'remember',  description: 'Save a note for context',      usage: '/remember <text>' },
+  { name: 'forget',    description: 'Clear saved notes',            usage: '/forget' },
+];
+
+function matchSlashCommands(query: string): SlashCommand[] {
+  return SLASH_COMMANDS.filter(cmd => cmd.name.startsWith(query.toLowerCase()));
+}
+
 declare function acquireVsCodeApi(): {
   postMessage(msg: any): void;
   getState(): any;
@@ -43,6 +69,14 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
   const [mentionStartPos, setMentionStartPos] = useState(0);
   const mentionDropdownRef = useRef<HTMLDivElement>(null);
+
+  // ── / slash command state ──
+  const [slashQuery, setSlashQuery] = useState('');
+  const [slashMatches, setSlashMatches] = useState<SlashCommand[]>([]);
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [showSlashDropdown, setShowSlashDropdown] = useState(false);
+  const [slashStartPos, setSlashStartPos] = useState(0);
+  const slashDropdownRef = useRef<HTMLDivElement>(null);
 
   // ── Image attachments ──
   const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -147,6 +181,54 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
     }, 0);
   }, [value, mentionStartPos, onValueChange]);
 
+  // ── / slash command detection ──
+  const detectSlashCommand = useCallback((text: string, cursorPos: number) => {
+    const beforeCursor = text.substring(0, cursorPos);
+    const slashIndex = beforeCursor.lastIndexOf('/');
+    if (slashIndex === -1) { setShowSlashDropdown(false); return; }
+    if (slashIndex > 0 && beforeCursor[slashIndex - 1] !== ' ' && beforeCursor[slashIndex - 1] !== '\n') {
+      setShowSlashDropdown(false); return;
+    }
+    const query = beforeCursor.substring(slashIndex + 1);
+    if (query.includes(' ')) { setShowSlashDropdown(false); return; }
+    setSlashQuery(query);
+    setSlashStartPos(slashIndex);
+    const matches = matchSlashCommands(query);
+    setSlashMatches(matches);
+    setSlashActiveIndex(0);
+    setShowSlashDropdown(matches.length > 0);
+  }, []);
+
+  // Close slash dropdown on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (slashDropdownRef.current && !slashDropdownRef.current.contains(e.target as Node)) {
+        setShowSlashDropdown(false);
+      }
+    };
+    if (showSlashDropdown) {
+      document.addEventListener('mousedown', handleClick);
+      return () => document.removeEventListener('mousedown', handleClick);
+    }
+  }, [showSlashDropdown]);
+
+  const insertSlashCommand = useCallback((cmd: SlashCommand) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const cursorPos = textarea.selectionStart;
+    const before = value.substring(0, slashStartPos);
+    const after = value.substring(cursorPos);
+    const newValue = `${before}/${cmd.name} ${after}`;
+    onValueChange(newValue);
+    setShowSlashDropdown(false);
+    setTimeout(() => {
+      const newPos = slashStartPos + cmd.name.length + 2;
+      textarea.selectionStart = newPos;
+      textarea.selectionEnd = newPos;
+      textarea.focus();
+    }, 0);
+  }, [value, slashStartPos, onValueChange]);
+
   // ── Image paste support ──
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData.items);
@@ -233,6 +315,32 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
       }
     }
 
+    // Handle slash command dropdown navigation
+    if (showSlashDropdown) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashActiveIndex(prev => (prev + 1) % slashMatches.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashActiveIndex(prev => (prev - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        if (slashMatches[slashActiveIndex]) {
+          insertSlashCommand(slashMatches[slashActiveIndex]);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSlashDropdown(false);
+        return;
+      }
+    }
+
     // Enter to send (without Shift)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -276,8 +384,9 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
     const newValue = e.target.value;
     onValueChange(newValue);
     detectMention(newValue, e.target.selectionStart);
+    detectSlashCommand(newValue, e.target.selectionStart);
     setHistoryIndex(-1);
-  }, [onValueChange, detectMention]);
+  }, [onValueChange, detectMention, detectSlashCommand]);
 
   const handleClear = () => {
     setShowConfirm(true);
@@ -433,6 +542,27 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
                   }}>
                     {suggestion.path}
                   </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* / Slash command dropdown */}
+          {showSlashDropdown && slashMatches.length > 0 && (
+            <div
+              ref={slashDropdownRef}
+              className="slash-dropdown"
+            >
+              <div className="slash-dropdown-header">Commands</div>
+              {slashMatches.map((cmd, index) => (
+                <div
+                  key={cmd.name}
+                  className={cn('slash-option', index === slashActiveIndex && 'slash-active')}
+                  onClick={() => insertSlashCommand(cmd)}
+                  onMouseEnter={() => setSlashActiveIndex(index)}
+                >
+                  <span className="slash-name">/{cmd.name}</span>
+                  <span className="slash-desc">{cmd.description}</span>
                 </div>
               ))}
             </div>

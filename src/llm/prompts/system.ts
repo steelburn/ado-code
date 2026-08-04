@@ -26,6 +26,10 @@ export interface SystemPromptOptions {
   customInstructions?: string;
   /** Tool names actually registered in the runtime. Falls back to mode defaults. */
   availableTools?: string[];
+  /** Optional user memory prompt string (from UserMemory.toPromptString()). */
+  memoryPrompt?: string;
+  /** Optional workspace memory prompt string (from WorkspaceMemory.toPromptString()). */
+  workspaceMemoryPrompt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +154,22 @@ function buildCustomInstructionsSection(
   ].join('\n');
 }
 
+/** User memories — persistent preferences, instructions, corrections, context. */
+function buildMemorySection(memoryPrompt?: string): string {
+  if (!memoryPrompt || memoryPrompt.trim().length === 0) {
+    return '';
+  }
+  return memoryPrompt.trim();
+}
+
+/** Workspace memory — project-scoped key-value entries. */
+function buildWorkspaceMemorySection(workspaceMemoryPrompt?: string): string {
+  if (!workspaceMemoryPrompt || workspaceMemoryPrompt.trim().length === 0) {
+    return '';
+  }
+  return workspaceMemoryPrompt.trim();
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -178,13 +198,15 @@ function formatOsName(osId: string): string {
  * and extend without touching a single monolithic template string.
  */
 export function generateSystemPrompt(options: SystemPromptOptions): string {
-  const { mode, workspacePath, os, customInstructions, availableTools } =
+  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt } =
     options;
 
   const sections: string[] = [
     buildRoleSection(mode),
     buildToolsSection(mode, availableTools),
     buildToolGuidelines(mode),
+    buildMemorySection(memoryPrompt),
+    buildWorkspaceMemorySection(workspaceMemoryPrompt),
     buildEnvironmentSection(workspacePath, os),
     buildOutputFormatSection(),
     buildCustomInstructionsSection(customInstructions),

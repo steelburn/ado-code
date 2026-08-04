@@ -755,7 +755,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.conversation.push({ role: 'user', content: finalContent });
     this.trimConversation();
     const messages: LlmMessage[] = [
-      { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
+      { role: 'system', content: buildSystemPrompt(this.activeWorkItem, this.services.memory.toPromptString()) },
       ...this.conversation,
     ];
     try {

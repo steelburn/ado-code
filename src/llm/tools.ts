@@ -15,7 +15,7 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory']);
 
 export function createToolExecutor(
   services: Services,
@@ -173,6 +173,33 @@ export function createToolExecutor(
         },
         required: ['key', 'category', 'content'],
       },
+    },
+    // ── Workspace memory tools ──────────────────────────────────────
+    {
+      name: 'read_workspace_memory',
+      description: 'Read a workspace-scoped memory entry by key',
+      parameters: {
+        type: 'object',
+        properties: { key: { type: 'string', description: 'Memory key to read' } },
+        required: ['key'],
+      },
+    },
+    {
+      name: 'write_workspace_memory',
+      description: 'Write or overwrite a workspace-scoped memory entry (key-value store under .ado-code/memory/)',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Memory key' },
+          value: { type: 'string', description: 'Content to store' },
+        },
+        required: ['key', 'value'],
+      },
+    },
+    {
+      name: 'list_workspace_memory',
+      description: 'List all workspace memory keys',
+      parameters: { type: 'object', properties: {} },
     },
   ];
 
@@ -336,6 +363,25 @@ export function createToolExecutor(
             });
           });
           return result.slice(0, 8000);
+        }
+        case 'set_memory': {
+          services.memory.set(args.key, args.category, args.content);
+          return JSON.stringify({ ok: true, key: args.key, category: args.category });
+        }
+        case 'read_workspace_memory': {
+          const val = services.workspaceMemory.read(args.key);
+          if (val === null) {
+            return JSON.stringify({ error: `key '${args.key}' not found in workspace memory` });
+          }
+          return JSON.stringify({ key: args.key, value: val });
+        }
+        case 'write_workspace_memory': {
+          services.workspaceMemory.write(args.key, args.value);
+          return JSON.stringify({ ok: true, key: args.key });
+        }
+        case 'list_workspace_memory': {
+          const keys = services.workspaceMemory.list();
+          return JSON.stringify(keys);
         }
         default:
           // MCP tools use the mcp__<server>__<tool> prefix convention

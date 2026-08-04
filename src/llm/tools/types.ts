@@ -40,6 +40,10 @@ export type ToolName =
   | 'update_work_item_state'
   | 'add_comment'
   | 'delegate_to_agent'
+  | 'read_workspace_memory'
+  | 'write_workspace_memory'
+  | 'list_workspace_memory'
+  | 'set_memory'
 
 /**
  * Type map defining the native (typed) argument structure for each tool.
@@ -84,7 +88,7 @@ export interface ToolUse<TName extends ToolName = ToolName> {
 // ---------------------------------------------------------------------------
 
 /** Logical groupings of tools for UI and mode-gating. */
-export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado'
+export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado' | 'memory'
 
 /** Maps each ToolGroup to its member ToolNames. */
 export interface ToolGroupMap {
@@ -93,6 +97,7 @@ export interface ToolGroupMap {
   execute: ('execute_command' | 'delegate_to_agent')[]
   mcp: never[]
   ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment')[]
+  memory: ('read_workspace_memory' | 'write_workspace_memory' | 'list_workspace_memory' | 'set_memory')[]
 }
 
 /** Default group-to-tools mapping. */
@@ -102,6 +107,7 @@ export const TOOL_GROUP_MAP: ToolGroupMap = {
   execute: ['execute_command', 'delegate_to_agent'],
   mcp: [],
   ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment'],
+  memory: ['read_workspace_memory', 'write_workspace_memory', 'list_workspace_memory', 'set_memory'],
 }
 
 /** Human-readable display names for each tool. */
@@ -122,6 +128,10 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   update_work_item_state: 'Update state',
   add_comment: 'Add comment',
   delegate_to_agent: 'Delegate to agent',
+  read_workspace_memory: 'Read workspace memory',
+  write_workspace_memory: 'Write workspace memory',
+  list_workspace_memory: 'List workspace memory',
+  set_memory: 'Set user memory',
 }
 
 // ---------------------------------------------------------------------------
