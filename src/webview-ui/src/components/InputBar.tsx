@@ -566,6 +566,9 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
                 >
                   <span className="slash-name">/{cmd.name}</span>
                   <span className="slash-desc">{cmd.description}</span>
+                  {(cmd.usage.includes('<') || cmd.usage.includes('[')) && (
+                    <span className="slash-usage">{cmd.usage}</span>
+                  )}
                 </div>
               ))}
             </div>
