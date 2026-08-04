@@ -2,6 +2,26 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.4.1] - 2026-08-04
+
+### Feature Visibility Overhaul
+- **Output Channel**: New "ADO Code" output channel for structured logging across all subsystems (MCP, memory, checkpoints, context, agents)
+- **Status Panel**: New sidebar tree view showing mode, memory counts, MCP servers, and agent status at a glance
+- **Memory Browser**: Commands to view, edit, and clear user/workspace memory from the command palette (Show Memory, Edit Memory Entry, Clear All Memory, Show Workspace Memory)
+- **Token Usage Indicator**: Status bar item showing approximate token usage during conversations
+- **Stop Button**: Red stop button appears during LLM streaming to cancel generation mid-response
+- **Set Mode Command**: QuickPick to switch between Inline/Plan/Act modes from command palette
+- **Checkpoint Browser**: List and restore checkpoints from command palette (List Checkpoints)
+
+### MCP Integration Fix
+- MCP servers now connect on extension activation (was silently broken — `connectAll()` was never called)
+
+### Bug Fixes
+- Fixed slash command autocomplete: arrow-key navigation now correctly selects the highlighted command (was a stale closure bug in `handleKeyDown` dependency array)
+
+### Cleanup
+- Removed unused extended modes (code/architect/ask/debug) — only inline/plan/act are wired
+
 ## [0.4.0] - 2026-08-04
 
 ### Agent Reference Files
