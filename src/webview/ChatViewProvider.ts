@@ -819,7 +819,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         session.name = firstUser.content.slice(0, 60) + (firstUser.content.length > 60 ? '…' : '');
       }
     }
-    await this.saveSessions(sessions);
+    // Prune old sessions beyond the configured limit
+    const maxSessions = vscode.workspace.getConfiguration('adoCode').get<number>('sessions.maxPerProject', 20);
+    if (sessions.length > maxSessions) {
+      // Sort oldest-first, keep the most recent `maxSessions` (always keep active)
+      const sorted = [...sessions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const toKeep = new Set(sorted.slice(-maxSessions).map(s => s.id));
+      toKeep.add(activeId); // always keep active session
+      const pruned = sessions.filter(s => toKeep.has(s.id));
+      await this.saveSessions(pruned);
+    } else {
+      await this.saveSessions(sessions);
+    }
   }
 
   /** Task 2: load a session's messages into the conversation and post to webview. */

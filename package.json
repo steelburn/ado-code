@@ -395,6 +395,11 @@
           "default": true,
           "description": "Before starting a task with no description AND no acceptance criteria, warn and offer to review detail or request clarification"
         },
+        "adoCode.sessions.maxPerProject": {
+          "type": "number",
+          "default": 20,
+          "description": "Maximum number of chat sessions to keep per workspace + ADO project. Older sessions beyond this limit are auto-pruned."
+        },
         "adoCode.agents.enabled": {
           "type": "array",
           "items": {
