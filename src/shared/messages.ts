@@ -41,7 +41,9 @@ export type WebviewToExtensionMessage =
   | { type: 'switchSession'; sessionId: string }
   | { type: 'newSession' }
   | { type: 'renameSession'; sessionId: string; name: string }
-  | { type: 'deleteSession'; sessionId: string };
+  | { type: 'deleteSession'; sessionId: string }
+  // Configuration page
+  | { type: 'saveConfig'; config: Record<string, any> };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -79,7 +81,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history
   | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
-  | { type: 'sessionSwitched'; session: Session };
+  | { type: 'sessionSwitched'; session: Session }
+  // Configuration page: full settings snapshot
+  | { type: 'fullConfig'; config: Record<string, any> };
 
 // Shared types
 export interface MessageContext {

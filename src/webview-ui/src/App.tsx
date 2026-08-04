@@ -10,6 +10,7 @@ import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
 import { ConsentCard, ConsentRequest } from './components/ConsentCard';
 import { SessionHistory } from './components/SessionHistory';
+import { ConfigurationPage } from './components/ConfigurationPage';
 import './styles/app.css';
 import './styles/markdown.css';
 
@@ -85,6 +86,9 @@ function App() {
   // Session history
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  // Configuration page
+  const [showConfig, setShowConfig] = useState(false);
 
   // ── Message handler ────────────────────────────────────────────
   useEffect(() => {
@@ -348,7 +352,7 @@ function App() {
         vscode.postMessage({ type: 'rerunWizard' });
         break;
       case 'openSettings':
-        vscode.postMessage({ type: 'openSettings' });
+        setShowConfig(true);
         break;
     }
   }, []);
@@ -405,6 +409,15 @@ function App() {
             <span /><span /><span />
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // Configuration page
+  if (showConfig) {
+    return (
+      <div className="app">
+        <ConfigurationPage onBack={() => setShowConfig(false)} />
       </div>
     );
   }

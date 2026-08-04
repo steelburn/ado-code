@@ -275,7 +275,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           case 'getConfig':
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            // Also send full settings for the Configuration page
+            this.postMessage({ type: 'fullConfig', config: this._allSettings() });
             break;
+          case 'saveConfig': {
+            // Apply each setting to VS Code configuration
+            const cfg = vscode.workspace.getConfiguration('adoCode');
+            for (const [key, value] of Object.entries(message.config)) {
+              await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+            }
+            this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            if (this._sanitizedConfig().configured) {
+              await this.refreshWorkItems();
+            }
+            break;
+          }
           case 'updateConfig':
             await this.applyConfigUpdate(message.config);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
@@ -505,6 +519,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: s.mode,
       configured: Boolean(s.adoOrganization && s.adoProject && s.adoPat && s.llmApiKey),
     };
+  }
+
+  /** Return all VS Code settings for the Configuration page. */
+  private _allSettings(): Record<string, any> {
+    const cfg = vscode.workspace.getConfiguration('adoCode');
+    const keys = [
+      'adoOrganization', 'adoProject', 'adoPat', 'adoServerUrl',
+      'llmProvider', 'llmApiUrl', 'llmApiKey', 'llmModel',
+      'mode',
+      'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion',
+      'changelog.enabled', 'changelog.autoCommit', 'changelog.postToAdo',
+      'ado.clarificationState', 'ado.warnOnSparseTask',
+      'act.toolBudget', 'act.terminalAllowlist',
+      'sessions.maxPerProject',
+      'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect',
+    ];
+    const result: Record<string, any> = {};
+    for (const key of keys) {
+      result[key] = cfg.get(key);
+    }
+    return result;
   }
 
   /** Task 19: persist config from the welcome screen (never echo secrets back). */

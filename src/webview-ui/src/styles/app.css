@@ -1544,3 +1544,180 @@ code {
   align-items: center;
   justify-content: center;
 }
+
+/* ── Configuration Page ──────────────────────────────────────── */
+.config-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.config-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+  flex-shrink: 0;
+}
+
+.config-back {
+  background: none;
+  border: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+
+.config-back:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.config-title {
+  flex: 1;
+  font-size: 0.9em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  margin: 0;
+}
+
+.config-save {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 4px 12px;
+  border-radius: 3px;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.config-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.config-save-dirty {
+  background: var(--vscode-button-background);
+}
+
+.config-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.config-section {
+  margin-bottom: 20px;
+}
+
+.config-section-title {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  margin: 0 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-section-icon {
+  font-size: 1em;
+}
+
+.config-field {
+  margin-bottom: 12px;
+  padding-left: 4px;
+}
+
+.config-label {
+  display: block;
+  font-size: 0.82em;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+  margin-bottom: 2px;
+}
+
+.config-desc {
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.config-input,
+.config-select {
+  width: 100%;
+  max-width: 360px;
+  padding: 4px 8px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.82em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  outline: none;
+}
+
+.config-input:focus,
+.config-select:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.config-toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.config-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.config-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+
+.config-toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--vscode-descriptionForeground);
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.config-toggle input:checked + .config-toggle-slider {
+  background: var(--vscode-textLink-foreground);
+  border-color: var(--vscode-textLink-foreground);
+}
+
+.config-toggle input:checked + .config-toggle-slider::before {
+  transform: translateX(16px);
+  background: var(--vscode-button-foreground);
+}
+
+.config-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
