@@ -35,7 +35,13 @@ export type WebviewToExtensionMessage =
   // File search for @ mentions
   | { type: 'searchFiles'; query: string }
   // Consent: user answer to an agent consent request (inline mode mutating tool)
-  | { type: 'consentResponse'; requestId: string; approved: boolean };
+  | { type: 'consentResponse'; requestId: string; approved: boolean }
+  // Session history
+  | { type: 'listSessions' }
+  | { type: 'switchSession'; sessionId: string }
+  | { type: 'newSession' }
+  | { type: 'renameSession'; sessionId: string; name: string }
+  | { type: 'deleteSession'; sessionId: string };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -70,7 +76,10 @@ export type ExtensionToWebviewMessage =
   // Consent: the agent requires user approval for a mutating tool (inline mode)
   | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> }
   // File search results for @ mentions
-  | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> };
+  | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
+  // Session history
+  | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
+  | { type: 'sessionSwitched'; session: Session };
 
 // Shared types
 export interface MessageContext {
@@ -144,4 +153,15 @@ export interface ExtensionConfig {
   changelogPostToAdo: boolean;
   adoClarificationState: string;
   adoWarnOnSparseTask: boolean;
+}
+
+// ── Session History ─────────────────────────────────────────────────
+export interface Session {
+  /** ISO timestamp used as unique ID */
+  id: string;
+  /** Display name (auto-generated from first user message, or user-set) */
+  name: string;
+  /** ISO date string */
+  createdAt: string;
+  messages: Array<{ role: string; content: string }>;
 }
