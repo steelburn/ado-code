@@ -43,30 +43,9 @@ export const TOOL_GROUPS = TOOL_GROUP_MAP;
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_MODES: ModeConfig[] = [
-  {
-    slug: 'code',
-    name: 'Code',
-    role: 'Expert coding assistant for everyday coding, edits, and file operations.',
-    toolGroups: ['read', 'write', 'execute'],
-  },
-  {
-    slug: 'architect',
-    name: 'Architect',
-    role: 'Systems architect for planning, specs, and migrations.',
-    toolGroups: ['read', 'write'],
-  },
-  {
-    slug: 'ask',
-    name: 'Ask',
-    role: 'Knowledgeable assistant for fast answers and explanations.',
-    toolGroups: ['read'],
-  },
-  {
-    slug: 'debug',
-    name: 'Debug',
-    role: 'Debugging specialist for tracing issues and adding logs.',
-    toolGroups: ['read', 'execute'],
-  },
+  { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['read', 'write', 'execute'] },
+  { slug: 'plan', name: 'Plan', role: 'Read-only planning, no edits', toolGroups: ['read'] },
+  { slug: 'act', name: 'Act', role: 'Full auto-approve mode', toolGroups: ['read', 'write', 'execute'] },
 ];
 
 // ---------------------------------------------------------------------------
