@@ -275,7 +275,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           case 'getConfig':
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
-            // Also send full settings for the Configuration page
+            break;
+          case 'getFullConfig':
             this.postMessage({ type: 'fullConfig', config: this._allSettings() });
             break;
           case 'saveConfig': {

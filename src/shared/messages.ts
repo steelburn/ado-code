@@ -43,6 +43,7 @@ export type WebviewToExtensionMessage =
   | { type: 'renameSession'; sessionId: string; name: string }
   | { type: 'deleteSession'; sessionId: string }
   // Configuration page
+  | { type: 'getFullConfig' }
   | { type: 'saveConfig'; config: Record<string, any> };
 
 // Messages from Extension Host → Webview

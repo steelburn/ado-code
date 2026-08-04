@@ -123,7 +123,7 @@ export function ConfigurationPage({ onBack }: Props) {
       }
     };
     window.addEventListener('message', handler);
-    vscode.postMessage({ type: 'getConfig' });
+    vscode.postMessage({ type: 'getFullConfig' });
     return () => window.removeEventListener('message', handler);
   }, []);
 
