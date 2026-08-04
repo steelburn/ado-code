@@ -378,7 +378,9 @@ export function InputBar({ mode, value, onValueChange, onSend, onClear, onModeSe
         return;
       }
     }
-  }, [showMentionDropdown, mentionSuggestions, mentionActiveIndex, insertMention, handleSend, history, historyIndex, onValueChange]);
+  }, [showMentionDropdown, mentionSuggestions, mentionActiveIndex, insertMention,
+    showSlashDropdown, slashMatches, slashActiveIndex, insertSlashCommand,
+    handleSend, history, historyIndex, onValueChange]);
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
