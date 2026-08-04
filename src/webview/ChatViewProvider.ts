@@ -9,6 +9,7 @@ import { LlmMessage, LlmProviderType } from '../llm/types';
 import { buildSystemPrompt, buildAgentPrompt } from '../llm/prompts';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
+import { createConsentBroker } from '../llm/consent';
 import { AgentRunner } from '../agents/AgentRunner';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -18,6 +19,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // before the provider in activate()).
   private agentRunner?: AgentRunner;
   private executor?: ToolExecutor;
+  // Consent broker for inline-mode mutating tools: tracks the in-flight
+  // approve/reject request so the agentic loop never hangs on a missed prompt.
+  private readonly consentBroker = createConsentBroker();
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
 
@@ -46,14 +50,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.executor = createToolExecutor(this.services, this._context, {
       onUpdateState: (id, state) => this.updateWorkItemState(id, state),
       onDelegate: (prompt, agent) => this.delegateToAgent(prompt, agent),
-      onApprove: async (name, args) => {
-        const pick = await vscode.window.showQuickPick(['Approve', 'Reject'], {
-          placeHolder: `Allow tool '${name}' with ${JSON.stringify(args)}?`,
-        });
-        return pick === 'Approve';
-      },
+      // Consent: inline mode mutating tools flow through the webview consent
+      // card (Approve/Reject), with a native QuickPick fallback when the
+      // webview isn't available, and a hard timeout so the agentic loop can
+      // never block on an unanswered prompt.
+      onApprove: async (name, args) => this.requestConsent(name, args),
     });
     this.executor.setMode(getSettings().mode);
+  }
+
+  /**
+   * Request user consent for a mutating tool (inline mode). Renders an
+   * Approve/Reject card in the chat webview and waits for the answer; falls
+   * back to a native QuickPick when the webview is unavailable. The broker
+   * times out and denies after 120s, and rejectAll() on webview dispose / chat
+   * clear / turn abort, so the agentic loop can never hang on a missed prompt.
+   */
+  async requestConsent(tool: string, args: Record<string, any>): Promise<boolean> {
+    const { requestId, decision } = this.consentBroker.request({ tool, args });
+    if (this._view) {
+      this.postMessage({ type: 'consentRequest', requestId, tool, args });
+    } else {
+      // No webview (e.g. invoked before resolve or after disposal): native pick.
+      const pick = await vscode.window.showQuickPick(['Approve', 'Reject'], {
+        placeHolder: `Allow tool '${tool}' with ${JSON.stringify(args)}?`,
+      });
+      this.consentBroker.resolve(requestId, pick === 'Approve');
+    }
+    // A newer user message aborts the turn — the pending prompt must not
+    // outlive it (the abort also kills the LLM fetch; this kills the wait).
+    const abort = this.llmAbort;
+    if (abort) {
+      return await new Promise<boolean>((resolve) => {
+        const onAbort = () => {
+          this.consentBroker.resolve(requestId, false);
+          resolve(false);
+        };
+        if (abort.signal.aborted) {
+          onAbort();
+          return;
+        }
+        abort.signal.addEventListener('abort', onAbort, { once: true });
+        decision.then((approved) => {
+          abort.signal.removeEventListener('abort', onAbort);
+          resolve(approved);
+        });
+      });
+    }
+    return decision;
   }
 
   /** Task 24 (M-4): delegate to an external agent; result streams async via webview. */
@@ -123,6 +167,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken
   ) {
     this._view = webviewView;
+    // If the chat panel closes while the agent waits for consent, deny the
+    // pending prompt so the agentic loop can finish (or abort) instead of
+    // blocking until the 120s timeout.
+    webviewView.onDidDispose(() => this.consentBroker.rejectAll());
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -173,8 +221,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'clearConversation':
             // Full reset: abort any in-flight LLM stream and clear the loading
             // state too — a stuck spinner must not leave the input bar dead
-            // after clearing.
+            // after clearing. Any pending consent prompt is denied as well.
             this.llmAbort?.abort();
+            this.consentBroker.rejectAll();
             this.conversation = [];
             this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
@@ -255,6 +304,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.refreshWorkItems();
             break;
           }
+          case 'consentResponse':
+            this.consentBroker.resolve(message.requestId, message.approved);
+            break;
         }
       },
       undefined,
@@ -673,72 +725,82 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.llmAbort = abort;
 
     // ── Task 24: mode-aware dispatch (Q8) ────────────────────────────
+    // All three modes run the agentic loop; the EXECUTOR's mode gates what
+    // the agent may do: inline → mutating tools require user consent,
+    // plan → read-only (no state changes), act → auto-approve.
     const mode = getSettings().mode;
-    if (mode === 'plan' || mode === 'act') {
-      if (!this.executor) {
-        this.postMessage({ type: 'error', message: 'Tool executor not wired — run the extension from a fresh activation.' });
-        return;
-      }
-      const budget = getSettings().actToolBudget;
-      // Task 26: multi-turn — append this turn to the persisted conversation.
-      this.conversation.push({ role: 'user', content: finalContent });
-      this.trimConversation();
-      const messages: LlmMessage[] = [
-        { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
-        ...this.conversation,
-      ];
-      try {
-        const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget);
-        this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
-        this.conversation.push({ role: 'assistant', content: result.text });
-        this.trimConversation();
-        this.persistConversation();
-        if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
-      } catch (err) {
-        if (abort.signal.aborted) return;
-        const message = err instanceof Error ? err.message : String(err);
-        this.postMessage({ type: 'error', message });
-      }
+    // Sync the executor with the persisted setting on EVERY turn — a stale
+    // executor (e.g. mode changed via the Settings UI, which bypasses
+    // cycleMode) would silently auto-approve or block tools against the
+    // user's chosen mode.
+    this.executor?.setMode(mode);
+    if (!this.executor) {
+      this.postMessage({ type: 'error', message: 'Tool executor not wired — run the extension from a fresh activation.' });
       return;
     }
-
-    // inline mode: plain streaming chat (Task 13), multi-turn (Task 26)
+    const budget = getSettings().actToolBudget;
+    // Task 26: multi-turn — append this turn to the persisted conversation.
     this.conversation.push({ role: 'user', content: finalContent });
     this.trimConversation();
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemPrompt(this.activeWorkItem) },
       ...this.conversation,
     ];
-
     try {
-      let assistantText = '';
-      let streamEnded = false;
-      for await (const chunk of this.llmClient().streamChat(messages, abort.signal)) {
-        assistantText += chunk.content;
-        this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
-        if (chunk.done) {
-          streamEnded = true;
-          break;
-        }
-      }
-      // Robustness: some OpenAI-compatible gateways close the SSE stream
-      // WITHOUT a [DONE]/message_stop marker, so the provider never yields a
-      // done chunk and the webview's loading spinner would stick. Always
-      // emit the final done chunk ourselves.
-      if (!streamEnded) {
-        this.postMessage({ type: 'assistantMessage', content: '', done: true });
-      }
-      // Task 26: record the turn + persist history
-      if (assistantText) {
-        this.conversation.push({ role: 'assistant', content: assistantText });
-        this.trimConversation();
-      }
+      const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget);
+      this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
+      this.conversation.push({ role: 'assistant', content: result.text });
+      this.trimConversation();
       this.persistConversation();
+      if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
     } catch (err) {
-      if (abort.signal.aborted) return; // cancelled by a newer message
+      if (abort.signal.aborted) return;
+      // INLINE resilience: the endpoint may not support tool calling (some
+      // OpenAI-compatible gateways 400 on `tools` for a non-tool model). Fall
+      // back to plain streaming chat for this turn so inline mode keeps
+      // working exactly like it did before tools were enabled here.
+      if (mode === 'inline') {
+        try {
+          const text = await this.streamAssistantTurn(messages, abort);
+          if (text) {
+            this.conversation.push({ role: 'assistant', content: text });
+            this.trimConversation();
+          }
+          this.persistConversation();
+        } catch (streamErr) {
+          if (abort.signal.aborted) return;
+          const message = streamErr instanceof Error ? streamErr.message : String(streamErr);
+          this.postMessage({ type: 'error', message });
+        }
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
     }
+  }
+
+  /**
+   * Plain streaming chat turn (inline-mode fallback when the endpoint can't
+   * handle tool calling). Streams chunks to the webview and returns the
+   * accumulated text. Always emits a final done chunk — some gateways close
+   * the SSE stream without [DONE], and a missing done chunk leaves the
+   * webview spinner stuck and the input bar disabled.
+   */
+  private async streamAssistantTurn(messages: LlmMessage[], abort: AbortController): Promise<string> {
+    let assistantText = '';
+    let streamEnded = false;
+    for await (const chunk of this.llmClient().streamChat(messages, abort.signal)) {
+      assistantText += chunk.content;
+      this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
+      if (chunk.done) {
+        streamEnded = true;
+        break;
+      }
+    }
+    if (!streamEnded) {
+      this.postMessage({ type: 'assistantMessage', content: '', done: true });
+    }
+    return assistantText;
   }
 
   /** Task 16: format the active editor file + selection as an LLM context block. */

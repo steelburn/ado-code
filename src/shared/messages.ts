@@ -29,7 +29,9 @@ export type WebviewToExtensionMessage =
   | { type: 'selectProject'; projectName: string }
   // Input-bar tools: inject active-editor context / attach a file into the draft
   | { type: 'getEditorContext' }
-  | { type: 'pickFiles' };
+  | { type: 'pickFiles' }
+  // Consent: user answer to an agent consent request (inline mode mutating tool)
+  | { type: 'consentResponse'; requestId: string; approved: boolean };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -60,7 +62,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'modelList'; models: string[] }
   // Input-bar tools: active-editor context block / attached file contents
   | { type: 'editorContext'; text: string }
-  | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> };
+  | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
+  // Consent: the agent requires user approval for a mutating tool (inline mode)
+  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> };
 
 // Shared types
 export interface MessageContext {

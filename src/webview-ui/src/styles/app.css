@@ -1051,3 +1051,92 @@ code {
   background: var(--vscode-dropdown-border);
   margin: 4px 0;
 }
+
+/* ── Consent card (inline mode: agent requires approval for a mutating tool) ── */
+.consent-card {
+  margin: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #b58900);
+  border-left: 3px solid var(--vscode-inputValidation-warningBorder, #b58900);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  flex-shrink: 0;
+}
+
+.consent-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.consent-card-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.consent-card-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.consent-card-heading {
+  font-weight: 600;
+  font-size: var(--vscode-font-size);
+}
+
+.consent-card-sub {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.consent-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.consent-card-tool {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  color: var(--vscode-textLink-foreground);
+  align-self: flex-start;
+}
+
+.consent-card-summary {
+  font-size: 0.95em;
+  word-break: break-all;
+}
+
+.consent-card-args {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 140px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.consent-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-approve {
+  background: var(--vscode-testing-iconPassed, #388a34);
+  color: #ffffff;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.btn-approve:hover {
+  background: var(--vscode-testing-iconPassed, #388a34);
+  opacity: 0.85;
+}

@@ -8,6 +8,7 @@ import { AgentBar } from './components/AgentBar';
 import { KebabMenu } from './components/KebabMenu';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
+import { ConsentCard, ConsentRequest } from './components/ConsentCard';
 import './styles/app.css';
 import './styles/markdown.css';
 
@@ -70,6 +71,8 @@ function App() {
   // Input draft lives in App so toolbar tools (add context / attach files) can
   // append to it; InputBar renders it controlled.
   const [draft, setDraft] = useState('');
+  // Pending consent: the agent (inline mode) wants to run a mutating tool.
+  const [consent, setConsent] = useState<ConsentRequest | null>(null);
   // Wizard model picker (LLM provider)
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -89,6 +92,9 @@ function App() {
           // handler discarded it, so Plan/Act replies never rendered. (Inline
           // streaming sends empty-content done chunks, so appending is a
           // no-op there.)
+          // A reply arriving means the agentic turn finished — no consent
+          // prompt can still be pending.
+          setConsent(null);
           if (msg.done) setLoading(false);
           else setLoading(true);
           if (!msg.content) break;
@@ -114,6 +120,17 @@ function App() {
           // "Fetching…" forever (Refresh links are gated on !loading).
           setProjectsLoading(false);
           setModelsLoading(false);
+          // An error ends the turn — no consent prompt can still be pending.
+          setConsent(null);
+          break;
+
+        case 'consentRequest':
+          // Agent requires consent for a mutating tool (inline mode).
+          setConsent({
+            requestId: msg.requestId,
+            tool: msg.tool,
+            args: msg.args,
+          });
           break;
 
         case 'config': {
@@ -233,6 +250,14 @@ function App() {
     setMessages(prev => [...prev, { role: 'user', content }]);
     vscode.postMessage({ type: 'userMessage', content });
     setDraft('');
+    // A new turn aborts any in-flight run — the host denies the pending
+    // prompt; drop the card here too.
+    setConsent(null);
+  }, []);
+
+  const handleConsentResponse = useCallback((requestId: string, approved: boolean) => {
+    setConsent(null);
+    vscode.postMessage({ type: 'consentResponse', requestId, approved });
   }, []);
 
   const handleClear = useCallback(() => {
@@ -397,6 +422,11 @@ function App() {
         onSelect={handleAgentSelect}
         visible={showAgentBar}
       />
+
+      {/* Consent card — agent wants to run a mutating tool (inline mode) */}
+      {consent && (
+        <ConsentCard request={consent} onRespond={handleConsentResponse} />
+      )}
 
       {/* Input */}
       <InputBar
