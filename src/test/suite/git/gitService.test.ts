@@ -48,4 +48,37 @@ suite('GitService', () => {
     const branch = await service.createTaskBranch(1234, 'Fix login bug!');
     assert.strictEqual(branch, null);
   });
+
+  test('getWorktreeInfo reports a clean repo after a commit', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add .', { cwd: tmpDir });
+    cp.execSync('git commit -m "initial commit"', { cwd: tmpDir });
+    const info = await service.getWorktreeInfo(tmpDir);
+    assert.strictEqual(info.dirty, false);
+    assert.strictEqual(info.changedFiles, 0);
+    assert.ok(info.lastCommit?.includes('initial commit'));
+  });
+
+  test('getWorktreeInfo reports dirty files', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'changed\n');
+    fs.writeFileSync(path.join(tmpDir, 'b.txt'), 'new\n');
+    const info = await service.getWorktreeInfo(tmpDir);
+    assert.strictEqual(info.dirty, true);
+    assert.strictEqual(info.changedFiles, 2);
+  });
+
+  test('getWorktreeInfo returns defaults for a non-git directory', async () => {
+    const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-plain-'));
+    try {
+      const service = new GitService(tmpDir);
+      const info = await service.getWorktreeInfo(plainDir);
+      assert.deepStrictEqual(info, { dirty: false, changedFiles: 0, ahead: 0, behind: 0, lastCommit: null });
+    } finally {
+      fs.rmSync(plainDir, { recursive: true, force: true });
+    }
+  });
 });

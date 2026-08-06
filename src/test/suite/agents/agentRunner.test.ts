@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { AgentRunner } from '../../../agents/AgentRunner';
 import { AgentRegistry } from '../../../agents/registry';
 import { AgentRun, AgentName } from '../../../agents/types';
@@ -105,5 +108,154 @@ suite('AgentRunner', () => {
   test('followUp throws for unknown run id', async () => {
     const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
     await assert.rejects(runner.followUp('missing', 'hi'), /no run with id/);
+  });
+
+  test('dismiss marks a run as dismissed and persists the id', () => {
+    const persisted: AgentRun[] = [{
+      id: 'run-1-1', workItemId: 1, agent: 'claude', workdir: '/tmp',
+      status: 'succeeded', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+    }];
+    let savedDismissed: string[] = [];
+    const runner = new AgentRunner(
+      fakeRegistry(),
+      fakeGit(),
+      { onStatus: () => {}, onComplete: () => {} },
+      {
+        save: () => {},
+        load: () => persisted,
+        saveDismissed: ids => { savedDismissed = ids; },
+        loadDismissed: () => savedDismissed,
+      }
+    );
+    assert.strictEqual(runner.isDismissed('run-1-1'), false);
+    runner.dismiss('run-1-1');
+    assert.strictEqual(runner.isDismissed('run-1-1'), true);
+    assert.deepStrictEqual(savedDismissed, ['run-1-1']);
+  });
+
+  test('dismissing an unknown run id is a no-op', () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    runner.dismiss('nope');
+    assert.strictEqual(runner.isDismissed('nope'), false);
+  });
+
+  test('dismissed runs stay dismissed after reconstruction from the store', () => {
+    const persisted: AgentRun[] = [{
+      id: 'run-2-1', workItemId: 2, agent: 'claude', workdir: '/tmp',
+      status: 'succeeded', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+    }];
+    const dismissed: string[] = ['run-2-1'];
+    // Simulates an extension reload: the store still holds the dismissed id.
+    const runner = new AgentRunner(
+      fakeRegistry(),
+      fakeGit(),
+      { onStatus: () => {}, onComplete: () => {} },
+      {
+        save: () => {},
+        load: () => persisted,
+        saveDismissed: () => {},
+        loadDismissed: () => dismissed,
+      }
+    );
+    assert.strictEqual(runner.isDismissed('run-2-1'), true);
+  });
+
+  test('delegate slugs the worktree branch from the work item title', async () => {
+    const git = {
+      ...fakeGit(),
+      getBranchName: (id: number, t: string) => `feature/ADO-${id}-${t.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    };
+    const runner = new AgentRunner(fakeRegistry(), git, { onStatus: () => {}, onComplete: () => {} });
+    const run = await runner.delegate(42, 'Read and follow AGENTS.md and implement the ticket.', 'claude', 'Fix login bug');
+    assert.strictEqual(run.branch, 'feature/ADO-42-fix-login-bug');
+  });
+
+  test('delegate falls back to the prompt first line when no title given', async () => {
+    const git = {
+      ...fakeGit(),
+      getBranchName: (id: number, t: string) => `feature/ADO-${id}-${t.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    };
+    const runner = new AgentRunner(fakeRegistry(), git, { onStatus: () => {}, onComplete: () => {} });
+    const run = await runner.delegate(42, 'Read and follow AGENTS.md', 'claude');
+    assert.strictEqual(run.branch, 'feature/ADO-42-read-and-follow-agents-md');
+  });
+
+  test('runs the memory-driven pre-agent hook and streams its output', async () => {
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-hook-'));
+    try {
+      const events: string[] = [];
+      const git = {
+        ...fakeGit(),
+        workspaceRoot: workdir,
+        getBranchName: (id: number, t: string) => `feature/ADO-${id}-${t}`,
+        createWorktree: async () => workdir,
+      };
+      const runner = new AgentRunner(
+        fakeRegistry(),
+        git,
+        { onStatus: (_r, d) => events.push(d), onComplete: () => {} },
+        undefined,
+        { read: (key) => (key === 'agent.before' ? 'echo BEFORE_HOOK_OUT' : null) }
+      );
+      await runner.delegate(42, 'do stuff', 'claude');
+      assert.ok(events.some(e => e.includes('BEFORE_HOOK_OUT')), 'hook output should stream to the panel');
+    } finally {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test('skips the pre-agent hook when memory has none', async () => {
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-hook-'));
+    try {
+      const events: string[] = [];
+      const git = {
+        ...fakeGit(),
+        workspaceRoot: workdir,
+        getBranchName: (id: number, t: string) => `feature/ADO-${id}-${t}`,
+        createWorktree: async () => workdir,
+      };
+      const runner = new AgentRunner(
+        fakeRegistry(),
+        git,
+        { onStatus: (_r, d) => events.push(d), onComplete: () => {} },
+        undefined,
+        { read: () => null }
+      );
+      await runner.delegate(42, 'do stuff', 'claude');
+      assert.ok(!events.some(e => e.includes('pre-agent hook')), 'no hook should run without memory');
+    } finally {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test('appends the memory-driven post-agent hook output to the summary', async () => {
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-hook-'));
+    try {
+      let summary = '';
+      const git = {
+        ...fakeGit(),
+        workspaceRoot: workdir,
+        getBranchName: (id: number, t: string) => `feature/ADO-${id}-${t}`,
+        createWorktree: async () => workdir,
+      };
+      const runner = new AgentRunner(
+        fakeRegistry(['codex']),
+        git,
+        { onStatus: () => {}, onComplete: (_r, s) => { summary = s; } },
+        undefined,
+        { read: (key) => (key === 'agent.after' ? 'echo AFTER_HOOK_OUT' : null) }
+      );
+      // codex is not installed → the adapter fails fast, verifyWork runs and
+      // the post-agent hook executes. Poll instead of a fixed sleep.
+      await runner.delegate(42, 'do stuff', 'codex');
+      const deadline = Date.now() + 2000;
+      while (summary === '' && Date.now() < deadline) {
+        await new Promise(res => setTimeout(res, 50));
+      }
+      assert.ok(summary.includes('Post-agent hook'), 'summary should carry the hook section');
+      assert.ok(summary.includes('AFTER_HOOK_OUT'), 'hook output should be captured in the summary');
+    } finally {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
   });
 });

@@ -183,33 +183,12 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
       // agents not available
     }
 
-    // ── Worktrees (agent isolation) ──────────────────────────────
-    try {
-      const worktrees = await this.services.git.listWorktrees();
-      if (worktrees.length > 0) {
-        const wtItem = new StatusItem(
-          `Worktrees: ${worktrees.length} active`,
-          vscode.TreeItemCollapsibleState.Expanded
-        );
-        wtItem.iconPath = new vscode.ThemeIcon('folder-opened');
-        for (const wt of worktrees) {
-          const child = new StatusItem(
-            wt.branch,
-            vscode.TreeItemCollapsibleState.None
-          );
-          child.iconPath = new vscode.ThemeIcon('git-branch');
-          child.description = wt.runId;
-          child.tooltip = wt.path;
-          child.contextValue = 'statusWorktree';
-          child.meta = { runId: wt.runId, path: wt.path, branch: wt.branch };
-          wtItem.children = wtItem.children ?? [];
-          wtItem.children.push(child);
-        }
-        items.push(wtItem);
-      }
-    } catch {
-      // worktrees not available
-    }
+    // ── Worktrees ─────────────────────────────────────────────────
+    // Removed: superseded by the dedicated "Worktrees" view
+    // (adoCode.worktrees / WorktreesTreeProvider), which shows per-worktree
+    // run status, dirty files, last commit and ahead/behind. The context
+    // menus (Open in Terminal/Explorer, Remove) are shared via the
+    // `worktreeNode` contextValue.
 
     return items;
   }

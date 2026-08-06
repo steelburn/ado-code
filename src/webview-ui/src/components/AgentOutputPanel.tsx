@@ -17,9 +17,10 @@ interface Props {
   output: string;
   loading: boolean;
   onDismiss?: (runId: string) => void;
+  onReopen?: (runId: string) => void;
 }
 
-export function AgentOutputPanel({ run, output, loading, onDismiss }: Props) {
+export function AgentOutputPanel({ run, output, loading, onDismiss, onReopen }: Props) {
   const [expanded, setExpanded] = useState(true);
   const outputRef = useRef<HTMLDivElement>(null);
 
@@ -84,6 +85,29 @@ export function AgentOutputPanel({ run, output, loading, onDismiss }: Props) {
             {run.branch}
           </span>
         )}
+        {isFinished && onReopen && (
+          <button
+            className="agent-output-close"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReopen(run.id);
+            }}
+            title="Reopen output in editor panel"
+            style={{
+              marginLeft: 'auto',
+              background: 'none',
+              border: 'none',
+              color: 'var(--vscode-textLink-foreground)',
+              cursor: 'pointer',
+              padding: '2px 6px',
+              fontSize: '12px',
+              lineHeight: 1,
+              borderRadius: '4px',
+            }}
+          >
+            ↗
+          </button>
+        )}
         {isFinished && onDismiss && (
           <button
             className="agent-output-close"
@@ -93,7 +117,6 @@ export function AgentOutputPanel({ run, output, loading, onDismiss }: Props) {
             }}
             title="Dismiss"
             style={{
-              marginLeft: 'auto',
               background: 'none',
               border: 'none',
               color: 'var(--vscode-descriptionForeground)',
@@ -117,8 +140,39 @@ export function AgentOutputPanel({ run, output, loading, onDismiss }: Props) {
             </div>
           )}
           {!output && run.status !== 'running' && (
-            <div className="agent-output-content" style={{ color: 'var(--vscode-descriptionForeground)', fontStyle: 'italic', padding: '8px 0' }}>
-              Output captured in the editor panel →
+            <div
+              className="agent-output-content"
+              style={{
+                color: 'var(--vscode-descriptionForeground)',
+                fontStyle: 'italic',
+                padding: '8px 0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <span>Output captured in the editor panel.</span>
+              {onReopen && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReopen(run.id);
+                  }}
+                  title="Reopen the summary output in the editor panel"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--vscode-textLink-foreground)',
+                    cursor: 'pointer',
+                    fontStyle: 'normal',
+                    fontSize: '12px',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                  }}
+                >
+                  Reopen output ↗
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -1,9 +1,15 @@
 import { WorkItemContext } from '../shared/messages';
 
+/** Frame memory blocks for an external agent as explicit instructions. */
+export function wrapMemoryContext(memoryContext: string): string {
+  return `## ADO Code Memory (instructions you MUST honor)\n\n${memoryContext}`;
+}
+
 export function buildAgentPrompt(
   workItem: WorkItemContext & { state?: string },
   branch: string,
-  projectContext?: string
+  projectContext?: string,
+  memoryContext?: string
 ): string {
   const lines = [
     `Read and follow AGENTS.md in the current directory — it contains the project structure, build commands, conventions, and constraints you must respect.`,
@@ -37,6 +43,14 @@ export function buildAgentPrompt(
     `Working branch: ${branch}`,
     `When finished: run the project's tests/lint if present, then summarize what you changed and why. Do NOT commit unless asked.`
   );
+
+  // Memory-driven instructions (user + workspace memory) — the external
+  // agent must honor them like any other project convention. The executable
+  // hook keys (agent.before / agent.after) are excluded upstream because the
+  // runner executes them automatically around the run.
+  if (memoryContext && memoryContext.trim().length > 0) {
+    lines.push('', wrapMemoryContext(memoryContext.trim()));
+  }
 
   return lines.join('\n');
 }

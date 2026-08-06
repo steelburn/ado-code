@@ -8,6 +8,15 @@ const execFile = promisify(cp.execFile);
 /** Worktree directory name prefix under .ado-code/worktrees/. */
 const WORKTREE_PREFIX = 'run-';
 
+/** Per-worktree git details (see GitService.getWorktreeInfo). */
+export interface WorktreeInfo {
+  dirty: boolean;
+  changedFiles: number;
+  ahead: number;
+  behind: number;
+  lastCommit: string | null;
+}
+
 export class GitService {
   // public readonly so ChatViewProvider's offerPushAndPr (Task 11) can pass
   // the cwd to git push / gh pr create.
@@ -293,5 +302,41 @@ export class GitService {
   async gitInWorktree(worktreePath: string, args: string[]): Promise<string> {
     const { stdout } = await execFile('git', args, { cwd: worktreePath });
     return stdout;
+  }
+
+  /**
+   * Per-worktree git details for the Worktrees view: dirty state, changed
+   * file count, ahead/behind vs upstream, and the last commit (short form).
+   * Never throws — returns an all-default shape on any git failure.
+   */
+  async getWorktreeInfo(worktreePath: string): Promise<WorktreeInfo> {
+    const empty: WorktreeInfo = { dirty: false, changedFiles: 0, ahead: 0, behind: 0, lastCommit: null };
+    try {
+      // `-b` with porcelain emits a `## branch...upstream [ahead N, behind M]`
+      // header line, followed by one line per changed file.
+      const status = await this.gitInWorktree(worktreePath, ['status', '-sb', '--porcelain']);
+      const lines = status.split('\n').filter(l => l.trim().length > 0);
+      let ahead = 0;
+      let behind = 0;
+      const header = lines.find(l => l.startsWith('## '));
+      const m = header?.match(/\[ahead (\d+)(?:, behind (\d+))?\]/);
+      if (m) {
+        ahead = Number(m[1]);
+        behind = Number(m[2] ?? 0);
+      }
+      const changedFiles = lines.filter(l => !l.startsWith('## ')).length;
+
+      let lastCommit: string | null = null;
+      try {
+        const log = (await this.gitInWorktree(worktreePath, ['log', '-1', '--oneline'])).trim();
+        lastCommit = log || null; // unborn branch → empty output
+      } catch {
+        lastCommit = null; // no commits yet
+      }
+
+      return { dirty: changedFiles > 0, changedFiles, ahead, behind, lastCommit };
+    } catch {
+      return empty;
+    }
   }
 }

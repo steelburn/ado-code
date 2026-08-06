@@ -48,6 +48,8 @@ export type WebviewToExtensionMessage =
   | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
   | { type: 'agentFollowUp'; runId: string; prompt: string }
   | { type: 'agentCancel'; runId: string }
+  | { type: 'dismissAgentRun'; runId: string }
+  | { type: 'reopenAgentOutput'; runId: string }
   | { type: 'listAgents' }
   | { type: 'listAgentRuns' }
   | { type: 'clearConversation' }

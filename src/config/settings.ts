@@ -24,6 +24,7 @@ export interface AdoCodeSettings {
   changelogPostToAdo: boolean;
   adoClarificationState: string;
   adoWarnOnSparseTask: boolean;
+  ignoreDotAdoCode: boolean;
 }
 
 export function getSettings(): AdoCodeSettings {
@@ -50,6 +51,7 @@ export function getSettings(): AdoCodeSettings {
     changelogPostToAdo: config.get<boolean>('changelog.postToAdo', true),
     adoClarificationState: config.get<string>('ado.clarificationState', 'Blocked'),
     adoWarnOnSparseTask: config.get<boolean>('ado.warnOnSparseTask', true),
+    ignoreDotAdoCode: config.get<boolean>('ignore.dotAdoCode', true),
   };
 }
 

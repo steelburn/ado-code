@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
+import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
 import { AgentSummaryPanel } from './webview/AgentSummaryPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
@@ -58,6 +59,16 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.refreshStatus', () => {
       statusProvider.refresh();
+    })
+  );
+
+  // Worktrees Panel: dedicated view of agent worktrees with per-worktree
+  // details (run status, dirty files, last commit, ahead/behind).
+  const worktreesProvider = new WorktreesTreeProvider(services);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('adoCode.worktrees', worktreesProvider),
+    vscode.commands.registerCommand('adoCode.refreshWorktrees', () => {
+      worktreesProvider.refresh();
     })
   );
 
@@ -124,11 +135,15 @@ export async function activate(context: vscode.ExtensionContext) {
       // Highlight the selected item in both trees
       treeProvider.setSelected(node.workItemId);
       unassignedTreeProvider.setSelected(node.workItemId);
+      // Show the title-bar + context-menu "Deselect Work Item" affordances
+      // only while a selection exists (keeps the cramped view title bar clean).
+      void vscode.commands.executeCommand('setContext', 'adoCode.workItemSelected', true);
     }),
     vscode.commands.registerCommand('adoCode.unselectWorkItem', () => {
       chatProvider.clearActiveWorkItem();
       treeProvider.setSelected(undefined);
       unassignedTreeProvider.setSelected(undefined);
+      void vscode.commands.executeCommand('setContext', 'adoCode.workItemSelected', false);
       vscode.window.showInformationMessage('ADO Code: work item deselected.');
     }),
     vscode.commands.registerCommand('adoCode.startTask', (node: WorkItemNode) => {
@@ -549,6 +564,9 @@ Generate ONLY the commit message, nothing else.`;
         if (run.workItemId) {
           treeProvider.updateAgentStatus(run.workItemId, run.agent, run.status);
         }
+        // Worktrees view: reload only when the run status actually changes
+        // (start / cancel / complete) — cheap guard per streamed chunk.
+        worktreesProvider.refreshIfChanged(run);
       },
       onComplete: (run, summary) => {
         chatProvider.postMessage({ type: 'agentResult', run, summary });
@@ -559,14 +577,21 @@ Generate ONLY the commit message, nothing else.`;
         // Open the agent's summary in the editor area so the result is
         // visible outside the chat panel (markdown tab, preview mode).
         void openSummaryInEditor(context, run, summary);
+        worktreesProvider.refreshIfChanged(run);
       },
     },
     {
       save: runs => context.workspaceState.update('adoCode.agentRuns', runs),
       load: () => context.workspaceState.get<import('./agents/types').AgentRun[]>('adoCode.agentRuns', []),
-    }
+      saveDismissed: ids => context.workspaceState.update('adoCode.dismissedAgentRuns', ids),
+      loadDismissed: () => context.workspaceState.get<string[]>('adoCode.dismissedAgentRuns', []),
+    },
+    // Memory-driven pre/post agent hooks (workspace memory `agent.before` /
+    // `agent.after`) — run shell commands around each agent invocation.
+    services.workspaceMemory
   );
   chatProvider.setAgentRunner(agentRunner);
+  worktreesProvider.setAgentRunner(agentRunner);
 
   // Q7: offer to resume interrupted runs (with a session id) after reload.
   const interrupted = agentRunner.listRuns().filter(r => r.status === 'interrupted' && r.sessionId);
@@ -670,6 +695,22 @@ Generate ONLY the commit message, nothing else.`;
       await services.git.removeWorktree(meta.runId);
       vscode.window.showInformationMessage(`ADO Code: worktree ${meta.branch} removed.`);
       statusProvider.refreshLight();
+      worktreesProvider.refresh();
+    }),
+    // Re-open the agent summary editor panel for a finished run (e.g. from
+    // the Worktrees view context menu after the panel was closed).
+    vscode.commands.registerCommand('adoCode.showAgentOutput', (item: any) => {
+      const runId = typeof item === 'string' ? item : item?.meta?.runId ?? item?.runId;
+      const run = agentRunner.listRuns().find(r => r.id === runId);
+      if (!run) {
+        vscode.window.showInformationMessage('ADO Code: agent run not found.');
+        return;
+      }
+      if (!run.summary) {
+        vscode.window.showInformationMessage('ADO Code: no summary captured for this run.');
+        return;
+      }
+      AgentSummaryPanel.show(context, run, run.summary);
     })
   );
 

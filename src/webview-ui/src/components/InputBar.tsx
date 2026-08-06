@@ -40,6 +40,8 @@ interface Props {
   onAddContext: () => void;
   onAttachFiles: () => void;
   loading: string; // 'inline' | 'plan' | 'act' | ''
+  /** Active model can accept image input — gates the image button + paste. */
+  canAttachImages?: boolean;
 }
 
 interface ImageAttachment {
@@ -53,7 +55,7 @@ interface FileSuggestion {
   name: string;
 }
 
-export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, onModeSelect, onAddContext, onAttachFiles, loading }: Props) {
+export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, onModeSelect, onAddContext, onAttachFiles, loading, canAttachImages = true }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -227,6 +229,9 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
 
   // ── Image paste support ──
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    // Active model has no vision capability → ignore pasted images entirely.
+    if (!canAttachImages) return;
+
     const items = Array.from(e.clipboardData.items);
     const imageItems = items.filter(item => item.type.startsWith('image/'));
 
@@ -247,7 +252,7 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
       };
       reader.readAsDataURL(blob);
     });
-  }, []);
+  }, [canAttachImages]);
 
   const removeImage = useCallback((id: string) => {
     setImages(prev => prev.filter(img => img.id !== id));
@@ -635,9 +640,9 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
             </button>
             <button
               className="toolbar-btn"
-              title="Paste image (Ctrl+V)"
+              title={canAttachImages ? 'Paste image (Ctrl+V)' : 'Image input not supported by the active model'}
               onClick={() => fileInputRef.current?.click()}
-              disabled={!!loading}
+              disabled={!!loading || !canAttachImages}
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/>

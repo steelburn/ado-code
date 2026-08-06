@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -28,6 +28,7 @@
     "onCommand:adoCode.reassignWorkItem",
     "onCommand:adoCode.generateCommitMessage",
     "onView:adoCode.status",
+    "onView:adoCode.worktrees",
     "onCommand:adoCode.refreshStatus",
     "onCommand:adoCode.showMemory",
     "onCommand:adoCode.editMemory",
@@ -170,6 +171,16 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.refreshWorktrees",
+        "title": "Refresh Worktrees",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showAgentOutput",
+        "title": "Show Agent Output",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.showMemory",
         "title": "Show Memory",
         "category": "ADO Code"
@@ -225,28 +236,7 @@
           "group": "navigation"
         }
       ],
-      "view/title": [
-        {
-          "command": "adoCode.refreshWorkItems",
-          "when": "view == adoCode.workItems",
-          "group": "navigation"
-        },
-        {
-          "command": "adoCode.unselectWorkItem",
-          "when": "view == adoCode.workItems",
-          "group": "navigation"
-        },
-        {
-          "command": "adoCode.refreshWorkItems",
-          "when": "view == adoCode.unassignedWorkItems",
-          "group": "navigation"
-        },
-        {
-          "command": "adoCode.unselectWorkItem",
-          "when": "view == adoCode.unassignedWorkItems",
-          "group": "navigation"
-        }
-      ],
+      "view/title": [],
       "view/item/context": [
         {
           "command": "adoCode.startTask",
@@ -299,6 +289,11 @@
           "group": "4_state@2"
         },
         {
+          "command": "adoCode.unselectWorkItem",
+          "when": "(viewItem == workItemNode || viewItem == unassignedWorkItemNode) && adoCode.workItemSelected",
+          "group": "4_state@3"
+        },
+        {
           "command": "adoCode.takeOwnership",
           "when": "viewItem == unassignedWorkItemNode",
           "group": "1_workItem@1"
@@ -335,18 +330,23 @@
         },
         {
           "command": "adoCode.openWorktreeInTerminal",
-          "when": "viewItem == statusWorktree",
+          "when": "viewItem == statusWorktree || viewItem == worktreeNode",
           "group": "1_worktree@1"
         },
         {
           "command": "adoCode.openWorktreeInExplorer",
-          "when": "viewItem == statusWorktree",
+          "when": "viewItem == statusWorktree || viewItem == worktreeNode",
           "group": "1_worktree@2"
         },
         {
           "command": "adoCode.removeWorktree",
-          "when": "viewItem == statusWorktree",
+          "when": "viewItem == statusWorktree || viewItem == worktreeNode",
           "group": "2_worktree@1"
+        },
+        {
+          "command": "adoCode.showAgentOutput",
+          "when": "viewItem == statusWorktree || viewItem == worktreeNode",
+          "group": "3_worktree@1"
         }
       ]
     },
@@ -386,6 +386,11 @@
         {
           "id": "adoCode.status",
           "name": "Status",
+          "type": "tree"
+        },
+        {
+          "id": "adoCode.worktrees",
+          "name": "Worktrees",
           "type": "tree"
         }
       ]
@@ -525,6 +530,11 @@
           "type": "boolean",
           "default": true,
           "description": "Before starting a task with no description AND no acceptance criteria, warn and offer to review detail or request clarification"
+        },
+        "adoCode.ignore.dotAdoCode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ensure `.ado-code` (workspace memory, checkpoints, agent runs) is listed in `.gitignore` and `.dockerignore`; offers to add it when missing. Declining the offer is remembered per workspace (re-enable later by removing the entry from the ignore files and reloading)."
         },
         "adoCode.sessions.maxPerProject": {
           "type": "number",

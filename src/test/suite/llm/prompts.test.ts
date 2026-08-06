@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { buildSystemPrompt, buildAgentPrompt } from '../../../llm/prompts';
+import { buildSystemPrompt, buildAgentPrompt, wrapMemoryContext } from '../../../llm/prompts';
 import { WorkItemContext } from '../../../shared/messages';
 
 const baseItem: WorkItemContext = {
@@ -52,5 +52,23 @@ suite('Thread-aware prompts', () => {
   test('buildAgentPrompt without comments has no thread section', () => {
     const prompt = buildAgentPrompt(baseItem, 'feature/ADO-7-add-feature');
     assert.ok(!prompt.includes('Discussion thread'));
+  });
+
+  test('buildAgentPrompt includes memory context as instructions when provided', () => {
+    const memory = '## User Memories\n\n### instruction\nAlways run the linter after editing';
+    const prompt = buildAgentPrompt(baseItem, 'feature/ADO-7-add-feature', undefined, memory);
+    assert.ok(prompt.includes('ADO Code Memory (instructions you MUST honor)'));
+    assert.ok(prompt.includes('Always run the linter after editing'));
+  });
+
+  test('buildAgentPrompt omits the memory section when memory is empty', () => {
+    const prompt = buildAgentPrompt(baseItem, 'feature/ADO-7-add-feature', undefined, '  ');
+    assert.ok(!prompt.includes('ADO Code Memory'));
+  });
+
+  test('wrapMemoryContext frames memory as instructions', () => {
+    const wrapped = wrapMemoryContext('do the thing');
+    assert.ok(wrapped.includes('## ADO Code Memory'));
+    assert.ok(wrapped.includes('do the thing'));
   });
 });

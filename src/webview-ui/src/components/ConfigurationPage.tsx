@@ -3,6 +3,10 @@ import { vscode } from '../vscode';
 
 interface Props {
   onBack: () => void;
+  /** Fetch model ids with typed-but-unsaved LLM credentials (host does the call). */
+  onFetchModels?: (provider?: string, apiUrl?: string, apiKey?: string) => void;
+  models?: string[];
+  modelsLoading?: boolean;
 }
 
 interface ConfigSection {
@@ -26,7 +30,9 @@ const SECTIONS: ConfigSection[] = [
     icon: '🔵',
     settings: [
       { key: 'adoOrganization', label: 'Organization', type: 'string', description: 'ADO organization name (e.g. mycompany)', placeholder: 'mycompany' },
-      { key: 'adoProject', label: 'Project', type: 'string', description: 'Active ADO project name', placeholder: 'MyProject' },
+      // Active ADO project is intentionally NOT here: the project is bound
+      // per workspace (.ado-code/config.json) and switched from the chat
+      // header / work item trees.
       { key: 'adoPat', label: 'Personal Access Token', type: 'password', description: 'ADO PAT with Work Items + Project scope', placeholder: 'vso.work_write' },
       { key: 'adoServerUrl', label: 'Server URL (on-prem)', type: 'string', description: 'For ADO Server (TFS) — leave empty for cloud', placeholder: 'https://ado.corp.local/tfs/DefaultCollection' },
     ],
@@ -272,11 +278,117 @@ function McpServersInput({ value, onChange }: { value: McpServer[]; onChange: (s
   );
 }
 
-export function ConfigurationPage({ onBack }: Props) {
+/**
+ * Mirror of src/llm/modelCapabilities.ts (host). Kept here so the
+ * Configuration page can show capabilities LIVE as the user types/picks a
+ * model, without a host round-trip. Keep the patterns in sync.
+ */
+function inferModelCapabilities(modelId: string): { vision: boolean; tools: boolean } {
+  const id = (modelId ?? '').toLowerCase().trim();
+  if (!id) return { vision: false, tools: true };
+  const noToolsExact = new Set([
+    'dall-e-3', 'dall-e-2', 'whisper-1', 'tts-1', 'tts-1-hd',
+    'gpt-3.5-turbo-instruct', 'text-embedding-3-large', 'text-embedding-3-small', 'text-embedding-ada-002',
+  ]);
+  const vision = /vision|gemini|claude|4o|4\.1|4\.5|pixtral|llava|idefics|cogvlm|moondream|firellava|bakllava|smolvlm|paligemma|internvl|glm-4v|qwen[^ ]*\bvl\b|gpt-4-turbo|\bo[134]\b/i.test(id);
+  const tools = !noToolsExact.has(id) && !/embedding|whisper|\btts\b|dall-?e/i.test(id);
+  return { vision, tools };
+}
+
+/**
+ * Model list retrieval for the LLM Provider section: visible once the user
+ * has typed an API URL and API Key (saved or not — the host fetches with the
+ * typed values, exactly like the setup wizard's model picker). Picking a
+ * model sets `llmModel` on the form.
+ */
+function ModelFetcher({
+  config,
+  models,
+  loading,
+  error,
+  onFetch,
+  onPick,
+}: {
+  config: Record<string, any>;
+  models: string[];
+  loading: boolean;
+  error: string | null;
+  onFetch: (provider?: string, apiUrl?: string, apiKey?: string) => void;
+  onPick: (model: string) => void;
+}) {
+  const url = String(config.llmApiUrl ?? '').trim();
+  const key = String(config.llmApiKey ?? '').trim();
+  if (!url || !key) {
+    return (
+      <div className="config-models">
+        <div className="config-desc">Enter an API URL and API Key to fetch the model list.</div>
+      </div>
+    );
+  }
+  const current = String(config.llmModel ?? '');
+  return (
+    <div className="config-models">
+      <button
+        className="config-models-fetch"
+        onClick={() => onFetch(config.llmProvider, config.llmApiUrl, config.llmApiKey)}
+        disabled={loading}
+        type="button"
+      >
+        {loading ? 'Fetching…' : models.length > 0 ? '↻ Refresh models' : 'Fetch Models'}
+      </button>
+      {loading && <div className="config-desc">Fetching models from {url}…</div>}
+      {error && <div className="config-models-error">{error}</div>}
+      {!loading && models.length > 0 && (
+        <select
+          className="config-select"
+          value={current}
+          onChange={e => onPick(e.target.value)}
+          title={`${models.length} models available`}
+        >
+          <option value="">— pick a model —</option>
+          {current && !models.includes(current) && (
+            <option value={current}>{current} (current)</option>
+          )}
+          {models.map(m => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
+/** Capability readout for the currently selected model (live from the form). */
+function ModelCapabilitiesLine({ model }: { model: string }) {
+  const caps = inferModelCapabilities(model);
+  return (
+    <div className="config-models">
+      <div className={`config-caps ${caps.tools ? '' : 'config-caps-warn'}`}>
+        <span>Capabilities:</span>
+        <span className={caps.vision ? 'config-cap-ok' : 'config-cap-no'}>
+          🖼 vision {caps.vision ? '✓' : '✗'}
+        </span>
+        <span className={caps.tools ? 'config-cap-ok' : 'config-cap-no'}>
+          🛠 tool calling {caps.tools ? '✓' : '✗'}
+        </span>
+      </div>
+      {!caps.tools && (
+        <div className="config-models-error">
+          ⚠ This model doesn't support tool calling — agentic modes (Chat/Plan/Act) will degrade to plain chat without tools, file edits, or delegation.
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading }: Props) {
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // Inline display for host fetch failures (the global error banner is not
+  // rendered on this page).
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -284,6 +396,8 @@ export function ConfigurationPage({ onBack }: Props) {
       if (msg.type === 'fullConfig') {
         setConfig(msg.config);
         setLoading(false);
+      } else if (msg.type === 'error') {
+        setFetchError(msg.message);
       }
     };
     window.addEventListener('message', handler);
@@ -385,6 +499,22 @@ export function ConfigurationPage({ onBack }: Props) {
                 )}
               </div>
             ))}
+            {section.title === 'LLM Provider' && (
+              <>
+                <ModelFetcher
+                  config={config}
+                  models={models ?? []}
+                  loading={modelsLoading ?? false}
+                  error={fetchError}
+                  onFetch={(provider, apiUrl, apiKey) => {
+                    setFetchError(null);
+                    onFetchModels?.(provider, apiUrl, apiKey);
+                  }}
+                  onPick={model => handleChange('llmModel', model)}
+                />
+                <ModelCapabilitiesLine model={String(config.llmModel ?? '')} />
+              </>
+            )}
           </div>
         ))}
       </div>

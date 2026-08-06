@@ -23,6 +23,7 @@ interface SanitizedConfig {
   llmModel: string;
   mode?: 'inline' | 'plan' | 'act';
   configured: boolean;
+  modelCapabilities?: { vision: boolean; tools: boolean };
 }
 
 interface AgentInfo {
@@ -461,7 +462,12 @@ function App() {
   if (showConfig) {
     return (
       <div className="app">
-        <ConfigurationPage onBack={() => setShowConfig(false)} />
+        <ConfigurationPage
+          onBack={() => setShowConfig(false)}
+          onFetchModels={handleFetchModels}
+          models={models}
+          modelsLoading={modelsLoading}
+        />
       </div>
     );
   }
@@ -527,6 +533,14 @@ function App() {
               next.delete(runId);
               return next;
             });
+            // Persist the dismissal host-side so it survives re-hydration
+            // (panel remount / reload) instead of reappearing.
+            vscode.postMessage({ type: 'dismissAgentRun', runId });
+          }}
+          onReopen={(runId) => {
+            // Re-open the summary output in the editor panel (the user may
+            // have closed it after completion).
+            vscode.postMessage({ type: 'reopenAgentOutput', runId });
           }}
         />
       ))}
@@ -545,6 +559,9 @@ function App() {
       )}
 
       {/* Input */}
+      {/* Active-model capability gating: no vision → image attach/paste is
+          disabled; no tool calling → agentic modes degrade to plain chat,
+          surfaced as a persistent warning. */}
       <InputBar
         mode={mode}
         value={draft}
@@ -559,7 +576,13 @@ function App() {
         onAddContext={() => vscode.postMessage({ type: 'getEditorContext' })}
         onAttachFiles={() => vscode.postMessage({ type: 'pickFiles' })}
         loading={loading ? mode : ''}
+        canAttachImages={config.modelCapabilities?.vision ?? true}
       />
+      {config.configured && config.modelCapabilities && !config.modelCapabilities.tools && (
+        <div className="model-capability-warning" title="Tool calling unavailable for the active model">
+          ⚠ <strong>{config.llmModel}</strong> doesn't support tool calling — Chat/Plan/Act run as plain chat (no tools, no file edits, no delegation).
+        </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,24 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.6] - 2026-08-06
+
+### Features
+- **Dedicated Worktrees view**: New sidebar tree showing every agent worktree with per-worktree details — run status (color-coded), agent, work item, dirty/clean files, last commit, ahead/behind, and path. Refreshes automatically on run status changes (start/cancel/complete) and after removal. Context menus shared with the old Status-panel listing: Open in Terminal, Open in Explorer, Remove, and new **Show Agent Output**
+- **Reopen agent output**: Closed summary panels are no longer lost — finished runs get a "↗ Reopen" button and a "Reopen output" link in the chat panel, plus right-click → **Show Agent Output** in the Worktrees view. Summary panels now dedupe: reopening reveals and refreshes the existing panel instead of stacking duplicates
+- **Memory-driven agent hooks**: Workspace memory keys `agent.before` and `agent.after` hold shell commands that run around every agent invocation — `agent.before` executes in the agent's worktree before the adapter starts (output streams to the run panel), `agent.after` runs on completion and its output is captured into the summary. User and workspace memory are also injected into every agent handoff prompt as "ADO Code Memory (instructions you MUST honor)" (hook keys excluded so agents don't re-run them)
+- **Model capability checking**: The extension infers the active model's capabilities (`vision`, `tool calling`) from its id. Models without vision get image paste/attach disabled in the chat; models without tool calling trigger a persistent warning that agentic modes degrade to plain chat. The Configuration page shows a live capability readout for the selected model and highlights models lacking tool calling
+- **Model list retrieval in Configuration**: Once an API URL and API Key are entered, a "Fetch Models" button lists models from the endpoint (OpenAI `/models` or Anthropic `/v1/models`) and lets you pick one; failures render inline
+- **`.ado-code` auto-ignore**: The workspace data directory (memory, checkpoints, agent runs) is now offered to be added to `.gitignore` and `.dockerignore` when missing (setting `adoCode.ignore.dotAdoCode`, default on; a declined offer is remembered per workspace)
+
+### Improvements
+- **Branch names use the ADO subject**: Delegated agent worktree branches are slugged from the work item title (e.g. `feature/ADO-42-fix-login-bug`) instead of the prompt's first line ("read-and-follow-…")
+- **Tree view title bars cleaned up**: The cramped title-bar strip no longer holds Refresh/Deselect buttons — Deselect Work Item moved into the row context menu (shown only while a selection exists), refresh stays reachable via command palette, `ctrl+shift+r`, and the chat header
+
+### Bug Fixes
+- **Dismissed agent runs no longer reappear**: Dismissing a finished run is now persisted host-side, so panel remounts, re-focus, and extension reloads keep it dismissed
+- **Duplicate agent summary panels**: Reopening a summary while its panel is still open revealed a second panel — it now reveals and refreshes the existing one
+
 ## [0.5.5] - 2026-08-06
 
 ### Features

@@ -7,15 +7,27 @@ import { AgentRun } from '../agents/types';
  * similar to WorkItemDetailPanel but for agent results.
  */
 export class AgentSummaryPanel {
+  // Per-run panel tracking so show() reveals an existing panel instead of
+  // piling up duplicates (the panel id alone does NOT dedupe in VS Code).
+  private static panels = new Map<string, vscode.WebviewPanel>();
+
   /**
    * Show the agent summary in the editor area. If a panel for this run
-   * already exists, reveal it instead of creating a duplicate.
+   * already exists, reveal it (and refresh its content) instead of creating
+   * a duplicate.
    */
   public static show(context: vscode.ExtensionContext, run: AgentRun, summary: string): void {
     if (!summary) return;
 
     const panelId = `adoCode.agentSummary.${run.id}`;
     const title = AgentSummaryPanel.formatTitle(run);
+
+    const existing = AgentSummaryPanel.panels.get(panelId);
+    if (existing) {
+      existing.reveal(vscode.ViewColumn.Beside);
+      existing.webview.html = AgentSummaryPanel.renderHtml(run, summary);
+      return;
+    }
 
     const panel = vscode.window.createWebviewPanel(
       panelId,
@@ -25,6 +37,8 @@ export class AgentSummaryPanel {
     );
 
     panel.webview.html = AgentSummaryPanel.renderHtml(run, summary);
+    panel.onDidDispose(() => AgentSummaryPanel.panels.delete(panelId));
+    AgentSummaryPanel.panels.set(panelId, panel);
   }
 
   private static formatTitle(run: AgentRun): string {

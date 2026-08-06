@@ -24,15 +24,29 @@ export interface AgentRunnerCallbacks {
   onComplete(run: AgentRun, summary: string): void;      // final result
 }
 
+/** Q7: workspaceState-backed persistence for runs + dismissals. */
+export interface AgentRunnerStore {
+  save(runs: AgentRun[]): void;
+  load(): AgentRun[];
+  saveDismissed?(ids: string[]): void;
+  loadDismissed?(): string[];
+}
+
 export class AgentRunner {
   private runs = new Map<string, AgentRun>();
   private aborts = new Map<string, AbortController>();
+  // Runs the user dismissed from the chat panel — persisted so re-hydration
+  // (panel remount, extension reload) does not bring them back.
+  private dismissed = new Set<string>();
 
   constructor(
     private registry: AgentRegistry,
     private git: GitService,
     private callbacks: AgentRunnerCallbacks,
-    private store?: { save(runs: AgentRun[]): void; load(): AgentRun[] } // Q7: workspaceState-backed
+    private store?: AgentRunnerStore, // Q7: workspaceState-backed
+    // Memory-driven pre/post hooks: workspace memory keys `agent.before` /
+    // `agent.after` run as shell commands around each agent invocation.
+    private workspaceMemory?: { read(key: string): string | null }
   ) {
     // Q7: restore persisted runs on construction (extension reload).
     const persisted = this.store?.load() ?? [];
@@ -42,13 +56,15 @@ export class AgentRunner {
       }
       this.runs.set(run.id, run);
     }
+    // Restore dismissed run ids so they stay hidden after a reload.
+    this.dismissed = new Set(this.store?.loadDismissed?.() ?? []);
   }
 
   private persist(): void {
     this.store?.save([...this.runs.values()]);
   }
 
-  async delegate(workItemId: number, prompt: string, agent?: AgentName): Promise<AgentRun> {
+  async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string): Promise<AgentRun> {
     const installed = await this.registry.getInstalled();
     // M2 fix: honor adoCode.agents.autoSelect when no agent is specified.
     let chosen: AgentCapability | undefined;
@@ -72,10 +88,13 @@ export class AgentRunner {
       startedAt: new Date().toISOString(),
     };
 
-    // Create isolated worktree for this agent run
+    // Create isolated worktree for this agent run. The branch is slugged from
+    // the WORK ITEM TITLE (the ADO subject) when available — the prompt's
+    // first line is only a fallback (it is usually "Read and follow
+    // AGENTS.md…", which made ugly branch names).
     try {
-      const title = prompt.split('\n')[0]?.slice(0, 80) ?? `task-${workItemId}`;
-      const branchName = this.git.getBranchName(workItemId, title);
+      const slugSource = (title ?? prompt.split('\n')[0] ?? '').slice(0, 80) || `task-${workItemId}`;
+      const branchName = this.git.getBranchName(workItemId, slugSource);
       run.branch = branchName;
       const worktreePath = await this.git.createWorktree(run.id, branchName);
       run.worktreePath = worktreePath;
@@ -89,6 +108,11 @@ export class AgentRunner {
     this.runs.set(run.id, run);
     this.persist();
     this.callbacks.onStatus(run, `delegating to ${chosen.displayName}...`);
+
+    // Memory-driven PRE-agent hook: workspace memory key `agent.before` runs
+    // in the agent's working directory before the adapter starts. Output
+    // streams into the run panel; a failing hook does not block the run.
+    await this.runPreHook(run);
 
     const abort = new AbortController();
     this.aborts.set(run.id, abort);
@@ -149,6 +173,8 @@ export class AgentRunner {
     this.aborts.set(runId, abort);
     run.status = 'running';
     this.persist();
+    // Memory-driven PRE-agent hook also guards follow-up invocations.
+    await this.runPreHook(run);
     void (async () => {
       try {
         let result: { exitCode: number | null; output: string };
@@ -205,6 +231,34 @@ export class AgentRunner {
     return [...this.runs.values()];
   }
 
+  /** Permanently hide a finished run from the chat panel (persisted). */
+  dismiss(runId: string): void {
+    if (!this.runs.has(runId)) return;
+    this.dismissed.add(runId);
+    this.store?.saveDismissed?.([...this.dismissed]);
+  }
+
+  /** True when the user dismissed this run from the chat panel. */
+  isDismissed(runId: string): boolean {
+    return this.dismissed.has(runId);
+  }
+
+  /**
+   * Execute the memory-driven pre-agent hook (workspace memory key
+   * `agent.before`) in the run's working directory. Output streams to the
+   * run panel; failures are surfaced but never block the run.
+   */
+  private async runPreHook(run: AgentRun): Promise<void> {
+    const hook = this.workspaceMemory?.read('agent.before')?.trim();
+    if (!hook) return;
+    const cwd = run.worktreePath ?? run.workdir;
+    const { stdout, stderr } = await execAsync(hook, cwd);
+    const hookOut = (stdout || stderr).trim();
+    this.callbacks.onStatus(run, hookOut
+      ? `pre-agent hook (\`${hook}\`):\n${hookOut}`
+      : `pre-agent hook ran: ${hook}`);
+  }
+
   /** Check-back: after the agent finishes, verify the work it claims to have done. */
   private async verifyWork(run: AgentRun, output: string): Promise<string> {
     const lines: string[] = [];
@@ -259,6 +313,18 @@ export class AgentRunner {
     lines.push('```');
     lines.push(output.slice(-3000));
     lines.push('```');
+
+    // 5) Memory-driven POST-agent hook: workspace memory key `agent.after`
+    // runs in the agent's working directory once the run is done; its
+    // output is captured into the summary so it survives panel close/reopen.
+    const afterHook = this.workspaceMemory?.read('agent.after')?.trim();
+    if (afterHook) {
+      lines.push(`**Post-agent hook (\`${afterHook}\`):**`);
+      const { stdout, stderr } = await execAsync(afterHook, cwd);
+      lines.push('```');
+      lines.push((stdout || stderr).trim().slice(0, 2000) || '_no output_');
+      lines.push('```');
+    }
 
     return lines.join('\n');
   }

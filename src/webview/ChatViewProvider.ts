@@ -8,7 +8,7 @@ import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType } from '../llm/types';
-import { buildSystemPrompt, buildAgentPrompt } from '../llm/prompts';
+import { buildSystemPrompt, buildAgentPrompt, wrapMemoryContext } from '../llm/prompts';
 import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
@@ -19,6 +19,9 @@ import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
 import { parseChoicePrompt } from '../llm/parseChoicePrompt';
+import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
+import { AgentSummaryPanel } from './AgentSummaryPanel';
+import { getModelCapabilities } from '../llm/modelCapabilities';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -198,10 +201,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   async delegateToAgent(prompt: string, agent?: string): Promise<string> {
     if (!this.agentRunner) throw new Error('agent runner not wired');
     if (!this.activeWorkItem) throw new Error('select a work item first');
-    const run = await this.agentRunner.delegate(this.activeWorkItem.id, prompt, agent as any);
+    // Pass the work item TITLE so the agent worktree branch is slugged from
+    // the ADO subject, not from the prompt's first line.
+    const memory = this.buildAgentMemoryContext();
+    const finalPrompt = memory ? `${prompt}\n\n${wrapMemoryContext(memory)}` : prompt;
+    const run = await this.agentRunner.delegate(this.activeWorkItem.id, finalPrompt, agent as any, this.activeWorkItem.title);
     // Result is delivered async via agentStatus/agentResult messages; return a
     // placeholder so the tool executor sees the run started.
     return JSON.stringify({ ok: true, runId: run.id, status: run.status });
+  }
+
+  /**
+   * Assemble user + workspace memory as context for an EXTERNAL agent.
+   * The executable hook keys (`agent.before` / `agent.after`) are excluded —
+   * the runner executes those automatically around the run, so the agent
+   * shouldn't re-run them by hand.
+   */
+  private buildAgentMemoryContext(): string {
+    const parts: string[] = [];
+
+    const user = this.services.memory.toPromptString();
+    if (user.trim()) parts.push(user.trim());
+
+    const wsKeys = this.services.workspaceMemory
+      .list()
+      .filter(k => k !== 'agent.before' && k !== 'agent.after');
+    if (wsKeys.length > 0) {
+      const lines: string[] = ['## Workspace Memory', ''];
+      for (const key of wsKeys) {
+        const value = this.services.workspaceMemory.read(key);
+        if (value) {
+          lines.push(`### ${key}`);
+          lines.push('');
+          lines.push(value);
+          lines.push('');
+        }
+      }
+      parts.push(lines.join('\n'));
+    }
+
+    return parts.join('\n\n');
   }
 
   /** Task 24: agent-related message handlers. */
@@ -225,6 +264,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'agentCancel':
         this.agentRunner?.cancel(message.runId);
         break;
+      case 'dismissAgentRun':
+        // Persist the dismissal so a later re-hydration (panel remount,
+        // extension reload) does not re-show the finished run.
+        this.agentRunner?.dismiss(message.runId);
+        break;
+      case 'reopenAgentOutput': {
+        // Re-open the summary editor panel for a finished run (the user may
+        // have closed it; the summary is persisted on the run record).
+        const run = this.agentRunner?.listRuns().find(r => r.id === message.runId);
+        if (run?.summary) {
+          AgentSummaryPanel.show(this._context, run, run.summary);
+        }
+        break;
+      }
       case 'listAgents': {
         const agents = await this.services.agents.detect();
         this.postMessage({ type: 'agentList', agents });
@@ -252,10 +305,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'listAgentRuns': {
-        const runs = this.agentRunner?.listRuns() ?? [];
+        const all = this.agentRunner?.listRuns() ?? [];
+        // Dismissed runs stay hidden across re-hydration (panel remount, reload).
+        const visible = all.filter(r => !this.agentRunner?.isDismissed(r.id));
         // Only send running + recently finished (last 5 completed)
-        const active = runs.filter(r => r.status === 'running');
-        const recent = runs
+        const active = visible.filter(r => r.status === 'running');
+        const recent = visible
           .filter(r => r.status !== 'running')
           .sort((a, b) => (b.finishedAt ?? '').localeCompare(a.finishedAt ?? ''))
           .slice(0, 5);
@@ -381,6 +436,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'delegateToAgent':
           case 'agentFollowUp':
           case 'agentCancel':
+          case 'dismissAgentRun':
+          case 'reopenAgentOutput':
           case 'listAgents':
           case 'listAgentRuns':
             await this.handleAgentMessage(message);
@@ -624,6 +681,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       llmModel: s.llmModel,
       mode: s.mode,
       configured: Boolean(s.adoOrganization && s.adoProject && s.adoPat && s.llmApiKey),
+      // Capabilities of the ACTIVE model — the webview gates image pasting
+      // (vision) and warns when tool calling is unavailable.
+      modelCapabilities: getModelCapabilities(s.llmModel),
     };
   }
 
@@ -645,6 +705,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const key of keys) {
       result[key] = cfg.get(key);
     }
+    // Capabilities of the saved model, for the Configuration page.
+    result.modelCapabilities = getModelCapabilities(String(result.llmModel ?? ''));
     return result;
   }
 
@@ -837,6 +899,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (!fs.existsSync(agentsMdPath)) {
         await this.offerGenerateAgentsMd(root);
       }
+
+      // 4) .ado-code not ignored — offer to add it to .gitignore/.dockerignore
+      await this.checkDotAdoCodeIgnored(root);
     } catch (err) {
       logger.error('Chat: workspace init check failed', err);
     }
@@ -1109,6 +1174,53 @@ app.Run();
     }
   }
 
+  /**
+   * Offer to list `.ado-code` in .gitignore/.dockerignore so per-user
+   * workspace data (memory, checkpoints, agent runs) is never committed or
+   * baked into a Docker image. Gated by `adoCode.ignore.dotAdoCode` (default
+   * on); a declined offer is remembered per workspace (workspaceState) so we
+   * don't nag on every load. A git repo with no .gitignore yet gets one
+   * synthesized — that is exactly the repo where .ado-code would be committed.
+   */
+  private async checkDotAdoCodeIgnored(root: string): Promise<void> {
+    if (!getSettings().ignoreDotAdoCode) return;
+    if (this._context.workspaceState.get<boolean>(IGNORE_DISMISS_KEY)) return;
+
+    const missing = missingIgnoreTargets(root, DOT_ADO_CODE);
+    const hasGitignore = fs.existsSync(path.join(root, '.gitignore'));
+    if (!hasGitignore && (await this.services.git.isGitRepo())) {
+      missing.push('.gitignore');
+    }
+    if (missing.length === 0) return;
+
+    const choice = await this.requestConfirmation(
+      'Ignore .ado-code',
+      `ADO Code stores per-user workspace data in ".ado-code" (memory, checkpoints, agent runs). It is not listed in ${missing.join(' and ')}. Add it so it is never committed or baked into a Docker image?`,
+      [
+        { label: `Add to ${missing.join(' and ')}`, value: 'add' },
+        { label: 'Skip', value: 'skip', isDangerous: true },
+      ]
+    );
+
+    if (choice === 'add') {
+      const added: string[] = [];
+      for (const name of missing) {
+        if (ensureEntryInIgnoreFile(path.join(root, name), DOT_ADO_CODE)) {
+          added.push(name);
+        }
+      }
+      if (added.length > 0) {
+        logger.info(`Chat: added .ado-code to ${added.join(', ')}`);
+        vscode.window.showInformationMessage(`ADO Code: added ".ado-code" to ${added.join(' and ')}.`);
+      }
+    } else if (choice === 'skip') {
+      // Remember the user's choice so the offer does not reappear on every load.
+      await this._context.workspaceState.update(IGNORE_DISMISS_KEY, true);
+      logger.info('Chat: user declined to ignore .ado-code (remembered per workspace)');
+    }
+    // choice === null → card dismissed without a decision; re-offer next load.
+  }
+
   /** Generate a basic AGENTS.md template from the workspace structure. */
   private async generateAgentsMd(root: string): Promise<void> {
     const pkgPath = path.join(root, 'package.json');
@@ -1288,7 +1400,12 @@ app.Run();
     } catch {
       // No AGENTS.md — agents still get the work item context.
     }
-    const prompt = buildAgentPrompt(this.activeWorkItem, branch ?? 'unknown', projectContext);
+    const prompt = buildAgentPrompt(
+      this.activeWorkItem,
+      branch ?? 'unknown',
+      projectContext,
+      this.buildAgentMemoryContext()
+    );
 
     // 4) Delegate (Task 24) — status + result stream back to the webview.
     // H-3 fix: the runner is wired via setAgentRunner (Task 24), NOT on Services.

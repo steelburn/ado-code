@@ -26,9 +26,9 @@ src/llm/tools/ BaseTool, ToolRegistry, 5 tool implementations + definitions
 src/llm/providers/ BaseProvider, openai-v2, anthropic-v2
 src/llm/context/ tokenCounter, contextManager, condenser
 src/memory/ UserMemory, WorkspaceMemory
-src/services/ checkpoints/, mcp/
+src/services/ checkpoints/, mcp/, ignoreFiles/ (keeps `.ado-code` out of .gitignore/.dockerignore)
 src/shared/ Message protocol types
-src/webview/ ChatViewProvider
+src/webview/ ChatViewProvider, StatusPanelProvider, WorktreesTreeProvider (dedicated agent-worktree view)
 src/webview-ui/ React app (components/, styles/)
 
 ## Architecture
@@ -60,6 +60,14 @@ adapters/ — 7 adapter implementations
 ### Memory System
 UserMemory.ts — per-user preferences (VS Code globalState)
 WorkspaceMemory.ts — per-project conventions (.ado-code/memory/)
+Memory is injected into the chat system prompt AND into every external-agent
+handoff prompt (framed as "ADO Code Memory (instructions you MUST honor)";
+the hook keys below are excluded from the agent context). Workspace memory
+keys `agent.before` / `agent.after` run as shell hooks around each agent
+invocation: `agent.before` executes in the run's workdir before the adapter
+starts (output streams to the run panel), `agent.after` runs on completion
+and its output is captured into the summary (AgentRunner.runPreHook +
+verifyWork).
 
 ### Webview
 ChatViewProvider.ts — message routing, commands
