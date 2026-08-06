@@ -146,12 +146,15 @@ function App() {
           break;
 
         case 'choicePrompt':
-          // AI detected a choice prompt — show as inline confirmation card
+          // AI detected a choice prompt — show as inline confirmation card.
+          // isChoice marks it: clicking an option sends the choice as a user
+          // message (the LLM then acts on it as a follow-up turn).
           setConfirmation({
             requestId: msg.requestId,
             title: 'Choose an option',
             description: msg.question,
             options: msg.options,
+            isChoice: true,
           });
           break;
 
@@ -324,9 +327,20 @@ function App() {
   }, []);
 
   const handleConfirmationResponse = useCallback((requestId: string, value: string) => {
+    // AI choice prompts: the option click becomes the user's follow-up
+    // message (same flow as typing it) so the LLM executes the choice.
+    // The host never registered a confirmBroker request for choice cards,
+    // so a confirmationResponse there would be a no-op.
+    const wasChoice = confirmation?.isChoice === true;
     setConfirmation(null);
+    if (wasChoice) {
+      setMessages(prev => [...prev, { role: 'user', content: value }]);
+      setLoading(true);
+      vscode.postMessage({ type: 'sendMessage', content: value });
+      return;
+    }
     vscode.postMessage({ type: 'confirmationResponse', requestId, value });
-  }, []);
+  }, [confirmation]);
 
   const handleClear = useCallback(() => {
     vscode.postMessage({ type: 'clearConversation' });

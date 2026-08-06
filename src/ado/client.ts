@@ -245,6 +245,37 @@ export class AdoClient {
     );
   }
 
+  /**
+   * Create a pull request (Git REST API, api-version 7.1 GA).
+   * repositoryId may be the repo NAME or GUID. Guarded: refuses when
+   * source and target branches are the same.
+   */
+  async createPullRequest(
+    project: string,
+    repositoryId: string,
+    sourceBranch: string,
+    targetBranch: string,
+    title: string,
+    description?: string
+  ): Promise<{ pullRequestId: number; url: string }> {
+    if (sourceBranch === targetBranch) {
+      throw new Error(`createPullRequest: source and target branches are the same ('${sourceBranch}')`);
+    }
+    const pr = await this.post<any>(
+      `/${project}/_apis/git/repositories/${encodeURIComponent(repositoryId)}/pullrequests?api-version=${GA_VERSION}`,
+      {
+        sourceRefName: `refs/heads/${sourceBranch}`,
+        targetRefName: `refs/heads/${targetBranch}`,
+        title,
+        description: description || '',
+      }
+    );
+    return {
+      pullRequestId: pr.pullRequestId,
+      url: pr.url ?? '',
+    };
+  }
+
   private async get<T>(endpoint: string): Promise<T> {
     const url = this.buildUrl(endpoint);
     const response = await this.fetchWithFallback(url, { method: 'GET', headers: this.headers });

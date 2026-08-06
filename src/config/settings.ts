@@ -12,6 +12,8 @@ export interface AdoCodeSettings {
   llmApiUrl: string;
   llmApiKey: string;
   llmModel: string;
+  /** Optional cheaper model for AI choice-prompt detection ('' = main model). */
+  llmChoiceDetectionModel: string;
   mode: 'inline' | 'plan' | 'act';
   actToolBudget: number;
   actTerminalAllowlist: string[];
@@ -39,6 +41,7 @@ export function getSettings(): AdoCodeSettings {
     llmApiUrl: config.get<string>('llmApiUrl', 'https://api.openai.com/v1'),
     llmApiKey: config.get<string>('llmApiKey', ''),
     llmModel: config.get<string>('llmModel', 'gpt-4o'),
+    llmChoiceDetectionModel: config.get<string>('llm.choiceDetectionModel', ''),
     mode: config.get<'inline' | 'plan' | 'act'>('mode', 'inline'),
     actToolBudget: config.get<number>('act.toolBudget', 25),
     actTerminalAllowlist: config.get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']),

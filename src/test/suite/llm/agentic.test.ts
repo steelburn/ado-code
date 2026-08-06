@@ -28,6 +28,7 @@ function stubExecutor() {
     tools,
     mode: 'act' as 'inline' | 'plan' | 'act',
     setMode(_m: 'inline' | 'plan' | 'act') {},
+    beginTurn() {},
     async execute(name: string, args: Record<string, any>): Promise<string> {
       if (name === 'echo') return `echoed: ${args.value}`;
       throw new Error(`unknown tool ${name}`);
@@ -163,5 +164,35 @@ suite('AnthropicProvider chatWithTools', () => {
     ]);
     assert.strictEqual(captured.system, 'sys');
     assert.strictEqual(captured.messages[0].role, 'user');
+  });
+
+  test('runAgenticChat reports progress for thinking text and tool execution', async () => {
+    let callCount = 0;
+    const fetchStub = async (_url: any, init: any) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: 'thinking...',
+              tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'echo', arguments: '{"value":"hi"}' } }],
+            },
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const updates: string[] = [];
+    await runAgenticChat(client, stubExecutor(), [{ role: 'user', content: 'go' }], undefined, 8, (u) => {
+      if (u.tool) updates.push(`tool:${u.tool.name}`);
+      else if (u.text) updates.push(`text:${u.text}`);
+    });
+
+    assert.ok(updates.includes('text:thinking...'), 'thinking text reported');
+    assert.ok(updates.includes('tool:echo'), 'tool execution reported');
   });
 });

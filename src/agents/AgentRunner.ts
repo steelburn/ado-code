@@ -78,11 +78,24 @@ export class AgentRunner {
     if (!chosen.installed) {
       throw new Error(`agent '${agent ?? 'any'}' is not installed`);
     }
+
+    // Guardrail: never run two agents on the same work item concurrently —
+    // both would create the same branch and stomp each other's worktree.
+    const activeForItem = [...this.runs.values()].find(
+      r => r.workItemId === workItemId && r.status === 'running'
+    );
+    if (activeForItem) {
+      throw new Error(
+        `work item #${workItemId} already has an active agent run (${activeForItem.agent}, ${activeForItem.id}) — finish or cancel it before delegating again`
+      );
+    }
+
     const workdir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const run: AgentRun = {
       id: `run-${Date.now()}-${workItemId}`,
       workItemId,
       agent: chosen.name,
+      title: title || '',
       workdir,
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -95,6 +108,20 @@ export class AgentRunner {
     try {
       const slugSource = (title ?? prompt.split('\n')[0] ?? '').slice(0, 80) || `task-${workItemId}`;
       const branchName = this.git.getBranchName(workItemId, slugSource);
+      // Guardrail: reusing a branch that predates the current base means the
+      // agent works from stale code — surface a warning but continue. The
+      // guard must NEVER break run setup (wrapped defensively).
+      try {
+        if (await this.git.branchExists(branchName)) {
+          const upToDate = await this.git.isBranchUpToDate(branchName);
+          if (!upToDate) {
+            const warn = `warning: branch '${branchName}' already exists and is behind the base branch — this run will continue from outdated code`;
+            this.callbacks.onStatus(run, warn);
+          }
+        }
+      } catch {
+        // Guard helpers unavailable (e.g. minimal fakes) — skip the warning.
+      }
       run.branch = branchName;
       const worktreePath = await this.git.createWorktree(run.id, branchName);
       run.worktreePath = worktreePath;
@@ -217,6 +244,10 @@ export class AgentRunner {
     if (run && run.status === 'running') {
       run.status = 'cancelled';
       this.persist();
+      // Notify listeners of the transition (webview panel status + working
+      // indicator) — the async IIFE bails early on cancelled and never fires
+      // onComplete, so this is the only status signal for a cancelled run.
+      this.callbacks.onStatus(run, 'cancelled by user');
     }
   }
 

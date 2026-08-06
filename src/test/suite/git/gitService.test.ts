@@ -81,4 +81,130 @@ suite('GitService', () => {
       fs.rmSync(plainDir, { recursive: true, force: true });
     }
   });
+
+  test('createWorktree names the directory with the run id (no double prefix)', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+
+    const wtPath = await service.createWorktree('run-1785000000000-42', 'feature/ADO-42-fix-login');
+    assert.ok(
+      wtPath.endsWith(path.join('.ado-code', 'worktrees', 'run-1785000000000-42')),
+      `unexpected dir name: ${wtPath}`
+    );
+    assert.ok(fs.existsSync(wtPath));
+
+    // listWorktrees round-trips the canonical run id.
+    const listed = await service.listWorktrees();
+    const mine = listed.find(w => w.branch === 'feature/ADO-42-fix-login');
+    assert.ok(mine, 'worktree should be listed');
+    assert.strictEqual(mine.runId, 'run-1785000000000-42');
+
+    await service.removeWorktree('run-1785000000000-42');
+    assert.ok(!fs.existsSync(wtPath), 'worktree dir should be removed');
+  });
+
+  test('listWorktrees normalizes legacy double-prefixed dirs and removeWorktree cleans them', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+
+    // Simulate the old layout: directory = `run-` + runId (run-run-999-7).
+    const legacyDir = path.join(tmpDir, '.ado-code', 'worktrees', 'run-run-999-7');
+    fs.mkdirSync(path.dirname(legacyDir), { recursive: true });
+    const branch = 'feature/ADO-7-legacy';
+    cp.execSync(`git branch ${branch}`, { cwd: tmpDir });
+    cp.execSync(`git worktree add ${legacyDir} ${branch}`, { cwd: tmpDir });
+
+    const listed = await service.listWorktrees();
+    const mine = listed.find(w => w.branch === branch);
+    assert.ok(mine, 'legacy worktree should be listed');
+    assert.strictEqual(mine.runId, 'run-999-7', 'legacy dir normalizes to the canonical run id');
+
+    await service.removeWorktree('run-999-7');
+    assert.ok(!fs.existsSync(legacyDir), 'legacy worktree dir should be removed');
+  });
+
+  test('commitWorktreeChanges commits a dirty worktree and reports clean ones', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+    const wtPath = await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+
+    // Clean worktree → nothing to commit.
+    const clean = await service.commitWorktreeChanges('run-1-42', 'ADO-42: x');
+    assert.deepStrictEqual(clean, { committed: false, reason: 'nothing-to-commit' });
+
+    // Dirty worktree → committed with the given message.
+    fs.writeFileSync(path.join(wtPath, 'a.txt'), 'changed\n');
+    const committed = await service.commitWorktreeChanges('run-1-42', 'ADO-42: fix login');
+    assert.strictEqual(committed.committed, true);
+    const log = cp.execSync('git log -1 --format=%s', { cwd: wtPath }).toString().trim();
+    assert.strictEqual(log, 'ADO-42: fix login');
+  });
+
+  test('pushWorktreeBranch pushes the feature branch and refuses protected branches', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+    const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-bare-'));
+    cp.execSync('git init --bare', { cwd: bareDir });
+    cp.execSync(`git remote add origin ${bareDir}`, { cwd: tmpDir });
+
+    await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+    fs.writeFileSync(path.join(service.getWorktreePath('run-1-42'), 'a.txt'), 'changed\n');
+    await service.commitWorktreeChanges('run-1-42', 'ADO-42: fix login');
+
+    const push = await service.pushWorktreeBranch('run-1-42');
+    assert.strictEqual(push.pushed, true);
+    assert.strictEqual(push.branch, 'feature/ADO-42-fix-login');
+    // Remote really has it.
+    cp.execSync('git ls-remote origin feature/ADO-42-fix-login', { cwd: tmpDir });
+
+    // Protected-branch refusal: a worktree on 'main' must refuse.
+    await service.createWorktree('run-2-1', 'main');
+    const refused = await service.pushWorktreeBranch('run-2-1');
+    assert.strictEqual(refused.pushed, false);
+    assert.ok(String(refused.reason).includes('protected'));
+  });
+
+  test('isBranchUpToDate detects a stale base; deleteBranchIfMerged only deletes merged branches', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+    const wtPath = await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+    assert.strictEqual(await service.branchExists('feature/ADO-42-fix-login'), true);
+    assert.strictEqual(await service.isBranchUpToDate('feature/ADO-42-fix-login'), true, 'fresh branch is up to date');
+
+    // Base advances; the feature branch is now stale.
+    fs.writeFileSync(path.join(tmpDir, 'b.txt'), 'new\n');
+    cp.execSync('git add . && git commit -m "base advanced"', { cwd: tmpDir });
+    assert.strictEqual(await service.isBranchUpToDate('feature/ADO-42-fix-login'), false, 'stale after base advanced');
+
+    // Unmerged branch is NOT deleted.
+    assert.strictEqual(await service.deleteBranchIfMerged('feature/ADO-42-fix-login'), false);
+    assert.strictEqual(await service.branchExists('feature/ADO-42-fix-login'), true);
+
+    // Merge it into the base, remove the worktree, then delete succeeds.
+    cp.execSync('git merge feature/ADO-42-fix-login -m "merge"', { cwd: tmpDir });
+    await service.removeWorktree('run-1-42');
+    assert.strictEqual(await service.deleteBranchIfMerged('feature/ADO-42-fix-login'), true);
+    assert.strictEqual(await service.branchExists('feature/ADO-42-fix-login'), false);
+    assert.ok(!fs.existsSync(wtPath), 'worktree dir removed');
+  });
+
+  test('getWorktreeInfoForRun reports dirty state for a run', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+    const wtPath = await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+
+    let info = await service.getWorktreeInfoForRun('run-1-42');
+    assert.strictEqual(info.dirty, false);
+
+    fs.writeFileSync(path.join(wtPath, 'a.txt'), 'changed\n');
+    info = await service.getWorktreeInfoForRun('run-1-42');
+    assert.strictEqual(info.dirty, true);
+    assert.strictEqual(info.changedFiles, 1);
+  });
 });

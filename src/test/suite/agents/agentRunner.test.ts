@@ -66,6 +66,45 @@ suite('AgentRunner', () => {
     assert.ok(['cancelled', 'failed'].includes(state.status));
   });
 
+  test('delegate refuses a second run for the same work item (concurrency guard)', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    // Seed an in-flight run for work item 42 (delegate() would normally fail
+    // fast in the test env, so inject the running state directly).
+    (runner as any).runs.set('run-1-42', {
+      id: 'run-1-42', workItemId: 42, agent: 'claude', workdir: '/tmp', status: 'running',
+      startedAt: new Date().toISOString(),
+    });
+    await assert.rejects(
+      runner.delegate(42, 'do it', 'claude'),
+      /already has an active agent run/
+    );
+    // A different work item is not blocked.
+    const run = await runner.delegate(43, 'do it', 'claude');
+    assert.ok(run.id);
+  });
+
+  test('delegate warns when the existing branch is behind the base (stale-base guard)', async () => {
+    const git = {
+      ...fakeGit(),
+      getBranchName: () => 'feature/ADO-42-stale',
+      branchExists: async () => true,
+      isBranchUpToDate: async () => false,
+      createWorktree: async () => '/tmp/worktree',
+    };
+    const events: string[] = [];
+    const runner = new AgentRunner(
+      fakeRegistry(),
+      git,
+      { onStatus: (_run, delta) => events.push(delta), onComplete: () => {} }
+    );
+
+    await runner.delegate(42, 'do it', 'claude');
+    assert.ok(
+      events.some(e => e.includes('warning: branch') && e.includes('behind the base')),
+      'stale-base warning surfaced, got: ' + JSON.stringify(events)
+    );
+  });
+
   test('persisted running runs become interrupted on reload', () => {
     const persisted: AgentRun[] = [{
       id: 'run-999-1',

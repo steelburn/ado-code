@@ -4,6 +4,8 @@ import {
   isCommandSessionApproved,
   addSessionCommandApproval,
   clearSessionAutoApprovals,
+  isSessionAutoApproved,
+  addSessionToolApproval,
 } from '../../../llm/tool-approval-ui';
 
 suite('ConsentBroker', () => {
@@ -98,5 +100,33 @@ suite('Session command approval cache', () => {
   test('session approval trims whitespace', () => {
     addSessionCommandApproval('  git log  ');
     assert.strictEqual(isCommandSessionApproved('git log'), true);
+  });
+});
+
+suite('Session tool approval cache', () => {
+  setup(() => {
+    clearSessionAutoApprovals();
+  });
+
+  test('tool is not session-approved by default', () => {
+    assert.strictEqual(isSessionAutoApproved('edit_file'), false);
+  });
+
+  test('addSessionToolApproval makes the tool session-approved', () => {
+    addSessionToolApproval('edit_file');
+    assert.strictEqual(isSessionAutoApproved('edit_file'), true);
+  });
+
+  test('session approval is per-tool (other tools not approved)', () => {
+    addSessionToolApproval('edit_file');
+    assert.strictEqual(isSessionAutoApproved('edit_file'), true);
+    assert.strictEqual(isSessionAutoApproved('write_to_file'), false);
+    assert.strictEqual(isSessionAutoApproved('run_terminal_command'), false);
+  });
+
+  test('clearSessionAutoApprovals clears the tool cache too', () => {
+    addSessionToolApproval('edit_file');
+    clearSessionAutoApprovals();
+    assert.strictEqual(isSessionAutoApproved('edit_file'), false);
   });
 });

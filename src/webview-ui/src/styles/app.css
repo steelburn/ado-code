@@ -1292,6 +1292,18 @@ code {
   flex-wrap: wrap;
 }
 
+/* Long option labels (e.g. AI choice prompts) stack as full-width rows. */
+.consent-card-actions--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.consent-card-actions--stack .btn {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+}
+
 .consent-card-actions--terminal .btn {
   flex: 1 1 auto;
   min-width: 0;

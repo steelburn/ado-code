@@ -9,13 +9,17 @@ export async function runAgenticChat(
   executor: ToolExecutor,
   initialMessages: LlmMessage[],
   signal?: AbortSignal,
-  maxIterations: number = DEFAULT_MAX_ITERATIONS
+  maxIterations: number = DEFAULT_MAX_ITERATIONS,
+  onProgress?: (update: { text?: string; tool?: { name: string; args: Record<string, any> } }) => void
 ): Promise<LlmAgenticResult> {
   const messages = [...initialMessages];
   const allToolCalls: ToolCall[] = [];
 
   for (let i = 0; i < maxIterations; i++) {
     const { text, toolCalls } = await client.chatWithTools(messages, executor.tools, signal);
+    // Surface the iteration's thinking text (if any) — the loop otherwise
+    // stays silent until the final result.
+    if (text) onProgress?.({ text });
 
     if (!toolCalls || toolCalls.length === 0) {
       return { text, toolCalls: allToolCalls, iterations: i + 1 };
@@ -36,6 +40,8 @@ export async function runAgenticChat(
     // C1 fix: ONE tool message per result, each carrying its own toolCallId
     // (OpenAI requires one role:'tool' message per tool_call_id).
     for (const call of toolCalls) {
+      // Let the host surface what the AI is doing (status-bar detail).
+      onProgress?.({ tool: { name: call.name, args: call.arguments } });
       let content: string;
       try {
         content = await executor.execute(call.name, call.arguments);

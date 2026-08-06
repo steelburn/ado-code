@@ -1,5 +1,21 @@
 import { WorkItemContext } from '../shared/messages';
 
+/**
+ * Merge-flow instructions for the chat assistant: after a delegated agent
+ * run finishes, the assistant can execute commit → push → PR itself via the
+ * worktree tools (guarded — never force-push, never touch main).
+ */
+const MERGE_FLOW_INSTRUCTIONS = `## Merging agent work
+
+Delegated agents work in isolated git worktrees on feature/ADO-<id> branches. When a run finishes (or the user asks to merge agent work), you can execute the whole merge flow yourself:
+
+1. commit_worktree(runId) — commit ALL changes in the run's worktree. Only for FINISHED runs (never while the run is still 'running'); if the run failed, tell the user before committing.
+2. push_worktree(runId) — push the branch to origin. NEVER force-push; NEVER push main/master.
+3. create_pull_request(runId) — create the ADO pull request from the run's branch into the base branch.
+4. Once the PR is up (and the user confirms), you may update_work_item_state to Resolved.
+
+Guardrails: commit/push/PR are mutating tools — inline mode prompts for consent, act mode auto-runs. Use the runId of the finished run; if you don't know it, ask the user. If any step fails (e.g. push rejected), stop and report the exact error instead of working around it.`;
+
 /** Frame memory blocks for an external agent as explicit instructions. */
 export function wrapMemoryContext(memoryContext: string): string {
   return `## ADO Code Memory (instructions you MUST honor)\n\n${memoryContext}`;
@@ -86,6 +102,8 @@ Tags: ${activeWorkItem.tags || 'N/A'}`;
   if (workspaceMemoryPrompt && workspaceMemoryPrompt.trim().length > 0) {
     prompt += `\n\n${workspaceMemoryPrompt.trim()}`;
   }
+
+  prompt += `\n\n${MERGE_FLOW_INSTRUCTIONS}`;
 
   return prompt;
 }

@@ -188,13 +188,22 @@ export class GitService {
   }
 
   /**
+   * Directory name for an agent worktree: the run id itself when it already
+   * carries the `run-` prefix (AgentRunner ids are `run-<ts>-<workItemId>`),
+   * otherwise prefixed. This prevents the old `run-run-…` double prefix.
+   */
+  private worktreeDirName(runId: string): string {
+    return runId.startsWith(WORKTREE_PREFIX) ? runId : `${WORKTREE_PREFIX}${runId}`;
+  }
+
+  /**
    * Create an isolated git worktree for an agent run.
    * Returns the absolute path to the new working directory.
    * Creates the branch from HEAD if it doesn't exist yet.
    */
   async createWorktree(runId: string, branchName: string): Promise<string> {
     const base = this.worktreeBase();
-    const wtDir = path.join(base, `${WORKTREE_PREFIX}${runId}`);
+    const wtDir = path.join(base, this.worktreeDirName(runId));
 
     // Ensure base directory exists
     await execFile('mkdir', ['-p', base], { cwd: this.workspaceRoot });
@@ -226,14 +235,26 @@ export class GitService {
    * If the worktree has uncommitted changes, they are discarded.
    */
   async removeWorktree(runId: string): Promise<void> {
-    const wtDir = path.join(this.worktreeBase(), `${WORKTREE_PREFIX}${runId}`);
-    try {
-      // Force remove — discards uncommitted changes
-      await execFile('git', ['worktree', 'remove', '--force', wtDir], {
-        cwd: this.workspaceRoot,
-      });
-    } catch {
-      // If git worktree remove fails, try manual cleanup
+    const base = this.worktreeBase();
+    // New worktrees live at the run id directly; legacy ones carry the extra
+    // `run-` prefix (run-run-…). Try both so old worktrees still clean up.
+    const candidates = [
+      path.join(base, runId),
+      path.join(base, `${WORKTREE_PREFIX}${runId}`),
+    ];
+    for (const wtDir of candidates) {
+      try {
+        // Force remove — discards uncommitted changes
+        await execFile('git', ['worktree', 'remove', '--force', wtDir], {
+          cwd: this.workspaceRoot,
+        });
+        return;
+      } catch {
+        // Try the next candidate / fall through to manual cleanup.
+      }
+    }
+    // If git worktree remove failed for every candidate, try manual cleanup.
+    for (const wtDir of candidates) {
       try {
         await execFile('rm', ['-rf', wtDir], { cwd: this.workspaceRoot });
       } catch {
@@ -266,12 +287,17 @@ export class GitService {
         );
 
         const wtPath = lines['worktree'] ?? '';
-        const branch = (lines['HEAD'] ?? '').replace('refs/heads/', '');
+        // `--porcelain` puts the branch on a `branch` line (HEAD is the bare
+        // commit hash). Reading HEAD here would label worktrees with hashes.
+        const branch = (lines['branch'] ?? lines['HEAD'] ?? '').replace('refs/heads/', '');
 
         // Only include our agent worktrees (under .ado-code/worktrees/run-*)
         if (wtPath.startsWith(base) && wtPath.includes(`${WORKTREE_PREFIX}`)) {
           const dirName = path.basename(wtPath);
-          const runId = dirName.replace(/^run-/, '');
+          // Legacy dirs were created as `run-` + runId (double prefix, e.g.
+          // run-run-1785…); new dirs are exactly the run id (run-1785…).
+          // Normalize both to the canonical run id (which starts with 'run-').
+          const runId = dirName.startsWith('run-run-') ? dirName.slice('run-'.length) : dirName;
           worktrees.push({ runId, path: wtPath, branch });
         }
       }
@@ -279,6 +305,117 @@ export class GitService {
       return worktrees;
     } catch {
       return [];
+    }
+  }
+
+  /** Absolute path of a run's worktree directory (whether or not it exists yet). */
+  public getWorktreePath(runId: string): string {
+    return path.join(this.worktreeBase(), this.worktreeDirName(runId));
+  }
+
+  /** Worktree status for a run id (dirty/changed/ahead/behind/lastCommit). */
+  public async getWorktreeInfoForRun(runId: string): Promise<WorktreeInfo> {
+    return this.getWorktreeInfo(this.getWorktreePath(runId));
+  }
+
+  /**
+   * Commit ALL changes in the run's worktree. Never force-pushes, never
+   * touches main. Returns { committed: false, reason } when there is
+   * nothing to commit, and the commit hash on success.
+   */
+  public async commitWorktreeChanges(
+    runId: string,
+    message: string
+  ): Promise<{ committed: boolean; reason?: string; hash?: string }> {
+    const wtDir = this.getWorktreePath(runId);
+    const { stdout } = await execFile('git', ['status', '--porcelain'], { cwd: wtDir });
+    if (!stdout.trim()) {
+      return { committed: false, reason: 'nothing-to-commit' };
+    }
+    await execFile('git', ['add', '-A'], { cwd: wtDir });
+    const commit = await execFile('git', ['commit', '-m', message], { cwd: wtDir });
+    const hashMatch = commit.stdout.match(/^\[[^\]]+ ([0-9a-f]{7,40})\]/m);
+    return { committed: true, hash: hashMatch ? hashMatch[1] : undefined };
+  }
+
+  /**
+   * Push the run's worktree branch to origin (set upstream). Guarded: never
+   * force-push, never pushes main/master. Returns the pushed branch name.
+   */
+  public async pushWorktreeBranch(runId: string): Promise<{ pushed: boolean; branch?: string; reason?: string }> {
+    const wtDir = this.getWorktreePath(runId);
+    const branch = (await this.getBranchNameIn(wtDir)).trim();
+    if (!branch) return { pushed: false, reason: 'no-branch' };
+    if (branch === 'main' || branch === 'master') {
+      return { pushed: false, reason: `refusing to push protected branch '${branch}'` };
+    }
+    await execFile('git', ['push', '-u', 'origin', branch], { cwd: wtDir });
+    return { pushed: true, branch };
+  }
+
+  /** Branch name checked out in an arbitrary directory ('' when detached/none). */
+  private async getBranchNameIn(dir: string): Promise<string> {
+    try {
+      const { stdout } = await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir });
+      return stdout.trim();
+    } catch {
+      return '';
+    }
+  }
+
+  /** Current branch of the MAIN repo (the base for agent branches). */
+  public async getBaseBranch(): Promise<string> {
+    const branch = await this.getBranchNameIn(this.workspaceRoot);
+    if (branch) return branch;
+    // Detached HEAD or fresh repo — fall back to the remote default.
+    try {
+      const { stdout } = await execFile('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: this.workspaceRoot });
+      return stdout.trim().replace(/^refs\/remotes\/origin\//, '');
+    } catch {
+      return 'main';
+    }
+  }
+
+  /** Does a local branch with this name exist? */
+  public async branchExists(branch: string): Promise<boolean> {
+    try {
+      const { stdout } = await execFile('git', ['branch', '--list', branch], { cwd: this.workspaceRoot });
+      return stdout.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Stale-base guardrail: true when the base branch has advanced beyond the
+   * given branch (i.e. the branch does NOT contain the base's HEAD — an
+   * agent run would be working from outdated code).
+   */
+  public async isBranchUpToDate(branch: string): Promise<boolean> {
+    try {
+      const base = await this.getBaseBranch();
+      if (branch === base) return true;
+      await execFile('git', ['merge-base', '--is-ancestor', base, branch], { cwd: this.workspaceRoot });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Post-merge cleanup guardrail: delete a local branch ONLY when it is
+   * fully merged into the base branch (safe — no commits lost).
+   */
+  public async deleteBranchIfMerged(branch: string): Promise<boolean> {
+    if (!(await this.branchExists(branch))) return false;
+    const base = await this.getBaseBranch();
+    try {
+      const { stdout } = await execFile('git', ['branch', '--merged', base], { cwd: this.workspaceRoot });
+      if (!stdout.split('\n').some(l => l.trim().replace(/^\*/, '').trim() === branch)) return false;
+      await execFile('git', ['branch', '-d', branch], { cwd: this.workspaceRoot });
+      return true;
+    } catch {
+      return false;
     }
   }
 

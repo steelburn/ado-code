@@ -97,6 +97,12 @@ export async function activate(context: vscode.ExtensionContext) {
   // Wire to the chat provider so it can update after each LLM turn
   chatProvider.setTokenStatusBar(tokenStatusBar);
 
+  // Working indicator: status-bar spinner while an LLM turn or agent run is
+  // in flight — stays visible when the chat view is hidden/away.
+  const workingBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  context.subscriptions.push(workingBar);
+  chatProvider.setWorkingStatusBar(workingBar);
+
   // Task 4.1: show token usage in the output channel
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.showTokenUsage', () => {
@@ -554,6 +560,10 @@ Generate ONLY the commit message, nothing else.`;
 
   // Task 24 (H5): construct AgentRunner AFTER both services and chatProvider
   // exist, then hand it to the provider (which builds the tool executor).
+  // Last observed status per run id — drives the working indicator on
+  // transitions (running → spin, terminal → stop) without reacting to every
+  // streamed chunk.
+  const agentRunStatus = new Map<string, string>();
   const agentRunner = new AgentRunner(
     services.agents,
     services.git,
@@ -563,6 +573,13 @@ Generate ONLY the commit message, nothing else.`;
         // Update tree view with agent status
         if (run.workItemId) {
           treeProvider.updateAgentStatus(run.workItemId, run.agent, run.status);
+        }
+        // Working indicator: only on status TRANSITIONS (onStatus also fires
+        // per streamed chunk) — running → spin, terminal → stop.
+        const prevStatus = agentRunStatus.get(run.id);
+        if (prevStatus !== run.status) {
+          agentRunStatus.set(run.id, run.status);
+          chatProvider.setWorking(run.status === 'running');
         }
         // Worktrees view: reload only when the run status actually changes
         // (start / cancel / complete) — cheap guard per streamed chunk.
@@ -577,6 +594,13 @@ Generate ONLY the commit message, nothing else.`;
         // Open the agent's summary in the editor area so the result is
         // visible outside the chat panel (markdown tab, preview mode).
         void openSummaryInEditor(context, run, summary);
+        // Terminal status → stop the working indicator (covers cancel paths
+        // where no onStatus transition was observed).
+        const prevStatus = agentRunStatus.get(run.id);
+        if (prevStatus !== run.status) {
+          agentRunStatus.set(run.id, run.status);
+          chatProvider.setWorking(run.status === 'running');
+        }
         worktreesProvider.refreshIfChanged(run);
       },
     },
@@ -684,16 +708,69 @@ Generate ONLY the commit message, nothing else.`;
       if (!meta?.path) return;
       vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(meta.path), false);
     }),
+    vscode.commands.registerCommand('adoCode.commitWorktree', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.runId) return;
+      const run = agentRunner.listRuns().find(r => r.id === meta.runId);
+      const msg = `ADO-${run?.workItemId ?? '?'}: ${run?.title || 'agent changes'}`;
+      try {
+        const commit = await services.git.commitWorktreeChanges(meta.runId, msg);
+        if (!commit.committed) {
+          vscode.window.showInformationMessage(`ADO Code: nothing to commit in ${meta.branch} (worktree is clean).`);
+          return;
+        }
+        const push = await services.git.pushWorktreeBranch(meta.runId);
+        if (!push.pushed) {
+          vscode.window.showWarningMessage(`ADO Code: committed ${commit.hash ?? ''} but push failed — ${push.reason}`);
+          return;
+        }
+        vscode.window.showInformationMessage(
+          `ADO Code: committed ${commit.hash ?? ''} and pushed ${push.branch} → origin.`
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: commit/push failed — ${err instanceof Error ? err.message : err}`);
+      } finally {
+        worktreesProvider.refresh();
+      }
+    }),
     vscode.commands.registerCommand('adoCode.removeWorktree', async (item: any) => {
       const meta = item?.meta;
       if (!meta?.runId) return;
-      const confirm = await vscode.window.showWarningMessage(
-        `Remove worktree for ${meta.branch}? Uncommitted changes will be lost.`,
-        'Remove', 'Cancel'
-      );
-      if (confirm !== 'Remove') return;
+      // Guardrail: removing a worktree with uncommitted changes discards the
+      // agent's work. Offer Commit & Push first; only remove anyway on
+      // explicit choice; delete the branch afterwards only if it was merged.
+      let dirty = false;
+      try {
+        dirty = (await services.git.getWorktreeInfoForRun(meta.runId)).dirty;
+      } catch {
+        // Worktree may not exist as a git worktree — fall through.
+      }
+      if (dirty) {
+        const pick = await vscode.window.showWarningMessage(
+          `Worktree ${meta.branch} has UNCOMMITTED changes — removing it will discard them.`,
+          'Commit & Push, then Remove', 'Remove Anyway', 'Cancel'
+        );
+        if (!pick || pick === 'Cancel') return;
+        if (pick === 'Commit & Push, then Remove') {
+          const run = agentRunner.listRuns().find(r => r.id === meta.runId);
+          const msg = `ADO-${run?.workItemId ?? '?'}: ${run?.title || 'agent changes'}`;
+          try {
+            const commit = await services.git.commitWorktreeChanges(meta.runId, msg);
+            if (commit.committed) {
+              await services.git.pushWorktreeBranch(meta.runId);
+            }
+          } catch (err) {
+            vscode.window.showErrorMessage(`ADO Code: commit/push before remove failed — ${err instanceof Error ? err.message : err}`);
+            return;
+          }
+        }
+      }
       await services.git.removeWorktree(meta.runId);
-      vscode.window.showInformationMessage(`ADO Code: worktree ${meta.branch} removed.`);
+      // Branch cleanup: only when fully merged into the base (safe).
+      const deleted = await services.git.deleteBranchIfMerged(meta.branch);
+      vscode.window.showInformationMessage(
+        `ADO Code: worktree ${meta.branch} removed.${deleted ? ' Merged branch deleted.' : ' Branch kept (not merged).'}`
+      );
       statusProvider.refreshLight();
       worktreesProvider.refresh();
     }),

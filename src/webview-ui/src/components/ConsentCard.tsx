@@ -36,10 +36,11 @@ function summarize(tool: string, args: Record<string, any>): string {
 /**
  * Inline consent card: the agent (LLM) wants to run a mutating tool and the
  * user must approve before it executes (inline mode). Rendered above the
- * input bar so it can't be missed; Approve/Reject posts consentResponse.
+ * input bar so it can't be missed; posts consentResponse.
  *
- * For run_terminal_command, shows 4 options: Allow Once, Allow for Session,
- * Allow Permanently, Deny — so users can grant progressive permission levels.
+ * Every mutating tool gets "Allow for Session" (auto-approve this tool until
+ * the chat is cleared or a new session starts). Terminal commands get one
+ * extra option, "Allow Permanently" (persists to act.terminalAllowlist).
  */
 export function ConsentCard({ request, onRespond }: Props) {
   const isTerminal = request.tool === 'run_terminal_command';
@@ -64,7 +65,7 @@ export function ConsentCard({ request, onRespond }: Props) {
         <div className="consent-card-summary">{summarize(request.tool, request.args)}</div>
         <pre className="consent-card-args">{argsText}</pre>
       </div>
-      <div className={`consent-card-actions${isTerminal ? ' consent-card-actions--terminal' : ''}`}>
+      <div className="consent-card-actions consent-card-actions--terminal">
         {isTerminal ? (
           <>
             <button
@@ -100,8 +101,16 @@ export function ConsentCard({ request, onRespond }: Props) {
             <button
               className="btn btn-approve"
               onClick={() => onRespond(request.requestId, true)}
+              title="Allow this tool to run one time"
             >
               Approve
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => onRespond(request.requestId, true, 'session')}
+              title="Auto-approve this tool for the rest of this session"
+            >
+              Allow for Session
             </button>
             <button
               className="btn btn-reject"

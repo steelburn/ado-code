@@ -18,7 +18,7 @@ interface ConfigSection {
 interface ConfigSetting {
   key: string;
   label: string;
-  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp';
+  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs';
   description: string;
   options?: string[];
   placeholder?: string;
@@ -35,6 +35,7 @@ const SECTIONS: ConfigSection[] = [
       // header / work item trees.
       { key: 'adoPat', label: 'Personal Access Token', type: 'password', description: 'ADO PAT with Work Items + Project scope', placeholder: 'vso.work_write' },
       { key: 'adoServerUrl', label: 'Server URL (on-prem)', type: 'string', description: 'For ADO Server (TFS) — leave empty for cloud', placeholder: 'https://ado.corp.local/tfs/DefaultCollection' },
+      { key: 'organizations', label: 'Organizations', type: 'orgs', description: 'ADO organizations the developer works with. The ACTIVE org is picked per workspace.' },
     ],
   },
   {
@@ -45,6 +46,7 @@ const SECTIONS: ConfigSection[] = [
       { key: 'llmApiUrl', label: 'API URL', type: 'string', description: 'LLM API base URL', placeholder: 'https://api.openai.com/v1' },
       { key: 'llmApiKey', label: 'API Key', type: 'password', description: 'LLM API key', placeholder: 'sk-...' },
       { key: 'llmModel', label: 'Model', type: 'string', description: 'Model name', placeholder: 'gpt-4o' },
+      { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'string', description: 'Optional CHEAPER model for detecting choice prompts in AI responses (e.g. gpt-4o-mini). Empty = use the main model. Set to "off" to disable LLM-assisted detection.', placeholder: 'gpt-4o-mini' },
     ],
   },
   {
@@ -110,6 +112,13 @@ const SECTIONS: ConfigSection[] = [
     icon: '🔌',
     settings: [
       { key: 'mcp.servers', label: 'Server configurations', type: 'mcp', description: 'Model Context Protocol server connections — each server exposes tools the AI can use' },
+    ],
+  },
+  {
+    title: 'Workspace',
+    icon: '🛡',
+    settings: [
+      { key: 'ignore.dotAdoCode', label: 'Keep .ado-code out of version control', type: 'boolean', description: 'Auto-add .ado-code to .gitignore / .dockerignore (prompts once per workspace; "Skip" is remembered)' },
     ],
   },
 ];
@@ -273,6 +282,85 @@ function McpServersInput({ value, onChange }: { value: McpServer[]; onChange: (s
       ))}
       <button className="config-mcp-add" onClick={addServer} type="button">
         + Add Server
+      </button>
+    </div>
+  );
+}
+
+interface AdoOrg {
+  name: string;
+  url: string;
+  project: string;
+}
+
+/** Editor for the ADO organizations list — add/remove orgs with name, URL, project. */
+function OrganizationsInput({ value, onChange }: { value: AdoOrg[]; onChange: (orgs: AdoOrg[]) => void }) {
+  const addOrg = () => {
+    onChange([...value, { name: '', url: '', project: '' }]);
+  };
+
+  const removeOrg = (idx: number) => {
+    onChange(value.filter((_, i) => i !== idx));
+  };
+
+  const updateOrg = (idx: number, field: keyof AdoOrg, fieldValue: string) => {
+    const updated = [...value];
+    updated[idx] = { ...updated[idx], [field]: fieldValue };
+    onChange(updated);
+  };
+
+  return (
+    <div className="config-mcp">
+      {value.length === 0 && (
+        <div className="config-mcp-empty">No organizations configured. Click + to add one.</div>
+      )}
+      {value.map((org, idx) => (
+        <div key={idx} className="config-mcp-server">
+          <div className="config-mcp-server-header">
+            <span className="config-mcp-server-num">#{idx + 1}</span>
+            <button
+              className="config-mcp-remove"
+              onClick={() => removeOrg(idx)}
+              title="Remove organization"
+              type="button"
+            >×</button>
+          </div>
+          <div className="config-mcp-fields">
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Name</label>
+              <input
+                className="config-input"
+                type="text"
+                value={org.name}
+                onChange={e => updateOrg(idx, 'name', e.target.value)}
+                placeholder="mycompany"
+              />
+            </div>
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">URL</label>
+              <input
+                className="config-input"
+                type="text"
+                value={org.url}
+                onChange={e => updateOrg(idx, 'url', e.target.value)}
+                placeholder="https://dev.azure.com/mycompany"
+              />
+            </div>
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Project</label>
+              <input
+                className="config-input"
+                type="text"
+                value={org.project}
+                onChange={e => updateOrg(idx, 'project', e.target.value)}
+                placeholder="MyProject"
+              />
+            </div>
+          </div>
+        </div>
+      ))}
+      <button className="config-mcp-add" onClick={addOrg} type="button">
+        + Add Organization
       </button>
     </div>
   );
@@ -487,6 +575,11 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                   <McpServersInput
                     value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
                     onChange={servers => handleChange(setting.key, servers)}
+                  />
+                ) : setting.type === 'orgs' ? (
+                  <OrganizationsInput
+                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                    onChange={orgs => handleChange(setting.key, orgs)}
                   />
                 ) : (
                   <input

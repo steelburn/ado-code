@@ -9,6 +9,8 @@ export interface ToolExecutor {
   /** Q8: current tool-use mode — inline (approval on mutating), plan (read-only), act (auto-approve). */
   mode: 'inline' | 'plan' | 'act';
   setMode(mode: 'inline' | 'plan' | 'act'): void;
+  /** Reset per-turn state (e.g. consent-denied flag) at the start of a turn. */
+  beginTurn(): void;
   execute(name: string, args: Record<string, any>): Promise<string>;
 }
 
@@ -16,7 +18,7 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
 
 export function createToolExecutor(
   services: Services,
@@ -25,10 +27,17 @@ export function createToolExecutor(
     onDelegate?: (prompt: string, agent?: string) => Promise<string>;
     onUpdateState?: (id: number, state: string) => Promise<void>;
     onApprove?: (name: string, args: Record<string, any>) => Promise<boolean>;
+    // Merge flow for finished agent runs (wired by ChatViewProvider).
+    onCommitWorktree?: (runId: string, message: string) => Promise<{ committed: boolean; reason?: string; hash?: string }>;
+    onPushWorktree?: (runId: string) => Promise<{ pushed: boolean; branch?: string; reason?: string }>;
+    onCreatePullRequest?: (runId: string, title?: string, description?: string) => Promise<{ pullRequestId: number; url: string }>;
   }
 ): ToolExecutor {
   // M-6 fix: mode lives on `state` (mutated by setMode) — no closure var.
-  const state = { mode: 'inline' as 'inline' | 'plan' | 'act' };
+  // `deniedKeys` = per-turn set of consent denials, keyed so a NEW command or
+  // tool still prompts: terminal commands by exact command string, other
+  // mutating tools by tool name.
+  const state = { mode: 'inline' as 'inline' | 'plan' | 'act', deniedKeys: new Set<string>() };
   const tools: LlmTool[] = [
     {
       name: 'get_work_items',
@@ -75,6 +84,43 @@ export function createToolExecutor(
           agent: { type: 'string', description: 'Agent name (claude, codex, opencode, hermes, pi, openclaw, aider, gemini, cursor-agent); omit for auto-pick' },
         },
         required: ['prompt'],
+      },
+    },
+    // ── Merge flow: commit / push / PR for a finished agent run's worktree ──
+    {
+      name: 'commit_worktree',
+      description: 'Commit ALL changes in a finished agent run\'s worktree (the isolated branch for a delegated run). Use after the agent finished so its work is preserved. Never touches main.',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: 'Run id of the finished agent run (from the agent output)' },
+          message: { type: 'string', description: 'Commit message; omit to default to ADO <id> + work item title' },
+        },
+        required: ['runId'],
+      },
+    },
+    {
+      name: 'push_worktree',
+      description: 'Push an agent run\'s worktree branch to origin (never force-pushes, never pushes main/master). Call AFTER commit_worktree.',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: 'Run id of the finished agent run' },
+        },
+        required: ['runId'],
+      },
+    },
+    {
+      name: 'create_pull_request',
+      description: 'Create an Azure DevOps pull request from an agent run\'s branch into the base branch. Call AFTER push_worktree.',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: 'Run id of the finished agent run' },
+          title: { type: 'string', description: 'PR title; omit to default to ADO <id> + work item title' },
+          description: { type: 'string', description: 'PR description (summary of the changes)' },
+        },
+        required: ['runId'],
       },
     },
     // ── Q3 resolution: code tools ─────────────────────────────────────────
@@ -216,6 +262,9 @@ export function createToolExecutor(
     // `state.mode`.
     get mode() { return state.mode; },
     setMode(m: 'inline' | 'plan' | 'act') { state.mode = m; },
+    // New turn → the user can be asked again (a previous turn's denials must
+    // not lock this turn out of consent prompts).
+    beginTurn() { state.deniedKeys.clear(); },
     async execute(name, args) {
       // ── Q8 mode gating ─────────────────────────────────────────────
       // Runs FIRST — before any project/ADO resolution — so blocked tools are
@@ -233,8 +282,20 @@ export function createToolExecutor(
           if (!hooks?.onApprove) {
             return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
           }
+          // After one denial, re-prompting the SAME command/tool is pointless
+          // — deny it silently for the rest of the turn. A NEW command or
+          // tool still pops a consent card (the user may allow it).
+          const denyKey = name === 'run_terminal_command'
+            ? `run_terminal_command:${String(args.command ?? '')}`
+            : name;
+          if (state.deniedKeys.has(denyKey)) {
+            return JSON.stringify({ error: `tool '${name}' rejected by user (denied earlier this turn)` });
+          }
           const ok = await hooks.onApprove(name, args);
-          if (!ok) return JSON.stringify({ error: `tool '${name}' rejected by user` });
+          if (!ok) {
+            state.deniedKeys.add(denyKey);
+            return JSON.stringify({ error: `tool '${name}' rejected by user` });
+          }
         }
         // C3 fix: act mode still enforces the terminal allowlist on
         // run_terminal_command (tokenized, operator-free — see helper below).
@@ -250,8 +311,14 @@ export function createToolExecutor(
               if (!hooks?.onApprove) {
                 return JSON.stringify({ error: `command not allowed in act mode (allowlist + no shell operators): ${command}` });
               }
+              if (state.deniedKeys.has(`run_terminal_command:${command}`)) {
+                return JSON.stringify({ error: `command rejected by user: ${command} (denied earlier this turn)` });
+              }
               const ok = await hooks.onApprove(name, args);
-              if (!ok) return JSON.stringify({ error: `command rejected by user: ${command}` });
+              if (!ok) {
+                state.deniedKeys.add(`run_terminal_command:${command}`);
+                return JSON.stringify({ error: `command rejected by user: ${command}` });
+              }
             }
           }
         }
@@ -303,6 +370,18 @@ export function createToolExecutor(
           return hooks?.onDelegate
             ? await hooks.onDelegate(args.prompt, args.agent)
             : JSON.stringify({ error: 'agent delegation not wired' });
+        case 'commit_worktree':
+          return hooks?.onCommitWorktree
+            ? JSON.stringify(await hooks.onCommitWorktree(String(args.runId ?? ''), String(args.message ?? '')))
+            : JSON.stringify({ error: 'worktree commit not wired' });
+        case 'push_worktree':
+          return hooks?.onPushWorktree
+            ? JSON.stringify(await hooks.onPushWorktree(String(args.runId ?? '')))
+            : JSON.stringify({ error: 'worktree push not wired' });
+        case 'create_pull_request':
+          return hooks?.onCreatePullRequest
+            ? JSON.stringify(await hooks.onCreatePullRequest(String(args.runId ?? ''), args.title ? String(args.title) : undefined, args.description ? String(args.description) : undefined))
+            : JSON.stringify({ error: 'pull request creation not wired' });
         // ── Q3 code tools (implemented via VS Code APIs) ─────────────
         case 'read_file': {
           const uri = resolveWorkspacePath(args.path); // C4: path confinement

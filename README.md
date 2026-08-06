@@ -23,7 +23,9 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **`.ado-code` auto-ignore**: The workspace data directory is offered to be added to `.gitignore`/`.dockerignore` on load (setting `adoCode.ignore.dotAdoCode`, default on)
 - Direct mode selection: click Chat/Plan/Act to switch modes instantly
 - In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
-- **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons
+- **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
+- **AI merge flow**: For finished agent runs, the assistant can commit, push, and open an ADO pull request itself (`commit_worktree` → `push_worktree` → `create_pull_request`) — never force-pushes, never touches `main`/`master`
+- **Working indicator**: A status-bar spinner shows while any LLM turn or agent run is in flight — visible even when the chat view is hidden, with live detail ("thinking…", "tool: edit_file")
 - Full detail view: right-click → "Show Full Details" opens a formatted panel in the editor
 - **Work item selection**: Selected items show a green badge; deselect via the row context menu
 - Agent delegation injects AGENTS.md project context so all agents understand the codebase
@@ -56,6 +58,7 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.llmApiUrl` | LLM API endpoint |
 | `adoCode.llmApiKey` | LLM API key |
 | `adoCode.llmModel` | LLM model name |
+| `adoCode.llm.choiceDetectionModel` | Optional cheaper model for AI choice-prompt detection (empty = main model, `off` = regex-only) |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, or `act` |
 | `adoCode.act.toolBudget` | Max tool calls per act-mode turn |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
@@ -121,8 +124,10 @@ Memory is injected into the chat assistant's system prompt and into every extern
 Each delegated agent run gets an isolated git worktree under `.ado-code/worktrees/`:
 
 - The **Worktrees** view (ADO Code activity bar) lists every worktree with its run status (running/succeeded/failed/interrupted), branch, dirty/clean files, last commit, and ahead/behind
-- Right-click actions: **Open in Terminal**, **Open in Explorer**, **Remove**, **Show Agent Output**
+- Right-click actions: **Open in Terminal**, **Open in Explorer**, **Commit & Push**, **Remove**, **Show Agent Output**
 - Branches are named from the ADO work item subject, e.g. `feature/ADO-42-fix-login-bug`
+- **Merge flow**: after a run finishes, commit its changes (`Commit & Push` or the AI's `commit_worktree`/`push_worktree` tools), then open a PR (`create_pull_request`) — the AI is instructed to execute this flow and will stop and report if a step fails
+- **Guardrails**: two agents can never run on the same work item concurrently; reusing a stale branch warns; **Remove** refuses silently discarding dirty work (offers *Commit & Push, then Remove*) and deletes the local branch afterwards only when it is fully merged — commits are never lost
 
 ## Model Capabilities
 
@@ -144,6 +149,12 @@ The extension infers the active model's capabilities from its id:
 - `.ado-code` auto-ignore for `.gitignore`/`.dockerignore`
 - Branch names slugged from the ADO work item title
 - Dismissed agent runs no longer reappear; summary panels dedupe on reopen
+- **AI merge flow**: commit/push/PR tools for finished agent runs + worktree guardrails (concurrent-run block, stale-base warning, dirty-remove protection, merged-branch cleanup)
+- Working indicator in the status bar (survives chat view being hidden)
+- Background LLM processing survives panel close; pending consent cards re-post on return
+- AI choice detection via optional cheap model; choice buttons now send the option as a message
+- Sessions auto-create on the first message
+- Full Configuration page coverage (organizations editor, choice-detection model, workspace ignore toggle) — fixes MCP-server wipe on save
 
 ### 0.5.5
 

@@ -159,6 +159,11 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.commitWorktree",
+        "title": "Commit & Push Worktree",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.generateCommitMessage",
         "title": "Generate Commit Message",
         "icon": "$(sparkle)",
@@ -341,6 +346,11 @@
         {
           "command": "adoCode.removeWorktree",
           "when": "viewItem == statusWorktree || viewItem == worktreeNode",
+          "group": "2_worktree@2"
+        },
+        {
+          "command": "adoCode.commitWorktree",
+          "when": "viewItem == statusWorktree || viewItem == worktreeNode",
           "group": "2_worktree@1"
         },
         {
@@ -452,6 +462,11 @@
           "type": "string",
           "default": "gpt-4o",
           "description": "LLM model name (e.g., gpt-4o, claude-sonnet-4-20250514, llama3, etc.)"
+        },
+        "adoCode.llm.choiceDetectionModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional CHEAPER model used to detect choice prompts in AI responses (e.g. 'gpt-4o-mini'). Empty = use the main llmModel. Set to 'off' to disable LLM-assisted detection (regex-only)."
         },
         "adoCode.git.requireGitRepo": {
           "type": "boolean",

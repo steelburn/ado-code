@@ -2,8 +2,25 @@
  * Detect when an AI response contains a choice prompt — a question followed
  * by numbered or bulleted options. Returns the extracted options, or null
  * if the response doesn't look like a choice prompt.
+ *
+ * Two paths:
+ * - `parseChoicePrompt` — fast regex (no extra LLM cost). Misses responses
+ *   that ask a question WITHOUT numbered/bulleted options (e.g. "Want me to
+ *   run X and/or update Y?").
+ * - `detectChoicePrompt` — async fallback: only when the response still
+ *   looks question-like, asks the (optionally cheaper) model to extract a
+ *   structured { question, options } prompt, so natural-language offers
+ *   still surface as clickable options.
  */
-export function parseChoicePrompt(text: string): { question: string; options: Array<{ label: string; value: string }> } | null {
+import { LlmClient } from './client';
+import { LlmMessage } from './types';
+
+export interface ChoicePrompt {
+  question: string;
+  options: Array<{ label: string; value: string }>;
+}
+
+export function parseChoicePrompt(text: string): ChoicePrompt | null {
   if (!text || text.length > 2000) return null;
 
   // Patterns that signal the AI is asking the user to choose
@@ -54,4 +71,103 @@ export function parseChoicePrompt(text: string): { question: string; options: Ar
     : text.trim();
 
   return { question, options };
+}
+
+// ---------------------------------------------------------------------------
+// LLM-assisted detection fallback
+// ---------------------------------------------------------------------------
+
+const MAX_DETECT_CHARS = 4000;
+const DETECT_TIMEOUT_MS = 12000;
+
+/**
+ * Cheap heuristic gate: should we spend an LLM call on this response?
+ * Only when the text is a plausible question-and-offer: 40..4000 chars and
+ * either ends with '?' or uses an offer phrasing. The regex path handles
+ * numbered/bulleted lists; this gate catches the rest.
+ */
+export function looksLikeChoiceQuestion(text: string): boolean {
+  if (!text || text.length < 40 || text.length > MAX_DETECT_CHARS) return false;
+  const tail = text.slice(-400);
+  return (
+    /[?？]\s*$/.test(tail) ||
+    /(want me to|should i|would you (like|want)|shall i|do you (want|need|prefer)|may i|can i)\b/i.test(tail)
+  );
+}
+
+/**
+ * Defensive parse of the detector model's output: strips ``` fences, finds
+ * the first {...} block, and validates the shape. Accepts either
+ * {"question": "...", "options": ["...", ...]} or {"none": true}.
+ */
+export function parseChoiceDetectorJson(raw: string): ChoicePrompt | null {
+  if (!raw) return null;
+  // Strip markdown fences and leading prose.
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  let body = fenced ? fenced[1] : raw;
+  const brace = body.indexOf('{');
+  if (brace >= 0) body = body.slice(brace);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed && parsed.none === true) return null;
+  const question = typeof parsed?.question === 'string' ? parsed.question.trim() : '';
+  const options = Array.isArray(parsed?.options)
+    ? parsed.options
+        .filter((o: any) => typeof o === 'string' && o.trim().length > 0)
+        .map((o: string) => { const label = o.trim().slice(0, 160); return { label, value: label }; })
+    : [];
+  if (!question || options.length < 2 || options.length > 6) return null;
+  return { question: question.slice(0, 400), options };
+}
+
+/**
+ * Extract a choice prompt from a finished response, using an LLM call as
+ * fallback when the regex path misses. Returns null when the response is
+ * not a choice question, when the model says so, or on any failure — the
+ * caller must never break the chat over detection.
+ *
+ * @param client The LLM client for the detection call — construct it with
+ *               the (optionally cheaper) model override at the call site.
+ */
+export async function detectChoicePrompt(
+  text: string,
+  client: LlmClient
+): Promise<ChoicePrompt | null> {
+  // 1. Regex fast path — zero extra cost.
+  const fast = parseChoicePrompt(text);
+  if (fast) return fast;
+
+  // 2. Heuristic gate — only spend a call on plausible questions.
+  if (!looksLikeChoiceQuestion(text)) return null;
+
+  const system = [
+    'You are a strict JSON extractor for a coding assistant UI.',
+    'The user just received the following AI response. Decide whether it ends with a question OFFERING the user a choice of next actions (e.g. "Want me to ...?", "Should I ... or ...?", "Would you like ...?").',
+    'If YES, reply with ONLY valid JSON: {"question": "<the question, without the options>", "options": ["<imperative option 1>", "<imperative option 2>", ...]} — 2 to 6 options, each a short actionable phrase (max 120 chars), NO numbering or bullets.',
+    'If NO (it is not a choice offer), reply with ONLY valid JSON: {"none": true}.',
+    'Reply with raw JSON only — no markdown fences, no commentary.',
+  ].join('\n');
+
+  const messages: LlmMessage[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: text.length > MAX_DETECT_CHARS ? text.slice(-MAX_DETECT_CHARS) : text },
+  ];
+
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), DETECT_TIMEOUT_MS);
+  try {
+    let raw = '';
+    for await (const chunk of client.streamChat(messages, abort.signal)) {
+      raw += chunk.content;
+    }
+    return parseChoiceDetectorJson(raw);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

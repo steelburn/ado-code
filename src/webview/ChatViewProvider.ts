@@ -14,11 +14,11 @@ import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
-import { isCommandSessionApproved, addSessionCommandApproval, addToTerminalAllowlist } from '../llm/tool-approval-ui';
+import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
-import { parseChoicePrompt } from '../llm/parseChoicePrompt';
+import { parseChoicePrompt, detectChoicePrompt } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { getModelCapabilities } from '../llm/modelCapabilities';
@@ -39,6 +39,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private refreshTimer?: ReturnType<typeof setInterval>;
   // Task 4.1: token usage status bar — wired via setTokenStatusBar from extension.ts
   private tokenStatusBar?: vscode.StatusBarItem;
+  // Working indicator: status-bar spinner shown while the LLM turn or any
+  // agent run is in flight — visible even when the chat view is hidden.
+  private workingBar?: vscode.StatusBarItem;
+  private workingDepth = 0;
+  private workingActive = false;
 
   // ── Session persistence (Task 2) ──────────────────────────────────
   private get sessionKey(): string {
@@ -118,6 +123,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.tokenStatusBar = bar;
   }
 
+  /** Wire the working indicator (created in extension.ts). */
+  public setWorkingStatusBar(bar: vscode.StatusBarItem): void {
+    this.workingBar = bar;
+  }
+
+  /**
+   * Track in-flight processing (LLM turns + agent runs) with a depth counter
+   * so overlapping work keeps the spinner spinning until ALL of it finishes.
+   * Survives webview hide/dispose — the indicator is host-side. show()/hide()
+   * fire only on active↔idle transitions.
+   */
+  public setWorking(working: boolean): void {
+    this.workingDepth = Math.max(0, this.workingDepth + (working ? 1 : -1));
+    const active = this.workingDepth > 0;
+    if (!this.workingBar || active === this.workingActive) return;
+    this.workingActive = active;
+    if (active) {
+      this.workingBar.text = '$(sync~spin) Working…';
+      this.workingBar.tooltip = 'ADO Code is processing (LLM turn or agent run)';
+      this.workingBar.show();
+    } else {
+      this.workingBar.text = '';
+      this.workingBar.hide();
+    }
+  }
+
+  /**
+   * Update the working indicator's text with what the AI is currently doing
+   * (e.g. "tool: edit_file", "thinking…"). Only applies while a turn is
+   * actually in flight.
+   */
+  private setWorkingDetail(detail: string): void {
+    if (this.workingBar && this.workingActive) {
+      this.workingBar.text = `$(sync~spin) Working… ${detail}`;
+    }
+  }
+
   /** H10 fix: wire the tool executor concretely once the runner exists. */
   public setAgentRunner(runner: AgentRunner): void {
     this.agentRunner = runner;
@@ -130,6 +172,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // webview isn't available, and a hard timeout so the agentic loop can
       // never block on an unanswered prompt.
       onApprove: async (name, args) => this.requestConsent(name, args),
+      // Merge flow for finished agent runs: commit → push → PR.
+      onCommitWorktree: async (runId, message) => {
+        const run = this.agentRunner?.listRuns().find(r => r.id === runId);
+        if (!run) return { committed: false, reason: `run '${runId}' not found` };
+        if (run.status === 'running') return { committed: false, reason: `run '${runId}' is still running — wait for it to finish` };
+        const msg = message || `ADO-${run.workItemId ?? '?'}: ${run.title || 'agent changes'}`;
+        return this.services.git.commitWorktreeChanges(runId, msg);
+      },
+      onPushWorktree: async (runId) => this.services.git.pushWorktreeBranch(runId),
+      onCreatePullRequest: async (runId, title, description) => {
+        const run = this.agentRunner?.listRuns().find(r => r.id === runId);
+        if (!run) throw new Error(`run '${runId}' not found`);
+        if (!run.branch) throw new Error(`run '${runId}' has no branch — nothing to merge`);
+        const base = await this.services.git.getBaseBranch();
+        const repo = path.basename(this.services.git.workspaceRoot) || 'repo';
+        const prTitle = title || `ADO-${run.workItemId ?? '?'}: ${run.title || 'agent changes'}`;
+        return this.services.ado.createPullRequest(
+          this.activeProject(), repo, run.branch, base, prTitle, description
+        );
+      },
     });
     this.executor.setMode(getSettings().mode);
   }
@@ -138,10 +200,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Request user consent for a mutating tool (inline mode). Renders an
    * Approve/Reject card in the chat webview and waits for the answer; falls
    * back to a native QuickPick when the webview is unavailable. The broker
-   * times out and denies after 120s, and rejectAll() on webview dispose / chat
-   * clear / turn abort, so the agentic loop can never hang on a missed prompt.
+   * times out and denies after 120s, and rejectAll() fires on chat clear /
+   * turn abort / newer message, so the agentic loop can never hang on a
+   * missed prompt. NOTE: webview dispose deliberately does NOT reject —
+   * the LLM turn keeps running host-side while the view is hidden, and the
+   * pending card is re-posted when the view is recreated.
    */
   async requestConsent(tool: string, args: Record<string, any>): Promise<boolean> {
+    // Session-scoped approvals skip the prompt entirely: the user already
+    // chose "Allow for Session" on an earlier card this session. This covers
+    // BOTH tool-name approvals and exact terminal commands (inline mode
+    // reaches this hook for run_terminal_command too — the executor's
+    // command cache only gates act mode).
+    if (isSessionAutoApproved(tool)) return true;
+    if (tool === 'run_terminal_command' && isCommandSessionApproved(String(args.command ?? ''))) return true;
+
     const { requestId, decision } = this.consentBroker.request({ tool, args });
     if (this._view) {
       this.postMessage({ type: 'consentRequest', requestId, tool, args });
@@ -331,10 +404,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken
   ) {
     this._view = webviewView;
-    // If the chat panel closes while the agent waits for consent, deny the
-    // pending prompt so the agentic loop can finish (or abort) instead of
-    // blocking until the 120s timeout.
-    webviewView.onDidDispose(() => { this.consentBroker.rejectAll(); this.confirmBroker.rejectAll(); });
+    // Do NOT reject pending consent here: the user may have switched away
+    // while the LLM turn was running, and the agentic loop keeps executing
+    // host-side. Force-denying a consent prompt mid-turn would fail the tool
+    // call and stall the run. The broker's 120s timeout already guarantees
+    // the loop can never hang, and resolveWebviewView re-posts the pending
+    // card so the user can still approve on return.
+    // Confirmations are different: they are pre-processing interactions with
+    // no timeout, so a view close should cancel them (never block forever).
+    webviewView.onDidDispose(() => { this.confirmBroker.rejectAll(); });
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -357,6 +435,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (err) {
       logger.error('Chat: session init failed', err);
+    }
+
+    // The agentic loop may still be running from before the view was hidden,
+    // waiting on a consent card. Re-post the pending request so the user can
+    // approve (or reject) the in-flight tool call on return.
+    const pendingConsent = this.consentBroker.pending;
+    if (pendingConsent) {
+      this.postMessage({
+        type: 'consentRequest',
+        requestId: pendingConsent.requestId,
+        tool: pendingConsent.tool,
+        args: pendingConsent.args,
+      });
     }
 
     // Restore the active work item detail so the task panel is visible after
@@ -417,6 +508,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Apply each setting to VS Code configuration
             const cfg = vscode.workspace.getConfiguration('adoCode');
             for (const [key, value] of Object.entries(message.config)) {
+              // Never persist derived values back into settings.
+              if (key === 'modelCapabilities') continue;
               await cfg.update(key, value, vscode.ConfigurationTarget.Global);
             }
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
@@ -449,6 +542,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.llmAbort?.abort();
             this.consentBroker.rejectAll();
             this.confirmBroker.rejectAll();
+            // "Allow for Session" approvals are scoped to this chat — a
+            // cleared chat must not keep auto-approving tools.
+            clearSessionAutoApprovals();
             this.conversation = [];
             await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
@@ -572,16 +668,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Process scope before resolving — the broker clears pending on resolve.
             if (message.approved && message.scope && this.consentBroker.pending) {
               const pending = this.consentBroker.pending;
-              if (pending.tool === 'run_terminal_command') {
-                const cmd = String(pending.args.command ?? '').trim();
-                if (message.scope === 'session') {
-                  addSessionCommandApproval(cmd);
-                } else if (message.scope === 'permanent') {
-                  // Fire-and-forget: update setting in background
-                  addToTerminalAllowlist(cmd).catch(err =>
-                    logger.error(`[tool-approval] failed to update allowlist: ${err}`),
-                  );
+              if (message.scope === 'session') {
+                // Allow for Session: exact command (terminal) or tool name.
+                if (pending.tool === 'run_terminal_command') {
+                  addSessionCommandApproval(String(pending.args.command ?? '').trim());
+                } else {
+                  addSessionToolApproval(pending.tool);
                 }
+              } else if (message.scope === 'permanent' && pending.tool === 'run_terminal_command') {
+                // Fire-and-forget: update setting in background
+                addToTerminalAllowlist(String(pending.args.command ?? '').trim()).catch(err =>
+                  logger.error(`[tool-approval] failed to update allowlist: ${err}`),
+                );
               }
             }
             this.consentBroker.resolve(message.requestId, message.approved);
@@ -691,8 +789,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _allSettings(): Record<string, any> {
     const cfg = vscode.workspace.getConfiguration('adoCode');
     const keys = [
+      // Every setting contributed in package.json (contributes.configuration)
+      // must appear here, or the Configuration page shows it empty and a Save
+      // would clobber the real value (mcp.servers suffered exactly this).
+      'organizations',
       'adoOrganization', 'adoProject', 'adoPat', 'adoServerUrl',
-      'llmProvider', 'llmApiUrl', 'llmApiKey', 'llmModel',
+      'llmProvider', 'llmApiUrl', 'llmApiKey', 'llmModel', 'llm.choiceDetectionModel',
       'mode',
       'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion',
       'changelog.enabled', 'changelog.autoCommit', 'changelog.postToAdo',
@@ -700,13 +802,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'act.toolBudget', 'act.terminalAllowlist',
       'sessions.maxPerProject',
       'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect',
+      'ignore.dotAdoCode',
+      'mcp.servers',
     ];
     const result: Record<string, any> = {};
     for (const key of keys) {
       result[key] = cfg.get(key);
     }
-    // Capabilities of the saved model, for the Configuration page.
-    result.modelCapabilities = getModelCapabilities(String(result.llmModel ?? ''));
+    // NOTE: modelCapabilities is deliberately NOT included — saveConfig
+    // writes every key back to settings, and a derived value must never be
+    // persisted. The page computes capabilities itself (mirror module).
     return result;
   }
 
@@ -1409,8 +1514,10 @@ app.Run();
 
     // 4) Delegate (Task 24) — status + result stream back to the webview.
     // H-3 fix: the runner is wired via setAgentRunner (Task 24), NOT on Services.
+    // Pass the work item TITLE so the worktree branch is slugged from the ADO
+    // subject (same as delegateToAgent), not from the prompt's first line.
     if (!this.agentRunner) throw new Error('agent runner not wired yet (Task 24)');
-    await this.agentRunner.delegate(workItemId, prompt, agent as any);
+    await this.agentRunner.delegate(workItemId, prompt, agent as any, this.activeWorkItem?.title);
   }
 
   /** Task 13: real detail fetch + thread → activeWorkItem → system prompt. */
@@ -1636,7 +1743,32 @@ app.Run();
     await this.saveSessions(sessions);
     await this.setActiveSessionId(session.id);
     this.conversation = [];
+    // A new session is a fresh chat — "Allow for Session" approvals from the
+    // previous session must not leak into it.
+    clearSessionAutoApprovals();
     this.postMessage({ type: 'historyRestored', messages: [] });
+    this.sendSessionList();
+  }
+
+  /**
+   * Session-tracking fix: ensure an active session exists before a chat turn
+   * is persisted. Previously a fresh user who never clicked "New Session"
+   * chatted into the void — persistConversation bailed on the missing active
+   * id and the history dropdown stayed "No sessions yet". Named from the
+   * first message; preserves any in-memory conversation.
+   */
+  private async ensureSession(firstMessage: string): Promise<void> {
+    if (this.getActiveSessionId()) return;
+    const sessions = this.getSessions();
+    const session: Session = {
+      id: new Date().toISOString(),
+      name: (firstMessage || 'New Session').slice(0, 60),
+      createdAt: new Date().toISOString(),
+      messages: [],
+    };
+    sessions.push(session);
+    await this.saveSessions(sessions);
+    await this.setActiveSessionId(session.id);
     this.sendSessionList();
   }
 
@@ -1744,12 +1876,19 @@ app.Run();
     // cycleMode) would silently auto-approve or block tools against the
     // user's chosen mode.
     this.executor?.setMode(mode);
+    // New turn → reset per-turn executor state (consent-denied flag), so the
+    // user gets fresh consent prompts this turn.
+    this.executor?.beginTurn();
     if (!this.executor) {
       this.postMessage({ type: 'error', message: 'Tool executor not wired — run the extension from a fresh activation.' });
       return;
     }
     const budget = getSettings().actToolBudget;
     // Task 26: multi-turn — append this turn to the persisted conversation.
+    // Session tracking: auto-create the session on the FIRST message so the
+    // conversation is actually persisted (and the history list stops showing
+    // "No sessions yet" for users who never clicked New Session).
+    await this.ensureSession(content);
     this.conversation.push({ role: 'user', content: llmContent });
     this.trimConversation();
     logger.debug(`Chat: building system prompt with ${this.services.memory.getAll().length} user memories, ${this.services.workspaceMemory.list().length} workspace memories`);
@@ -1757,8 +1896,21 @@ app.Run();
       { role: 'system', content: buildSystemPrompt(this.activeWorkItem, this.services.memory.toPromptString(), this.services.workspaceMemory.toPromptString()) },
       ...this.conversation,
     ];
+    // Working indicator: the turn is in flight (host-side — survives the
+    // chat view being hidden). Cleared in the finally below on completion,
+    // abort (stop/clear/new message), or failure.
+    this.setWorking(true);
     try {
-      const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget);
+      const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget, (update) => {
+        // Status-bar detail: show what the AI is doing right now (thinking vs
+        // which tool it is executing) — visible even when the chat view is
+        // hidden.
+        if (update.tool) {
+          this.setWorkingDetail(`tool: ${update.tool.name}`);
+        } else if (update.text && update.text.trim()) {
+          this.setWorkingDetail('thinking…');
+        }
+      });
       this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
       this.conversation.push({ role: 'assistant', content: result.text });
       this.trimConversation();
@@ -1766,8 +1918,20 @@ app.Run();
       this.updateTokenStatusBar(messages);
       if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
 
-      // Detect AI choice prompts and show as inline options
-      const choicePrompt = parseChoicePrompt(result.text);
+      // Detect AI choice prompts and show as inline options — regex fast
+      // path first (free); when it misses but the response still ends on a
+      // question, ask the (optionally cheaper) model to extract a structured
+      // prompt so natural-language offers surface as clickable options.
+      let choicePrompt = parseChoicePrompt(result.text);
+      if (!choicePrompt && getSettings().llmChoiceDetectionModel !== 'off') {
+        try {
+          const cfg = llmConfigFromSettings();
+          const model = getSettings().llmChoiceDetectionModel || cfg.model;
+          choicePrompt = await detectChoicePrompt(result.text, new LlmClient({ ...cfg, model }));
+        } catch (err) {
+          logger.debug('Chat: choice detection failed', err);
+        }
+      }
       if (choicePrompt) {
         const requestId = `choice-${Date.now()}`;
         this.postMessage({
@@ -1801,6 +1965,8 @@ app.Run();
       }
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
+    } finally {
+      this.setWorking(false);
     }
   }
 

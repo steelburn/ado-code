@@ -26,7 +26,7 @@ export interface ConsentBroker {
   request(payload: ConsentRequestPayload): { requestId: string; decision: Promise<boolean> };
   /** Resolve a pending request from a user response (webview message). */
   resolve(requestId: string, approved: boolean): void;
-  /** Fail every pending request (webview disposed, chat cleared, turn aborted). */
+  /** Fail every pending request (chat cleared, turn aborted, newer message). */
   rejectAll(): void;
   /** The in-flight request, if any. */
   readonly pending: ConsentRequest | null;

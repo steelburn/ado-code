@@ -95,4 +95,106 @@ suite('ToolExecutor security', () => {
     // never {ok:true}.
     assert.ok(!String(res).includes('"ok":true'));
   });
+
+  test('inline mode: only the SAME tool is auto-denied after a denial; new tools still prompt', async () => {
+    let approveCalls = 0;
+    const executor = createToolExecutor(
+      stubServices(),
+      {} as any,
+      {
+        onApprove: async () => { approveCalls += 1; return false; },
+        onUpdateState: async () => {},
+        onDelegate: async () => 'delegated',
+      }
+    );
+    executor.setMode('inline');
+
+    const r1 = await executor.execute('add_comment', { id: 1, text: 'a' });
+    assert.ok(String(r1).includes('rejected by user'));
+    assert.strictEqual(approveCalls, 1, 'first tool prompted');
+
+    // SAME tool again in the same turn — silent denial, no second prompt.
+    const r2 = await executor.execute('add_comment', { id: 2, text: 'b' });
+    assert.ok(String(r2).includes('denied earlier this turn'));
+    assert.strictEqual(approveCalls, 1, 'approval hook NOT called again for the same tool');
+
+    // DIFFERENT mutating tool — still prompts (user may allow it).
+    await executor.execute('edit_file', { path: 'a.ts', oldText: 'a', newText: 'b' });
+    assert.strictEqual(approveCalls, 2, 'different tool still prompts after a denial');
+
+    // beginTurn resets — the user can be asked again next turn.
+    executor.beginTurn();
+    await executor.execute('add_comment', { id: 3, text: 'c' });
+    assert.strictEqual(approveCalls, 3, 'approval hook called again after beginTurn');
+  });
+
+  test('inline mode: terminal command denial is keyed by the exact command string', async () => {
+    let approveCalls = 0;
+    const executor = createToolExecutor(
+      stubServices(),
+      {} as any,
+      {
+        onApprove: async () => { approveCalls += 1; return false; },
+        onUpdateState: async () => {},
+        onDelegate: async () => 'delegated',
+      }
+    );
+    executor.setMode('inline');
+
+    const r1 = await executor.execute('run_terminal_command', { command: 'npm test' });
+    assert.ok(String(r1).includes('rejected by user'));
+    assert.strictEqual(approveCalls, 1, 'first command prompted');
+
+    // SAME command again — silent denial.
+    const r2 = await executor.execute('run_terminal_command', { command: 'npm test' });
+    assert.ok(String(r2).includes('denied earlier this turn'));
+    assert.strictEqual(approveCalls, 1, 'approval hook NOT called again for the same command');
+
+    // DIFFERENT command — prompts again.
+    const r3 = await executor.execute('run_terminal_command', { command: 'git status' });
+    assert.strictEqual(approveCalls, 2, 'different command still prompts after a denial');
+    assert.ok(String(r3).includes('rejected by user'));
+  });
+
+  test('inline mode: approvals do not suppress later prompts', async () => {
+    let approveCalls = 0;
+    const executor = createToolExecutor(
+      stubServices(),
+      {} as any,
+      {
+        onApprove: async () => { approveCalls += 1; return true; },
+        onUpdateState: async () => {},
+        onDelegate: async () => 'delegated',
+      }
+    );
+    executor.setMode('inline');
+
+    await executor.execute('add_comment', { id: 1, text: 'a' });
+    const r2 = await executor.execute('add_comment', { id: 2, text: 'b' });
+    assert.ok(!String(r2).includes('consent denied'), 'approval keeps prompting for the next tool');
+    assert.strictEqual(approveCalls, 2);
+  });
+
+  test('merge tools route through their hooks (commit_worktree)', async () => {
+    let called: any = null;
+    const executor = createToolExecutor(
+      stubServices(),
+      {} as any,
+      {
+        onCommitWorktree: async (runId, message) => { called = { runId, message }; return { committed: true, hash: 'abc1234' }; },
+      }
+    );
+    executor.setMode('act');
+    const res = await executor.execute('commit_worktree', { runId: 'run-1-42', message: 'ADO-42: fix login' });
+    assert.deepStrictEqual(JSON.parse(res), { committed: true, hash: 'abc1234' });
+    assert.deepStrictEqual(called, { runId: 'run-1-42', message: 'ADO-42: fix login' });
+  });
+
+  test('merge tools are blocked in plan mode (never mutate from a plan)', async () => {
+    for (const tool of ['commit_worktree', 'push_worktree', 'create_pull_request']) {
+      const ex = makeExecutor('plan');
+      const res = await ex.execute(tool, { runId: 'run-1-42' });
+      assert.ok(String(res).includes('not allowed in plan mode'), `${tool} blocked in plan`);
+    }
+  });
 });

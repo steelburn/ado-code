@@ -11,14 +11,28 @@ All notable changes to ADO Code will be documented in this file.
 - **Model capability checking**: The extension infers the active model's capabilities (`vision`, `tool calling`) from its id. Models without vision get image paste/attach disabled in the chat; models without tool calling trigger a persistent warning that agentic modes degrade to plain chat. The Configuration page shows a live capability readout for the selected model and highlights models lacking tool calling
 - **Model list retrieval in Configuration**: Once an API URL and API Key are entered, a "Fetch Models" button lists models from the endpoint (OpenAI `/models` or Anthropic `/v1/models`) and lets you pick one; failures render inline
 - **`.ado-code` auto-ignore**: The workspace data directory (memory, checkpoints, agent runs) is now offered to be added to `.gitignore` and `.dockerignore` when missing (setting `adoCode.ignore.dotAdoCode`, default on; a declined offer is remembered per workspace)
+- **AI merge flow**: The assistant can now execute the whole merge flow for a finished agent run itself via three new tools — `commit_worktree` (commits all worktree changes; refuses unknown/still-running runs), `push_worktree` (never force-pushes, refuses `main`/`master`), and `create_pull_request` (ADO Git REST, refuses same source/target). Instructions are injected into the system prompt; the tools are consent-gated in inline mode, auto-approved in act mode, and blocked in plan mode
+- **Worktree merge guardrails**: `delegate()` refuses a second concurrent run on the same work item (both would share a branch) and warns when an existing branch is behind the base (stale-code risk). New **Commit & Push** context-menu action; **Remove** now offers *Commit & Push, then Remove* when the worktree is dirty, and deletes the local branch afterwards only if it is fully merged (unmerged branches are kept — commits are never lost)
+- **Working indicator**: A status-bar spinner (`$(sync~spin) Working…`) shows while any LLM turn or agent run is in flight — host-side, so it stays visible when the chat view is hidden — and updates live with what the AI is doing ("thinking…", "tool: edit_file")
+- **Background processing survives view changes**: Closing/hiding the chat panel no longer force-denies pending consent mid-turn — the LLM loop keeps running host-side, the 120s consent timeout remains the hang-safety net, and a pending consent card is re-posted when you return
+- **AI choice detection (LLM-assisted)**: Responses that ask a question without numbered options (e.g. "Want me to … and/or …?") are now parsed by a cheap-AI extraction pass (setting `adoCode.llm.choiceDetectionModel`; `off` disables it). Choice buttons now actually work — clicking one sends the option as a follow-up message — and long option labels stack as full-width rows
+- **Sessions auto-create**: The first chat message now creates a session (named from the message) — no more "No sessions yet" for users who never clicked New Session, and the conversation is actually persisted
+- **Full Configuration page coverage**: Every contributed setting now round-trips through the page — including a structured **Organizations** editor (name/URL/project), the **choice detection model** field, and a new **Workspace** section for the `.ado-code` ignore toggle
 
 ### Improvements
 - **Branch names use the ADO subject**: Delegated agent worktree branches are slugged from the work item title (e.g. `feature/ADO-42-fix-login-bug`) instead of the prompt's first line ("read-and-follow-…")
 - **Tree view title bars cleaned up**: The cramped title-bar strip no longer holds Refresh/Deselect buttons — Deselect Work Item moved into the row context menu (shown only while a selection exists), refresh stays reachable via command palette, `ctrl+shift+r`, and the chat header
+- **Worktree directories named after the run**: Directories under `.ado-code/worktrees/` are now exactly the run id (no `run-run-…` double prefix); legacy directories still list and clean up correctly
+- **Consent deny-once per command**: After one consent denial in a turn, only the SAME tool (or exact terminal command) is auto-denied for the rest of the turn — new commands still prompt; `beginTurn()` resets each message
+- **"Allow for Session" for every tool**: All mutating tools now offer it on the consent card (was terminal-only); approvals skip the prompt and are cleared when the chat is cleared or a new session starts
 
 ### Bug Fixes
 - **Dismissed agent runs no longer reappear**: Dismissing a finished run is now persisted host-side, so panel remounts, re-focus, and extension reloads keep it dismissed
 - **Duplicate agent summary panels**: Reopening a summary while its panel is still open revealed a second panel — it now reveals and refreshes the existing one
+- **Worktree branch labels were commit hashes**: `git worktree list --porcelain` puts the branch on a `branch` line — the parser read the bare `HEAD` hash, so every worktree was labeled with a commit id
+- **"No sessions yet" despite chatting**: The first message now auto-creates a session — previously conversations were never persisted (and the history list stayed empty) until the user clicked New Session
+- **Configuration page could wipe MCP servers**: `mcp.servers` was missing from the settings payload, so the page loaded it empty and Save overwrote real server configs with `[]` — all settings now round-trip
+- **Derived values written to settings**: The model-capabilities payload was being saved back as a junk `adoCode.modelCapabilities` setting — derived values are excluded from saves
 
 ## [0.5.5] - 2026-08-06
 

@@ -13,6 +13,7 @@ export interface AgentRun {
   id: string;               // local run id (e.g. run-<timestamp>-<workItemId>)
   workItemId?: number;
   agent: AgentName;
+  title?: string;           // ADO work item title (commit/PR message defaults)
   sessionId?: string;       // external agent's session id (for resume)
   workdir: string;
   branch?: string;          // git branch this run is working on
