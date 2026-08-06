@@ -1,5 +1,8 @@
 import { AdoWorkItem, AdoWorkItemReference, WiqlResult, AdoComment } from './types';
 
+const GA_VERSION = '7.1';
+const PREVIEW_VERSION = '7.1-preview.4';
+
 export class AdoClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -148,13 +151,8 @@ export class AdoClient {
    * On-prem: best-effort profile endpoint under the server URL.
    */
   async getMe(): Promise<{ displayName: string; emailAddress: string }> {
-    const response = await fetch(
-      `${this.profileBaseUrl}/_apis/profile/profiles/me?api-version=7.1`,
-      { headers: this.headers }
-    );
-    if (!response.ok) {
-      throw new Error(`ADO API error: ${response.status} ${await response.text()}`);
-    }
+    const url = `${this.profileBaseUrl}/_apis/profile/profiles/me?api-version=${GA_VERSION}`;
+    const response = await this.fetchWithFallback(url, { headers: this.headers });
     return response.json() as Promise<{ displayName: string; emailAddress: string }>;
   }
 
@@ -240,46 +238,81 @@ export class AdoClient {
     workItemId: number,
     fields: Array<{ op: string; path: string; value: any }>
   ): Promise<any> {
-    const response = await fetch(
-      `${this.baseUrl}/${project}/_apis/wit/workitems/${workItemId}?api-version=7.1`,
-      {
-        method: 'PATCH',
-        headers: { ...this.headers, 'Content-Type': 'application/json-patch+json' },
-        body: JSON.stringify(fields),
-      }
+    return this.patch(
+      `/${project}/_apis/wit/workitems/${workItemId}?api-version=${GA_VERSION}`,
+      fields,
+      { 'Content-Type': 'application/json-patch+json' }
     );
-
-    if (!response.ok) {
-      throw new Error(`ADO API error: ${response.status} ${await response.text()}`);
-    }
-
-    return response.json();
   }
 
   private async get<T>(endpoint: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${endpoint}`, {
-      method: 'GET',
-      headers: this.headers,
-    });
-
-    if (!response.ok) {
-      throw new Error(`ADO API error: ${response.status} ${await response.text()}`);
-    }
-
+    const url = this.buildUrl(endpoint);
+    const response = await this.fetchWithFallback(url, { method: 'GET', headers: this.headers });
     return response.json() as Promise<T>;
   }
 
   private async post<T>(endpoint: string, body: any): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+    const url = this.buildUrl(endpoint);
+    const response = await this.fetchWithFallback(url, {
       method: 'POST',
       headers: this.headers,
       body: JSON.stringify(body),
     });
+    return response.json() as Promise<T>;
+  }
+
+  private async patch<T>(endpoint: string, body: any, headers?: Record<string, string>): Promise<T> {
+    const url = this.buildUrl(endpoint);
+    const response = await this.fetchWithFallback(url, {
+      method: 'PATCH',
+      headers: { ...this.headers, ...headers },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+    return response.json() as Promise<T>;
+  }
+
+  /**
+   * Build a full URL from a relative endpoint. If the endpoint already starts
+   * with http, return it as-is (e.g. profileBaseUrl endpoints).
+   */
+  private buildUrl(endpoint: string): string {
+    if (endpoint.startsWith('http')) return endpoint;
+    return `${this.baseUrl}${endpoint}`;
+  }
+
+  /**
+   * Universal ADO API fetch with GA→preview fallback.
+   * Tries the GA version first. If the response contains the "preview flag
+   * must be supplied" error, automatically retries with the preview version.
+   * This handles the common case where an ADO org hasn't fully rolled out
+   * GA for a specific endpoint.
+   */
+  private async fetchWithFallback(
+    url: string,
+    init: RequestInit,
+    gaVersion = GA_VERSION,
+    previewVersion = PREVIEW_VERSION,
+  ): Promise<Response> {
+    // Replace any existing api-version param with GA version
+    const gaUrl = url.replace(/api-version=[^&]+/, `api-version=${gaVersion}`);
+    let response = await fetch(gaUrl, init);
+
+    if (!response.ok) {
+      const text = await response.text();
+      if (text.includes('-preview flag must be supplied')) {
+        // Retry with preview version
+        const previewUrl = url.replace(/api-version=[^&]+/, `api-version=${previewVersion}`);
+        response = await fetch(previewUrl, init);
+      } else {
+        // Re-throw the original error (response body was consumed, so create a new error)
+        throw new Error(`ADO API error: ${response.status} ${text}`);
+      }
+    }
 
     if (!response.ok) {
       throw new Error(`ADO API error: ${response.status} ${await response.text()}`);
     }
 
-    return response.json() as Promise<T>;
+    return response;
   }
 }

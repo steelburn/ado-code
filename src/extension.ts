@@ -3,6 +3,7 @@ import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
+import { AgentSummaryPanel } from './webview/AgentSummaryPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
@@ -60,6 +61,18 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Wire memory change events → debounced status refresh (no shell calls).
+  // Disposables are tracked so they can be torn down on service rebuild.
+  let memorySubscriptions: vscode.Disposable[] = [];
+  function wireMemoryEvents(svc: Services): void {
+    for (const d of memorySubscriptions) d.dispose();
+    memorySubscriptions = [
+      svc.memory.onDidChange(() => statusProvider.debouncedRefresh()),
+      svc.workspaceMemory.onDidChange(() => statusProvider.debouncedRefresh()),
+    ];
+  }
+  wireMemoryEvents(services);
+
   // Task 4.1: token usage status bar (right-aligned, shows approximate token count)
   const tokenStatusBar = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
@@ -108,6 +121,15 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.selectWorkItem', (node: WorkItemNode) => {
       chatProvider.selectWorkItem(node.workItemId);
+      // Highlight the selected item in both trees
+      treeProvider.setSelected(node.workItemId);
+      unassignedTreeProvider.setSelected(node.workItemId);
+    }),
+    vscode.commands.registerCommand('adoCode.unselectWorkItem', () => {
+      chatProvider.clearActiveWorkItem();
+      treeProvider.setSelected(undefined);
+      unassignedTreeProvider.setSelected(undefined);
+      vscode.window.showInformationMessage('ADO Code: work item deselected.');
     }),
     vscode.commands.registerCommand('adoCode.startTask', (node: WorkItemNode) => {
       chatProvider.startTask(node.workItemId, node.workItemTitle);
@@ -536,7 +558,7 @@ Generate ONLY the commit message, nothing else.`;
         }
         // Open the agent's summary in the editor area so the result is
         // visible outside the chat panel (markdown tab, preview mode).
-        void openSummaryInEditor(run, summary);
+        void openSummaryInEditor(context, run, summary);
       },
     },
     {
@@ -562,13 +584,119 @@ Generate ONLY the commit message, nothing else.`;
     chatProvider.refreshWorkItems();
   }
 
+  // ── Status Panel context menu commands ──────────────────────────
+
+  // Memory commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.deleteMemory', (item: any) => {
+      const meta = item?.meta;
+      if (!meta) return;
+      if (meta.source === 'user') {
+        services.memory.delete(meta.key);
+        vscode.window.showInformationMessage(`ADO Code: deleted user memory "${meta.key}".`);
+      } else {
+        services.workspaceMemory.delete(meta.key);
+        vscode.window.showInformationMessage(`ADO Code: deleted workspace memory "${meta.key}".`);
+      }
+      statusProvider.refreshLight();
+    }),
+    vscode.commands.registerCommand('adoCode.moveToWorkspaceMemory', (item: any) => {
+      const meta = item?.meta;
+      if (!meta || meta.source !== 'user') return;
+      services.workspaceMemory.write(meta.key, meta.content);
+      services.memory.delete(meta.key);
+      vscode.window.showInformationMessage(`ADO Code: moved "${meta.key}" to workspace memory.`);
+      statusProvider.refreshLight();
+    }),
+    vscode.commands.registerCommand('adoCode.moveToUserMemory', (item: any) => {
+      const meta = item?.meta;
+      if (!meta || meta.source !== 'workspace') return;
+      const content = services.workspaceMemory.read(meta.key);
+      if (content) {
+        services.memory.set(meta.key, 'context', content);
+        services.workspaceMemory.delete(meta.key);
+        vscode.window.showInformationMessage(`ADO Code: moved "${meta.key}" to user memory.`);
+        statusProvider.refreshLight();
+      }
+    })
+  );
+
+  // Agent commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.openAgentInTerminal', (item: any) => {
+      const meta = item?.meta;
+      if (!meta) return;
+      const projectRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+      const terminal = vscode.window.createTerminal({
+        name: `${meta.displayName} (${projectRoot})`,
+        cwd: projectRoot,
+      });
+      terminal.show();
+      // Type the agent command so user can add their prompt
+      terminal.sendText(`${meta.name} `, false);
+    }),
+    vscode.commands.registerCommand('adoCode.copyAgentName', (item: any) => {
+      const meta = item?.meta;
+      if (!meta) return;
+      vscode.env.clipboard.writeText(meta.name);
+      vscode.window.showInformationMessage(`ADO Code: copied "${meta.name}" to clipboard.`);
+    })
+  );
+
+  // Worktree commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.openWorktreeInTerminal', (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.path) return;
+      const terminal = vscode.window.createTerminal({
+        name: `Worktree: ${meta.branch}`,
+        cwd: meta.path,
+      });
+      terminal.show();
+    }),
+    vscode.commands.registerCommand('adoCode.openWorktreeInExplorer', (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.path) return;
+      vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(meta.path), false);
+    }),
+    vscode.commands.registerCommand('adoCode.removeWorktree', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.runId) return;
+      const confirm = await vscode.window.showWarningMessage(
+        `Remove worktree for ${meta.branch}? Uncommitted changes will be lost.`,
+        'Remove', 'Cancel'
+      );
+      if (confirm !== 'Remove') return;
+      await services.git.removeWorktree(meta.runId);
+      vscode.window.showInformationMessage(`ADO Code: worktree ${meta.branch} removed.`);
+      statusProvider.refreshLight();
+    })
+  );
+
   // Keep services in sync with settings / workspace changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('adoCode')) {
-        services = createServices(context);
-        chatProvider.setServices(services);
-        statusProvider.refresh();
+        // Only rebuild services (and re-detect agents) when ADO/org/PAT
+        // or agent-relevant config changes. Mode-only changes are debounced.
+        const rebuildKeys = [
+          'adoCode.adoOrganization',
+          'adoCode.adoProject',
+          'adoCode.adoPat',
+          'adoCode.adoServerUrl',
+          'adoCode.mcp.servers',
+          'adoCode.agents',
+        ];
+        const needsRebuild = rebuildKeys.some(k => e.affectsConfiguration(k));
+        if (needsRebuild) {
+          services = createServices(context);
+          chatProvider.setServices(services);
+          // Re-subscribe memory events to the new service instances
+          wireMemoryEvents(services);
+          statusProvider.refresh();
+        } else {
+          statusProvider.debouncedRefresh();
+        }
       }
     })
   );
@@ -577,26 +705,11 @@ Generate ONLY the commit message, nothing else.`;
 export function deactivate() {}
 
 /**
- * Write the agent's completion summary to a per-run markdown file and open it
- * in the editor area (preview tab, column beside the active editor) so the
- * result is readable outside the chat panel.
+ * Open the agent's summary in a formatted webview panel in the editor area
+ * (beside the active editor), rendered as a nicely formatted HTML page.
  */
-async function openSummaryInEditor(run: AgentRun, summary: string): Promise<void> {
-  if (!summary) return;
-  try {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.tmpdir();
-    const dir = vscode.Uri.joinPath(vscode.Uri.file(root), '.ado-code', 'runs');
-    await vscode.workspace.fs.createDirectory(dir);
-    const file = vscode.Uri.joinPath(dir, `${run.id}-summary.md`);
-    const heading = run.workItemId ? `# Agent summary — ADO-${run.workItemId}\n\n` : `# Agent summary\n\n`;
-    await vscode.workspace.fs.writeFile(file, Buffer.from(heading + summary, 'utf8'));
-    await vscode.window.showTextDocument(file, {
-      preview: true,
-      viewColumn: vscode.ViewColumn.Beside,
-    });
-  } catch (err) {
-    vscode.window.showWarningMessage(
-      `ADO Code: could not open the agent summary in the editor — ${err instanceof Error ? err.message : err}`
-    );
-  }
+async function openSummaryInEditor(
+  ctx: vscode.ExtensionContext, run: AgentRun, summary: string
+): Promise<void> {
+  AgentSummaryPanel.show(ctx, run, summary);
 }

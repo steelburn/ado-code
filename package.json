@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -104,6 +104,60 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.unselectWorkItem",
+        "title": "Deselect Work Item",
+        "icon": "$(close-all)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.deleteMemory",
+        "title": "Delete Memory",
+        "icon": "$(trash)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.moveToWorkspaceMemory",
+        "title": "Move to Workspace Memory",
+        "icon": "$(folder-opened)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.moveToUserMemory",
+        "title": "Move to User Memory",
+        "icon": "$(person)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.openAgentInTerminal",
+        "title": "Open in Terminal",
+        "icon": "$(terminal)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.copyAgentName",
+        "title": "Copy Agent Name",
+        "icon": "$(clippy)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.openWorktreeInTerminal",
+        "title": "Open Worktree in Terminal",
+        "icon": "$(terminal)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.openWorktreeInExplorer",
+        "title": "Open Worktree in Explorer",
+        "icon": "$(folder-opened)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.removeWorktree",
+        "title": "Remove Worktree",
+        "icon": "$(trash)",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.generateCommitMessage",
         "title": "Generate Commit Message",
         "icon": "$(sparkle)",
@@ -178,7 +232,17 @@
           "group": "navigation"
         },
         {
+          "command": "adoCode.unselectWorkItem",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
           "command": "adoCode.refreshWorkItems",
+          "when": "view == adoCode.unassignedWorkItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.unselectWorkItem",
           "when": "view == adoCode.unassignedWorkItems",
           "group": "navigation"
         }
@@ -238,6 +302,51 @@
           "command": "adoCode.takeOwnership",
           "when": "viewItem == unassignedWorkItemNode",
           "group": "1_workItem@1"
+        },
+        {
+          "command": "adoCode.reassignWorkItem",
+          "when": "viewItem == workItemNode || viewItem == unassignedWorkItemNode",
+          "group": "5_assignment@1"
+        },
+        {
+          "command": "adoCode.deleteMemory",
+          "when": "viewItem == statusMemoryUser || viewItem == statusMemoryWorkspace",
+          "group": "1_memory@1"
+        },
+        {
+          "command": "adoCode.moveToWorkspaceMemory",
+          "when": "viewItem == statusMemoryUser",
+          "group": "2_memory@1"
+        },
+        {
+          "command": "adoCode.moveToUserMemory",
+          "when": "viewItem == statusMemoryWorkspace",
+          "group": "2_memory@1"
+        },
+        {
+          "command": "adoCode.openAgentInTerminal",
+          "when": "viewItem == statusAgent",
+          "group": "1_agent@1"
+        },
+        {
+          "command": "adoCode.copyAgentName",
+          "when": "viewItem == statusAgent",
+          "group": "2_agent@1"
+        },
+        {
+          "command": "adoCode.openWorktreeInTerminal",
+          "when": "viewItem == statusWorktree",
+          "group": "1_worktree@1"
+        },
+        {
+          "command": "adoCode.openWorktreeInExplorer",
+          "when": "viewItem == statusWorktree",
+          "group": "1_worktree@2"
+        },
+        {
+          "command": "adoCode.removeWorktree",
+          "when": "viewItem == statusWorktree",
+          "group": "2_worktree@1"
         }
       ]
     },

@@ -33,6 +33,8 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   private workItems: WorkItemSummary[] = [];
   // Track which work items have active agent runs
   private activeAgentRuns = new Map<number, { agent: string; status: string }>();
+  // Track the currently selected work item for highlighting
+  private selectedWorkItemId?: number;
   // Parent → children index (built on refresh)
   private childrenOf = new Map<number, WorkItemSummary[]>();
   private roots: WorkItemSummary[] = [];
@@ -107,6 +109,17 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     this._onDidChangeTreeData.fire(undefined);
   }
 
+  /** Set the selected work item for visual highlighting. */
+  setSelected(workItemId?: number): void {
+    this.selectedWorkItemId = workItemId;
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Get the currently selected work item ID. */
+  getSelectedId(): number | undefined {
+    return this.selectedWorkItemId;
+  }
+
   getWorkItemById(id: number): WorkItemSummary | undefined {
     return this.workItems.find(wi => wi.id === id);
   }
@@ -128,7 +141,8 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   private toNode(wi: WorkItemSummary): WorkItemNode {
     const agentRun = this.activeAgentRuns.get(wi.id);
     const hasChildren = this.childrenOf.has(wi.id);
-    return new WorkItemNode(wi, agentRun, this.nodeContextValue, hasChildren);
+    const isSelected = wi.id === this.selectedWorkItemId;
+    return new WorkItemNode(wi, agentRun, this.nodeContextValue, hasChildren, isSelected);
   }
 }
 
@@ -139,7 +153,8 @@ export class WorkItemNode extends vscode.TreeItem {
     workItem: WorkItemSummary,
     agentRun?: { agent: string; status: string },
     contextValue = 'workItemNode',
-    hasChildren = false
+    hasChildren = false,
+    isSelected = false
   ) {
     super(
       workItem.title,
@@ -151,8 +166,13 @@ export class WorkItemNode extends vscode.TreeItem {
     if (agentRun) {
       // Show agent status in description
       this.description = `#${workItem.id} 🤖 ${agentRun.agent}`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}\nAgent: ${agentRun.agent} (${agentRun.status})`;
+      this.tooltip = `${workItem.workItemType} - ${workItem.state}\\nAgent: ${agentRun.agent} (${agentRun.status})`;
       this.iconPath = new vscode.ThemeIcon('loading~spin');
+    } else if (isSelected) {
+      // Selected item: highlighted icon + badge
+      this.description = `#${workItem.id} ◀ active`;
+      this.tooltip = `${workItem.workItemType} - ${workItem.state}\\nSelected for chat context`;
+      this.iconPath = new vscode.ThemeIcon('check-all', new vscode.ThemeColor('charts.green'));
     } else {
       this.description = `#${workItem.id}`;
       this.tooltip = `${workItem.workItemType} - ${workItem.state}`;

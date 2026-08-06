@@ -71,6 +71,21 @@ export class AgentRunner {
       status: 'running',
       startedAt: new Date().toISOString(),
     };
+
+    // Create isolated worktree for this agent run
+    try {
+      const title = prompt.split('\n')[0]?.slice(0, 80) ?? `task-${workItemId}`;
+      const branchName = this.git.getBranchName(workItemId, title);
+      run.branch = branchName;
+      const worktreePath = await this.git.createWorktree(run.id, branchName);
+      run.worktreePath = worktreePath;
+      run.workdir = worktreePath; // Agent runs in its own worktree
+      this.callbacks.onStatus(run, `worktree created: ${branchName}`);
+    } catch (err) {
+      // Fall back to main repo if worktree creation fails
+      this.callbacks.onStatus(run, `worktree failed, using main repo: ${err instanceof Error ? err.message : err}`);
+    }
+
     this.runs.set(run.id, run);
     this.persist();
     this.callbacks.onStatus(run, `delegating to ${chosen.displayName}...`);
@@ -195,11 +210,18 @@ export class AgentRunner {
     const lines: string[] = [];
     lines.push(`**Agent finished (${run.agent})** exit=${run.status}`);
     if (run.sessionId) lines.push(`session: \`${run.sessionId}\``);
+    if (run.branch) lines.push(`branch: \`${run.branch}\``);
+    if (run.worktreePath) lines.push(`worktree: \`${run.worktreePath}\``);
     lines.push('');
+
+    // Use worktree path for git commands if available (isolated per-agent tracking)
+    const cwd = run.worktreePath ?? run.workdir;
 
     // 1) What changed in git?
     try {
-      const status = await this.git.getStatusPorcelain();
+      const status = run.worktreePath
+        ? await this.git.gitInWorktree(cwd, ['status', '--porcelain'])
+        : await this.git.getStatusPorcelain();
       lines.push('**Changed files:**');
       lines.push(status.trim() || '_no changes detected_');
     } catch (err) {
@@ -208,7 +230,9 @@ export class AgentRunner {
 
     // 2) Diff stat (bounded)
     try {
-      const diffStat = await this.git.getDiffStat();
+      const diffStat = run.worktreePath
+        ? await this.git.gitInWorktree(cwd, ['diff', '--stat'])
+        : await this.git.getDiffStat();
       if (diffStat.trim()) {
         lines.push('**Diff stat:**');
         lines.push('```');
@@ -224,7 +248,7 @@ export class AgentRunner {
       // M7 fix: the verify command is USER-configured (trusted input), so shell
       // execution is defensible — but it must run via `exec` (shell) to respect
       // quotes/globs, and the plan must say so.
-      const { stdout, stderr } = await execAsync(verifyCmd, run.workdir);
+      const { stdout, stderr } = await execAsync(verifyCmd, cwd);
       lines.push('```');
       lines.push((stdout || stderr).slice(0, 2000));
       lines.push('```');

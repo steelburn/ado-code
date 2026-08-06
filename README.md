@@ -9,16 +9,22 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - Tool calling with agentic loop for autonomous coding tasks
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, and more)
+- **Git worktree isolation**: Concurrent agents run in isolated worktrees — no branch conflicts
+- **Multi-agent output panels**: Track multiple agent runs simultaneously with independent output
 - File checkpoints: auto-save before AI edits, restore on demand
 - MCP (Model Context Protocol) support for external tool servers
 - Slash commands with autocomplete (/help, /status, /clear, /mode, etc.)
 - User memory: AI remembers your preferences across sessions
 - Workspace memory: project-specific conventions in .ado-code/memory/
+- **Status Panel context menus**: Right-click to delete memory, open agents in terminal, manage worktrees
 - Direct mode selection: click Chat/Plan/Act to switch modes instantly
 - In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
+- **AI choice detection**: When AI asks you to choose, options appear as clickable buttons
 - Hierarchical work item trees: parent-child view matching ADO structure (Epic → Feature → User Story → Task) with type-specific icons
 - Full detail view: right-click → "Show Full Details" opens a formatted panel in the editor with metadata, description, criteria, and discussion
+- **Work item selection**: Selected items show a green badge; deselect via title bar button
 - Agent delegation injects AGENTS.md project context so all agents understand the codebase
+- **Agent summary panel**: Completion summaries open in a styled HTML panel with metadata and duration
 - Workspace scaffolding: new project wizard for Node.js, Python, PHP (Laravel), .NET C# with auto-generated files
 - Workspace-to-ADO project binding: prevents working on items from the wrong project
 - Enhanced slash command autocomplete with parameter hints and real-world examples

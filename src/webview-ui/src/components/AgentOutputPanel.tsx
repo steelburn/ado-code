@@ -4,6 +4,8 @@ interface AgentRun {
   id: string;
   workItemId?: number;
   agent: string;
+  branch?: string;
+  worktreePath?: string;
   status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
   startedAt: string;
   finishedAt?: string;
@@ -14,9 +16,10 @@ interface Props {
   run: AgentRun | null;
   output: string;
   loading: boolean;
+  onDismiss?: (runId: string) => void;
 }
 
-export function AgentOutputPanel({ run, output, loading }: Props) {
+export function AgentOutputPanel({ run, output, loading, onDismiss }: Props) {
   const [expanded, setExpanded] = useState(true);
   const outputRef = useRef<HTMLDivElement>(null);
 
@@ -28,6 +31,8 @@ export function AgentOutputPanel({ run, output, loading }: Props) {
   }, [output, expanded]);
 
   if (!run) return null;
+
+  const isFinished = run.status !== 'running';
 
   const statusColors: Record<string, string> = {
     running: 'var(--vscode-progressBar-background)',
@@ -63,6 +68,45 @@ export function AgentOutputPanel({ run, output, loading }: Props) {
         {run.workItemId && (
           <span className="agent-output-wi">ADO-{run.workItemId}</span>
         )}
+        {run.branch && (
+          <span
+            className="agent-output-branch"
+            style={{
+              marginLeft: 4,
+              padding: '1px 6px',
+              borderRadius: 4,
+              fontSize: '0.78em',
+              background: 'var(--vscode-badge-background, #333)',
+              color: 'var(--vscode-badge-foreground, #ccc)',
+            }}
+            title={run.worktreePath ? `Worktree: ${run.worktreePath}` : 'Branch'}
+          >
+            {run.branch}
+          </span>
+        )}
+        {isFinished && onDismiss && (
+          <button
+            className="agent-output-close"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDismiss(run.id);
+            }}
+            title="Dismiss"
+            style={{
+              marginLeft: 'auto',
+              background: 'none',
+              border: 'none',
+              color: 'var(--vscode-descriptionForeground)',
+              cursor: 'pointer',
+              padding: '2px 6px',
+              fontSize: '14px',
+              lineHeight: 1,
+              borderRadius: '4px',
+            }}
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {expanded && (
@@ -72,10 +116,9 @@ export function AgentOutputPanel({ run, output, loading }: Props) {
               <pre>{output}</pre>
             </div>
           )}
-          {run.summary && (
-            <div className="agent-output-summary">
-              <div className="task-detail-section-title">Summary</div>
-              <div className="task-detail-section-content">{run.summary}</div>
+          {!output && run.status !== 'running' && (
+            <div className="agent-output-content" style={{ color: 'var(--vscode-descriptionForeground)', fontStyle: 'italic', padding: '8px 0' }}>
+              Output captured in the editor panel →
             </div>
           )}
         </div>

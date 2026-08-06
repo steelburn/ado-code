@@ -55,10 +55,9 @@ function App() {
   const [mode, setMode] = useState('inline');
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
 
-  // Agent state
+  // Agent state — supports multiple concurrent runs
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [agentRun, setAgentRun] = useState<any>(null);
-  const [agentOutput, setAgentOutput] = useState('');
+  const [agentRuns, setAgentRuns] = useState<Map<string, { run: any; output: string }>>(new Map());
   const [projects, setProjects] = useState<Array<{ id: string; name: string; state: string }>>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   // Input draft lives in App so toolbar tools (add context / attach files) can
@@ -145,6 +144,16 @@ function App() {
           });
           break;
 
+        case 'choicePrompt':
+          // AI detected a choice prompt — show as inline confirmation card
+          setConfirmation({
+            requestId: msg.requestId,
+            title: 'Choose an option',
+            description: msg.question,
+            options: msg.options,
+          });
+          break;
+
         case 'config': {
           const cfg = msg.config as unknown as SanitizedConfig;
           setConfig(cfg);
@@ -174,6 +183,16 @@ function App() {
 
           break;
 
+        case 'agentRunsList': {
+          // Hydrate multi-run map from extension host (on mount / re-focus)
+          const next = new Map<string, { run: any; output: string }>();
+          for (const run of msg.runs) {
+            next.set(run.id, { run, output: '' });
+          }
+          setAgentRuns(next);
+          break;
+        }
+
         case 'historyRestored':
           setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
           break;
@@ -198,20 +217,36 @@ function App() {
           }
           break;
 
-        case 'agentStatus':
-          // Show agent bar when delegation is active
-          setAgentRun(msg.run);
-          // Append streaming output
-          if (msg.delta) {
-            setAgentOutput(prev => prev + msg.delta);
-          }
+        case 'agentStatus': {
+          // Upsert into the multi-run map
+          const runId = msg.run.id;
+          setAgentRuns(prev => {
+            const next = new Map(prev);
+            const existing = next.get(runId);
+            next.set(runId, {
+              run: msg.run,
+              output: (existing?.output ?? '') + (msg.delta ?? ''),
+            });
+            return next;
+          });
           break;
+        }
 
-        case 'agentResult':
-          setAgentRun(msg.run);
-          setAgentOutput(prev => prev + '\n\n' + msg.summary);
+        case 'agentResult': {
+          const resultId = msg.run.id;
+          setAgentRuns(prev => {
+            const next = new Map(prev);
+            const existing = next.get(resultId);
+            next.set(resultId, {
+              run: msg.run,
+              // Summary is now shown in the editor panel, not inline
+              output: existing?.output ?? '',
+            });
+            return next;
+          });
           setLoading(false);
           break;
+        }
 
         case 'projectList':
           setProjects(msg.projects);
@@ -257,6 +292,7 @@ function App() {
 
     vscode.postMessage({ type: 'getConfig' });
     vscode.postMessage({ type: 'listAgents' });
+    vscode.postMessage({ type: 'listAgentRuns' });
     vscode.postMessage({ type: 'listSessions' });
 
     return () => window.removeEventListener('message', handler);
@@ -478,8 +514,22 @@ function App() {
         />
       </div>
 
-      {/* Agent output panel (when agent is running) */}
-      <AgentOutputPanel run={agentRun} output={agentOutput} loading={loading} />
+      {/* Agent output panels (one per running/recent agent) */}
+      {Array.from(agentRuns.entries()).map(([id, { run, output }]) => (
+        <AgentOutputPanel
+          key={id}
+          run={run}
+          output={output}
+          loading={loading && run.status === 'running'}
+          onDismiss={(runId) => {
+            setAgentRuns(prev => {
+              const next = new Map(prev);
+              next.delete(runId);
+              return next;
+            });
+          }}
+        />
+      ))}
 
       {/* Messages */}
       <MessageList messages={messages} loading={loading} />

@@ -1,7 +1,12 @@
 import * as cp from 'child_process';
+import * as path from 'path';
+import * as os from 'os';
 import { promisify } from 'util';
 
 const execFile = promisify(cp.execFile);
+
+/** Worktree directory name prefix under .ado-code/worktrees/. */
+const WORKTREE_PREFIX = 'run-';
 
 export class GitService {
   // public readonly so ChatViewProvider's offerPushAndPr (Task 11) can pass
@@ -164,5 +169,129 @@ export class GitService {
     } catch {
       return false;
     }
+  }
+
+  // ── Worktree management (concurrent agent isolation) ─────────────
+
+  /** Get the base directory for agent worktrees. */
+  private worktreeBase(): string {
+    return path.join(this.workspaceRoot, '.ado-code', 'worktrees');
+  }
+
+  /**
+   * Create an isolated git worktree for an agent run.
+   * Returns the absolute path to the new working directory.
+   * Creates the branch from HEAD if it doesn't exist yet.
+   */
+  async createWorktree(runId: string, branchName: string): Promise<string> {
+    const base = this.worktreeBase();
+    const wtDir = path.join(base, `${WORKTREE_PREFIX}${runId}`);
+
+    // Ensure base directory exists
+    await execFile('mkdir', ['-p', base], { cwd: this.workspaceRoot });
+
+    // Check if branch exists; if not, create it from HEAD
+    try {
+      const { stdout } = await execFile('git', ['branch', '--list', branchName], {
+        cwd: this.workspaceRoot,
+      });
+      if (stdout.trim().length === 0) {
+        // Branch doesn't exist — create it from HEAD
+        await execFile('git', ['branch', branchName], { cwd: this.workspaceRoot });
+      }
+    } catch {
+      // If we can't check, just try to create the worktree — it will fail
+      // with a clear error if the branch doesn't exist.
+    }
+
+    // Create the worktree
+    await execFile('git', ['worktree', 'add', wtDir, branchName], {
+      cwd: this.workspaceRoot,
+    });
+
+    return wtDir;
+  }
+
+  /**
+   * Remove a worktree and its directory.
+   * If the worktree has uncommitted changes, they are discarded.
+   */
+  async removeWorktree(runId: string): Promise<void> {
+    const wtDir = path.join(this.worktreeBase(), `${WORKTREE_PREFIX}${runId}`);
+    try {
+      // Force remove — discards uncommitted changes
+      await execFile('git', ['worktree', 'remove', '--force', wtDir], {
+        cwd: this.workspaceRoot,
+      });
+    } catch {
+      // If git worktree remove fails, try manual cleanup
+      try {
+        await execFile('rm', ['-rf', wtDir], { cwd: this.workspaceRoot });
+      } catch {
+        // Best effort — directory may already be gone
+      }
+    }
+  }
+
+  /**
+   * List all agent worktrees under .ado-code/worktrees/.
+   * Returns array of { runId, path, branch } objects.
+   */
+  async listWorktrees(): Promise<Array<{ runId: string; path: string; branch: string }>> {
+    const base = this.worktreeBase();
+    try {
+      // Get worktree list in parseable format
+      const { stdout } = await execFile('git', ['worktree', 'list', '--porcelain'], {
+        cwd: this.workspaceRoot,
+      });
+
+      const worktrees: Array<{ runId: string; path: string; branch: string }> = [];
+      const blocks = stdout.split('\n\n').filter(b => b.trim());
+
+      for (const block of blocks) {
+        const lines = Object.fromEntries(
+          block.split('\n').map(l => {
+            const idx = l.indexOf(' ');
+            return idx > 0 ? [l.substring(0, idx), l.substring(idx + 1)] : [l, ''];
+          })
+        );
+
+        const wtPath = lines['worktree'] ?? '';
+        const branch = (lines['HEAD'] ?? '').replace('refs/heads/', '');
+
+        // Only include our agent worktrees (under .ado-code/worktrees/run-*)
+        if (wtPath.startsWith(base) && wtPath.includes(`${WORKTREE_PREFIX}`)) {
+          const dirName = path.basename(wtPath);
+          const runId = dirName.replace(/^run-/, '');
+          worktrees.push({ runId, path: wtPath, branch });
+        }
+      }
+
+      return worktrees;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get the branch name for a work item based on title.
+   * Same logic as createTaskBranch but without creating the branch.
+   */
+  getBranchName(workItemId: number, title: string): string {
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40);
+    return `feature/ADO-${workItemId}-${slug}`;
+  }
+
+  /**
+   * Run a git command against a specific working directory (worktree).
+   * Used by verifyWork to get accurate per-agent change tracking.
+   */
+  async gitInWorktree(worktreePath: string, args: string[]): Promise<string> {
+    const { stdout } = await execFile('git', args, { cwd: worktreePath });
+    return stdout;
   }
 }

@@ -36,6 +36,10 @@ const GLOBAL_STATE_KEY = 'adoCode.userMemory';
  * so the LLM can respect user preferences, instructions, and context.
  */
 export class UserMemory {
+  private readonly _onDidChange = new vscode.EventEmitter<void>();
+  /** Fires after any mutation (set, delete, clear). */
+  readonly onDidChange = this._onDidChange.event;
+
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   /** Get all stored memory entries. */
@@ -87,6 +91,7 @@ export class UserMemory {
     }
 
     this.context.globalState.update(GLOBAL_STATE_KEY, { entries } satisfies MemoryStore);
+    this._onDidChange.fire();
   }
 
   /** Delete a memory entry by key. Returns true if found and deleted. */
@@ -98,6 +103,7 @@ export class UserMemory {
     if (filtered.length === before) return false;
 
     this.context.globalState.update(GLOBAL_STATE_KEY, { entries: filtered } satisfies MemoryStore);
+    this._onDidChange.fire();
     return true;
   }
 
@@ -105,5 +111,6 @@ export class UserMemory {
   clear(): void {
     logger.info('Memory: cleared all user memory');
     this.context.globalState.update(GLOBAL_STATE_KEY, { entries: [] } satisfies MemoryStore);
+    this._onDidChange.fire();
   }
 }

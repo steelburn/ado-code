@@ -15,6 +15,8 @@ export interface AgentRun {
   agent: AgentName;
   sessionId?: string;       // external agent's session id (for resume)
   workdir: string;
+  branch?: string;          // git branch this run is working on
+  worktreePath?: string;    // isolated worktree directory (for concurrent runs)
   status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'; // interrupted: extension reloaded mid-run (Q7)
   startedAt: string;
   finishedAt?: string;

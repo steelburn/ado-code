@@ -2,6 +2,31 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.5] - 2026-08-06
+
+### Features
+- **Git worktree isolation for concurrent agents**: Each agent run now gets its own isolated git worktree under `.ado-code/worktrees/`, preventing branch conflicts and file corruption when multiple agents run simultaneously
+- **Multi-agent output panels**: Multiple agent runs now display as separate collapsible panels in the chat, each with independent streaming output and a close button for completed runs
+- **Agent summary in formatted webview panel**: Agent completion summaries now open in a styled HTML panel (like WorkItemDetailPanel) instead of a raw markdown preview, with metadata, status badge, and duration
+- **Status Panel context menus**: Right-click actions on Status Panel items:
+  - Memory: Delete, Move to User/Workspace memory
+  - Agents: Open in Terminal, Copy Agent Name
+  - Worktrees: Open in Terminal, Open in Explorer, Remove
+- **Work item selection highlighting**: Selected work items now show a green check icon with "◀ active" badge in the tree view
+- **Deselect Work Item**: New command to release the active work item selection (title bar button + context menu)
+- **AI choice prompt detection**: When the AI asks the user to choose between options, the response is parsed and displayed as an inline confirmation card with clickable buttons
+- **Reassign Work Item**: Fixed missing context menu entry for reassigning work items to other team members
+
+### Improvements
+- **Universal ADO API fallback**: All ADO REST API calls now try the GA version (7.1) first and automatically retry with preview (7.1-preview.4) if the org hasn't rolled out GA yet
+- **Status Panel live updates**: Memory changes now trigger debounced tree refreshes; configuration changes are categorized to avoid unnecessary agent re-detection
+- **Worktree listing in Status Panel**: Active agent worktrees are displayed in the Status Panel with branch names and run IDs
+
+### Bug Fixes
+- **Reassign Work Item 400 error**: Fixed API version mismatch — PATCH endpoint now uses correct preview version with automatic fallback
+- **Single agent output overwrite**: Fixed issue where only one agent's output was visible when multiple agents ran concurrently
+- **Agent summary cluttering chat**: Agent summaries no longer append to chat panel output — they open in a dedicated editor panel
+
 ## [0.5.4] - 2026-08-05
 
 ### Bug Fixes

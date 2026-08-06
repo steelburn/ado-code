@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { logger } from '../services/logger';
 
 /**
@@ -12,6 +13,9 @@ import { logger } from '../services/logger';
 export class WorkspaceMemory {
   private workspaceRoot: string;
   private memoryDir: string;
+  private readonly _onDidChange = new vscode.EventEmitter<void>();
+  /** Fires after any mutation (write, delete). */
+  readonly onDidChange = this._onDidChange.event;
 
   constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
@@ -46,6 +50,7 @@ export class WorkspaceMemory {
     this.init();
     const filePath = this.getFilePath(key);
     fs.writeFileSync(filePath, value, 'utf8');
+    this._onDidChange.fire();
   }
 
   /**
@@ -59,6 +64,7 @@ export class WorkspaceMemory {
       return false;
     }
     fs.unlinkSync(filePath);
+    this._onDidChange.fire();
     return true;
   }
 

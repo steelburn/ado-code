@@ -10,15 +10,62 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
   /** Cached agent detection results (async → cached for sync getChildren). */
   private agentCapabilities: AgentCapability[] = [];
 
+  /** Debounce timer for rapid config changes. */
+  private _refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
   constructor(private services: Services) {
     // Kick off initial async agent detection; fire tree refresh when done
     // so the STATUS tree shows agents after the async probe completes.
     void this.refreshAgents().then(() => this._onDidChangeTreeData.fire(undefined));
   }
 
+  /**
+   * Full refresh: re-detect agents + re-render tree.
+   * Call this when agents or deep structural data may have changed.
+   */
   refresh(): void {
     void this.refreshAgents();
     this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /**
+   * Debounced refresh — coalesces rapid calls (e.g. tag/chip edits,
+   * sequential config updates) into a single tree re-render after 300ms.
+   */
+  debouncedRefresh(): void {
+    if (this._refreshTimer) clearTimeout(this._refreshTimer);
+    this._refreshTimer = setTimeout(() => {
+      this._refreshTimer = undefined;
+      this._onDidChangeTreeData.fire(undefined);
+    }, 300);
+  }
+
+  /**
+   * Lightweight refresh for data that doesn't affect agents.
+   * Skips the async agent detection (no shell calls), just re-renders the
+   * tree with current memory/MCP/mode snapshots.
+   */
+  refreshLight(): void {
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Handle a VS Code configuration change event. */
+  onConfigChanged(e: vscode.ConfigurationChangeEvent): void {
+    if (!e.affectsConfiguration('adoCode')) return;
+
+    // Only rebuild services + re-detect agents when ADO/agent-relevant
+    // keys change. Everything else (mode, theme, etc.) is a light refresh.
+    const agentKeys = [
+      'adoCode.mcp.servers',
+      'adoCode.agents',
+    ];
+    const needsAgentRefresh = agentKeys.some(k => e.affectsConfiguration(k));
+
+    if (needsAgentRefresh) {
+      this.refresh();
+    } else {
+      this.debouncedRefresh();
+    }
   }
 
   /** Fire only the agents subtree (lighter than full refresh). */
@@ -34,7 +81,7 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
     return element;
   }
 
-  getChildren(element?: StatusItem): StatusItem[] {
+  async getChildren(element?: StatusItem): Promise<StatusItem[]> {
     if (element) return element.children ?? [];
 
     const items: StatusItem[] = [];
@@ -69,12 +116,16 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
         );
         child.iconPath = new vscode.ThemeIcon('person');
         child.description = new Date(entry.timestamp).toLocaleDateString();
+        child.contextValue = 'statusMemoryUser';
+        child.meta = { key: entry.key, category: entry.category, content: entry.content, source: 'user' };
         memItem.children = memItem.children ?? [];
         memItem.children.push(child);
       }
       for (const key of workspaceMemories) {
         const child = new StatusItem(key, vscode.TreeItemCollapsibleState.None);
         child.iconPath = new vscode.ThemeIcon('folder');
+        child.contextValue = 'statusMemoryWorkspace';
+        child.meta = { key, source: 'workspace' };
         memItem.children = memItem.children ?? [];
         memItem.children.push(child);
       }
@@ -121,6 +172,8 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
           );
           child.iconPath = new vscode.ThemeIcon('check');
           child.description = agent.version ?? 'installed';
+          child.contextValue = 'statusAgent';
+          child.meta = { name: agent.name, displayName: agent.displayName, version: agent.version };
           agentItem.children = agentItem.children ?? [];
           agentItem.children.push(child);
         }
@@ -130,12 +183,43 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
       // agents not available
     }
 
+    // ── Worktrees (agent isolation) ──────────────────────────────
+    try {
+      const worktrees = await this.services.git.listWorktrees();
+      if (worktrees.length > 0) {
+        const wtItem = new StatusItem(
+          `Worktrees: ${worktrees.length} active`,
+          vscode.TreeItemCollapsibleState.Expanded
+        );
+        wtItem.iconPath = new vscode.ThemeIcon('folder-opened');
+        for (const wt of worktrees) {
+          const child = new StatusItem(
+            wt.branch,
+            vscode.TreeItemCollapsibleState.None
+          );
+          child.iconPath = new vscode.ThemeIcon('git-branch');
+          child.description = wt.runId;
+          child.tooltip = wt.path;
+          child.contextValue = 'statusWorktree';
+          child.meta = { runId: wt.runId, path: wt.path, branch: wt.branch };
+          wtItem.children = wtItem.children ?? [];
+          wtItem.children.push(child);
+        }
+        items.push(wtItem);
+      }
+    } catch {
+      // worktrees not available
+    }
+
     return items;
   }
 }
 
 class StatusItem extends vscode.TreeItem {
   children?: StatusItem[];
+  /** Extra metadata carried for context-menu commands. */
+  meta?: Record<string, any>;
+
   constructor(
     label: string,
     collapsibleState: vscode.TreeItemCollapsibleState,

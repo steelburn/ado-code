@@ -18,6 +18,7 @@ import { isCommandSessionApproved, addSessionCommandApproval, addToTerminalAllow
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
+import { parseChoicePrompt } from '../llm/parseChoicePrompt';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -250,6 +251,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'listAgentRuns': {
+        const runs = this.agentRunner?.listRuns() ?? [];
+        // Only send running + recently finished (last 5 completed)
+        const active = runs.filter(r => r.status === 'running');
+        const recent = runs
+          .filter(r => r.status !== 'running')
+          .sort((a, b) => (b.finishedAt ?? '').localeCompare(a.finishedAt ?? ''))
+          .slice(0, 5);
+        this.postMessage({ type: 'agentRunsList', runs: [...active, ...recent] });
+        break;
+      }
     }
   }
 
@@ -370,6 +382,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'agentFollowUp':
           case 'agentCancel':
           case 'listAgents':
+          case 'listAgentRuns':
             await this.handleAgentMessage(message);
             break;
           case 'clearConversation':
@@ -1316,6 +1329,12 @@ app.Run();
     }
   }
 
+  /** Clear the active work item selection. */
+  clearActiveWorkItem(): void {
+    this.activeWorkItem = undefined;
+    this.postMessage({ type: 'workItemDetail', item: null });
+  }
+
   /** Task 28: full-detail review — fetch work item + discussion, post both to the webview. */
   async reviewTaskDetail(workItemId: number): Promise<void> {
     this.postMessage({ type: 'loading', loading: true });
@@ -1629,6 +1648,18 @@ app.Run();
       await this.persistConversation();
       this.updateTokenStatusBar(messages);
       if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
+
+      // Detect AI choice prompts and show as inline options
+      const choicePrompt = parseChoicePrompt(result.text);
+      if (choicePrompt) {
+        const requestId = `choice-${Date.now()}`;
+        this.postMessage({
+          type: 'choicePrompt',
+          requestId,
+          question: choicePrompt.question,
+          options: choicePrompt.options,
+        });
+      }
     } catch (err) {
       if (abort.signal.aborted) return;
       // INLINE resilience: the endpoint may not support tool calling (some

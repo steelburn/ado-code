@@ -17,6 +17,8 @@ export interface AgentRun {
   agent: AgentName;
   sessionId?: string;
   workdir: string;
+  branch?: string;
+  worktreePath?: string;
   status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
   startedAt: string;
   finishedAt?: string;
@@ -47,6 +49,7 @@ export type WebviewToExtensionMessage =
   | { type: 'agentFollowUp'; runId: string; prompt: string }
   | { type: 'agentCancel'; runId: string }
   | { type: 'listAgents' }
+  | { type: 'listAgentRuns' }
   | { type: 'clearConversation' }
   // Task 28: task detail review + clarification
   | { type: 'reviewTaskDetail'; workItemId: number }
@@ -95,6 +98,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'agentStatus'; run: AgentRun; delta: string }
   | { type: 'agentResult'; run: AgentRun; summary: string }
   | { type: 'agentList'; agents: AgentCapability[] }
+  | { type: 'agentRunsList'; runs: AgentRun[] }
+  // AI choice prompt: detected question + options from AI response
+  | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }> }
   // Task 26: history restore (Q4)
   | { type: 'historyRestored'; messages: { role: string; content: string }[] }
   // Task 28: task detail review + clarification

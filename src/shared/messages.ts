@@ -55,7 +55,9 @@ export type WebviewToExtensionMessage =
   | { type: 'deleteSession'; sessionId: string }
   // Configuration page
   | { type: 'getFullConfig' }
-  | { type: 'saveConfig'; config: Record<string, any> };
+  | { type: 'saveConfig'; config: Record<string, any> }
+  // Agent runs: request list of active/recent runs for multi-run display
+  | { type: 'listAgentRuns' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -76,6 +78,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'agentStatus'; run: AgentRun; delta: string }
   | { type: 'agentResult'; run: AgentRun; summary: string }
   | { type: 'agentList'; agents: AgentCapability[] }
+  | { type: 'agentRunsList'; runs: AgentRun[] }
+  // AI choice prompt: detected question + options from AI response
+  | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }> }
   // Task 26: history restore (Q4)
   | { type: 'historyRestored'; messages: { role: string; content: string }[] }
   // Task 28: task detail review + clarification
