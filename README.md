@@ -13,7 +13,8 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **Worktrees view**: Dedicated sidebar tree with per-worktree details — run status, agent, dirty/clean files, last commit, ahead/behind — plus Open in Terminal/Explorer, Remove, and Show Agent Output actions
 - **Reopen agent output**: Finished runs keep a "↗ Reopen" button and right-click → **Show Agent Output** — the summary panel is never permanently lost after being closed
 - **Memory-driven agent hooks**: Workspace memory keys `agent.before` / `agent.after` run shell commands around every agent invocation; user + workspace memory are injected into every agent handoff prompt
-- **Model capability checking**: Image paste/attach is disabled for non-vision models, models without tool calling are flagged, and the Configuration page shows a live capability readout
+- **Model capability checking**: Image paste/attach is disabled for non-vision models, models without tool calling are flagged, and the Configuration page shows a live capability readout. Detection is three layers — per-model **overrides** (you declare it, it wins) > **live gateway data** (OpenRouter/Ollama capability fields on `/models`) > **name heuristic** (gpt-4o/5, claude, gemini, o1–o9, llama-4, …)
+- **Capability overrides**: `adoCode.llm.capabilityOverrides` declares vision/tool support per model id when auto-detection gets it wrong — edited as structured rows in the Configuration page, beating every other detection layer
 - Multi-agent output panels: track multiple agent runs simultaneously with independent streaming output
 - File checkpoints: auto-save before AI edits, restore on demand
 - MCP (Model Context Protocol) support for external tool servers
@@ -24,7 +25,8 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - Direct mode selection: click Chat/Plan/Act to switch modes instantly
 - In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
-- **AI merge flow**: For finished agent runs, the assistant can commit, push, and open an ADO pull request itself (`commit_worktree` → `push_worktree` → `create_pull_request`) — never force-pushes, never touches `main`/`master`
+- **AI merge flow**: For finished agent runs, the assistant can commit, push, and open an ADO pull request itself (`commit_worktree` → `push_worktree` → `create_pull_request`) — never force-pushes, never touches protected branches (`adoCode.git.protectedBranches`, default `main`/`master`), refuses to commit failed runs unless it explicitly overrides after reviewing, and can resolve merge conflicts (`resolve_pr_conflicts`) then re-commit/re-push until the PR is clean
+- **Clean Up After Merge**: Removes a merged run's worktree and deletes its branch (only when the PR is actually merged and the branch is fully merged) — from the Worktrees view context menu or an auto-offer after a merged PR
 - **Working indicator**: A status-bar spinner shows while any LLM turn or agent run is in flight — visible even when the chat view is hidden, with live detail ("thinking…", "tool: edit_file")
 - Full detail view: right-click → "Show Full Details" opens a formatted panel in the editor
 - **Work item selection**: Selected items show a green badge; deselect via the row context menu
@@ -59,6 +61,7 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.llmApiKey` | LLM API key |
 | `adoCode.llmModel` | LLM model name |
 | `adoCode.llm.choiceDetectionModel` | Optional cheaper model for AI choice-prompt detection (empty = main model, `off` = regex-only) |
+| `adoCode.llm.capabilityOverrides` | Per-model capability overrides (array of `{ model, vision?, tools? }`) — beats auto-detection |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, or `act` |
 | `adoCode.act.toolBudget` | Max tool calls per act-mode turn |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
@@ -66,6 +69,7 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.git.createBranchOnTaskStart` | Auto-create `feature/ADO-<id>-<slug>` branch |
 | `adoCode.git.requireCleanTree` | Warn on branch switch with uncommitted changes |
 | `adoCode.git.prOnCompletion` | Offer to push + create a PR via `gh` on task done |
+| `adoCode.git.protectedBranches` | Branches `create_pull_request` refuses to target (default `["main", "master"]`) |
 | `adoCode.changelog.enabled` | Update CHANGELOG.md on task completion |
 | `adoCode.changelog.autoCommit` | Commit CHANGELOG.md automatically |
 | `adoCode.changelog.postToAdo` | Post the changelog entry as an ADO comment |

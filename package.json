@@ -164,6 +164,11 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.cleanupWorktree",
+        "title": "Clean Up After Merge",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.generateCommitMessage",
         "title": "Generate Commit Message",
         "icon": "$(sparkle)",
@@ -349,6 +354,11 @@
           "group": "2_worktree@2"
         },
         {
+          "command": "adoCode.cleanupWorktree",
+          "when": "viewItem == statusWorktree || viewItem == worktreeNode",
+          "group": "3_worktree@2"
+        },
+        {
           "command": "adoCode.commitWorktree",
           "when": "viewItem == statusWorktree || viewItem == worktreeNode",
           "group": "2_worktree@1"
@@ -468,6 +478,11 @@
           "default": "",
           "description": "Optional CHEAPER model used to detect choice prompts in AI responses (e.g. 'gpt-4o-mini'). Empty = use the main llmModel. Set to 'off' to disable LLM-assisted detection (regex-only)."
         },
+        "adoCode.llm.capabilityOverrides": {
+          "type": "array",
+          "default": [],
+          "description": "Per-model capability overrides: [{ \"model\": \"deepseek-v4\", \"vision\": true }] — user-declared values beat both gateway capability hints and name heuristics. Leave a field unset to keep the auto-detected value."
+        },
         "adoCode.git.requireGitRepo": {
           "type": "boolean",
           "default": true,
@@ -487,6 +502,12 @@
           "type": "boolean",
           "default": false,
           "description": "On task completion, offer to push the branch and create a PR via gh CLI (Q5 resolution — opt-in)"
+        },
+        "adoCode.git.protectedBranches": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["main", "master"],
+          "description": "Branches create_pull_request must never target — the AI merge flow refuses to open a PR against these"
         },
         "adoCode.mode": {
           "type": "string",

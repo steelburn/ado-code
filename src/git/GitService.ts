@@ -1,4 +1,5 @@
 import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { promisify } from 'util';
@@ -313,9 +314,25 @@ export class GitService {
     return path.join(this.worktreeBase(), this.worktreeDirName(runId));
   }
 
+  /**
+   * Resolve the EXISTING worktree dir for a run id, honoring both layouts:
+   * new dirs are the run id verbatim (run-<ts>-<id>), legacy dirs carry an
+   * extra `run-` prefix (run-run-<ts>-<id>). listWorktrees() normalizes both
+   * to the canonical run id, so commit/push/status MUST try both candidates
+   * or they compute a cwd that does not exist — which Node reports as
+   * "spawn git ENOENT" (the same misleading error as a missing git binary).
+   * Falls back to the primary candidate when neither exists yet (fresh run).
+   */
+  public resolveWorktreePath(runId: string): string {
+    const base = this.worktreeBase();
+    const primary = path.join(base, this.worktreeDirName(runId));
+    const legacy = path.join(base, `${WORKTREE_PREFIX}${runId}`);
+    return fs.existsSync(primary) ? primary : fs.existsSync(legacy) ? legacy : primary;
+  }
+
   /** Worktree status for a run id (dirty/changed/ahead/behind/lastCommit). */
   public async getWorktreeInfoForRun(runId: string): Promise<WorktreeInfo> {
-    return this.getWorktreeInfo(this.getWorktreePath(runId));
+    return this.getWorktreeInfo(this.resolveWorktreePath(runId));
   }
 
   /**
@@ -327,7 +344,7 @@ export class GitService {
     runId: string,
     message: string
   ): Promise<{ committed: boolean; reason?: string; hash?: string }> {
-    const wtDir = this.getWorktreePath(runId);
+    const wtDir = this.resolveWorktreePath(runId);
     const { stdout } = await execFile('git', ['status', '--porcelain'], { cwd: wtDir });
     if (!stdout.trim()) {
       return { committed: false, reason: 'nothing-to-commit' };
@@ -343,7 +360,7 @@ export class GitService {
    * force-push, never pushes main/master. Returns the pushed branch name.
    */
   public async pushWorktreeBranch(runId: string): Promise<{ pushed: boolean; branch?: string; reason?: string }> {
-    const wtDir = this.getWorktreePath(runId);
+    const wtDir = this.resolveWorktreePath(runId);
     const branch = (await this.getBranchNameIn(wtDir)).trim();
     if (!branch) return { pushed: false, reason: 'no-branch' };
     if (branch === 'main' || branch === 'master') {

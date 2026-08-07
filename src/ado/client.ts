@@ -257,7 +257,7 @@ export class AdoClient {
     targetBranch: string,
     title: string,
     description?: string
-  ): Promise<{ pullRequestId: number; url: string }> {
+  ): Promise<{ pullRequestId: number; url: string; mergeStatus?: string }> {
     if (sourceBranch === targetBranch) {
       throw new Error(`createPullRequest: source and target branches are the same ('${sourceBranch}')`);
     }
@@ -273,7 +273,43 @@ export class AdoClient {
     return {
       pullRequestId: pr.pullRequestId,
       url: pr.url ?? '',
+      // ADO evaluates the merge asynchronously; the creation response carries
+      // the initial mergeStatus (queued/conflicts/succeeded/rejected). The
+      // LLM should re-check via resolve_pr_conflicts when it reads 'conflicts'.
+      mergeStatus: pr.mergeStatus ?? undefined,
     };
+  }
+
+  /**
+   * List pull requests whose SOURCE branch matches the given branch
+   * (Git REST `searchCriteria.sourceRefName`). Used by post-merge cleanup:
+   * a PR with status 'completed' + mergeStatus 'succeeded' means the branch
+   * was merged and the worktree can be removed.
+   */
+  async getPullRequestsBySourceBranch(
+    project: string,
+    repositoryId: string,
+    sourceBranch: string
+  ): Promise<Array<{ pullRequestId: number; status: string; mergeStatus: string; url?: string }>> {
+    const ref = `refs/heads/${sourceBranch}`;
+    const result = await this.get<{ value: Array<{ pullRequestId: number; status: string; mergeStatus: string; url?: string }> }>(
+      `/${project}/_apis/git/repositories/${encodeURIComponent(repositoryId)}/pullrequests?searchCriteria.sourceRefName=${encodeURIComponent(ref)}&api-version=${GA_VERSION}`
+    );
+    return result.value ?? [];
+  }
+
+  /**
+   * Fetch a single pull request's merge status (Git REST). Task 4 (conflict
+   * surfacing) reads mergeStatus/mergeFailureMessage from here.
+   */
+  async getPullRequest(
+    project: string,
+    repositoryId: string,
+    pullRequestId: number
+  ): Promise<{ pullRequestId: number; status: string; mergeStatus: string; mergeFailureMessage?: string; isDraft?: boolean; url?: string }> {
+    return this.get<{ pullRequestId: number; status: string; mergeStatus: string; mergeFailureMessage?: string; isDraft?: boolean; url?: string }>(
+      `/${project}/_apis/git/repositories/${encodeURIComponent(repositoryId)}/pullrequests/${pullRequestId}?api-version=${GA_VERSION}`
+    );
   }
 
   private async get<T>(endpoint: string): Promise<T> {

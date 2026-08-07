@@ -21,7 +21,7 @@ interface Props {
   projects: Array<{ id: string; name: string; state: string }>;
   projectsLoading: boolean;
   onFetchModels: (provider?: string, apiUrl?: string, apiKey?: string) => void;
-  models: string[];
+  models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
   modelsLoading: boolean;
 }
 
@@ -196,8 +196,8 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
                 onChange={e => update('llmModel', e.target.value)}
               >
                 <option value="">Select a model…</option>
-                {(models.includes(form.llmModel) ? models : [form.llmModel, ...models]).map(m => (
-                  <option key={m} value={m}>{m}</option>
+                {(models.some(m => m.id === form.llmModel) ? models : [{ id: form.llmModel }, ...models]).map(m => (
+                  <option key={m.id} value={m.id}>{m.id}</option>
                 ))}
               </select>
               <button

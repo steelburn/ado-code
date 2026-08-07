@@ -11,7 +11,10 @@ Delegated agents work in isolated git worktrees on feature/ADO-<id> branches. Wh
 
 1. commit_worktree(runId) — commit ALL changes in the run's worktree. Only for FINISHED runs (never while the run is still 'running'); if the run failed, tell the user before committing.
 2. push_worktree(runId) — push the branch to origin. NEVER force-push; NEVER push main/master.
-3. create_pull_request(runId) — create the ADO pull request from the run's branch into the base branch.
+3. create_pull_request(runId) — create the ADO pull request from the run's branch into the base branch. The result includes mergeStatus: if it reads 'conflicts', DO NOT stop — resolve them:
+   a. resolve_pr_conflicts(runId) — lists the conflicted files with the base/our/their contents and the worktree-relative path of each.
+   b. For each conflicted file, propose/apply a resolution via edit_file or apply_diff on its worktreePath (the file lives in the run's worktree, not the main checkout).
+   c. commit_worktree(runId) + push_worktree(runId) again to re-trigger the ADO merge; if the PR still reports conflicts, repeat.
 4. Once the PR is up (and the user confirms), you may update_work_item_state to Resolved.
 
 Guardrails: commit/push/PR are mutating tools — inline mode prompts for consent, act mode auto-runs. Use the runId of the finished run; if you don't know it, ask the user. If any step fails (e.g. push rejected), stop and report the exact error instead of working around it.`;

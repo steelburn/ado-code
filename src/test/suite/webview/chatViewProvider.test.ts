@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
 import {
   isSessionAutoApproved,
@@ -135,6 +136,58 @@ suite('ChatViewProvider', () => {
     assert.ok(!posted.find((m: any) => m.type === 'consentRequest'), 'no consent card posted');
   });
 
+  test('sendMessage (choice-card answer) routes to handleUserMessage — never dropped', async () => {
+    // Regression: the webview posts {type:'sendMessage'} when the user picks
+    // an option on an AI-posed question. The host switch had no such case, so
+    // the answer was silently dropped and the chat went stale (spinner on, no
+    // LLM turn). Drive the REAL message switch and assert routing.
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const handlers: Array<(msg: any) => void> = [];
+    const webviewView: any = {
+      onDidDispose: () => {},
+      webview: {
+        options: {},
+        html: '',
+        postMessage: () => {},
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (h: (msg: any) => void) => { handlers.push(h); },
+      },
+    };
+    // Stub the LLM turn so the test only verifies ROUTING, not the API call.
+    let routed: string | null = null;
+    (provider as any).handleUserMessage = async (content: string) => { routed = content; };
+
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+
+    assert.strictEqual(handlers.length, 1, 'message handler was registered');
+    await handlers[0]({ type: 'sendMessage', content: 'Option B — use the refactor' });
+    assert.strictEqual(routed, 'Option B — use the refactor', 'sendMessage content reached handleUserMessage');
+  });
+
+  test('userMessage still routes content + images to handleUserMessage', async () => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const handlers: Array<(msg: any) => void> = [];
+    const webviewView: any = {
+      onDidDispose: () => {},
+      webview: {
+        options: {},
+        html: '',
+        postMessage: () => {},
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (h: (msg: any) => void) => { handlers.push(h); },
+      },
+    };
+    const routed: any[] = [];
+    (provider as any).handleUserMessage = async (content: string, images?: any[]) => { routed.push({ content, images }); };
+
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+
+    await handlers[0]({ type: 'userMessage', content: 'hi', images: [{ dataUrl: 'data:image/png;base64,x' }] });
+    assert.strictEqual(routed.length, 1);
+    assert.strictEqual(routed[0].content, 'hi');
+    assert.strictEqual(routed[0].images.length, 1);
+  });
+
   test('createNewSession clears session approvals (no leak into the new chat)', async () => {
     clearSessionAutoApprovals();
     addSessionToolApproval('edit_file');
@@ -142,5 +195,76 @@ suite('ChatViewProvider', () => {
 
     await provider.createNewSession();
     assert.strictEqual(isSessionAutoApproved('edit_file'), false, 'approvals reset on new session');
+  });
+
+  test('commit_worktree refuses failed runs unless allowFailed overrides', async () => {
+    let committed = 0;
+    const services: any = {
+      git: { commitWorktreeChanges: async () => { committed++; return { committed: true, hash: 'abc1234' }; } },
+    };
+    const provider = new ChatViewProvider({} as any, services, {} as any);
+    (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', workItemId: 42, title: 'Fix login', status: 'failed' }] };
+    provider.setAgentRunner((provider as any).agentRunner);
+    (provider as any).executor.setMode('act');
+
+    const denied = await (provider as any).executor.execute('commit_worktree', { runId: 'run-1' });
+    const deniedObj = JSON.parse(denied);
+    assert.strictEqual(deniedObj.committed, false, 'failed run blocked by default');
+    assert.ok(String(deniedObj.reason).includes('failed'), 'reason names the failed status');
+    assert.strictEqual(committed, 0, 'no commit attempted for the failed run');
+
+    const allowed = await (provider as any).executor.execute('commit_worktree', { runId: 'run-1', allowFailed: true });
+    assert.strictEqual(JSON.parse(allowed).committed, true, 'allowFailed commits anyway');
+    assert.strictEqual(committed, 1);
+  });
+
+  test('commit_worktree still refuses running runs (regression)', async () => {
+    const services: any = {
+      git: { commitWorktreeChanges: async () => ({ committed: true, hash: 'abc' }) },
+    };
+    const provider = new ChatViewProvider({} as any, services, {} as any);
+    (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', status: 'running' }] };
+    provider.setAgentRunner((provider as any).agentRunner);
+    (provider as any).executor.setMode('act');
+
+    const res = await (provider as any).executor.execute('commit_worktree', { runId: 'run-1' });
+    assert.strictEqual(JSON.parse(res).committed, false, 'running run still blocked');
+  });
+
+  test('create_pull_request refuses protected base branches', async () => {
+    const cfg = vscode.workspace.getConfiguration('adoCode');
+    const prev = cfg.get<string[]>('git.protectedBranches', ['main', 'master']);
+    try {
+      await cfg.update('git.protectedBranches', ['main'], vscode.ConfigurationTarget.Global);
+      let prCalled = false;
+      const services: any = {
+        git: { workspaceRoot: '/tmp/repo', getBaseBranch: async () => 'main' },
+        ado: { createPullRequest: async () => { prCalled = true; return { pullRequestId: 1, url: 'x' }; } },
+      };
+      const provider = new ChatViewProvider({} as any, services, {} as any);
+      (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', branch: 'feature/ado-42', workItemId: 42, title: 'Fix', status: 'succeeded' }] };
+      provider.setAgentRunner((provider as any).agentRunner);
+      (provider as any).executor.setMode('act');
+
+      const res = await (provider as any).executor.execute('create_pull_request', { runId: 'run-1' });
+      assert.ok(String(res).includes('protected branch'), 'refusal names the protected branch');
+      assert.strictEqual(prCalled, false, 'createPullRequest never called for a protected base');
+    } finally {
+      await cfg.update('git.protectedBranches', prev, vscode.ConfigurationTarget.Global);
+    }
+  });
+
+  test('create_pull_request passes for a normal base branch', async () => {
+    const services: any = {
+      git: { workspaceRoot: '/tmp/repo', getBaseBranch: async () => 'develop' },
+      ado: { createPullRequest: async () => ({ pullRequestId: 7, url: 'https://dev.azure.com/x' }) },
+    };
+    const provider = new ChatViewProvider({} as any, services, {} as any);
+    (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', branch: 'feature/ado-42', workItemId: 42, title: 'Fix', status: 'succeeded' }] };
+    provider.setAgentRunner((provider as any).agentRunner);
+    (provider as any).executor.setMode('act');
+
+    const res = await (provider as any).executor.execute('create_pull_request', { runId: 'run-1' });
+    assert.ok(String(res).includes('pullRequestId'), 'PR created for a normal base');
   });
 });

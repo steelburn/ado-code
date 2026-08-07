@@ -2,6 +2,19 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.6] - 2026-08-07
+
+### Features
+- **Capability overrides**: You know your model best — `adoCode.llm.capabilityOverrides` (array of `{ model, vision?, tools? }`) lets you declare vision/tool-calling support per model id, beating every auto-detection layer. A structured editor in the Configuration page (LLM Provider → Capability overrides) adds/removes rows with model id + checkboxes; unchecked fields keep the auto-detected value
+- **Live model capabilities**: Detection is now three layers — user override > live gateway data > name heuristic. Gateways that expose capabilities on `/models` (OpenRouter `architecture.input_modalities`, Ollama `capabilities[]`) are read directly, so brand-new or custom model ids report correctly without pattern updates; the heuristic fallback now also covers gpt-5, o1–o9, llama-4, gemma-3, deepseek-vl, glm-4.5v, and more
+- **Protected PR targets**: `adoCode.git.protectedBranches` (default `["main", "master"]`) — `create_pull_request` refuses to open a PR against a protected base branch, so the assistant can't accidentally target production
+- **Merge-flow guardrails**: Committing a FAILED agent run is refused unless the assistant explicitly passes `allowFailed` (after reviewing); `resolve_pr_conflicts` surfaces git merge conflicts (base/ours/theirs contents) so the assistant can resolve them, re-commit, and re-push until the PR is clean
+- **Clean Up After Merge**: New context-menu action (and auto-offer after a merged PR) that removes the run's worktree and deletes its branch — but only when the PR is actually merged and the branch is fully merged; nothing is ever lost
+
+### Bug Fixes
+- **Choice-card answers went stale**: Clicking an option on an AI-posed question posted `sendMessage`, which the host silently dropped — the chat showed your answer and "Thinking…" forever with no LLM turn ever starting. Choice answers now route through the same turn path as typed messages
+- **"spawn git ENOENT" on legacy worktrees**: Commit & Push / Clean Up After Merge failed on worktrees created by older versions (`run-run-…` directories) — the path resolver now checks both directory layouts. ENOENT errors are also re-phrased to say whether the worktree directory is missing or git isn't on the VS Code process PATH
+
 ## [0.5.6] - 2026-08-06
 
 ### Features

@@ -1,4 +1,5 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmProviderType, LlmTool } from './types';
+import type { ModelInfo } from './modelCapabilities';
 import { OpenAiProvider } from './providers/openai';
 import { AnthropicProvider } from './providers/anthropic';
 
@@ -30,10 +31,11 @@ export class LlmClient {
   }
 
   /**
-   * Model ids available at the configured endpoint (setup-wizard model
-   * picker). Delegates to the provider's listModels.
+   * Model ids (+ capability hints when the gateway exposes them) available at
+   * the configured endpoint (setup-wizard model picker). Delegates to the
+   * provider's listModels.
    */
-  async listModels(): Promise<string[]> {
+  async listModels(): Promise<ModelInfo[]> {
     if (!this.provider.listModels) {
       throw new Error(`provider ${this.config.provider} does not support listing models`);
     }

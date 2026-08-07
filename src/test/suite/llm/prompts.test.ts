@@ -71,4 +71,13 @@ suite('Thread-aware prompts', () => {
     assert.ok(wrapped.includes('## ADO Code Memory'));
     assert.ok(wrapped.includes('do the thing'));
   });
+
+  test('buildSystemPrompt teaches the merge flow incl. conflict resolution', () => {
+    const prompt = buildSystemPrompt(baseItem);
+    assert.ok(prompt.includes('commit_worktree(runId)'), 'merge flow present');
+    assert.ok(prompt.includes('create_pull_request(runId)'), 'PR step present');
+    assert.ok(prompt.includes('resolve_pr_conflicts(runId)'), 'conflict-resolution step present');
+    assert.ok(prompt.includes('mergeStatus'), 'LLM told about the mergeStatus field');
+    assert.ok(prompt.includes('worktreePath'), 'LLM told the worktree-relative edit path');
+  });
 });

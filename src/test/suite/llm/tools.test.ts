@@ -197,4 +197,24 @@ suite('ToolExecutor security', () => {
       assert.ok(String(res).includes('not allowed in plan mode'), `${tool} blocked in plan`);
     }
   });
+
+  test('resolve_pr_conflicts routes through its hook (read-only)', async () => {
+    let called: any = null;
+    const executor = createToolExecutor(
+      stubServices(),
+      {} as any,
+      {
+        onResolvePrConflicts: async (runId) => {
+          called = runId;
+          return [{ path: 'f.txt', worktreePath: `.ado-code/worktrees/${runId}/f.txt`, base: 'b', ours: 'o', theirs: 't' }];
+        },
+      }
+    );
+    executor.setMode('plan'); // read-only → allowed even in plan mode
+    const res = await executor.execute('resolve_pr_conflicts', { runId: 'run-1-42' });
+    assert.strictEqual(called, 'run-1-42');
+    const parsed = JSON.parse(res);
+    assert.strictEqual(parsed[0].path, 'f.txt');
+    assert.strictEqual(parsed[0].ours, 'o');
+  });
 });

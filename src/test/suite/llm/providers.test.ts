@@ -1,6 +1,6 @@
 import * as assert from 'assert';
-import { OpenAiProvider } from '../../../llm/providers/openai';
-import { AnthropicProvider } from '../../../llm/providers/anthropic';
+import { OpenAiProvider, listModelsOpenAi } from '../../../llm/providers/openai';
+import { AnthropicProvider, listModelsAnthropic } from '../../../llm/providers/anthropic';
 import { LlmConfig, LlmMessage } from '../../../llm/types';
 
 function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -61,6 +61,30 @@ suite('OpenAiProvider', () => {
     }
     assert.strictEqual(chunks[0].content, 'x');
     assert.strictEqual(chunks[chunks.length - 1].done, true);
+  });
+
+  test('listModels parses ids + OpenRouter/Ollama capability hints', async () => {
+    const fetchStub = async () => ({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: 'openai/gpt-5', architecture: { input_modalities: ['text', 'image'] } },
+          { id: 'openai/gpt-4o', architecture: { input_modalities: ['text'] } },
+          { id: 'custom/plain', object: 'model' }, // OpenAI/vLLM style — no hints
+          { name: 'ollama/qwen2.5-vl', capabilities: ['vision', 'tools'] }, // Ollama style
+          { id: '' }, // empty id → dropped
+        ],
+      }),
+    });
+    (globalThis as any).fetch = fetchStub;
+
+    const models = await listModelsOpenAi(config);
+    assert.deepStrictEqual(models, [
+      { id: 'openai/gpt-5', vision: true },
+      { id: 'openai/gpt-4o', vision: false },
+      { id: 'custom/plain' },
+      { id: 'ollama/qwen2.5-vl', vision: true, tools: true },
+    ]);
   });
 });
 

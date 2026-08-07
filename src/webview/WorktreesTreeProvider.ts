@@ -26,6 +26,8 @@ interface WorktreeEntry {
   lastCommit: string | null;
 }
 
+export { WorktreeEntry };
+
 export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<WorktreeNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -46,6 +48,10 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
   setAgentRunner(runner: AgentRunner): void {
     this.agentRunner = runner;
   }
+
+  /** Called after each successful reload with the fresh entries — the host
+   * wires the post-merge cleanup auto-offer here. */
+  onReloaded?: (entries: WorktreeEntry[]) => void;
 
   /** Full re-read of worktrees + git details. Resolves when the reload lands. */
   refresh(): Promise<void> {
@@ -83,6 +89,9 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
         })
       );
       this.roots = entries.map((e) => this.toNode(e));
+      // Host hook: post-merge cleanup auto-offer (fire-and-forget — the
+      // host throttles ADO polling per run).
+      try { this.onReloaded?.(entries); } catch { /* never break the tree */ }
     } catch (err) {
       logger.error('Worktrees: reload failed', err);
       this.roots = [];

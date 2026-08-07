@@ -12,6 +12,9 @@ export interface ImageAttachment {
 
 export type WebviewToExtensionMessage =
   | { type: 'userMessage'; content: string; context?: MessageContext; images?: ImageAttachment[] }
+  // Choice-card answers: the user picked an option on an AI-posed question.
+  // Routed to the same turn path as userMessage (host must handle BOTH).
+  | { type: 'sendMessage'; content: string }
   | { type: 'fetchWorkItems' }
   | { type: 'selectWorkItem'; workItemId: number }
   | { type: 'startTask'; workItemId: number; title: string }
@@ -89,8 +92,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
   // Project selection
   | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> }
-  // Wizard model picker
-  | { type: 'modelList'; models: string[] }
+  // Wizard model picker — model ids plus OPTIONAL live capability hints from
+  // gateways that expose them (OpenRouter/Ollama). Undefined = use heuristic.
+  | { type: 'modelList'; models: Array<{ id: string; vision?: boolean; tools?: boolean }> }
   // Input-bar tools: active-editor context block / attached file contents
   | { type: 'editorContext'; text: string }
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }

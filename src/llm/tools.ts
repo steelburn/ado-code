@@ -15,7 +15,7 @@ export interface ToolExecutor {
 }
 
 // Q8: read-only tools are always allowed (inline/plan/act).
-const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory']);
+const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'resolve_pr_conflicts']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
 const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
@@ -28,9 +28,11 @@ export function createToolExecutor(
     onUpdateState?: (id: number, state: string) => Promise<void>;
     onApprove?: (name: string, args: Record<string, any>) => Promise<boolean>;
     // Merge flow for finished agent runs (wired by ChatViewProvider).
-    onCommitWorktree?: (runId: string, message: string) => Promise<{ committed: boolean; reason?: string; hash?: string }>;
+    onCommitWorktree?: (runId: string, message: string, allowFailed?: boolean) => Promise<{ committed: boolean; reason?: string; hash?: string }>;
     onPushWorktree?: (runId: string) => Promise<{ pushed: boolean; branch?: string; reason?: string }>;
-    onCreatePullRequest?: (runId: string, title?: string, description?: string) => Promise<{ pullRequestId: number; url: string }>;
+    onCreatePullRequest?: (runId: string, title?: string, description?: string) => Promise<{ pullRequestId: number; url: string; mergeStatus?: string }>;
+    /** Conflict surfacing: fetch conflicted files (base/our/their) for a run's PR. */
+    onResolvePrConflicts?: (runId: string) => Promise<Array<{ path: string; worktreePath: string; base?: string; ours?: string; theirs?: string; truncated?: boolean }>>;
   }
 ): ToolExecutor {
   // M-6 fix: mode lives on `state` (mutated by setMode) — no closure var.
@@ -89,12 +91,13 @@ export function createToolExecutor(
     // ── Merge flow: commit / push / PR for a finished agent run's worktree ──
     {
       name: 'commit_worktree',
-      description: 'Commit ALL changes in a finished agent run\'s worktree (the isolated branch for a delegated run). Use after the agent finished so its work is preserved. Never touches main.',
+      description: 'Commit ALL changes in a finished agent run\'s worktree (the isolated branch for a delegated run). Use after the agent finished so its work is preserved. Never touches main. Refuses runs that FAILED verification unless allowFailed is set (a failed run may still contain useful partial work — override deliberately).',
       parameters: {
         type: 'object',
         properties: {
           runId: { type: 'string', description: 'Run id of the finished agent run (from the agent output)' },
           message: { type: 'string', description: 'Commit message; omit to default to ADO <id> + work item title' },
+          allowFailed: { type: 'boolean', description: 'Set true to commit a run whose verification FAILED (e.g. adapter crashed with no code changes). Omit for succeeded runs.' },
         },
         required: ['runId'],
       },
@@ -112,13 +115,24 @@ export function createToolExecutor(
     },
     {
       name: 'create_pull_request',
-      description: 'Create an Azure DevOps pull request from an agent run\'s branch into the base branch. Call AFTER push_worktree.',
+      description: 'Create an Azure DevOps pull request from an agent run\'s branch into the base branch. Call AFTER push_worktree. Refuses to target protected branches (see adoCode.git.protectedBranches).',
       parameters: {
         type: 'object',
         properties: {
           runId: { type: 'string', description: 'Run id of the finished agent run' },
           title: { type: 'string', description: 'PR title; omit to default to ADO <id> + work item title' },
           description: { type: 'string', description: 'PR description (summary of the changes)' },
+        },
+        required: ['runId'],
+      },
+    },
+    {
+      name: 'resolve_pr_conflicts',
+      description: 'When a pull request reports conflicts (mergeStatus conflicts), list the conflicted files with the base/our/their contents so you can resolve them. READ-ONLY. Edit the resolution via edit_file/apply_diff on the given worktreePath, then commit_worktree + push_worktree again to re-trigger the merge.',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: 'Run id of the finished agent run whose PR conflicts' },
         },
         required: ['runId'],
       },
@@ -372,7 +386,7 @@ export function createToolExecutor(
             : JSON.stringify({ error: 'agent delegation not wired' });
         case 'commit_worktree':
           return hooks?.onCommitWorktree
-            ? JSON.stringify(await hooks.onCommitWorktree(String(args.runId ?? ''), String(args.message ?? '')))
+            ? JSON.stringify(await hooks.onCommitWorktree(String(args.runId ?? ''), String(args.message ?? ''), Boolean(args.allowFailed)))
             : JSON.stringify({ error: 'worktree commit not wired' });
         case 'push_worktree':
           return hooks?.onPushWorktree
@@ -382,6 +396,10 @@ export function createToolExecutor(
           return hooks?.onCreatePullRequest
             ? JSON.stringify(await hooks.onCreatePullRequest(String(args.runId ?? ''), args.title ? String(args.title) : undefined, args.description ? String(args.description) : undefined))
             : JSON.stringify({ error: 'pull request creation not wired' });
+        case 'resolve_pr_conflicts':
+          return hooks?.onResolvePrConflicts
+            ? JSON.stringify(await hooks.onResolvePrConflicts(String(args.runId ?? '')))
+            : JSON.stringify({ error: 'conflict resolution not wired' });
         // ── Q3 code tools (implemented via VS Code APIs) ─────────────
         case 'read_file': {
           const uri = resolveWorkspacePath(args.path); // C4: path confinement

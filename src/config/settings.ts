@@ -14,6 +14,8 @@ export interface AdoCodeSettings {
   llmModel: string;
   /** Optional cheaper model for AI choice-prompt detection ('' = main model). */
   llmChoiceDetectionModel: string;
+  /** Per-model capability overrides — user knowledge beats heuristics. */
+  llmCapabilityOverrides: Array<{ model: string; vision?: boolean; tools?: boolean }>;
   mode: 'inline' | 'plan' | 'act';
   actToolBudget: number;
   actTerminalAllowlist: string[];
@@ -21,6 +23,8 @@ export interface AdoCodeSettings {
   gitCreateBranchOnTaskStart: boolean;
   gitRequireCleanTree: boolean;
   gitPrOnCompletion: boolean;
+  /** Branches create_pull_request must never target (default main/master). */
+  gitProtectedBranches: string[];
   changelogEnabled: boolean;
   changelogAutoCommit: boolean;
   changelogPostToAdo: boolean;
@@ -42,6 +46,7 @@ export function getSettings(): AdoCodeSettings {
     llmApiKey: config.get<string>('llmApiKey', ''),
     llmModel: config.get<string>('llmModel', 'gpt-4o'),
     llmChoiceDetectionModel: config.get<string>('llm.choiceDetectionModel', ''),
+    llmCapabilityOverrides: config.get<Array<{ model: string; vision?: boolean; tools?: boolean }>>('llm.capabilityOverrides', []),
     mode: config.get<'inline' | 'plan' | 'act'>('mode', 'inline'),
     actToolBudget: config.get<number>('act.toolBudget', 25),
     actTerminalAllowlist: config.get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']),
@@ -49,6 +54,7 @@ export function getSettings(): AdoCodeSettings {
     gitCreateBranchOnTaskStart: config.get<boolean>('git.createBranchOnTaskStart', true),
     gitRequireCleanTree: config.get<boolean>('git.requireCleanTree', false),
     gitPrOnCompletion: config.get<boolean>('git.prOnCompletion', false),
+    gitProtectedBranches: config.get<string[]>('git.protectedBranches', ['main', 'master']),
     changelogEnabled: config.get<boolean>('changelog.enabled', true),
     changelogAutoCommit: config.get<boolean>('changelog.autoCommit', true),
     changelogPostToAdo: config.get<boolean>('changelog.postToAdo', true),

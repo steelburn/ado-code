@@ -1,5 +1,6 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
 import type { ContentBlockParam } from './BaseProvider';
+import { toModelInfo, ModelInfo } from '../modelCapabilities';
 
 export class AnthropicProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
@@ -199,13 +200,13 @@ export class AnthropicProvider implements LlmProvider {
     return { text, toolCalls };
   }
 
-  async listModels(config: LlmConfig): Promise<string[]> {
+  async listModels(config: LlmConfig): Promise<ModelInfo[]> {
     return listModelsAnthropic(config);
   }
 }
 
-/** Model ids via Anthropic's GET /v1/models endpoint. */
-export async function listModelsAnthropic(config: LlmConfig): Promise<string[]> {
+/** Model ids (+ capability hints when the gateway exposes them) via Anthropic's GET /v1/models endpoint. */
+export async function listModelsAnthropic(config: LlmConfig): Promise<ModelInfo[]> {
   const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
   const response = await fetch(`${baseUrl}/v1/models`, {
     method: 'GET',
@@ -217,6 +218,6 @@ export async function listModelsAnthropic(config: LlmConfig): Promise<string[]> 
   if (!response.ok) {
     throw new Error(`Anthropic API error: ${response.status} ${await response.text()}`);
   }
-  const parsed = (await response.json()) as { data?: Array<{ id: string }> };
-  return (parsed.data ?? []).map(m => m.id).filter(Boolean);
+  const parsed = (await response.json()) as { data?: unknown[] };
+  return (parsed.data ?? []).map(m => toModelInfo(m)).filter((m): m is ModelInfo => m !== null);
 }

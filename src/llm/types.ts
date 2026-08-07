@@ -1,6 +1,7 @@
 export type LlmProviderType = 'openai' | 'anthropic';
 
 import type { ContentBlockParam } from './providers/BaseProvider';
+import type { ModelInfo } from './modelCapabilities';
 
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -30,8 +31,8 @@ export interface LlmProvider {
     text: string;
     toolCalls: ToolCall[];
   }>;
-  /** Model ids available at this endpoint (wizard model picker). */
-  listModels?(config: LlmConfig): Promise<string[]>;
+  /** Model ids (+ capability hints when the gateway exposes them) — wizard model picker. */
+  listModels?(config: LlmConfig): Promise<ModelInfo[]>;
 }
 
 export interface LlmToolParameter {

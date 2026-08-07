@@ -17,15 +17,18 @@ import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmatio
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
+import { getMergeConflicts } from '../git/mergeConflicts';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
 import { parseChoicePrompt, detectChoicePrompt } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
-import { getModelCapabilities } from '../llm/modelCapabilities';
+import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
+  /** Capability hints from the last /models fetch — live data wins over the heuristic. */
+  private lastModelInfos: ModelInfo[] = [];
   // Task 24 (H5): wired via setAgentRunner AFTER both exist (services built
   // before the provider in activate()).
   private agentRunner?: AgentRunner;
@@ -173,10 +176,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // never block on an unanswered prompt.
       onApprove: async (name, args) => this.requestConsent(name, args),
       // Merge flow for finished agent runs: commit → push → PR.
-      onCommitWorktree: async (runId, message) => {
+      onCommitWorktree: async (runId, message, allowFailed) => {
         const run = this.agentRunner?.listRuns().find(r => r.id === runId);
         if (!run) return { committed: false, reason: `run '${runId}' not found` };
         if (run.status === 'running') return { committed: false, reason: `run '${runId}' is still running — wait for it to finish` };
+        if (run.status === 'failed' && !allowFailed) return { committed: false, reason: `run '${runId}' failed — commit only after reviewing (or pass allowFailed)` };
         const msg = message || `ADO-${run.workItemId ?? '?'}: ${run.title || 'agent changes'}`;
         return this.services.git.commitWorktreeChanges(runId, msg);
       },
@@ -186,11 +190,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!run) throw new Error(`run '${runId}' not found`);
         if (!run.branch) throw new Error(`run '${runId}' has no branch — nothing to merge`);
         const base = await this.services.git.getBaseBranch();
+        // Guardrail: refuse PRs targeting protected branches (default main/master).
+        const protectedBranches = getSettings().gitProtectedBranches;
+        if (protectedBranches.includes(base)) {
+          throw new Error(`refusing to create a PR targeting protected branch '${base}'`);
+        }
         const repo = path.basename(this.services.git.workspaceRoot) || 'repo';
         const prTitle = title || `ADO-${run.workItemId ?? '?'}: ${run.title || 'agent changes'}`;
         return this.services.ado.createPullRequest(
           this.activeProject(), repo, run.branch, base, prTitle, description
         );
+      },
+      // Conflict surfacing: when the PR reports conflicts, fetch the
+      // base/our/their contents of each conflicted file so the LLM can
+      // resolve them (read-only; edits go through edit_file/apply_diff on
+      // the worktree path, then commit + push again).
+      onResolvePrConflicts: async (runId) => {
+        const run = this.agentRunner?.listRuns().find(r => r.id === runId);
+        if (!run) throw new Error(`run '${runId}' not found`);
+        if (!run.branch) throw new Error(`run '${runId}' has no branch`);
+        const base = await this.services.git.getBaseBranch();
+        const conflicts = await getMergeConflicts(
+          this.services.git.workspaceRoot, base, run.branch
+        );
+        return conflicts.map(c => ({
+          path: c.path,
+          worktreePath: `.ado-code/worktrees/${runId}/${c.path}`,
+          base: c.base,
+          ours: c.ours,
+          theirs: c.theirs,
+          truncated: c.truncated,
+        }));
       },
     });
     this.executor.setMode(getSettings().mode);
@@ -495,6 +525,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'userMessage':
             await this.handleUserMessage(message.content, message.images);
             break;
+          case 'sendMessage':
+            // Choice-card answers (AI asked a question, user picked an option)
+            // arrive here — same turn path as a typed message. Without this
+            // case the message was silently dropped and the chat went stale
+            // (spinner on, no LLM turn ever started).
+            await this.handleUserMessage(message.content);
+            break;
           case 'fetchWorkItems':
             await this.refreshWorkItems();
             break;
@@ -755,9 +792,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Resolve model ids for the wizard's model picker. Like fetchProjects, the
    * wizard types provider/URL/key BEFORE saving them, so use the typed values
-   * when supplied; otherwise fall back to saved settings.
+   * when supplied; otherwise fall back to saved settings. Also caches the
+   * returned capability hints so _sanitizedConfig can use LIVE gateway data
+   * (OpenRouter/Ollama) for the active model instead of the heuristic alone.
    */
-  private async fetchModels(message: { provider?: string; apiUrl?: string; apiKey?: string }): Promise<string[]> {
+  private async fetchModels(message: { provider?: string; apiUrl?: string; apiKey?: string }): Promise<ModelInfo[]> {
     const s = getSettings();
     const config = {
       provider: (message.provider as LlmProviderType) || s.llmProvider,
@@ -765,7 +804,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       apiKey: message.apiKey || s.llmApiKey,
       model: s.llmModel,
     };
-    return new LlmClient(config).listModels();
+    const models = await new LlmClient(config).listModels();
+    this.lastModelInfos = models;
+    return models;
   }
 
   /** Task 19: never send adoPat/llmApiKey to the webview — secrets stay in the host. */
@@ -780,9 +821,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: s.mode,
       configured: Boolean(s.adoOrganization && s.adoProject && s.adoPat && s.llmApiKey),
       // Capabilities of the ACTIVE model — the webview gates image pasting
-      // (vision) and warns when tool calling is unavailable.
-      modelCapabilities: getModelCapabilities(s.llmModel),
+      // (vision) and warns when tool calling is unavailable. Precedence:
+      // user override > LIVE gateway hints (cached from the last /models
+      // fetch — OpenRouter and Ollama expose them) > id heuristic.
+      modelCapabilities: getModelCapabilities(s.llmModel, this.liveHintsFor(s.llmModel), s.llmCapabilityOverrides),
     };
+  }
+
+  /** Live capability hints for a model id from the last /models fetch. */
+  private liveHintsFor(modelId: string): { vision?: boolean; tools?: boolean } | undefined {
+    const info = this.lastModelInfos.find(m => m.id === modelId);
+    if (!info) return undefined;
+    const hints: { vision?: boolean; tools?: boolean } = {};
+    if (info.vision !== undefined) hints.vision = info.vision;
+    if (info.tools !== undefined) hints.tools = info.tools;
+    return Object.keys(hints).length > 0 ? hints : undefined;
   }
 
   /** Return all VS Code settings for the Configuration page. */
@@ -794,9 +847,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // would clobber the real value (mcp.servers suffered exactly this).
       'organizations',
       'adoOrganization', 'adoProject', 'adoPat', 'adoServerUrl',
-      'llmProvider', 'llmApiUrl', 'llmApiKey', 'llmModel', 'llm.choiceDetectionModel',
+      'llmProvider', 'llmApiUrl', 'llmApiKey', 'llmModel', 'llm.choiceDetectionModel', 'llm.capabilityOverrides',
       'mode',
-      'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion',
+      'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion', 'git.protectedBranches',
       'changelog.enabled', 'changelog.autoCommit', 'changelog.postToAdo',
       'ado.clarificationState', 'ado.warnOnSparseTask',
       'act.toolBudget', 'act.terminalAllowlist',

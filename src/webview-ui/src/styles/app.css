@@ -1977,6 +1977,24 @@ code {
   color: var(--vscode-inputValidation-errorForeground, #f48771);
 }
 
+/* Capability-override row toggles */
+.config-cap-toggles {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.config-cap-toggles .config-mcp-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.config-cap-hint {
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground, #999);
+}
+
 /* ── Chat: active model lacks tool calling ────────────────────── */
 .model-capability-warning {
   padding: 6px 10px;

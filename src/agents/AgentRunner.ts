@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { AgentRun, AgentName, AgentCapability } from './types';
 import { AgentRegistry } from './registry';
 import { createAdapter } from './adapters';
+import { AgentAdapter } from './adapters/types';
 import { GitService } from '../git/GitService';
 
 // M7 fix: the verify command is USER-configured (trusted input), so shell exec
@@ -46,7 +47,10 @@ export class AgentRunner {
     private store?: AgentRunnerStore, // Q7: workspaceState-backed
     // Memory-driven pre/post hooks: workspace memory keys `agent.before` /
     // `agent.after` run as shell commands around each agent invocation.
-    private workspaceMemory?: { read(key: string): string | null }
+    private workspaceMemory?: { read(key: string): string | null },
+    // Adapter factory — injectable so tests don't depend on whether a real
+    // agent CLI (claude, codex, …) is installed on the machine.
+    private adapterFactory: (name: AgentName) => AgentAdapter = createAdapter
   ) {
     // Q7: restore persisted runs on construction (extension reload).
     const persisted = this.store?.load() ?? [];
@@ -143,7 +147,7 @@ export class AgentRunner {
 
     const abort = new AbortController();
     this.aborts.set(run.id, abort);
-    const adapter = createAdapter(chosen.name);
+    const adapter = this.adapterFactory(chosen.name);
 
     // Fire and forget; result delivered via callback
     void (async () => {

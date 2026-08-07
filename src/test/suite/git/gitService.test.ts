@@ -207,4 +207,26 @@ suite('GitService', () => {
     assert.strictEqual(info.dirty, true);
     assert.strictEqual(info.changedFiles, 1);
   });
+
+  test('resolveWorktreePath finds legacy run-run- dirs so commit/push never ENOENT', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+    // Legacy layout: dirs were created as `run-` + runId (run-run-<ts>-<id>).
+    // listWorktrees() normalizes the dir name back to the canonical run id
+    // (run-<ts>-<id>), so commit/push must find the LEGACY dir or the cwd
+    // doesn't exist → Node throws the misleading "spawn git ENOENT".
+    cp.execSync('git branch feature/ADO-42-legacy', { cwd: tmpDir });
+    cp.execSync('git worktree add .ado-code/worktrees/run-run-1-42 feature/ADO-42-legacy', { cwd: tmpDir });
+
+    const resolved = service.resolveWorktreePath('run-1-42');
+    assert.ok(resolved.endsWith(path.join('.ado-code', 'worktrees', 'run-run-1-42')), `resolved legacy dir, got ${resolved}`);
+    assert.ok(fs.existsSync(resolved), 'resolved dir exists');
+
+    // Full round-trip: commit + push must work through the legacy dir.
+    fs.writeFileSync(path.join(resolved, 'legacy.txt'), 'legacy work\n');
+    const commit = await service.commitWorktreeChanges('run-1-42', 'ADO-42: legacy work');
+    assert.strictEqual(commit.committed, true, 'commit succeeds via legacy dir');
+    assert.ok(commit.hash, 'commit hash present');
+  });
 });

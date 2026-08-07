@@ -68,8 +68,8 @@ function App() {
   const [consent, setConsent] = useState<ConsentRequest | null>(null);
   // Pending confirmation: in-chat card replacing native VS Code dialogs.
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
-  // Wizard model picker (LLM provider)
-  const [models, setModels] = useState<string[]>([]);
+  // Wizard model picker (LLM provider) — ids + optional live capability hints
+  const [models, setModels] = useState<Array<{ id: string; vision?: boolean; tools?: boolean }>>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   // Ensures the main-view project switcher fetches the org project list once
   // per webview session (message-handler closures are stale, so a ref, not

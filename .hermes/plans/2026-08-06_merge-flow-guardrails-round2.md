@@ -20,9 +20,11 @@
 
 ---
 
-## Task 1: Verify-gate on commit
+## Task 1: Verify-gate on commit ✅ IMPLEMENTED (2026-08-07)
 
 **Objective:** `commit_worktree` refuses to commit work from a run that FAILED verification unless the user explicitly overrides.
+
+**Status:** Done — `onCommitWorktree(runId, message, allowFailed)` in ChatViewProvider.ts blocks `status === 'failed'` (reason: `run 'X' failed — commit only after reviewing (or pass allowFailed)`); `allowFailed?: boolean` added to the tool schema (src/llm/tools.ts) + hook signature + execute case. Tests in chatViewProvider.test.ts (failed→refuse, allowFailed→commit, running→still refused). 196 passing / 1 known flake.
 
 **Files:**
 - Modify: `src/webview/ChatViewProvider.ts` (`onCommitWorktree` hook)
@@ -36,9 +38,11 @@
 
 **Step 4:** Commit: `git commit -m "feat: block committing failed agent runs unless overridden"`
 
-## Task 2: Protected PR targets
+## Task 2: Protected PR targets ✅ IMPLEMENTED (2026-08-07)
 
 **Objective:** `create_pull_request` refuses targets on a configurable protected-branch list.
+
+**Status:** Done — new setting `adoCode.git.protectedBranches` (string[], default `["main","master"]`) in package.json + settings.ts + `_allSettings()` + ConfigurationPage Git section (array editor); `onCreatePullRequest` throws `refusing to create a PR targeting protected branch '<base>'` when base is in the list (the push guard in GitService.pushWorktreeBranch already refused pushing main/master — this closes the PR side). Tests in chatViewProvider.test.ts (protected base throws via JSON error; normal base passes through to createPullRequest).
 
 **Files:**
 - Modify: `src/config/settings.ts` + `package.json` (new setting `adoCode.git.protectedBranches: string[]`, default `["main", "master"]`)
@@ -51,9 +55,16 @@
 
 **Step 3:** `npm run compile && npm test`, commit: `feat: refuse PRs targeting protected branches`
 
-## Task 3: Post-merge cleanup (PR merged → remove worktree + delete branch)
+## Task 3: Post-merge cleanup (PR merged → remove worktree + delete branch) ✅ IMPLEMENTED (2026-08-07)
 
 **Objective:** After a PR merges, offer to clean up: remove the worktree and delete the now-merged local branch.
+
+**Status:** Done —
+- `AdoClient.getPullRequestsBySourceBranch(project, repo, branch)` (Git REST `searchCriteria.sourceRefName=refs/heads/<branch>`, encoded) + `getPullRequest(project, repo, id)` (mergeStatus/mergeFailureMessage for Task 4).
+- New vscode-free `src/git/mergeCleanup.ts`: `hasMergedPullRequest(run, project, deps)` (any PR `status==='completed' && mergeStatus==='succeeded'`) + `cleanupMergedRun(runId, project, deps)` → removeWorktree + deleteBranchIfMerged; no-op with reason for unknown run / no branch / unmerged PR; repo = basename(workspaceRoot).
+- `adoCode.cleanupWorktree` command (extension.ts) — context menu "Clean Up After Merge" (group `3_worktree@2`, `viewItem == statusWorktree || viewItem == worktreeNode`); info/warning messages + tree refresh in finally.
+- Auto-offer: `WorktreesTreeProvider.onReloaded(entries)` hook → extension.ts checks finished runs with branches (throttled 10 min/run) and offers "Clean Up After Merge" / "Later" when the PR merged.
+- Tests: mergeCleanup.test.ts (7 unit + 2 real-repo integration: merged branch deleted, unmerged branch kept) + 3 AdoClient fetch-stub tests. 208 passing / 1 known flake.
 
 **Files:**
 - Modify: `src/ado/client.ts` (`getPullRequest` + `getPullRequestsBySourceBranch` — Git REST `GET /{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.sourceRefName=refs/heads/{branch}`)
@@ -63,9 +74,16 @@
 
 **Steps:** TDD per helper: fetch PRs (fetch-stub), completed+merged → cleanup runs; PR still active → no-op. Wire command + menu (`package.json` `view/item/context`, group `3_worktree@2`). Verify with a real bare remote + fake ADO fetch. Commit: `feat: post-merge cleanup for agent worktrees`
 
-## Task 4: Conflict surfacing
+## Task 4: Conflict surfacing ✅ IMPLEMENTED (2026-08-07)
 
 **Objective:** When a PR is created with conflicts (or becomes conflicted), surface the conflicted diff to the chat so the LLM can resolve it.
+
+**Status:** Done —
+- `src/git/mergeConflicts.ts` (new, vscode-free): `getMergeConflicts(workspaceRoot, baseBranch, featureBranch)` runs `git merge-tree <merge-base^{tree}> <base> <feature>` (OLD form — this machine is git 2.34.1, the `--write-tree` form needs 2.38+; verified live) and parses `changed in both` / `added in both` sections into `{path, baseSha, ourSha, theirSha}`; fetches each blob via `git show <sha>` capped at 300 lines. PITFALL (found via TDD): the first merge-tree arg must be the MERGE-BASE tree — passing the base branch's own tree makes the merge degenerate (branch1 === base → nothing reported as conflicting).
+- `AdoClient.createPullRequest` now returns `mergeStatus` from the creation response.
+- New READ-ONLY tool `resolve_pr_conflicts {runId}` (tools.ts — added to READ_ONLY_TOOLS so plan mode allows it) routed through `onResolvePrConflicts` hook; ChatViewProvider maps conflicts to `{path, worktreePath: .ado-code/worktrees/<runId>/<path>, base, ours, theirs, truncated}` so the LLM edits the WORKTREE file via edit_file/apply_diff, then re-commits + re-pushes.
+- `MERGE_FLOW_INSTRUCTIONS` extended: create_pull_request → if mergeStatus 'conflicts', resolve_pr_conflicts → edit worktreePath → commit + push again, repeat until clean.
+- Tests: mergeConflicts.test.ts (3 parse tests incl. real captured output + 2 real-repo integration: conflict detected with correct base/ours/theirs contents, disjoint-file branches → []), client mergeStatus assert, tools routing (plan mode allowed), prompts (merge flow incl. conflict step). 215 passing / 1 known flake.
 
 **Files:**
 - Modify: `src/ado/client.ts` — `getPullRequest` returns `mergeStatus` (`succeeded` / `conflicts` / `rejected`) and the PR's `isDraft`/`status`; add `getPullRequestConflicts(project, repo, prId)` if needed (Git REST exposes `mergeFailureMessage` on the PR)
@@ -79,7 +97,7 @@
 
 ## Suggested Task Order & Batching
 
-Tasks 1–2 are small and independent → do first. Task 3 depends on new ADO GET methods (task-4-adjacent) → do third. Task 4 last.
+Tasks 1–2 are small and independent → do first. ~~Task 3 depends on new ADO GET methods (task-4-adjacent) → do third. Task 4 last.~~ ALL FOUR TASKS DONE (2026-08-07): verify-gate, protected PR targets, post-merge cleanup, conflict surfacing. Suite 215 passing / 1 known pre-existing flake.
 
 ## Tests / Validation
 

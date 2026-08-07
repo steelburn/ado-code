@@ -1,5 +1,6 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
 import type { ContentBlockParam } from './BaseProvider';
+import { toModelInfo, ModelInfo } from '../modelCapabilities';
 
 export class OpenAiProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
@@ -120,7 +121,7 @@ export class OpenAiProvider implements LlmProvider {
     return { text, toolCalls };
   }
 
-  async listModels(config: LlmConfig): Promise<string[]> {
+  async listModels(config: LlmConfig): Promise<ModelInfo[]> {
     return listModelsOpenAi(config);
   }
 }
@@ -167,8 +168,8 @@ function convertContent(
   return parts;
 }
 
-/** Model ids via the standard OpenAI-compatible GET /models endpoint. */
-export async function listModelsOpenAi(config: LlmConfig): Promise<string[]> {
+/** Model ids (+ capability hints when the gateway exposes them) via the standard OpenAI-compatible GET /models endpoint. */
+export async function listModelsOpenAi(config: LlmConfig): Promise<ModelInfo[]> {
   const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/models`, {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${config.apiKey}` },
@@ -176,6 +177,6 @@ export async function listModelsOpenAi(config: LlmConfig): Promise<string[]> {
   if (!response.ok) {
     throw new Error(`OpenAI API error: ${response.status} ${await response.text()}`);
   }
-  const parsed = (await response.json()) as { data?: Array<{ id: string }> };
-  return (parsed.data ?? []).map(m => m.id).filter(Boolean);
+  const parsed = (await response.json()) as { data?: unknown[] };
+  return (parsed.data ?? []).map(m => toModelInfo(m)).filter((m): m is ModelInfo => m !== null);
 }

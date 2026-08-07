@@ -10,6 +10,8 @@ import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
 import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { GitService } from './git/GitService';
+import { cleanupMergedRun, hasMergedPullRequest } from './git/mergeCleanup';
+import { gitErrorMessage } from './git/gitError';
 import { AgentRunner } from './agents/AgentRunner';
 import { AgentRun } from './agents/types';
 import { logger } from './services/logger';
@@ -71,6 +73,45 @@ export async function activate(context: vscode.ExtensionContext) {
       worktreesProvider.refresh();
     })
   );
+
+  // Post-merge cleanup auto-offer (round-2 guardrail Task 3): when the
+  // Worktrees view reloads and a finished run's branch has a completed +
+  // merged PR on ADO, offer "Clean Up After Merge" (remove worktree +
+  // delete branch). Throttled per run so a refresh storm never hammers ADO.
+  const cleanupOfferAt = new Map<string, number>();
+  const CLEANUP_OFFER_COOLDOWN_MS = 10 * 60 * 1000; // re-offer once per 10 min
+  worktreesProvider.onReloaded = (entries) => {
+    void (async () => {
+      try {
+        const project = getActiveOrg(context, getSettings()).project;
+        const now = Date.now();
+        for (const e of entries) {
+          const run = e.run;
+          // Only finished runs with a branch can have a merged PR worth
+          // offering cleanup for.
+          if (!run?.branch || run.status === 'running') continue;
+          const last = cleanupOfferAt.get(run.id) ?? 0;
+          if (now - last < CLEANUP_OFFER_COOLDOWN_MS) continue;
+          cleanupOfferAt.set(run.id, now);
+          const merged = await hasMergedPullRequest(run, project, {
+            git: services.git,
+            ado: services.ado,
+            getRun: (id) => agentRunner.listRuns().find(r => r.id === id),
+          });
+          if (!merged) continue;
+          const pick = await vscode.window.showInformationMessage(
+            `ADO Code: PR for ${run.branch} was merged — clean up the worktree?`,
+            'Clean Up After Merge', 'Later'
+          );
+          if (pick === 'Clean Up After Merge') {
+            await vscode.commands.executeCommand('adoCode.cleanupWorktree', { meta: { runId: run.id, branch: run.branch } });
+          }
+        }
+      } catch (err) {
+        logger.error('Worktrees: post-merge cleanup offer failed', err);
+      }
+    })();
+  };
 
   // Wire memory change events → debounced status refresh (no shell calls).
   // Disposables are tracked so they can be torn down on service rebuild.
@@ -728,7 +769,7 @@ Generate ONLY the commit message, nothing else.`;
           `ADO Code: committed ${commit.hash ?? ''} and pushed ${push.branch} → origin.`
         );
       } catch (err) {
-        vscode.window.showErrorMessage(`ADO Code: commit/push failed — ${err instanceof Error ? err.message : err}`);
+        vscode.window.showErrorMessage(`ADO Code: commit/push failed — ${gitErrorMessage(err, services.git.resolveWorktreePath(meta.runId))}`);
       } finally {
         worktreesProvider.refresh();
       }
@@ -760,7 +801,7 @@ Generate ONLY the commit message, nothing else.`;
               await services.git.pushWorktreeBranch(meta.runId);
             }
           } catch (err) {
-            vscode.window.showErrorMessage(`ADO Code: commit/push before remove failed — ${err instanceof Error ? err.message : err}`);
+            vscode.window.showErrorMessage(`ADO Code: commit/push before remove failed — ${gitErrorMessage(err, services.git.resolveWorktreePath(meta.runId))}`);
             return;
           }
         }
@@ -773,6 +814,33 @@ Generate ONLY the commit message, nothing else.`;
       );
       statusProvider.refreshLight();
       worktreesProvider.refresh();
+    }),
+    // Post-merge cleanup: remove the worktree + delete the branch when the
+    // run's PR was completed and merged on ADO. Invoked from the Worktrees
+    // view context menu ("Clean Up After Merge") and the auto-offer below.
+    vscode.commands.registerCommand('adoCode.cleanupWorktree', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.runId) return;
+      try {
+        const project = getActiveOrg(context, getSettings()).project;
+        const result = await cleanupMergedRun(meta.runId, project, {
+          git: services.git,
+          ado: services.ado,
+          getRun: (id) => agentRunner.listRuns().find(r => r.id === id),
+        });
+        if (!result.cleaned) {
+          vscode.window.showInformationMessage(`ADO Code: nothing to clean up — ${result.reason}`);
+          return;
+        }
+        vscode.window.showInformationMessage(
+          `ADO Code: worktree ${meta.branch ?? ''} removed.${result.branchDeleted ? ' Merged branch deleted.' : ' Branch kept (not merged).'}`
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: cleanup failed — ${gitErrorMessage(err, services.git.resolveWorktreePath(meta.runId))}`);
+      } finally {
+        statusProvider.refreshLight();
+        worktreesProvider.refresh();
+      }
     }),
     // Re-open the agent summary editor panel for a finished run (e.g. from
     // the Worktrees view context menu after the panel was closed).

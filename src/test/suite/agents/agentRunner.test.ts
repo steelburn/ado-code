@@ -32,13 +32,24 @@ function fakeGit(): any {
 suite('AgentRunner', () => {
   test('delegate runs through the adapter and completes via callback', async () => {
     const events: string[] = [];
+    // Deterministic adapter: always "fails to spawn" — the test must not
+    // depend on whether a real `claude` binary is installed on the machine
+    // (it is, on dev machines — the real spawn would stay 'running' and the
+    // 100ms wait below would flake).
+    const stubAdapter = {
+      runTask: async () => ({ exitCode: 1, output: 'failed to spawn: fake' }),
+      extractSessionId: () => undefined,
+    };
     const runner = new AgentRunner(
       fakeRegistry(),
       fakeGit(),
       {
         onStatus: (_run, delta) => events.push(`status:${delta}`),
         onComplete: (_run, summary) => events.push(`complete:${summary.includes('Changed files:')}`),
-      }
+      },
+      undefined,
+      undefined,
+      () => stubAdapter as any
     );
 
     const run = await runner.delegate(42, 'do stuff', 'claude');
@@ -47,9 +58,8 @@ suite('AgentRunner', () => {
     // the time delegate() returns. Assert only what's stable: the run id.
     assert.ok(run.id.includes('42'));
 
-    // Wait for the background completion. The real `claude` binary isn't
-    // installed, so the adapter resolves exitCode 1 with a "failed to spawn"
-    // message — status becomes 'failed' and onComplete fires.
+    // Wait for the background completion — the stub adapter fails with
+    // exitCode 1, so status becomes 'failed' and onComplete fires.
     await new Promise(res => setTimeout(res, 100));
     const finished = runner.listRuns().find(r => r.id === run.id)!;
     assert.strictEqual(finished.status, 'failed');

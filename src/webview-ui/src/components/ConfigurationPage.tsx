@@ -5,7 +5,7 @@ interface Props {
   onBack: () => void;
   /** Fetch model ids with typed-but-unsaved LLM credentials (host does the call). */
   onFetchModels?: (provider?: string, apiUrl?: string, apiKey?: string) => void;
-  models?: string[];
+  models?: Array<{ id: string; vision?: boolean; tools?: boolean }>;
   modelsLoading?: boolean;
 }
 
@@ -18,7 +18,7 @@ interface ConfigSection {
 interface ConfigSetting {
   key: string;
   label: string;
-  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs';
+  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides';
   description: string;
   options?: string[];
   placeholder?: string;
@@ -47,6 +47,7 @@ const SECTIONS: ConfigSection[] = [
       { key: 'llmApiKey', label: 'API Key', type: 'password', description: 'LLM API key', placeholder: 'sk-...' },
       { key: 'llmModel', label: 'Model', type: 'string', description: 'Model name', placeholder: 'gpt-4o' },
       { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'string', description: 'Optional CHEAPER model for detecting choice prompts in AI responses (e.g. gpt-4o-mini). Empty = use the main model. Set to "off" to disable LLM-assisted detection.', placeholder: 'gpt-4o-mini' },
+      { key: 'llm.capabilityOverrides', label: 'Capability overrides', type: 'capOverrides', description: 'Per-model vision/tool-calling overrides. You know your model best: declare it here and it beats auto-detection. Leave a field unset to keep the detected value.' },
     ],
   },
   {
@@ -64,6 +65,7 @@ const SECTIONS: ConfigSection[] = [
       { key: 'git.createBranchOnTaskStart', label: 'Create branch on task start', type: 'boolean', description: 'Auto-create feature/ADO-<id> branch' },
       { key: 'git.requireCleanTree', label: 'Require clean tree', type: 'boolean', description: 'Warn on branch switch with uncommitted changes' },
       { key: 'git.prOnCompletion', label: 'PR on completion', type: 'boolean', description: 'Offer to push + create PR via gh on task done' },
+      { key: 'git.protectedBranches', label: 'Protected PR targets', type: 'array', description: 'Branches create_pull_request must never target (comma-separated)' },
     ],
   },
   {
@@ -366,20 +368,112 @@ function OrganizationsInput({ value, onChange }: { value: AdoOrg[]; onChange: (o
   );
 }
 
+interface CapOverride {
+  model: string;
+  vision?: boolean;
+  tools?: boolean;
+}
+
+/** Editor for per-model capability overrides — add/remove rows with model id
+ *  + vision/tools toggles (unset = keep auto-detected). Mirrors McpServersInput. */
+function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; onChange: (rows: CapOverride[]) => void }) {
+  const addRow = () => {
+    onChange([...value, { model: '' }]);
+  };
+
+  const removeRow = (idx: number) => {
+    onChange(value.filter((_, i) => i !== idx));
+  };
+
+  const updateRow = (idx: number, field: keyof CapOverride, fieldValue: any) => {
+    const updated = [...value];
+    updated[idx] = { ...updated[idx], [field]: fieldValue };
+    onChange(updated);
+  };
+
+  return (
+    <div className="config-mcp">
+      {value.length === 0 && (
+        <div className="config-mcp-empty">No capability overrides. Click + to declare vision/tool support for a model the auto-detection gets wrong.</div>
+      )}
+      {value.map((row, idx) => (
+        <div key={idx} className="config-mcp-server">
+          <div className="config-mcp-server-header">
+            <span className="config-mcp-server-num">#{idx + 1}</span>
+            <button
+              className="config-mcp-remove"
+              onClick={() => removeRow(idx)}
+              title="Remove override"
+              type="button"
+            >×</button>
+          </div>
+          <div className="config-mcp-fields">
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">Model id</label>
+              <input
+                className="config-input"
+                type="text"
+                value={row.model}
+                onChange={e => updateRow(idx, 'model', e.target.value)}
+                placeholder="deepseek-v4"
+              />
+            </div>
+            <div className="config-mcp-row config-cap-toggles">
+              <label className="config-mcp-label">
+                <input
+                  type="checkbox"
+                  checked={row.vision === true}
+                  onChange={e => updateRow(idx, 'vision', e.target.checked ? true : undefined)}
+                />{' '}
+                Vision
+              </label>
+              <label className="config-mcp-label">
+                <input
+                  type="checkbox"
+                  checked={row.tools === true}
+                  onChange={e => updateRow(idx, 'tools', e.target.checked ? true : undefined)}
+                />{' '}
+                Tool calling
+              </label>
+              <span className="config-cap-hint">(unchecked = keep auto-detected)</span>
+            </div>
+          </div>
+        </div>
+      ))}
+      <button className="config-mcp-add" onClick={addRow} type="button">
+        + Add Override
+      </button>
+    </div>
+  );
+}
+
 /**
  * Mirror of src/llm/modelCapabilities.ts (host). Kept here so the
  * Configuration page can show capabilities LIVE as the user types/picks a
  * model, without a host round-trip. Keep the patterns in sync.
  */
-function inferModelCapabilities(modelId: string): { vision: boolean; tools: boolean } {
+function inferModelCapabilities(
+  modelId: string,
+  live?: { vision?: boolean; tools?: boolean },
+  overrides?: CapOverride[]
+): { vision: boolean; tools: boolean } {
   const id = (modelId ?? '').toLowerCase().trim();
   if (!id) return { vision: false, tools: true };
+  const override = overrides?.find(o => (o.model ?? '').toLowerCase().trim() === id);
   const noToolsExact = new Set([
     'dall-e-3', 'dall-e-2', 'whisper-1', 'tts-1', 'tts-1-hd',
     'gpt-3.5-turbo-instruct', 'text-embedding-3-large', 'text-embedding-3-small', 'text-embedding-ada-002',
   ]);
-  const vision = /vision|gemini|claude|4o|4\.1|4\.5|pixtral|llava|idefics|cogvlm|moondream|firellava|bakllava|smolvlm|paligemma|internvl|glm-4v|qwen[^ ]*\bvl\b|gpt-4-turbo|\bo[134]\b/i.test(id);
-  const tools = !noToolsExact.has(id) && !/embedding|whisper|\btts\b|dall-?e/i.test(id);
+  const vision = override?.vision !== undefined
+    ? override.vision
+    : live?.vision !== undefined
+      ? live.vision
+      : /vision|gemini|claude|4o|4\.1|4\.5|gpt-5|pixtral|llava|idefics|cogvlm|moondream|firellava|bakllava|smolvlm|paligemma|internvl|glm-4v|glm-4\.5v|qwen[^ ]*\bvl\b|gpt-4-turbo|\bo[1-9]\b|llama-4|gemma-3|deepseek-vl|minicpm/i.test(id);
+  const tools = override?.tools !== undefined
+    ? override.tools
+    : live?.tools !== undefined
+      ? live.tools
+      : !noToolsExact.has(id) && !/embedding|whisper|\btts\b|dall-?e/i.test(id);
   return { vision, tools };
 }
 
@@ -398,7 +492,7 @@ function ModelFetcher({
   onPick,
 }: {
   config: Record<string, any>;
-  models: string[];
+  models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
   loading: boolean;
   error: string | null;
   onFetch: (provider?: string, apiUrl?: string, apiKey?: string) => void;
@@ -434,11 +528,11 @@ function ModelFetcher({
           title={`${models.length} models available`}
         >
           <option value="">— pick a model —</option>
-          {current && !models.includes(current) && (
+          {current && !models.some(m => m.id === current) && (
             <option value={current}>{current} (current)</option>
           )}
           {models.map(m => (
-            <option key={m} value={m}>{m}</option>
+            <option key={m.id} value={m.id}>{m.id}</option>
           ))}
         </select>
       )}
@@ -446,9 +540,16 @@ function ModelFetcher({
   );
 }
 
-/** Capability readout for the currently selected model (live from the form). */
-function ModelCapabilitiesLine({ model }: { model: string }) {
-  const caps = inferModelCapabilities(model);
+/** Capability readout for the currently selected model (live from the form,
+ *  preferring user overrides, then gateway-provided hints from a fetched
+ *  model list, then the name heuristic). */
+function ModelCapabilitiesLine({ model, models, overrides }: {
+  model: string;
+  models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
+  overrides?: CapOverride[];
+}) {
+  const live = models.find(m => m.id === model);
+  const caps = inferModelCapabilities(model, live ? { vision: live.vision, tools: live.tools } : undefined, overrides);
   return (
     <div className="config-models">
       <div className={`config-caps ${caps.tools ? '' : 'config-caps-warn'}`}>
@@ -581,6 +682,11 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                     value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
                     onChange={orgs => handleChange(setting.key, orgs)}
                   />
+                ) : setting.type === 'capOverrides' ? (
+                  <CapabilityOverridesInput
+                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                    onChange={rows => handleChange(setting.key, rows)}
+                  />
                 ) : (
                   <input
                     className="config-input"
@@ -605,7 +711,11 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                   }}
                   onPick={model => handleChange('llmModel', model)}
                 />
-                <ModelCapabilitiesLine model={String(config.llmModel ?? '')} />
+                <ModelCapabilitiesLine
+                  model={String(config.llmModel ?? '')}
+                  models={models ?? []}
+                  overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+                />
               </>
             )}
           </div>
