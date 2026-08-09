@@ -1,5 +1,7 @@
 // Messages from Webview → Extension Host
 import { AgentRun, AgentCapability } from '../agents/types';
+import { ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
+import { Skill, SkillExecutionRequest, SkillExecutionResult } from './skillTypes';
 
 /** An image pasted into the chat, carried as a base64 data URL. */
 export interface ImageAttachment {
@@ -62,7 +64,18 @@ export type WebviewToExtensionMessage =
   | { type: 'getFullConfig' }
   | { type: 'saveConfig'; config: Record<string, any> }
   // Agent runs: request list of active/recent runs for multi-run display
-  | { type: 'listAgentRuns' };
+  | { type: 'listAgentRuns' }
+  // Project creation wizard
+  | { type: 'openProjectWizard' }
+  | { type: 'projectWizardCreate'; request: ProjectCreationRequest }
+  // Task 9: skill system
+  | { type: 'getSkillCatalog' }
+  | { type: 'installSkill'; skillId: string; skill: Skill }
+  | { type: 'uninstallSkill'; skillId: string }
+  | { type: 'enableSkill'; skillId: string }
+  | { type: 'disableSkill'; skillId: string }
+  | { type: 'executeSkill'; request: SkillExecutionRequest }
+  | { type: 'getSkillDetail'; skillId: string };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -112,7 +125,18 @@ export type ExtensionToWebviewMessage =
   // Configuration page: full settings snapshot
   | { type: 'fullConfig'; config: Record<string, any> }
   // Proposed tasks created in ADO after user review
-  | { type: 'proposedTasksCreated'; count: number; parentId: number };
+  | { type: 'proposedTasksCreated'; count: number; parentId: number }
+  // Project creation wizard result
+  | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
+  // Skill catalog
+  | { type: 'openSkillCatalog' }
+  // Task 9: skill system
+  | { type: 'skillCatalog'; skills: Skill[] }
+  | { type: 'skillInstalled'; skillId: string; success: boolean }
+  | { type: 'skillUninstalled'; skillId: string; success: boolean }
+  | { type: 'skillEnabled'; skillId: string; enabled: boolean }
+  | { type: 'skillDetail'; skill: Skill }
+  | { type: 'skillExecutionResult'; result: SkillExecutionResult };
 
 // Shared types
 export interface MessageContext {

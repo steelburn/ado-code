@@ -704,6 +704,21 @@
           "default": [],
           "description": "Per-model capability overrides: [{ \"model\": \"deepseek-v4\", \"vision\": true }] — user-declared values beat both gateway capability hints and name heuristics. Leave a field unset to keep the auto-detected value."
         },
+        "adoCode.llm.modeConfigs": {
+          "type": "object",
+          "default": {},
+          "description": "Per-mode model overrides in Advanced mode: { \"inline\": { \"model\": \"gpt-4o\" }, \"plan\": { \"model\": \"gpt-4o\" }, \"act\": { \"model\": \"o3\" } }. Each mode can use a different model. Empty object = use the global llmModel."
+        },
+        "adoCode.llm.modeReasoningEffort": {
+          "type": "object",
+          "default": {},
+          "description": "Per-mode reasoning effort for reasoning models (o1, o3, o4-mini, etc.): { \"inline\": \"low\", \"plan\": \"medium\", \"act\": \"high\" }. Values: 'low', 'medium', 'high'. Empty object = no reasoning effort override."
+        },
+        "adoCode.advancedConfig": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Advanced Configuration mode — allows per-mode model selection and reasoning effort tuning."
+        },
         "adoCode.git.requireGitRepo": {
           "type": "boolean",
           "default": true,

@@ -347,6 +347,20 @@ export class ToolRegistry {
   }
 
   /**
+   * Register the execute_skill tool with the given SkillManager.
+   *
+   * Should be called after SkillManager is available (post-activation).
+   * Uses dynamic import to avoid circular dependency with services layer.
+   */
+  async registerSkillTool(skills: import('../../services/SkillManager').SkillManager): Promise<void> {
+    const { ExecuteSkillTool } = await import('./ExecuteSkillTool')
+    const executeSkillTool = new ExecuteSkillTool(skills)
+    if (!this.tools.has(executeSkillTool.name)) {
+      this.tools.set(executeSkillTool.name, executeSkillTool)
+    }
+  }
+
+  /**
    * Reset the singleton (for testing).
    */
   static reset(): void {

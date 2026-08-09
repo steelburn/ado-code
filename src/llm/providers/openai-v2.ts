@@ -43,6 +43,8 @@ export interface OpenAiV2Config {
   apiUrl: string;
   apiKey: string;
   model: string;
+  /** Reasoning effort for reasoning models (low, medium, high). Only used by models that support it. */
+  reasoningEffort?: string;
 }
 
 /**
@@ -98,6 +100,11 @@ export class OpenAiV2Provider extends BaseProvider {
     }
     if (options?.stopSequences !== undefined) {
       requestBody.stop = options.stopSequences;
+    }
+
+    // Add reasoning_effort for reasoning models (o1, o3, o4-mini, etc.)
+    if (this.config.reasoningEffort) {
+      requestBody.reasoning_effort = this.config.reasoningEffort;
     }
 
     // Convert tools if provided in options (tools not in standard options yet,
@@ -433,6 +440,11 @@ export class OpenAiV2Provider extends BaseProvider {
     }
     if (options?.stopSequences !== undefined) {
       requestBody.stop = options.stopSequences;
+    }
+
+    // Add reasoning_effort for reasoning models (o1, o3, o4-mini, etc.)
+    if (this.config.reasoningEffort) {
+      requestBody.reasoning_effort = this.config.reasoningEffort;
     }
 
     // Make the request

@@ -45,6 +45,7 @@ export type ToolName =
   | 'write_workspace_memory'
   | 'list_workspace_memory'
   | 'set_memory'
+  | 'execute_skill'
 
 /**
  * Type map defining the native (typed) argument structure for each tool.
@@ -68,6 +69,7 @@ export interface NativeToolArgs {
   add_comment: { id: number; text: string }
   delegate_to_agent: { prompt: string; agent?: string }
   create_work_item: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; parentWorkItemId?: number; assignedTo?: string; tags?: string }
+  execute_skill: { skillId: string; input: string }
 }
 
 /**
@@ -135,6 +137,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   write_workspace_memory: 'Write workspace memory',
   list_workspace_memory: 'List workspace memory',
   set_memory: 'Set user memory',
+  execute_skill: 'Execute skill',
 }
 
 // ---------------------------------------------------------------------------

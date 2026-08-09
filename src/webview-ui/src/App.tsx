@@ -11,6 +11,8 @@ import { ConsentCard, ConsentRequest } from './components/ConsentCard';
 import { ConfirmationCard, ConfirmationRequest } from './components/ConfirmationCard';
 import { SessionHistory } from './components/SessionHistory';
 import { ConfigurationPage } from './components/ConfigurationPage';
+import { ProjectCreationWizard } from './components/ProjectCreationWizard';
+import { SkillCatalog } from './components/SkillCatalog';
 import { vscode } from './vscode';
 import './styles/app.css';
 import './styles/markdown.css';
@@ -84,6 +86,10 @@ function App() {
 
   // Configuration page
   const [showConfig, setShowConfig] = useState(false);
+  // Project creation wizard
+  const [showProjectWizard, setShowProjectWizard] = useState(false);
+  // Skill catalog
+  const [showSkillCatalog, setShowSkillCatalog] = useState(false);
 
   // ── Message handler ────────────────────────────────────────────
   useEffect(() => {
@@ -301,6 +307,21 @@ function App() {
             });
           }
           break;
+
+        case 'openProjectWizard':
+          setShowProjectWizard(true);
+          break;
+
+        case 'projectWizardCreated':
+          if (msg.success) {
+            setShowProjectWizard(false);
+          } else {
+            setError(msg.error || 'Failed to create project');
+          }
+          break;
+        case 'openSkillCatalog':
+          setShowSkillCatalog(true);
+          break;
       }
     };
 
@@ -507,6 +528,14 @@ function App() {
       </div>
     );
   }
+  // Skill catalog
+  if (showSkillCatalog) {
+    return (
+      <div className="app">
+        <SkillCatalog onClose={() => setShowSkillCatalog(false)} />
+      </div>
+    );
+  }
 
   return (
     <div className="app chat-layout">
@@ -618,6 +647,10 @@ function App() {
         <div className="model-capability-warning" title="Tool calling unavailable for the active model">
           ⚠ <strong>{config.llmModel}</strong> doesn't support tool calling — Chat/Plan/Act run as plain chat (no tools, no file edits, no delegation).
         </div>
+      )}
+      {/* Project creation wizard */}
+      {showProjectWizard && (
+        <ProjectCreationWizard onClose={() => setShowProjectWizard(false)} />
       )}
     </div>
   );

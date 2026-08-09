@@ -1,0 +1,292 @@
+/* Wizard overlay */
+.wizard-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.wizard-container {
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.wizard-title {
+  margin: 0;
+  font-size: 1.2em;
+  color: var(--vscode-foreground);
+}
+
+.wizard-close {
+  background: none;
+  border: none;
+  color: var(--vscode-foreground);
+  font-size: 1.5em;
+  cursor: pointer;
+}
+
+/* Progress bar */
+.wizard-progress {
+  display: flex;
+  padding: 16px 20px;
+  gap: 8px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.wizard-progress-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.wizard-progress-active {
+  color: var(--vscode-focusBorder);
+  font-weight: 600;
+}
+
+.wizard-progress-complete {
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.wizard-progress-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--vscode-widget-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8em;
+}
+
+.wizard-progress-active .wizard-progress-num {
+  background: var(--vscode-focusBorder);
+  color: var(--vscode-editor-background);
+}
+
+/* Body */
+.wizard-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* Step titles */
+.wizard-step-title {
+  margin: 0 0 4px 0;
+  font-size: 1.1em;
+  color: var(--vscode-foreground);
+}
+
+.wizard-step-desc {
+  margin: 0 0 16px 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+/* Footer */
+.wizard-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--vscode-widget-border);
+}
+
+/* Buttons */
+.wizard-btn {
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  cursor: pointer;
+  border: none;
+}
+
+.wizard-btn-primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.wizard-btn-primary:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.wizard-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wizard-btn-secondary {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.wizard-btn-secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* Form elements */
+.wizard-form-group {
+  margin-bottom: 16px;
+}
+
+.wizard-label {
+  display: block;
+  font-size: 0.85em;
+  font-weight: 500;
+  margin-bottom: 4px;
+  color: var(--vscode-foreground);
+}
+
+.wizard-input,
+.wizard-select {
+  width: 100%;
+  padding: 8px 12px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.9em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.wizard-input:focus,
+.wizard-select:focus {
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+.wizard-hint {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 4px;
+}
+
+.wizard-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+/* Template cards */
+.wizard-category {
+  margin-bottom: 20px;
+}
+
+.wizard-category-title {
+  font-size: 0.9em;
+  font-weight: 600;
+  text-transform: capitalize;
+  margin-bottom: 8px;
+  color: var(--vscode-foreground);
+}
+
+.wizard-templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.wizard-template {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px;
+  background: var(--vscode-sideBar-background);
+  border: 2px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: center;
+  font-family: var(--vscode-font-family);
+}
+
+.wizard-template:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+.wizard-template-selected {
+  border-color: var(--vscode-focusBorder);
+  background: rgba(var(--vscode-focusBorder-rgb, 0, 122, 204), 0.1);
+}
+
+.wizard-template-icon {
+  font-size: 1.5em;
+  margin-bottom: 4px;
+}
+
+.wizard-template-name {
+  font-weight: 500;
+  font-size: 0.85em;
+  color: var(--vscode-foreground);
+}
+
+.wizard-template-desc {
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 2px;
+}
+
+/* Review section */
+.wizard-review-section {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--vscode-sideBar-background);
+  border-radius: 6px;
+}
+
+.wizard-review-heading {
+  margin: 0 0 8px 0;
+  font-size: 0.9em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.wizard-review-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 0.85em;
+}
+
+.wizard-review-label {
+  color: var(--vscode-descriptionForeground);
+}
+
+.wizard-review-value {
+  color: var(--vscode-foreground);
+  font-weight: 500;
+}
+
+/* Error */
+.wizard-error {
+  padding: 8px 12px;
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  border-radius: 4px;
+  color: var(--vscode-inputValidation-errorForeground);
+  font-size: 0.85em;
+}

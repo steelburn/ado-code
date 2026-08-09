@@ -24,6 +24,8 @@ export interface LlmConfig {
   apiUrl: string;
   apiKey: string;
   model: string;
+  /** Reasoning effort for reasoning models (low, medium, high). Only used by models that support it. */
+  reasoningEffort?: string;
 }
 
 export interface LlmProvider {

@@ -2,6 +2,11 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.8] - 2026-08-10
+
+### Features
+- **Express/Advanced Configuration**: New configuration mode toggle in the Configuration page — Express (default) uses one model for all modes, Advanced enables per-mode model selection and reasoning effort tuning (low/medium/high) for reasoning models like o1/o3. New settings: `adoCode.advancedConfig`, `adoCode.llm.modeConfigs`, `adoCode.llm.modeReasoningEffort`
+
 ## [0.5.7] - 2026-08-09
 
 ### Features

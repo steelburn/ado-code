@@ -19,6 +19,8 @@ export class OpenAiProvider implements LlmProvider {
         model: config.model,
         messages: openaiMessages,
         stream: true,
+        // Add reasoning_effort for reasoning models (o1, o3, o4-mini, etc.)
+        ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
       }),
     });
 

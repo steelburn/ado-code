@@ -1343,6 +1343,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.sendSessionList();
             break;
           }
+          // Skill management
+          case 'getSkillCatalog':
+            this.postMessage({
+              type: 'skillCatalog',
+              skills: this.services.skills.getAllSkills(),
+            });
+            break;
+          case 'installSkill': {
+            const installResult = this.services.skills.installSkill(message.skill);
+            this.postMessage({
+              type: 'skillInstalled',
+              skillId: message.skillId,
+              success: installResult,
+            });
+            break;
+          }
+          case 'uninstallSkill': {
+            const uninstallResult = this.services.skills.uninstallSkill(message.skillId);
+            this.postMessage({
+              type: 'skillUninstalled',
+              skillId: message.skillId,
+              success: uninstallResult,
+            });
+            break;
+          }
+          case 'enableSkill':
+            this.services.skills.enableSkill(message.skillId);
+            this.postMessage({
+              type: 'skillEnabled',
+              skillId: message.skillId,
+              enabled: true,
+            });
+            break;
+          case 'disableSkill':
+            this.services.skills.disableSkill(message.skillId);
+            this.postMessage({
+              type: 'skillEnabled',
+              skillId: message.skillId,
+              enabled: false,
+            });
+            break;
+          case 'executeSkill': {
+            const execResult = await this.services.skills.executeSkill(message.request);
+            this.postMessage({
+              type: 'skillExecutionResult',
+              result: execResult,
+            });
+            break;
+          }
+          case 'getSkillDetail': {
+            const skill = this.services.skills.getSkill(message.skillId);
+            this.postMessage({
+              type: 'skillDetail',
+              skill: skill || null,
+            });
+            break;
+          }
         }
       },
       undefined,
@@ -2487,7 +2544,7 @@ app.Run();
     try {
       // Use the real token counter instead of rough char/4 estimation
       const used = countMessageTokens(this.conversation);
-      const model = llmConfigFromSettings().model;
+      const model = llmConfigFromSettings(this.executor?.mode).model;
       const maxTokens = estimateContextWindow({ apiModelId: model }, this.lastModelInfos);
       const remaining = Math.max(0, maxTokens - used);
       const percentage = Math.min(100, Math.round((used / maxTokens) * 100));
@@ -2500,7 +2557,7 @@ app.Run();
 
   /** Fresh client from current settings (avoids stale config after changes). */
   private llmClient(): LlmClient {
-    return new LlmClient(llmConfigFromSettings());
+    return new LlmClient(llmConfigFromSettings(this.executor?.mode));
   }
 
   private async handleUserMessage(content: string, images?: ImageAttachment[]): Promise<void> {
@@ -2675,7 +2732,7 @@ app.Run();
       let choicePrompt = parseChoicePrompt(result.text);
       if (!choicePrompt && getSettings().llmChoiceDetectionModel !== 'off') {
         try {
-          const cfg = llmConfigFromSettings();
+          const cfg = llmConfigFromSettings(this.executor?.mode);
           const model = getSettings().llmChoiceDetectionModel || cfg.model;
           choicePrompt = await detectChoicePrompt(result.text, new LlmClient({ ...cfg, model }));
         } catch (err) {
@@ -3006,6 +3063,16 @@ First analyze the user story and explain your breakdown reasoning, then output t
         } else {
           vscode.window.showWarningMessage('ADO Code: no saved notes to clear.');
         }
+        break;
+      }
+      case 'new-project': {
+        this.postMessage({ type: 'openProjectWizard' });
+        this.postMessage({ type: 'loading', loading: false });
+        break;
+      }
+      case 'skills': {
+        this.postMessage({ type: 'openSkillCatalog' });
+        this.postMessage({ type: 'loading', loading: false });
         break;
       }
       default: {

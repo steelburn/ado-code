@@ -24,6 +24,8 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'remember',  description: 'Store a preference the AI remembers across chats',  usage: '/remember <text>' },
   { name: 'forget',    description: 'Remove all saved notes and preferences',            usage: '/forget' },
   { name: 'generate-tasks', description: 'Generate child tasks for the active user story', usage: '/generate-tasks' },
+  { name: 'new-project', description: 'Open the project creation wizard', usage: '/new-project' },
+  { name: 'skills',      description: 'Open the skill catalog to browse and manage AI skills', usage: '/skills' },
 ];
 
 function matchSlashCommands(query: string): SlashCommand[] {

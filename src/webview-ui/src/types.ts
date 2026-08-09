@@ -26,6 +26,8 @@ export interface AgentRun {
   summary?: string;
 }
 
+import { ProjectCreationRequest } from './components/ProjectCreationWizard/types';
+
 /** An image pasted into the chat, carried as a base64 data URL. */
 export interface ImageAttachment {
   id: string;
@@ -82,7 +84,9 @@ export type WebviewToExtensionMessage =
   | { type: 'switchSession'; sessionId: string }
   | { type: 'newSession' }
   | { type: 'renameSession'; sessionId: string; name: string }
-  | { type: 'deleteSession'; sessionId: string };
+  | { type: 'deleteSession'; sessionId: string }
+  // Project creation wizard
+  | { type: 'projectWizardCreate'; request: ProjectCreationRequest };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -128,7 +132,12 @@ export type ExtensionToWebviewMessage =
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history
   | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
-  | { type: 'sessionSwitched'; session: Session };
+  | { type: 'sessionSwitched'; session: Session }
+  // Project creation wizard
+  | { type: 'openProjectWizard' }
+  | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
+  // Skill catalog
+  | { type: 'openSkillCatalog' };
 
 // Shared types
 export interface MessageContext {
@@ -209,4 +218,68 @@ export interface Session {
   name: string;
   createdAt: string;
   messages: Array<{ role: string; content: string }>;
+}
+
+// ── Skill System Types ──────────────────────────────────────────────
+// Duplicated from src/shared/skillTypes.ts because the webview-ui project
+// cannot resolve cross-project imports (separate tsconfig + webpack).
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  category: SkillCategory;
+  tags: string[];
+  icon: string;
+  prompt?: string;
+  toolChain?: ToolChainStep[];
+  knowledge?: string;
+  installed: boolean;
+  enabled: boolean;
+  builtin: boolean;
+  source: 'builtin' | 'marketplace' | 'local';
+  config?: SkillConfig[];
+}
+
+export type SkillCategory =
+  | 'code-review'
+  | 'documentation'
+  | 'testing'
+  | 'refactoring'
+  | 'deployment'
+  | 'database'
+  | 'security'
+  | 'performance'
+  | 'accessibility'
+  | 'custom';
+
+export interface ToolChainStep {
+  tool: string;
+  args: Record<string, any>;
+  condition?: string;
+}
+
+export interface SkillConfig {
+  id: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'select';
+  default: any;
+  options?: string[];
+  description?: string;
+}
+
+export interface SkillExecutionRequest {
+  skillId: string;
+  input: string;
+  context?: Record<string, any>;
+  config?: Record<string, any>;
+}
+
+export interface SkillExecutionResult {
+  success: boolean;
+  output: string;
+  toolCalls?: Array<{ tool: string; args: any; result: any }>;
+  error?: string;
 }

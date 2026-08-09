@@ -25,6 +25,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - Direct mode selection: click Chat/Plan/Act/YOLO to switch modes instantly
 - In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
+- **Express/Advanced Configuration**: Toggle between simple (one model for all modes) and advanced (per-mode model selection + reasoning effort tuning) configuration modes — Advanced mode lets you use different models for Chat vs Act, and set reasoning effort (low/medium/high) for reasoning models like o1/o3
 - **AI merge flow**: For finished agent runs, the assistant can commit, push, and open an ADO pull request itself (`commit_worktree` → `push_worktree` → `create_pull_request`) — never force-pushes, never touches protected branches (`adoCode.git.protectedBranches`, default `main`/`master`), refuses to commit failed runs unless it explicitly overrides after reviewing, and can resolve merge conflicts (`resolve_pr_conflicts`) then re-commit/re-push until the PR is clean
 - **Dynamic context window detection**: Context window size auto-detected from the `/models` API endpoint (Ollama `n_ctx`, OpenRouter `context_length`, etc.) — live data overrides the hardcoded table; content-aware token counting (code ~3.5, prose ~4.5 chars/token) with expanded model table (27 models) and 128k default
 - **Context management**: Priority-based conversation truncation replaces naive 20-turn cutoff; real token counter replaces rough char/4 estimation; conversation auto-condenses at 75% context via LLM summarization; token status bar shows accurate model-aware counts
@@ -64,7 +65,10 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 
 ## Extension Settings
 
-Configure in VS Code settings under `adoCode.*`:
+Configure in VS Code settings under `adoCode.*`. The Configuration page offers two modes:
+
+- **Express Configuration** (default): Simple setup with one model for all modes
+- **Advanced Configuration**: Toggle the switch to enable per-mode model selection and reasoning effort tuning
 
 | Setting | Description |
 |---------|-------------|
@@ -78,9 +82,12 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.llmProvider` | `openai` (default) or `anthropic` |
 | `adoCode.llmApiUrl` | LLM API endpoint |
 | `adoCode.llmApiKey` | LLM API key |
-| `adoCode.llmModel` | LLM model name |
+| `adoCode.llmModel` | LLM model name (used for all modes in Express mode) |
 | `adoCode.llm.choiceDetectionModel` | Optional cheaper model for AI choice-prompt detection (empty = main model, `off` = regex-only) |
 | `adoCode.llm.capabilityOverrides` | Per-model capability overrides (array of `{ model, vision?, tools? }`) — beats auto-detection |
+| `adoCode.advancedConfig` | Enable Advanced Configuration mode for per-mode model selection (default `false`) |
+| `adoCode.llm.modeConfigs` | Per-mode model overrides in Advanced mode: `{ "inline": { "model": "gpt-4o" }, "act": { "model": "o3" } }` |
+| `adoCode.llm.modeReasoningEffort` | Per-mode reasoning effort for reasoning models: `{ "inline": "low", "act": "high" }` — values: `low`, `medium`, `high` |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, `act`, or `yolo` |
 | `adoCode.act.toolBudget` | Max tool calls per act-mode turn |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
@@ -109,18 +116,19 @@ Type `/` in the chat input to see available commands:
 
 | Command | Description |
 |---------|-------------|
-| `/status <state>` | Change work item state |
-| `/comment <text>` | Add a comment to the active work item |
-| `/pick` | Select a work item from the list |
-| `/assign <who>` | Reassign the active work item |
-| `/clear` | Clear chat history |
-| `/mode <mode>` | Switch mode (inline, plan, act, yolo) |
-| `/undo` | Restore files to the last checkpoint |
-| `/help` | Show available commands |
-| `/delegate [agent]` | Delegate to an external agent |
-| `/resume` | Resume an interrupted agent session |
-| `/remember <what>` | Remember a preference or instruction |
-| `/forget <key>` | Remove a memory entry |
+| `/status <state>` | Set work item state (e.g. Active, Done, Closed, Removed) |
+| `/comment <text>` | Post a comment to the active work item discussion thread |
+| `/pick` | Browse and select a work item from the tree to set as active context |
+| `/assign <who>` | Assign the active work item to a team member (name or email) |
+| `/clear` | Clear all chat messages and start fresh |
+| `/mode [mode]` | Switch mode (inline, plan, act, yolo) — omit mode to pick from list |
+| `/undo` | Revert the last state change made to the active work item |
+| `/help` | List all available slash commands with usage examples |
+| `/delegate [agent] <prompt>` | Hand off the active task to an external agent (claude, codex, opencode, hermes, pi, gemini) |
+| `/generate-tasks` | Generate child tasks for the active user story (review in editor before saving) |
+| `/resume` | Switch to a previous chat session to continue where you left off |
+| `/remember <what>` | Store a preference or instruction the AI will remember across sessions |
+| `/forget` | Remove all saved notes and preferences |
 
 ## Memory System
 
@@ -165,6 +173,10 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### 0.5.8
+
+- **Express/Advanced Configuration**: New configuration mode toggle — Express (default) uses one model for all modes, Advanced enables per-mode model selection and reasoning effort tuning (low/medium/high) for reasoning models like o1/o3
 
 ### 0.5.7
 
