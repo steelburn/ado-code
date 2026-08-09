@@ -335,6 +335,13 @@ function App() {
     if (saved?.detail) {
       setDetail(saved.detail);
     }
+    // Restore wizard/catalog visibility states
+    if (saved?.showProjectWizard) {
+      setShowProjectWizard(true);
+    }
+    if (saved?.showSkillCatalog) {
+      setShowSkillCatalog(true);
+    }
 
     vscode.postMessage({ type: 'getConfig' });
     vscode.postMessage({ type: 'listAgents' });
@@ -346,8 +353,13 @@ function App() {
 
   // Persist history + task detail so the chat restores after panel collapse/reopen
   useEffect(() => {
-    vscode.setState({ history: messages, detail });
-  }, [messages, detail]);
+    vscode.setState({
+      history: messages,
+      detail,
+      showProjectWizard,
+      showSkillCatalog,
+    });
+  }, [messages, detail, showProjectWizard, showSkillCatalog]);
 
   // ── Actions ────────────────────────────────────────────────────
   const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
