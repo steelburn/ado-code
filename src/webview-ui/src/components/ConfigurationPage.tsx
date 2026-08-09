@@ -18,7 +18,7 @@ interface ConfigSection {
 interface ConfigSetting {
   key: string;
   label: string;
-  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides';
+  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides' | 'model';
   description: string;
   hint?: string;
   min?: number;
@@ -46,7 +46,7 @@ const EXPRESS_SECTIONS: ConfigSection[] = [
       { key: 'llmProvider', label: 'Provider', type: 'enum', description: 'LLM API format', options: ['openai', 'anthropic'] },
       { key: 'llmApiUrl', label: 'API URL', type: 'string', description: 'LLM API base URL', placeholder: 'https://api.openai.com/v1' },
       { key: 'llmApiKey', label: 'API Key', type: 'password', description: 'LLM API key', placeholder: 'sk-...' },
-      { key: 'llmModel', label: 'Model', type: 'string', description: 'Model name (used for all modes)', placeholder: 'gpt-4o' },
+      { key: 'llmModel', label: 'Model', type: 'model', description: 'Model name (used for all modes)', placeholder: 'gpt-4o' },
     ],
   },
   {
@@ -414,7 +414,7 @@ interface CapOverride {
 
 /** Editor for per-model capability overrides — add/remove rows with model id
  *  + vision/tools toggles (unset = keep auto-detected). Mirrors McpServersInput. */
-function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; onChange: (rows: CapOverride[]) => void }) {
+function CapabilityOverridesInput({ value, models, onChange }: { value: CapOverride[]; models: Array<{ id: string; vision?: boolean; tools?: boolean }>; onChange: (rows: CapOverride[]) => void }) {
   const addRow = () => {
     onChange([...value, { model: '' }]);
   };
@@ -448,11 +448,10 @@ function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; o
           <div className="config-mcp-fields">
             <div className="config-mcp-row">
               <label className="config-mcp-label">Model id</label>
-              <input
-                className="config-input"
-                type="text"
+              <ModelInput
                 value={row.model}
-                onChange={e => updateRow(idx, 'model', e.target.value)}
+                models={models}
+                onChange={model => updateRow(idx, 'model', model)}
                 placeholder="deepseek-v4"
               />
             </div>
@@ -481,6 +480,100 @@ function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; o
       <button className="config-mcp-add" onClick={addRow} type="button">
         + Add Override
       </button>
+    </div>
+  );
+}
+
+/**
+ * Model input with dropdown for fetched models + custom input option.
+ * Shows a select dropdown when models are available, with an extra option
+ * to type a custom model not in the list.
+ */
+function ModelInput({
+  value,
+  models,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
+  placeholder?: string;
+  onChange: (model: string) => void;
+}) {
+  const [customMode, setCustomMode] = useState(false);
+  const [customValue, setCustomValue] = useState('');
+
+  // If models are available and user hasn't opted for custom mode
+  if (models.length > 0 && !customMode) {
+    // Check if current value is a custom model (not in the list)
+    const isCustom = value && !models.some(m => m.id === value);
+
+    return (
+      <div className="config-model-input">
+        <select
+          className="config-select"
+          value={isCustom ? '__custom__' : value}
+          onChange={e => {
+            if (e.target.value === '__custom__') {
+              setCustomMode(true);
+              setCustomValue(value);
+            } else {
+              onChange(e.target.value);
+            }
+          }}
+        >
+          <option value="">— pick a model —</option>
+          {models.map(m => (
+            <option key={m.id} value={m.id}>{m.id}</option>
+          ))}
+          {isCustom && <option value="__custom__">{value} (custom)</option>}
+          <option value="__custom__">✏️ Type custom model…</option>
+        </select>
+      </div>
+    );
+  }
+
+  // Custom input mode or no models available
+  return (
+    <div className="config-model-input">
+      <div className="config-model-input-row">
+        <input
+          className="config-input"
+          type="text"
+          value={customMode ? customValue : value}
+          onChange={e => {
+            if (customMode) {
+              setCustomValue(e.target.value);
+            } else {
+              onChange(e.target.value);
+            }
+          }}
+          onBlur={() => {
+            if (customMode) {
+              onChange(customValue);
+            }
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && customMode) {
+              onChange(customValue);
+            }
+          }}
+          placeholder={placeholder || 'e.g. gpt-4o, claude-sonnet-4-20250514'}
+        />
+        {customMode && models.length > 0 && (
+          <button
+            className="config-model-input-back"
+            onClick={() => {
+              setCustomMode(false);
+              setCustomValue('');
+            }}
+            title="Back to model list"
+            type="button"
+          >
+            ↩
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -527,14 +620,12 @@ function ModelFetcher({
   loading,
   error,
   onFetch,
-  onPick,
 }: {
   config: Record<string, any>;
   models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
   loading: boolean;
   error: string | null;
   onFetch: (provider?: string, apiUrl?: string, apiKey?: string) => void;
-  onPick: (model: string) => void;
 }) {
   const url = String(config.llmApiUrl ?? '').trim();
   const key = String(config.llmApiKey ?? '').trim();
@@ -545,7 +636,6 @@ function ModelFetcher({
       </div>
     );
   }
-  const current = String(config.llmModel ?? '');
   return (
     <div className="config-models">
       <button
@@ -559,20 +649,7 @@ function ModelFetcher({
       {loading && <div className="config-desc">Fetching models from {url}…</div>}
       {error && <div className="config-models-error">{error}</div>}
       {!loading && models.length > 0 && (
-        <select
-          className="config-select"
-          value={current}
-          onChange={e => onPick(e.target.value)}
-          title={`${models.length} models available`}
-        >
-          <option value="">— pick a model —</option>
-          {current && !models.some(m => m.id === current) && (
-            <option value={current}>{current} (current)</option>
-          )}
-          {models.map(m => (
-            <option key={m.id} value={m.id}>{m.id}</option>
-          ))}
-        </select>
+        <div className="config-desc">{models.length} models available — select from the dropdown above</div>
       )}
     </div>
   );
@@ -645,27 +722,12 @@ function ModeModelConfig({
       <div className="config-mode-model-fields">
         <div className="config-mode-model-row">
           <label className="config-mcp-label">Model</label>
-          {url && key && models.length > 0 ? (
-            <select
-              className="config-select"
-              value={modelValue}
-              onChange={e => onModelChange(e.target.value)}
-              title={`${models.length} models available`}
-            >
-              <option value="">— use default —</option>
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.id}</option>
-              ))}
-            </select>
-          ) : (
-            <input
-              className="config-input"
-              type="text"
-              value={modelValue}
-              onChange={e => onModelChange(e.target.value)}
-              placeholder="e.g. gpt-4o, o3"
-            />
-          )}
+          <ModelInput
+            value={modelValue}
+            models={models}
+            placeholder="e.g. gpt-4o, o3"
+            onChange={onModelChange}
+          />
         </div>
         <div className="config-mode-model-row">
           <label className="config-mcp-label">Reasoning Effort</label>
@@ -872,7 +934,15 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                 ) : setting.type === 'capOverrides' ? (
                   <CapabilityOverridesInput
                     value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                    models={models ?? []}
                     onChange={rows => handleChange(setting.key, rows)}
+                  />
+                ) : setting.type === 'model' ? (
+                  <ModelInput
+                    value={config[setting.key] ?? ''}
+                    models={models ?? []}
+                    placeholder={setting.placeholder}
+                    onChange={model => handleChange(setting.key, model)}
                   />
                 ) : (
                   <input
@@ -896,7 +966,6 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                     setFetchError(null);
                     onFetchModels?.(provider, apiUrl, apiKey);
                   }}
-                  onPick={model => handleChange('llmModel', model)}
                 />
                 <ModelCapabilitiesLine
                   model={String(config.llmModel ?? '')}

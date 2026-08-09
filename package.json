@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -741,8 +741,13 @@
         },
         "adoCode.git.protectedBranches": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["main", "master"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "main",
+            "master"
+          ],
           "description": "Branches create_pull_request must never target — the AI merge flow refuses to open a PR against these"
         },
         "adoCode.mode": {

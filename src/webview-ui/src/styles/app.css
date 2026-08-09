@@ -2205,6 +2205,39 @@ code {
   border-top: 1px solid var(--vscode-widget-border);
 }
 
+/* ── Model Input (dropdown + custom) ────────────────────────── */
+.config-model-input {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.config-model-input .config-select {
+  width: 100%;
+  max-width: 360px;
+}
+.config-model-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.config-model-input-row .config-input {
+  flex: 1;
+  max-width: 320px;
+}
+.config-model-input-back {
+  background: none;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 0.9em;
+}
+.config-model-input-back:hover {
+  background: var(--vscode-widget-border);
+  color: var(--vscode-foreground);
+}
+
 /* ── Wizard Overlay ──────────────────────────────────────────── */
 .wizard-overlay {
   position: fixed;
