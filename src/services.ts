@@ -6,6 +6,7 @@ import { AgentRegistry } from './agents/registry';
 import { CheckpointService } from './services/checkpoints/CheckpointService';
 import { McpManager } from './services/mcp/McpManager';
 import { SkillManager } from './services/SkillManager';
+import { ProjectCreationService } from './webview/ProjectCreationService';
 import { WorkspaceMemory } from './memory/WorkspaceMemory';
 import { getSettings, getActiveOrg } from './config/settings';
 import { UserMemory } from './memory/UserMemory';
@@ -23,6 +24,7 @@ export interface Services {
   checkpoints: CheckpointService;
   mcp: McpManager;
   skills: SkillManager;
+  projectCreation: ProjectCreationService;
   workspaceMemory: WorkspaceMemory;
   memory: UserMemory;
   logger: typeof logger;
@@ -65,6 +67,7 @@ export function createServices(context: vscode.ExtensionContext): Services {
     checkpoints: new CheckpointService(workspaceRoot),
     mcp: new McpManager(context),
     skills: new SkillManager(context),
+    projectCreation: new ProjectCreationService(context),
     workspaceMemory: new WorkspaceMemory(workspaceRoot),
     memory: new UserMemory(context),
     logger,

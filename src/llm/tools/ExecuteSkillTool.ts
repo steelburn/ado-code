@@ -7,6 +7,7 @@
 
 import { BaseTool, type TaskLike, type ToolCallbacks } from './BaseTool'
 import { SkillManager } from '../../services/SkillManager'
+import { logger } from '../../services/logger'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,17 +46,19 @@ export class ExecuteSkillTool extends BaseTool {
       // Validate required parameters
       if (!skillId || typeof skillId !== 'string') {
         const errorMsg = `Tool call 'execute_skill' is missing required parameter: skillId`
-        console.error(errorMsg)
+        logger.warn(errorMsg)
         pushToolResult(toolCallId, `Error: ${errorMsg}`)
         return
       }
 
       if (!input || typeof input !== 'string') {
         const errorMsg = `Tool call 'execute_skill' is missing required parameter: input`
-        console.error(errorMsg)
+        logger.warn(errorMsg)
         pushToolResult(toolCallId, `Error: ${errorMsg}`)
         return
       }
+
+      logger.info(`ExecuteSkillTool: executing skill "${skillId}"`)
 
       // Execute the skill via SkillManager
       const result = await this.skillManager.executeSkill({
@@ -64,6 +67,7 @@ export class ExecuteSkillTool extends BaseTool {
       })
 
       if (!result.success) {
+        logger.warn(`ExecuteSkillTool: skill "${skillId}" execution failed — ${result.error}`)
         pushToolResult(
           toolCallId,
           JSON.stringify({ error: result.error }),
@@ -71,6 +75,7 @@ export class ExecuteSkillTool extends BaseTool {
         return
       }
 
+      logger.info(`ExecuteSkillTool: skill "${skillId}" executed successfully`)
       pushToolResult(
         toolCallId,
         JSON.stringify({
@@ -81,7 +86,7 @@ export class ExecuteSkillTool extends BaseTool {
       )
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      console.error(`Error in execute_skill: ${errorMsg}`)
+      logger.error(`ExecuteSkillTool: error executing skill`, errorMsg)
       await handleError(
         'executing skill',
         error instanceof Error ? error : new Error(errorMsg),

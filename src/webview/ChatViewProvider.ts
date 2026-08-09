@@ -1400,6 +1400,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
             break;
           }
+          // Project creation wizard
+          case 'projectWizardCreate': {
+            logger.info('ChatViewProvider: projectWizardCreate received');
+            const projectResult = await this.services.projectCreation.createProject(message.request);
+            this.postMessage({
+              type: 'projectWizardCreated',
+              success: projectResult.success,
+              path: projectResult.path,
+              error: projectResult.error,
+            });
+            break;
+          }
         }
       },
       undefined,
@@ -3066,11 +3078,13 @@ First analyze the user story and explain your breakdown reasoning, then output t
         break;
       }
       case 'new-project': {
+        logger.info('ChatViewProvider: /new-project command received');
         this.postMessage({ type: 'openProjectWizard' });
         this.postMessage({ type: 'loading', loading: false });
         break;
       }
       case 'skills': {
+        logger.info('ChatViewProvider: /skills command received');
         this.postMessage({ type: 'openSkillCatalog' });
         this.postMessage({ type: 'loading', loading: false });
         break;

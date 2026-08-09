@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { logger } from '../services/logger';
 import { ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
 
 export class ProjectCreationService {
@@ -16,6 +17,8 @@ export class ProjectCreationService {
     try {
       const projectDir = path.join(request.targetPath, request.projectName);
 
+      logger.info(`ProjectCreation: creating project "${request.projectName}" with template "${request.templateId}"`);
+
       // Ensure target path exists
       if (!fs.existsSync(request.targetPath)) {
         fs.mkdirSync(request.targetPath, { recursive: true });
@@ -23,6 +26,7 @@ export class ProjectCreationService {
 
       // Check if project directory already exists
       if (fs.existsSync(projectDir)) {
+        logger.warn(`ProjectCreation: directory "${projectDir}" already exists`);
         return {
           success: false,
           path: projectDir,
@@ -43,11 +47,13 @@ export class ProjectCreationService {
         await this.createInitialCommit(projectDir, request.projectName);
       }
 
+      logger.info(`ProjectCreation: project "${request.projectName}" created successfully at ${projectDir}`);
       return {
         success: true,
         path: projectDir,
       };
     } catch (err) {
+      logger.error(`ProjectCreation: failed to create project`, err);
       return {
         success: false,
         path: '',
