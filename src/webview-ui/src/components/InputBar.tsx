@@ -16,13 +16,14 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'pick',      description: 'Select a work item to set as active context',      usage: '/pick' },
   { name: 'assign',    description: 'Assign work item to a team member (name/email)',   usage: '/assign <person>' },
   { name: 'clear',     description: 'Clear all chat messages',                          usage: '/clear' },
-  { name: 'mode',      description: 'Switch mode: inline, plan, or act',                usage: '/mode [mode]' },
+  { name: 'mode',      description: 'Switch mode: inline, plan, act, or yolo',          usage: '/mode [mode]' },
   { name: 'undo',      description: 'Revert last state change on active work item',     usage: '/undo' },
   { name: 'help',      description: 'List all available slash commands',                 usage: '/help' },
   { name: 'delegate',  description: 'Hand off task to agent (claude, codex, hermes…)',  usage: '/delegate [agent] <prompt>' },
   { name: 'resume',    description: 'Switch to a previous chat session',                 usage: '/resume' },
   { name: 'remember',  description: 'Store a preference the AI remembers across chats',  usage: '/remember <text>' },
   { name: 'forget',    description: 'Remove all saved notes and preferences',            usage: '/forget' },
+  { name: 'generate-tasks', description: 'Generate child tasks for the active user story', usage: '/generate-tasks' },
 ];
 
 function matchSlashCommands(query: string): SlashCommand[] {
@@ -36,10 +37,10 @@ interface Props {
   onSend: (content: string, images?: ImageAttachment[]) => void;
   onStop: () => void;
   onClear: () => void;
-  onModeSelect: (mode: 'inline' | 'plan' | 'act') => void;
+  onModeSelect: (mode: 'inline' | 'plan' | 'act' | 'yolo') => void;
   onAddContext: () => void;
   onAttachFiles: () => void;
-  loading: string; // 'inline' | 'plan' | 'act' | ''
+  loading: string; // 'inline' | 'plan' | 'act' | 'yolo' | ''
   /** Active model can accept image input — gates the image button + paste. */
   canAttachImages?: boolean;
 }
@@ -682,6 +683,7 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
               <span className={`mode-option ${mode === 'inline' ? 'mode-active' : ''}`} onClick={() => onModeSelect('inline')}>Chat</span>
               <span className={`mode-option ${mode === 'plan' ? 'mode-active' : ''}`} onClick={() => onModeSelect('plan')}>Plan</span>
               <span className={`mode-option ${mode === 'act' ? 'mode-active' : ''}`} onClick={() => onModeSelect('act')}>Act</span>
+              <span className={`mode-option ${mode === 'yolo' ? 'mode-active' : ''}`} onClick={() => onModeSelect('yolo')}>Yolo</span>
             </span>
           </div>
         </div>

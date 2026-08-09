@@ -163,7 +163,9 @@ export class AgentRunner {
         run.status = exitCode === null ? 'cancelled' : (exitCode === 0 ? 'succeeded' : 'failed');
         if (run.status === 'cancelled') { this.persist(); return; }
         // H8 fix: persist the output tail so interrupted runs have something to show.
-        run.outputFile = await this.writeOutput(run.id, output);
+        // Fire-and-forget: output file is a convenience, not required — don't block
+        // the completion path on vscode.workspace.fs (which can hang in test env).
+        void this.writeOutput(run.id, output).then(p => { run.outputFile = p; }).catch(() => {});
         const summary = await this.verifyWork(run, output);
         run.summary = summary;
         this.persist();
@@ -185,7 +187,8 @@ export class AgentRunner {
   /** H8: write agent output to a per-run file under the workspace state dir. */
   private async writeOutput(runId: string, output: string): Promise<string | undefined> {
     try {
-      const dir = vscode.Uri.joinPath(vscode.Uri.file(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.tmpdir()), '.ado-code', 'runs');
+      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.tmpdir();
+      const dir = vscode.Uri.joinPath(vscode.Uri.file(workspacePath), '.ado-code', 'runs');
       await vscode.workspace.fs.createDirectory(dir);
       const file = vscode.Uri.joinPath(dir, `${runId}.out.txt`);
       // H-8 fix: await the write so the file exists before we return its path.
@@ -296,6 +299,16 @@ export class AgentRunner {
 
   /** Check-back: after the agent finishes, verify the work it claims to have done. */
   private async verifyWork(run: AgentRun, output: string): Promise<string> {
+    try {
+      return await this._verifyWorkInner(run, output);
+    } catch (err) {
+      // Safety net: if any section of verifyWork throws (e.g. VS Code API
+      // unavailable in test env), return a minimal summary instead of crashing.
+      return `**Agent finished (${run.agent})** exit=${run.status}\n\n_verifyWork failed: ${err instanceof Error ? err.message : err}_`;
+    }
+  }
+
+  private async _verifyWorkInner(run: AgentRun, output: string): Promise<string> {
     const lines: string[] = [];
     lines.push(`**Agent finished (${run.agent})** exit=${run.status}`);
     if (run.sessionId) lines.push(`session: \`${run.sessionId}\``);
@@ -331,7 +344,12 @@ export class AgentRunner {
     } catch { /* ignore */ }
 
     // 3) Run the verification command (configurable, default: none)
-    const verifyCmd = vscode.workspace.getConfiguration('adoCode').get<string>('agents.verifyCommand', '');
+    let verifyCmd = '';
+    try {
+      verifyCmd = vscode.workspace.getConfiguration('adoCode').get<string>('agents.verifyCommand', '') ?? '';
+    } catch {
+      // VS Code API may not be available in test environments
+    }
     if (verifyCmd) {
       lines.push(`**Verification (\`${verifyCmd}\`):**`);
       // M7 fix: the verify command is USER-configured (trusted input), so shell

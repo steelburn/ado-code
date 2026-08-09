@@ -6,9 +6,9 @@ import { isCommandSessionApproved } from './tool-approval-ui';
 
 export interface ToolExecutor {
   tools: LlmTool[];
-  /** Q8: current tool-use mode — inline (approval on mutating), plan (read-only), act (auto-approve). */
-  mode: 'inline' | 'plan' | 'act';
-  setMode(mode: 'inline' | 'plan' | 'act'): void;
+  /** Q8: current tool-use mode — inline (approval on mutating), plan (read-only), act (auto-approve), yolo (auto-approve everything). */
+  mode: 'inline' | 'plan' | 'act' | 'yolo';
+  setMode(mode: 'inline' | 'plan' | 'act' | 'yolo'): void;
   /** Reset per-turn state (e.g. consent-denied flag) at the start of a turn. */
   beginTurn(): void;
   execute(name: string, args: Record<string, any>): Promise<string>;
@@ -18,7 +18,7 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'resolve_pr_conflicts']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
 
 export function createToolExecutor(
   services: Services,
@@ -33,13 +33,15 @@ export function createToolExecutor(
     onCreatePullRequest?: (runId: string, title?: string, description?: string) => Promise<{ pullRequestId: number; url: string; mergeStatus?: string }>;
     /** Conflict surfacing: fetch conflicted files (base/our/their) for a run's PR. */
     onResolvePrConflicts?: (runId: string) => Promise<Array<{ path: string; worktreePath: string; base?: string; ours?: string; theirs?: string; truncated?: boolean }>>;
+    /** Create work item with editor-tab preview + confirmation before ADO write. */
+    onCreateWorkItem?: (args: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; assignedTo?: string; tags?: string; parentWorkItemId?: number }) => Promise<{ id: number; url: string } | null>;
   }
 ): ToolExecutor {
   // M-6 fix: mode lives on `state` (mutated by setMode) — no closure var.
   // `deniedKeys` = per-turn set of consent denials, keyed so a NEW command or
   // tool still prompts: terminal commands by exact command string, other
   // mutating tools by tool name.
-  const state = { mode: 'inline' as 'inline' | 'plan' | 'act', deniedKeys: new Set<string>() };
+  const state = { mode: 'inline' as 'inline' | 'plan' | 'act' | 'yolo', deniedKeys: new Set<string>() };
   const tools: LlmTool[] = [
     {
       name: 'get_work_items',
@@ -74,6 +76,23 @@ export function createToolExecutor(
         type: 'object',
         properties: { id: { type: 'number' }, text: { type: 'string' } },
         required: ['id', 'text'],
+      },
+    },
+    {
+      name: 'create_work_item',
+      description: 'Create a new Azure DevOps work item (Task, Bug, Test Case, etc.) under a parent',
+      parameters: {
+        type: 'object',
+        properties: {
+          workItemType: { type: 'string', description: 'Work item type (Task, Bug, Test Case, etc.)' },
+          title: { type: 'string', description: 'Work item title' },
+          description: { type: 'string', description: 'Description or details' },
+          acceptanceCriteria: { type: 'string', description: 'Acceptance criteria' },
+          parentWorkItemId: { type: 'number', description: 'Parent work item ID (to create under)' },
+          assignedTo: { type: 'string', description: 'Assign to (email or display name)' },
+          tags: { type: 'string', description: 'Tags (comma-separated)' },
+        },
+        required: ['workItemType', 'title'],
       },
     },
     {
@@ -290,48 +309,52 @@ export function createToolExecutor(
         if (state.mode === 'plan') {
           return JSON.stringify({ error: `tool '${name}' is mutating and not allowed in plan mode` });
         }
-        // C3 fix: inline mode REQUIRES an approval hook. If none is wired,
-        // DENY — never silently execute a mutating tool.
-        if (state.mode === 'inline') {
-          if (!hooks?.onApprove) {
-            return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
+        // YOLO mode: skip ALL consent — auto-approve every tool including
+        // terminal commands. No allowlist, no prompt. User chose full autonomy.
+        if (state.mode !== 'yolo') {
+          // C3 fix: inline mode REQUIRES an approval hook. If none is wired,
+          // DENY — never silently execute a mutating tool.
+          if (state.mode === 'inline') {
+            if (!hooks?.onApprove) {
+              return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
+            }
+            // After one denial, re-prompting the SAME command/tool is pointless
+            // — deny it silently for the rest of the turn. A NEW command or
+            // tool still pops a consent card (the user may allow it).
+            const denyKey = name === 'run_terminal_command'
+              ? `run_terminal_command:${String(args.command ?? '')}`
+              : name;
+            if (state.deniedKeys.has(denyKey)) {
+              return JSON.stringify({ error: `tool '${name}' rejected by user (denied earlier this turn)` });
+            }
+            const ok = await hooks.onApprove(name, args);
+            if (!ok) {
+              state.deniedKeys.add(denyKey);
+              return JSON.stringify({ error: `tool '${name}' rejected by user` });
+            }
           }
-          // After one denial, re-prompting the SAME command/tool is pointless
-          // — deny it silently for the rest of the turn. A NEW command or
-          // tool still pops a consent card (the user may allow it).
-          const denyKey = name === 'run_terminal_command'
-            ? `run_terminal_command:${String(args.command ?? '')}`
-            : name;
-          if (state.deniedKeys.has(denyKey)) {
-            return JSON.stringify({ error: `tool '${name}' rejected by user (denied earlier this turn)` });
-          }
-          const ok = await hooks.onApprove(name, args);
-          if (!ok) {
-            state.deniedKeys.add(denyKey);
-            return JSON.stringify({ error: `tool '${name}' rejected by user` });
-          }
-        }
-        // C3 fix: act mode still enforces the terminal allowlist on
-        // run_terminal_command (tokenized, operator-free — see helper below).
-        // Commands not in the allowlist are routed through the approval hook
-        // so the user can allow once, per-session, or permanently.
-        if (name === 'run_terminal_command' && state.mode === 'act') {
-          const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
-          const command = String(args.command ?? '');
-          if (!isAllowlistedCommand(command, allowlist)) {
-            // Check session cache first (user chose "Allow for Session" earlier)
-            if (!isCommandSessionApproved(command)) {
-              // Not in allowlist and not session-approved — ask user
-              if (!hooks?.onApprove) {
-                return JSON.stringify({ error: `command not allowed in act mode (allowlist + no shell operators): ${command}` });
-              }
-              if (state.deniedKeys.has(`run_terminal_command:${command}`)) {
-                return JSON.stringify({ error: `command rejected by user: ${command} (denied earlier this turn)` });
-              }
-              const ok = await hooks.onApprove(name, args);
-              if (!ok) {
-                state.deniedKeys.add(`run_terminal_command:${command}`);
-                return JSON.stringify({ error: `command rejected by user: ${command}` });
+          // C3 fix: act mode still enforces the terminal allowlist on
+          // run_terminal_command (tokenized, operator-free — see helper below).
+          // Commands not in the allowlist are routed through the approval hook
+          // so the user can allow once, per-session, or permanently.
+          if (name === 'run_terminal_command' && state.mode === 'act') {
+            const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
+            const command = String(args.command ?? '');
+            if (!isAllowlistedCommand(command, allowlist)) {
+              // Check session cache first (user chose "Allow for Session" earlier)
+              if (!isCommandSessionApproved(command)) {
+                // Not in allowlist and not session-approved — ask user
+                if (!hooks?.onApprove) {
+                  return JSON.stringify({ error: `command not allowed in act mode (allowlist + no shell operators): ${command}` });
+                }
+                if (state.deniedKeys.has(`run_terminal_command:${command}`)) {
+                  return JSON.stringify({ error: `command rejected by user: ${command} (denied earlier this turn)` });
+                }
+                const ok = await hooks.onApprove(name, args);
+                if (!ok) {
+                  state.deniedKeys.add(`run_terminal_command:${command}`);
+                  return JSON.stringify({ error: `command rejected by user: ${command}` });
+                }
               }
             }
           }
@@ -379,6 +402,34 @@ export function createToolExecutor(
         case 'add_comment': {
           const c = await services.ado.addComment(project, args.id, args.text);
           return JSON.stringify({ ok: true, commentId: c.id });
+        }
+        case 'create_work_item': {
+          // Route through the editor-tab preview + confirmation hook so the
+          // user can review/edit details before the work item is created in ADO.
+          if (hooks?.onCreateWorkItem) {
+            const result = await hooks.onCreateWorkItem({
+              workItemType: args.workItemType,
+              title: args.title,
+              description: args.description,
+              acceptanceCriteria: args.acceptanceCriteria,
+              assignedTo: args.assignedTo,
+              tags: args.tags,
+              parentWorkItemId: args.parentWorkItemId ? Number(args.parentWorkItemId) : undefined,
+            });
+            if (!result) {
+              return JSON.stringify({ cancelled: true, message: 'Work item creation cancelled by user' });
+            }
+            return JSON.stringify({ ok: true, id: result.id, url: result.url });
+          }
+          // Fallback: direct creation if no hook is wired (e.g. headless).
+          const result = await services.ado.createWorkItem(project, args.workItemType, {
+            title: args.title,
+            description: args.description,
+            acceptanceCriteria: args.acceptanceCriteria,
+            assignedTo: args.assignedTo,
+            tags: args.tags,
+          }, args.parentWorkItemId ? Number(args.parentWorkItemId) : undefined);
+          return JSON.stringify({ ok: true, id: result.id, url: result.url });
         }
         case 'delegate_to_agent':
           return hooks?.onDelegate

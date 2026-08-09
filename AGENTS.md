@@ -8,7 +8,7 @@ Communication via VS Code postMessage bridge.
 
 ## Build & Test
 - `npm run compile` — TypeScript compilation (must be clean before any commit)
-- `npm test` — Mocha test suite (83+ tests, runs in VS Code electron)
+- `npm test` — Mocha test suite (249+ tests, runs in VS Code electron)
 - `npm run build:webview` — Webpack bundle for React webview
 - `npm run build:all` — compile + webview
 - `npm run lint` — ESLint
@@ -20,7 +20,7 @@ src/ado/ ADO REST API client, tree view, types
 src/agents/ Agent registry, runner, adapters (Claude, Codex, OpenCode, Hermes, Pi, Gemini, Generic)
 src/changelog/ CHANGELOG.md auto-update
 src/config/ VS Code settings, ContextProxy
-git/GitService.ts Git operations
+src/git/GitService.ts Git operations, gitError.ts error messages, mergeCleanup.ts post-merge cleanup, mergeConflicts.ts conflict surfacing
 src/llm/ LLM client, agentic loop, tools, providers, modes, prompts, context, consent
 src/llm/tools/ BaseTool, ToolRegistry, 5 tool implementations + definitions
 src/llm/providers/ BaseProvider, openai-v2, anthropic-v2
@@ -40,12 +40,13 @@ Composition: src/services.ts createServices() builds: ado, git, changelog, agent
 ### LLM Layer
 client.ts — streaming chat, tool-calling
 agentic.ts — multi-iteration tool loop
-tools.ts — mode-gated dispatch (inline/plan/act)
+tools.ts — mode-gated dispatch (inline/plan/act/yolo)
 tools/ — BaseTool, ToolRegistry, definitions
 providers/ — BaseProvider, openai-v2, anthropic-v2
-modes.ts — code/architect/ask/debug
+modes.ts — inline/plan/act/yolo mode configs
 prompts/system.ts — dynamic system prompt
 context/ — token counting, windowing, condensation
+modelCapabilities.ts — three-layer capability inference (override > live gateway > name heuristic)
 
 ### ADO Integration
 client.ts — REST API (all api-version=7.1)
@@ -80,10 +81,12 @@ shared/messages.ts — typed message protocol
 Tools defined as OpenAI-compatible JSON Schema.
 BaseTool abstract class provides lifecycle.
 ToolRegistry manages instances, dispatches by name.
-ToolExecutor gates by mode: plan=read-only, inline=consent, act=auto-approve.
+ToolExecutor gates by mode: plan=read-only, inline=consent, act=auto-approve, yolo=auto-approve everything (no consent, no allowlist).
 Tool names: get_work_items, get_work_item, read_file, edit_file, write_to_file,
 search_files, list_files, apply_diff, run_terminal_command, delegate_to_agent,
-restore_checkpoint, set_memory, read/write/list_workspace_memory, mcp__<server>__<tool>
+restore_checkpoint, set_memory, read/write/list_workspace_memory,
+commit_worktree, push_worktree, create_pull_request, resolve_pr_conflicts,
+mcp__<server>__<tool>
 
 ### Message Protocol
 src/shared/messages.ts defines typed contract.

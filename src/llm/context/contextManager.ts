@@ -80,6 +80,15 @@ export class ContextManager {
   }
 
   // -----------------------------------------------------------------------
+  // Configuration
+  // -----------------------------------------------------------------------
+
+  /** Update the max token budget (e.g. when live model data is available). */
+  setMaxTokens(maxTokens: number): void {
+    this.maxTokens = maxTokens;
+  }
+
+  // -----------------------------------------------------------------------
   // Tracking
   // -----------------------------------------------------------------------
 

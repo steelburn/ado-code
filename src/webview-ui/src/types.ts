@@ -64,7 +64,7 @@ export type WebviewToExtensionMessage =
   | { type: 'rerunWizard' }
   | { type: 'openSettings' }
   | { type: 'cycleMode' }
-  | { type: 'selectMode'; mode: 'inline' | 'plan' | 'act' }
+  | { type: 'selectMode'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
   | { type: 'fetchProjects'; organization?: string; pat?: string }
   | { type: 'fetchModels'; provider?: string; apiUrl?: string; apiKey?: string }
   | { type: 'selectProject'; projectName: string }
@@ -87,11 +87,13 @@ export type WebviewToExtensionMessage =
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
   | { type: 'assistantMessage'; content: string; done: boolean }
+  // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
+  | { type: 'thinkingMessage'; content: string; done: boolean }
   | { type: 'workItems'; items: WorkItemSummary[] }
   | { type: 'workItemDetail'; item: WorkItemDetail }
   | { type: 'gitStatus'; isGitRepo: boolean; currentBranch: string | null; branchCreated: string | null }
   | { type: 'changelogUpdated'; filePath: string }
-  | { type: 'modeChanged'; mode: 'inline' | 'plan' | 'act' }
+  | { type: 'modeChanged'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
   // H9: tool-call cards for the webview (agentic loop streaming)
   | { type: 'toolCall'; call: { id: string; name: string; arguments: Record<string, any> } }
   | { type: 'toolResult'; callId: string; content: string }
@@ -119,7 +121,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'editorContext'; text: string }
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
   // Consent: the agent requires user approval for a mutating tool (inline mode)
-  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any> }
+  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number }
   // Generic confirmation: in-chat card replacing native VS Code dialogs
   | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }> }
   // File search results for @ mentions
@@ -186,7 +188,7 @@ export interface ExtensionConfig {
   llmApiUrl: string;
   llmApiKey: string;
   llmModel: string;
-  mode: 'inline' | 'plan' | 'act';
+  mode: 'inline' | 'plan' | 'act' | 'yolo';
   agentsEnabled: string[];
   actToolBudget: number;
   actTerminalAllowlist: string[];

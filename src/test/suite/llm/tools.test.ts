@@ -14,7 +14,7 @@ function stubServices(): any {
   };
 }
 
-function makeExecutor(mode: 'inline' | 'plan' | 'act' = 'inline', withApprove = true): ToolExecutor {
+function makeExecutor(mode: 'inline' | 'plan' | 'act' | 'yolo' = 'inline', withApprove = true): ToolExecutor {
   const executor = createToolExecutor(
     stubServices(),
     {} as any, // context — workspaceState methods unused in these tests
@@ -196,6 +196,23 @@ suite('ToolExecutor security', () => {
       const res = await ex.execute(tool, { runId: 'run-1-42' });
       assert.ok(String(res).includes('not allowed in plan mode'), `${tool} blocked in plan`);
     }
+  });
+
+  test('yolo mode: mutating tools auto-approve without consent or allowlist', async () => {
+    // YOLO mode should skip consent entirely — the approve hook must NOT be called.
+    let approveCalled = false;
+    const ex = createToolExecutor(
+      stubServices(),
+      {} as any,
+      { onApprove: async () => { approveCalled = true; return true; } }
+    );
+    ex.setMode('yolo');
+    // run_terminal_command is mutating — in inline mode it would call onApprove.
+    // In yolo mode it should execute directly without asking.
+    const res = await ex.execute('run_terminal_command', { command: 'echo hello' });
+    assert.strictEqual(approveCalled, false, 'approve hook must NOT be called in yolo mode');
+    assert.ok(!res.includes('rejected'), `yolo should not reject: ${res}`);
+    assert.ok(res.includes('hello'), `yolo should execute the command: ${res}`);
   });
 
   test('resolve_pr_conflicts routes through its hook (read-only)', async () => {

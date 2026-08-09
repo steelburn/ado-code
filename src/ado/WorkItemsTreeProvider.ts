@@ -26,6 +26,12 @@ function iconForType(workItemType: string): string {
   return TYPE_ICONS[workItemType] ?? 'circle-outline';
 }
 
+export interface WorkItemFilterState {
+  states: string[];
+  types: string[];
+  text: string;
+}
+
 export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<WorkItemNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -39,6 +45,11 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   private childrenOf = new Map<number, WorkItemSummary[]>();
   private roots: WorkItemSummary[] = [];
 
+  // Filter state
+  private filterState: Set<string> = new Set(); // empty = show all states
+  private filterType: Set<string> = new Set();   // empty = show all types
+  private filterText: string = '';
+
   // Data is pushed in via refresh() (called from ChatViewProvider.refreshWorkItems,
   // Task 8 Step 4). The provider itself never talks to ADO.
   constructor(private readonly nodeContextValue = 'workItemNode') {}
@@ -49,10 +60,72 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     this._onDidChangeTreeData.fire(undefined);
   }
 
+  /** Set the state filter (empty array = show all states). */
+  setFilterState(states: string[]): void {
+    this.filterState = new Set(states);
+    this.buildTree();
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Set the type filter (empty array = show all types). */
+  setFilterType(types: string[]): void {
+    this.filterType = new Set(types);
+    this.buildTree();
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Set the text search filter (empty string = no text filter). */
+  setFilterText(text: string): void {
+    this.filterText = text;
+    this.buildTree();
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Clear all filters and rebuild the tree. */
+  clearFilters(): void {
+    this.filterState.clear();
+    this.filterType.clear();
+    this.filterText = '';
+    this.buildTree();
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Return the currently active filters (for UI display). */
+  getActiveFilters(): WorkItemFilterState {
+    return {
+      states: [...this.filterState],
+      types: [...this.filterType],
+      text: this.filterText,
+    };
+  }
+
+  /** Check if any filter is currently active. */
+  hasActiveFilters(): boolean {
+    return this.filterState.size > 0 || this.filterType.size > 0 || this.filterText.length > 0;
+  }
+
+  /** Check whether a work item passes all active filters. */
+  private matchesFilters(item: WorkItemSummary): boolean {
+    if (this.filterState.size > 0 && !this.filterState.has(item.state)) {
+      return false;
+    }
+    if (this.filterType.size > 0 && !this.filterType.has(item.workItemType)) {
+      return false;
+    }
+    if (this.filterText.length > 0) {
+      const lowerFilter = this.filterText.toLowerCase();
+      if (!item.title.toLowerCase().includes(lowerFilter)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** Build parent→children index and root list from flat work item array. */
   private buildTree(): void {
-    this.childrenOf.clear();
-    this.roots = [];
+    // Build the full (unfiltered) tree first
+    const allChildrenOf = new Map<number, WorkItemSummary[]>();
+    const allRoots: WorkItemSummary[] = [];
 
     // Index all items by id for parent lookup
     const byId = new Map<number, WorkItemSummary>();
@@ -65,38 +138,87 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     for (const wi of this.workItems) {
       const parentId = wi.parentId;
       if (parentId && byId.has(parentId)) {
-        // This item's parent is in the fetched set → it's a child
-        const siblings = this.childrenOf.get(parentId) ?? [];
+        const siblings = allChildrenOf.get(parentId) ?? [];
         siblings.push(wi);
-        this.childrenOf.set(parentId, siblings);
+        allChildrenOf.set(parentId, siblings);
       } else {
-        // No parent, or parent not fetched → root node
-        this.roots.push(wi);
+        allRoots.push(wi);
       }
     }
 
-    // Sort roots: by work item type hierarchy, then by title
+    // Sort type order helper
     const typeOrder = ['Epic', 'Feature', 'User Story', 'Product Backlog Item', 'Task', 'Bug', 'Issue'];
-    this.roots.sort((a, b) => {
+    const sortByTypeAndTitle = (a: WorkItemSummary, b: WorkItemSummary) => {
       const ai = typeOrder.indexOf(a.workItemType);
       const bi = typeOrder.indexOf(b.workItemType);
       const aOrder = ai === -1 ? 99 : ai;
       const bOrder = bi === -1 ? 99 : bi;
       if (aOrder !== bOrder) return aOrder - bOrder;
       return a.title.localeCompare(b.title);
-    });
+    };
 
-    // Sort children within each parent by type then title
-    for (const [, children] of this.childrenOf) {
-      children.sort((a, b) => {
-        const ai = typeOrder.indexOf(a.workItemType);
-        const bi = typeOrder.indexOf(b.workItemType);
-        const aOrder = ai === -1 ? 99 : ai;
-        const bOrder = bi === -1 ? 99 : bi;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-        return a.title.localeCompare(b.title);
-      });
+    // If no filters are active, use the full tree
+    const hasFilters = this.hasActiveFilters();
+    if (!hasFilters) {
+      this.childrenOf = allChildrenOf;
+      this.roots = allRoots.sort(sortByTypeAndTitle);
+
+      // Sort children within each parent
+      for (const [, children] of this.childrenOf) {
+        children.sort(sortByTypeAndTitle);
+      }
+      return;
     }
+
+    // Apply filters: a parent is visible if IT passes OR any child passes
+    // First, compute which items pass the filter
+    const matchingItems = new Set<number>();
+    for (const wi of this.workItems) {
+      if (this.matchesFilters(wi)) {
+        matchingItems.add(wi.id);
+      }
+    }
+
+    // Walk up from matching items to their ancestors so the tree path is visible
+    const visibleItems = new Set<number>();
+    for (const id of matchingItems) {
+      let current = byId.get(id);
+      while (current) {
+        visibleItems.add(current.id);
+        const pid = current.parentId;
+        current = pid ? byId.get(pid) : undefined;
+      }
+    }
+
+    // Rebuild filtered childrenOf — only keep children that are visible
+    this.childrenOf.clear();
+    for (const [parentId, children] of allChildrenOf) {
+      if (!visibleItems.has(parentId)) continue;
+      const filtered = children.filter(c => visibleItems.has(c.id));
+      if (filtered.length > 0) {
+        this.childrenOf.set(parentId, filtered);
+      }
+    }
+
+    // Rebuild filtered roots — only keep roots that are visible
+    this.roots = allRoots
+      .filter(r => visibleItems.has(r.id))
+      .sort(sortByTypeAndTitle);
+
+    // Sort children within each parent
+    for (const [, children] of this.childrenOf) {
+      children.sort(sortByTypeAndTitle);
+    }
+  }
+
+  /** Return all work items (unfiltered) for filter value discovery. */
+  getUniqueFilterValues(): WorkItemSummary[] {
+    return this.workItems;
+  }
+
+  /** Return the number of currently visible (filtered) root items. */
+  getVisibleCount(): number {
+    return this.roots.length;
   }
 
   /** Update agent run status for a work item. */

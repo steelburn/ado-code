@@ -352,6 +352,12 @@ export class OpenAiV2Provider extends BaseProvider {
               yield { type: "text", text: content } as ApiStreamChunk;
             }
 
+            // Extract reasoning/thinking content (o1, o3, and other reasoning models)
+            const reasoning = parsed.choices?.[0]?.delta?.reasoning_content;
+            if (reasoning) {
+              yield { type: "thinking", thinking: reasoning } as ApiStreamChunk;
+            }
+
             // Extract tool calls (if present)
             const toolCalls = parsed.choices?.[0]?.delta?.tool_calls;
             if (toolCalls && Array.isArray(toolCalls)) {

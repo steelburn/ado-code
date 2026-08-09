@@ -2,6 +2,44 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.7] - 2026-08-09
+
+### Features
+- **Task draft editor**: The `create_work_item` LLM tool now opens an editable markdown tab before creating work items in ADO — review, edit fields (title, description, acceptance criteria, assigned to, tags), then confirm via an in-chat card. Catches mistakes before they hit the backlog
+- **YOLO mode**: New fully-autonomous mode that auto-approves every tool including shell commands — no consent prompts, no allowlist. Use `/mode yolo`, the mode toggle (Chat|Plan|Act|YOLO), or the Configuration page. Skips all consent and terminal allowlist checks
+- **Consent auto-approve timer**: Harmless (read-only) terminal commands (git status/diff/log, npm test, ls, cat, etc.) show a countdown timer on the consent card; the command auto-approves when the timer expires. Configurable via `adoCode.consent.harmlessAutoApprove` (default off) and `adoCode.consent.harmlessAutoApproveSeconds` (default 20s, range 1–30). Read-only command detection covers git (status, diff, log, show, branch, remote, tag, blame), npm (test, run, list, info, view), pip, yarn, and common base commands (ls, cat, grep, find, etc.)
+- **Show AI thinking**: Models that return thinking/reasoning tokens (o1/o3 reasoning_content, Claude extended thinking) now display their internal reasoning in a collapsible blue thinking block while streaming. Configurable via `adoCode.chat.showThinking` (default `true`). Works automatically with supported models; no effect on models that don't expose thinking tokens
+- **Improved context size detection**: Content-aware token counting (code ~3.5 chars/token, prose ~4.5) replaces naive char/4 estimation; expanded model context window table (27 models including Gemini 1M/2M); better substring matching for model lookup; default context window raised from 8k to 128k
+- **Dynamic context window from API**: Context window size is now auto-detected from the `/models` endpoint — Ollama `meta.n_ctx`, OpenRouter `context_length`, and other providers. Live data takes precedence over the hardcoded table and auto-updates the ContextManager when models are fetched
+- **Context management**: Priority-based conversation truncation replaces naive 20-turn cutoff; real token counter replaces rough char/4 estimation; conversation auto-condenses at 75% context via LLM summarization; token status bar shows accurate model-aware counts
+- **Mode-aware system prompt**: Dynamic prompt generation includes mode-specific role, available tools, tool guidelines, environment context, and memory injection
+- **Tool budget configurable**: Max tool calls per act-mode turn now adjustable in the Configuration page (recommended: 15-30) with min/max constraints
+- **MCP server management**: Right-click MCP servers in the Status Panel to disconnect, reconnect, or view details
+- **Mode quick-cycle**: Right-click the Mode item in the Status Panel to cycle through inline/plan/act
+- **Worktree batch cleanup**: Remove All Completed action on the Worktrees root node
+- **Agent run history**: Recent Runs section in the Status Panel shows last 10 completed runs with status icons, timestamps, and context menu (View Summary, Open Worktree, Copy Run ID)
+- **Agent details panel**: Right-click agent in Status Panel to view name, binary, version, supported modes, and CLI arguments
+- **Memory search**: QuickPick fuzzy search across all user and workspace memory entries
+- **Memory import/export**: Export memories to JSON; import with merge or replace option
+- **Keyboard shortcuts**: Ctrl+Shift+M cycle mode, Ctrl+Shift+/ search memories, Ctrl+Alt+R refresh status
+- **Worktree diff viewer**: Show Changes opens VS Code diff editor for worktree files
+- **Agent auto-review**: Git diff automatically reviewed by LLM on agent completion with merge recommendation
+- **Work item filtering**: Filter Work Items tree by state, type, or text search with smart parent visibility
+- **Changelog on update**: After a version change, a one-time notification offers to show the new version's changelog in a styled webview panel
+- **Generate tasks from user story**: New `create_work_item` LLM tool creates ADO work items; `/generate-tasks` slash command and context menu action trigger the AI to analyze a user story and generate child tasks
+- **Agent progress in chat**: Agent delegation now shows start/completion messages in the chat thread alongside the streaming output panel
+- **Merge-flow guardrails round 2**: `commit_worktree` now refuses to commit a run whose verification FAILED unless the assistant explicitly passes `allowFailed` (after reviewing); `create_pull_request` refuses to open a PR against protected branches (`adoCode.git.protectedBranches`, default `["main", "master"]`); new `resolve_pr_conflicts` tool lists conflicted files with base/our/their contents so the assistant can resolve them via edit_file/apply_diff, then re-commit/re-push until the PR is clean
+- **Child task delegation**: When delegating a work item to an agent (via `delegate_to_agent` tool or `/delegate` slash command), the system now checks for child work items in ADO. If child tasks exist, a confirmation card warns the user and offers to include them in the agent's context. When included, child tasks are appended to the agent prompt so the agent implements all of them
+- **Clean Up After Merge**: New context-menu action on the Worktrees view and auto-offer after a merged PR — removes the run's worktree and deletes its branch, but only when the ADO pull request is actually completed+merged and the branch is fully merged; nothing is ever lost
+- **Capability overrides**: `adoCode.llm.capabilityOverrides` (array of `{ model, vision?, tools? }`) lets you declare vision/tool-calling support per model id, beating every auto-detection layer. Structured editor in the Configuration page (LLM Provider → Capability overrides) adds/removes rows with model id + checkboxes; unchecked fields keep the auto-detected value
+- **Live model capabilities**: Detection is now three layers — user override > live gateway data (OpenRouter `architecture.input_modalities`, Ollama `capabilities[]` from `/models`) > name heuristic. The heuristic now covers gpt-5, o1–o9, llama-4, gemma-3, deepseek-vl, glm-4.5v, minicpm, and more
+- Removed redundant "Select Work Item" context menu entry (was duplicated across two menu groups)
+
+### Bug Fixes
+- **Choice-card answers went stale**: Clicking an option on an AI-posed question posted `sendMessage`, which the host silently dropped — the chat showed your answer and "Thinking…" forever with no LLM turn ever starting. Choice answers now route through the same turn path as typed messages
+- **"spawn git ENOENT" on legacy worktrees**: Commit & Push / Clean Up After Merge failed on worktrees created by older versions (`run-run-…` directories) — the path resolver now checks both directory layouts. ENOENT errors are also re-phrased to say whether the worktree directory is missing or git isn't on the VS Code process PATH
+- **Pre-commit hook git env var pollution**: The pre-commit hook now clears `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE`, and other git env vars so the test suite (which shells out to git in temp repos) doesn't inherit stale hook state
+
 ## [0.5.6] - 2026-08-07
 
 ### Features

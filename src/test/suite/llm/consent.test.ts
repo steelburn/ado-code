@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { createConsentBroker } from '../../../llm/consent';
+import { createConsentBroker, isHarmlessCommand } from '../../../llm/consent';
 import {
   isCommandSessionApproved,
   addSessionCommandApproval,
@@ -128,5 +128,129 @@ suite('Session tool approval cache', () => {
     addSessionToolApproval('edit_file');
     clearSessionAutoApprovals();
     assert.strictEqual(isSessionAutoApproved('edit_file'), false);
+  });
+});
+
+suite('isHarmlessCommand', () => {
+  test('returns false for empty command', () => {
+    assert.strictEqual(isHarmlessCommand(''), false);
+    assert.strictEqual(isHarmlessCommand('  '), false);
+  });
+
+  test('rejects shell operators', () => {
+    assert.strictEqual(isHarmlessCommand('git status; rm -rf /'), false);
+    assert.strictEqual(isHarmlessCommand('echo hello | cat'), false);
+    assert.strictEqual(isHarmlessCommand('echo hello && rm -rf /'), false);
+    assert.strictEqual(isHarmlessCommand('echo `whoami`'), false);
+    assert.strictEqual(isHarmlessCommand('echo $HOME'), false);
+    assert.strictEqual(isHarmlessCommand('echo hello > /tmp/x'), false);
+    assert.strictEqual(isHarmlessCommand('echo hello < /tmp/x'), false);
+    assert.strictEqual(isHarmlessCommand('echo $(cmd)'), false);
+    assert.strictEqual(isHarmlessCommand('echo hello\nrm -rf /'), false);
+  });
+
+  test('approves read-only git commands', () => {
+    assert.strictEqual(isHarmlessCommand('git status'), true);
+    assert.strictEqual(isHarmlessCommand('git diff'), true);
+    assert.strictEqual(isHarmlessCommand('git diff HEAD'), true);
+    assert.strictEqual(isHarmlessCommand('git diff --stat HEAD~3'), true);
+    assert.strictEqual(isHarmlessCommand('git log'), true);
+    assert.strictEqual(isHarmlessCommand('git log --oneline -10'), true);
+    assert.strictEqual(isHarmlessCommand('git show HEAD'), true);
+    assert.strictEqual(isHarmlessCommand('git branch'), true);
+    assert.strictEqual(isHarmlessCommand('git branch -a'), true);
+    assert.strictEqual(isHarmlessCommand('git remote -v'), true);
+    assert.strictEqual(isHarmlessCommand('git tag'), true);
+    assert.strictEqual(isHarmlessCommand('git blame src/file.ts'), true);
+    assert.strictEqual(isHarmlessCommand('git ls-files'), true);
+  });
+
+  test('rejects mutating git commands', () => {
+    assert.strictEqual(isHarmlessCommand('git add .'), false);
+    assert.strictEqual(isHarmlessCommand('git commit -m "msg"'), false);
+    assert.strictEqual(isHarmlessCommand('git push'), false);
+    assert.strictEqual(isHarmlessCommand('git pull'), false);
+    assert.strictEqual(isHarmlessCommand('git merge feature'), false);
+    assert.strictEqual(isHarmlessCommand('git checkout -b new'), false);
+    assert.strictEqual(isHarmlessCommand('git reset HEAD~1'), false);
+    assert.strictEqual(isHarmlessCommand('git stash'), false);
+    assert.strictEqual(isHarmlessCommand('git clean -fd'), false);
+  });
+
+  test('rejects bare git (no subcommand)', () => {
+    assert.strictEqual(isHarmlessCommand('git'), false);
+  });
+
+  test('approves read-only base commands', () => {
+    assert.strictEqual(isHarmlessCommand('ls'), true);
+    assert.strictEqual(isHarmlessCommand('ls -la'), true);
+    assert.strictEqual(isHarmlessCommand('pwd'), true);
+    assert.strictEqual(isHarmlessCommand('cat file.txt'), true);
+    assert.strictEqual(isHarmlessCommand('head -n 10 file.txt'), true);
+    assert.strictEqual(isHarmlessCommand('tail -f log.txt'), true);
+    assert.strictEqual(isHarmlessCommand('wc -l file.txt'), true);
+    assert.strictEqual(isHarmlessCommand('grep pattern file.txt'), true);
+    assert.strictEqual(isHarmlessCommand('rg "TODO" src/'), true);
+    assert.strictEqual(isHarmlessCommand('find . -name "*.ts"'), true);
+    assert.strictEqual(isHarmlessCommand('tree src/'), true);
+    assert.strictEqual(isHarmlessCommand('echo hello'), true);
+    assert.strictEqual(isHarmlessCommand('date'), true);
+    assert.strictEqual(isHarmlessCommand('whoami'), true);
+    assert.strictEqual(isHarmlessCommand('which node'), true);
+    assert.strictEqual(isHarmlessCommand('node --version'), true);
+    assert.strictEqual(isHarmlessCommand('python --version'), true);
+    assert.strictEqual(isHarmlessCommand('curl https://example.com'), true);
+    assert.strictEqual(isHarmlessCommand('wget https://example.com/file'), true);
+    assert.strictEqual(isHarmlessCommand('env'), true);
+    assert.strictEqual(isHarmlessCommand('printenv HOME'), true);
+  });
+
+  test('approves read-only npm commands', () => {
+    assert.strictEqual(isHarmlessCommand('npm test'), true);
+    assert.strictEqual(isHarmlessCommand('npm run lint'), true);
+    assert.strictEqual(isHarmlessCommand('npm run compile'), true);
+    assert.strictEqual(isHarmlessCommand('npm list'), true);
+    assert.strictEqual(isHarmlessCommand('npm ls --depth=0'), true);
+    assert.strictEqual(isHarmlessCommand('npm info typescript'), true);
+    assert.strictEqual(isHarmlessCommand('npm view react version'), true);
+    assert.strictEqual(isHarmlessCommand('npm outdated'), true);
+    assert.strictEqual(isHarmlessCommand('npm doctor'), true);
+  });
+
+  test('rejects mutating npm commands', () => {
+    assert.strictEqual(isHarmlessCommand('npm install'), false);
+    assert.strictEqual(isHarmlessCommand('npm install express'), false);
+    assert.strictEqual(isHarmlessCommand('npm uninstall lodash'), false);
+    assert.strictEqual(isHarmlessCommand('npm publish'), false);
+    assert.strictEqual(isHarmlessCommand('npm update'), false);
+    assert.strictEqual(isHarmlessCommand('npm init'), false);
+  });
+
+  test('rejects bare npm (no subcommand)', () => {
+    assert.strictEqual(isHarmlessCommand('npm'), false);
+  });
+
+  test('approves read-only pip commands', () => {
+    assert.strictEqual(isHarmlessCommand('pip list'), true);
+    assert.strictEqual(isHarmlessCommand('pip show requests'), true);
+    assert.strictEqual(isHarmlessCommand('pip check'), true);
+  });
+
+  test('rejects mutating pip commands', () => {
+    assert.strictEqual(isHarmlessCommand('pip install requests'), false);
+    assert.strictEqual(isHarmlessCommand('pip uninstall requests'), false);
+  });
+
+  test('rejects unknown commands', () => {
+    assert.strictEqual(isHarmlessCommand('docker rm container'), false);
+    assert.strictEqual(isHarmlessCommand('kubectl delete pod x'), false);
+    assert.strictEqual(isHarmlessCommand('rm -rf /'), false);
+    assert.strictEqual(isHarmlessCommand('dd if=/dev/zero of=/dev/sda'), false);
+  });
+
+  test('case insensitive', () => {
+    assert.strictEqual(isHarmlessCommand('Git Status'), true);
+    assert.strictEqual(isHarmlessCommand('GIT DIFF'), true);
+    assert.strictEqual(isHarmlessCommand('NPM Test'), true);
   });
 });

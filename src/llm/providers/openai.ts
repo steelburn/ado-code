@@ -57,6 +57,11 @@ export class OpenAiProvider implements LlmProvider {
             if (content) {
               yield { content, done: false };
             }
+            // Reasoning/thinking content (o1, o3, and other reasoning models)
+            const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
+            if (reasoning) {
+              yield { content: '', done: false, thinking: reasoning };
+            }
           } catch {
             // Skip malformed JSON
           }

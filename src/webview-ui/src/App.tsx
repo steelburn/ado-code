@@ -21,7 +21,7 @@ interface SanitizedConfig {
   llmProvider: string;
   llmApiUrl: string;
   llmModel: string;
-  mode?: 'inline' | 'plan' | 'act';
+  mode?: 'inline' | 'plan' | 'act' | 'yolo';
   configured: boolean;
   modelCapabilities?: { vision: boolean; tools: boolean };
 }
@@ -55,6 +55,8 @@ function App() {
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
   const [mode, setMode] = useState('inline');
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
+  // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
+  const [thinking, setThinking] = useState('');
 
   // Agent state — supports multiple concurrent runs
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -97,8 +99,12 @@ function App() {
           // A reply arriving means the agentic turn finished — no consent
           // prompt can still be pending.
           setConsent(null);
-          if (msg.done) setLoading(false);
-          else setLoading(true);
+          if (msg.done) {
+            setLoading(false);
+            setThinking(''); // Turn finished — clear thinking text
+          } else {
+            setLoading(true);
+          }
           if (!msg.content) break;
           setMessages(prev => {
             const last = prev[prev.length - 1];
@@ -109,6 +115,15 @@ function App() {
             }
             return [...prev, { role: 'assistant', content: msg.content }];
           });
+          break;
+
+        case 'thinkingMessage':
+          // AI thinking/reasoning text — accumulate and display while streaming
+          if (!msg.done) {
+            setThinking(prev => prev + msg.content);
+          } else {
+            setThinking('');
+          }
           break;
 
         case 'loading':
@@ -124,6 +139,7 @@ function App() {
           setModelsLoading(false);
           // An error ends the turn — no consent prompt can still be pending.
           setConsent(null);
+          setThinking(''); // Clear thinking on error
           break;
 
         case 'consentRequest':
@@ -132,6 +148,7 @@ function App() {
             requestId: msg.requestId,
             tool: msg.tool,
             args: msg.args,
+            autoApproveMs: msg.autoApproveMs,
           });
           break;
 
@@ -248,6 +265,10 @@ function App() {
             });
             return next;
           });
+          // Add completion message to chat thread
+          const statusEmoji = msg.run.status === 'succeeded' ? '✅' : msg.run.status === 'failed' ? '❌' : '⚠️';
+          const completionMsg = `${statusEmoji} **Agent ${msg.run.agent}** ${msg.run.status} for #${msg.run.workItemId ?? '?'}`;
+          setMessages(prev => [...prev, { role: 'assistant', content: completionMsg }]);
           setLoading(false);
           break;
         }
@@ -319,6 +340,7 @@ function App() {
     // A new turn aborts any in-flight run — the host denies the pending
     // prompt; drop the card here too.
     setConsent(null);
+    setThinking('');
   }, []);
 
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
@@ -363,7 +385,7 @@ function App() {
     vscode.postMessage({ type: 'updateConfig', config: form });
   }, []);
 
-  const handleModeSelect = useCallback((selectedMode: 'inline' | 'plan' | 'act') => {
+  const handleModeSelect = useCallback((selectedMode: 'inline' | 'plan' | 'act' | 'yolo') => {
     vscode.postMessage({ type: 'selectMode', mode: selectedMode });
   }, []);
 
@@ -560,7 +582,7 @@ function App() {
       ))}
 
       {/* Messages */}
-      <MessageList messages={messages} loading={loading} />
+      <MessageList messages={messages} loading={loading} thinking={thinking} />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
       {consent && (

@@ -46,6 +46,7 @@ export const DEFAULT_MODES: ModeConfig[] = [
   { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['read', 'write', 'execute'] },
   { slug: 'plan', name: 'Plan', role: 'Read-only planning, no edits', toolGroups: ['read'] },
   { slug: 'act', name: 'Act', role: 'Full auto-approve mode', toolGroups: ['read', 'write', 'execute'] },
+  { slug: 'yolo', name: 'YOLO', role: 'Full autonomy — auto-approves everything including shell commands', toolGroups: ['read', 'write', 'execute'] },
 ];
 
 // ---------------------------------------------------------------------------

@@ -84,4 +84,42 @@ export class McpManager {
       .filter(([_, c]) => c.isConnected)
       .map(([name]) => name);
   }
+
+  /** Disconnect a specific server by name. Returns true if found and disconnected. */
+  async disconnectServer(name: string): Promise<boolean> {
+    const client = this.clients.get(name);
+    if (!client) return false;
+    await client.disconnect();
+    this.clients.delete(name);
+    return true;
+  }
+
+  /** Reconnect a specific server by name using its original config from VS Code settings. */
+  async reconnectServer(name: string): Promise<boolean> {
+    const config = this.getServerConfig(name);
+    if (!config) return false;
+    // Disconnect existing client if any
+    const existing = this.clients.get(name);
+    if (existing) {
+      await existing.disconnect();
+    }
+    const client = new McpClient(config);
+    try {
+      await client.connect();
+      const tools = await client.toLlmTools();
+      logger.info('MCP: reconnected to ' + name + ' (' + tools.length + ' tools)');
+      this.clients.set(name, client);
+      return true;
+    } catch (err) {
+      console.error(`[McpManager] Failed to reconnect to ${name}: ${err instanceof Error ? err.message : err}`);
+      this.clients.delete(name);
+      return false;
+    }
+  }
+
+  /** Look up the original config for a named server from VS Code settings. */
+  getServerConfig(name: string): McpServerConfig | undefined {
+    const configs = vscode.workspace.getConfiguration('adoCode').get<McpServerConfig[]>('mcp.servers', []);
+    return configs.find(c => c.name === name);
+  }
 }

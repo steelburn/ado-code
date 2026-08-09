@@ -1,7 +1,18 @@
 import * as vscode from 'vscode';
 import { Services } from '../services';
 import { getSettings } from '../config/settings';
-import { AgentCapability } from '../agents/types';
+import { AgentCapability, AgentRun } from '../agents/types';
+import { AgentRunner } from '../agents/AgentRunner';
+
+function relativeTime(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<StatusItem | undefined>();
@@ -9,6 +20,7 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
 
   /** Cached agent detection results (async → cached for sync getChildren). */
   private agentCapabilities: AgentCapability[] = [];
+  private agentRunner?: AgentRunner;
 
   /** Debounce timer for rapid config changes. */
   private _refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -17,6 +29,10 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
     // Kick off initial async agent detection; fire tree refresh when done
     // so the STATUS tree shows agents after the async probe completes.
     void this.refreshAgents().then(() => this._onDidChangeTreeData.fire(undefined));
+  }
+
+  setAgentRunner(runner: AgentRunner): void {
+    this.agentRunner = runner;
   }
 
   /**
@@ -95,6 +111,8 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
       );
       modeItem.iconPath = new vscode.ThemeIcon('compass');
       modeItem.command = { command: 'adoCode.setMode', title: 'Change Mode' };
+      modeItem.contextValue = 'statusMode';
+      modeItem.meta = { mode: settings.mode };
       items.push(modeItem);
     } catch {
       // settings not configured yet
@@ -109,6 +127,7 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
         vscode.TreeItemCollapsibleState.Expanded
       );
       memItem.iconPath = new vscode.ThemeIcon('brain');
+      memItem.contextValue = 'statusMemory';
       for (const entry of userMemories) {
         const child = new StatusItem(
           `[${entry.category}] ${entry.key}: ${entry.content.substring(0, 60)}`,
@@ -145,6 +164,8 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
       for (const name of mcpServers) {
         const child = new StatusItem(name, vscode.TreeItemCollapsibleState.None);
         child.iconPath = new vscode.ThemeIcon('check');
+        child.contextValue = 'statusMcpServer';
+        child.meta = { name };
         mcpItem.children = mcpItem.children ?? [];
         mcpItem.children.push(child);
       }
@@ -189,6 +210,48 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
     // run status, dirty files, last commit and ahead/behind. The context
     // menus (Open in Terminal/Explorer, Remove) are shared via the
     // `worktreeNode` contextValue.
+
+    // ── Recent Runs ──────────────────────────────────────────────
+    try {
+      if (this.agentRunner) {
+        const runs = this.agentRunner.listRuns()
+          .filter(r => r.status !== 'running')
+          .sort((a, b) => {
+            const aTime = a.finishedAt ? new Date(a.finishedAt).getTime() : 0;
+            const bTime = b.finishedAt ? new Date(b.finishedAt).getTime() : 0;
+            return bTime - aTime;
+          })
+          .slice(0, 10);
+
+        const runsItem = new StatusItem('Recent Runs', vscode.TreeItemCollapsibleState.Expanded);
+        runsItem.iconPath = new vscode.ThemeIcon('history');
+        if (runs.length === 0) {
+          const child = new StatusItem('No recent runs', vscode.TreeItemCollapsibleState.None);
+          runsItem.children = runsItem.children ?? [];
+          runsItem.children.push(child);
+        } else {
+          for (const run of runs) {
+            const statusIcon =
+              run.status === 'succeeded' ? 'check' :
+              run.status === 'failed' ? 'error' :
+              run.status === 'cancelled' ? 'close' :
+              'warning'; // interrupted
+            const label = `#${run.workItemId ?? '?'} — ${run.agent}`;
+            const timeDesc = run.finishedAt ? relativeTime(run.finishedAt) : '';
+            const child = new StatusItem(label, vscode.TreeItemCollapsibleState.None);
+            child.iconPath = new vscode.ThemeIcon(statusIcon);
+            child.description = timeDesc;
+            child.contextValue = 'statusRun';
+            child.meta = { runId: run.id, status: run.status, summary: run.summary, worktreePath: run.worktreePath };
+            runsItem.children = runsItem.children ?? [];
+            runsItem.children.push(child);
+          }
+        }
+        items.push(runsItem);
+      }
+    } catch {
+      // agentRunner not available
+    }
 
     return items;
   }

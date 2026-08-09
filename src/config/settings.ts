@@ -31,6 +31,10 @@ export interface AdoCodeSettings {
   adoClarificationState: string;
   adoWarnOnSparseTask: boolean;
   ignoreDotAdoCode: boolean;
+  agentsAutoReview: boolean;
+  consentHarmlessAutoApprove: boolean;
+  consentHarmlessAutoApproveSeconds: number;
+  chatShowThinking: boolean;
 }
 
 export function getSettings(): AdoCodeSettings {
@@ -48,7 +52,7 @@ export function getSettings(): AdoCodeSettings {
     llmChoiceDetectionModel: config.get<string>('llm.choiceDetectionModel', ''),
     llmCapabilityOverrides: config.get<Array<{ model: string; vision?: boolean; tools?: boolean }>>('llm.capabilityOverrides', []),
     mode: config.get<'inline' | 'plan' | 'act'>('mode', 'inline'),
-    actToolBudget: config.get<number>('act.toolBudget', 25),
+    actToolBudget: config.get<number>('act.toolBudget', 50),
     actTerminalAllowlist: config.get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']),
     gitRequireGitRepo: config.get<boolean>('git.requireGitRepo', true),
     gitCreateBranchOnTaskStart: config.get<boolean>('git.createBranchOnTaskStart', true),
@@ -61,6 +65,10 @@ export function getSettings(): AdoCodeSettings {
     adoClarificationState: config.get<string>('ado.clarificationState', 'Blocked'),
     adoWarnOnSparseTask: config.get<boolean>('ado.warnOnSparseTask', true),
     ignoreDotAdoCode: config.get<boolean>('ignore.dotAdoCode', true),
+    agentsAutoReview: config.get<boolean>('agents.autoReview', true),
+    consentHarmlessAutoApprove: config.get<boolean>('consent.harmlessAutoApprove', false),
+    consentHarmlessAutoApproveSeconds: config.get<number>('consent.harmlessAutoApproveSeconds', 20),
+    chatShowThinking: config.get<boolean>('chat.showThinking', true),
   };
 }
 

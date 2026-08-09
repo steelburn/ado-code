@@ -296,12 +296,14 @@ suite('AgentRunner', () => {
       );
       // codex is not installed → the adapter fails fast, verifyWork runs and
       // the post-agent hook executes. Poll instead of a fixed sleep.
-      await runner.delegate(42, 'do stuff', 'codex');
+      const run = await runner.delegate(42, 'do stuff', 'codex');
+      // Ensure workdir exists for execAsync (fakeGit.workspaceRoot is used as cwd)
+      run.workdir = workdir;
       const deadline = Date.now() + 2000;
       while (summary === '' && Date.now() < deadline) {
         await new Promise(res => setTimeout(res, 50));
       }
-      assert.ok(summary.includes('Post-agent hook'), 'summary should carry the hook section');
+      assert.ok(summary.includes('Post-agent hook'), 'summary should carry the hook section, got: ' + summary.slice(0, 500));
       assert.ok(summary.includes('AFTER_HOOK_OUT'), 'hook output should be captured in the summary');
     } finally {
       fs.rmSync(workdir, { recursive: true, force: true });

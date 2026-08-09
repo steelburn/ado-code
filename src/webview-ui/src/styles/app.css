@@ -1311,6 +1311,74 @@ code {
   padding: 5px 10px;
 }
 
+/* ── Consent card auto-approve timer ──────────────────────────────── */
+.consent-card-timer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.consent-card-timer-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-progressBar-background, rgba(255, 255, 255, 0.1));
+  overflow: hidden;
+}
+
+.consent-card-timer-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--vscode-charts-green, #388a34);
+  transition: width 0.1s linear;
+}
+
+.consent-card-timer-text {
+  font-size: 0.8em;
+  color: var(--vscode-charts-green, #388a34);
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+/* ── AI Thinking block ──────────────────────────────────────────── */
+.thinking-block {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-inputValidation-infoBorder, #3794ff);
+  border-left: 3px solid var(--vscode-inputValidation-infoBorder, #3794ff);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.thinking-icon {
+  font-size: 14px;
+}
+
+.thinking-label {
+  font-weight: 600;
+  font-size: 0.85em;
+  color: var(--vscode-inputValidation-infoBorder, #3794ff);
+}
+
+.thinking-content {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
 .btn-approve {
   background: var(--vscode-testing-iconPassed, #388a34);
   color: #ffffff;
@@ -1928,6 +1996,64 @@ code {
 .config-mcp-add:hover {
   border-color: var(--vscode-focusBorder);
   color: var(--vscode-foreground);
+}
+
+/* ── MCP server setup guide ─────────────────────────────────── */
+.config-mcp-guide {
+  margin-top: 12px;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.config-mcp-guide summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  user-select: none;
+}
+.config-mcp-guide summary:hover {
+  color: var(--vscode-foreground);
+}
+.config-mcp-guide-content {
+  padding: 12px;
+  font-size: 0.82em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
+  border-top: 1px solid var(--vscode-widget-border);
+}
+.config-mcp-guide-content p {
+  margin: 8px 0;
+}
+.config-mcp-guide-content ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.config-mcp-guide-content li {
+  margin: 4px 0;
+}
+.config-mcp-guide-content code {
+  background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.95em;
+}
+.config-mcp-guide-content pre {
+  background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.9em;
+  margin: 6px 0;
+  white-space: pre;
+}
+.config-mcp-guide-example {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.08));
+  border-radius: 4px;
+  border-left: 3px solid var(--vscode-focusBorder);
 }
 
 /* ── Configuration page: model list retrieval ────────────────── */

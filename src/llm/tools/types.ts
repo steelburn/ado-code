@@ -40,6 +40,7 @@ export type ToolName =
   | 'update_work_item_state'
   | 'add_comment'
   | 'delegate_to_agent'
+  | 'create_work_item'
   | 'read_workspace_memory'
   | 'write_workspace_memory'
   | 'list_workspace_memory'
@@ -66,6 +67,7 @@ export interface NativeToolArgs {
   update_work_item_state: { id: number; state: string }
   add_comment: { id: number; text: string }
   delegate_to_agent: { prompt: string; agent?: string }
+  create_work_item: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; parentWorkItemId?: number; assignedTo?: string; tags?: string }
 }
 
 /**
@@ -96,7 +98,7 @@ export interface ToolGroupMap {
   write: ('edit_file' | 'write_to_file' | 'apply_diff')[]
   execute: ('execute_command' | 'delegate_to_agent')[]
   mcp: never[]
-  ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment')[]
+  ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment' | 'create_work_item')[]
   memory: ('read_workspace_memory' | 'write_workspace_memory' | 'list_workspace_memory' | 'set_memory')[]
 }
 
@@ -106,7 +108,7 @@ export const TOOL_GROUP_MAP: ToolGroupMap = {
   write: ['edit_file', 'write_to_file', 'apply_diff'],
   execute: ['execute_command', 'delegate_to_agent'],
   mcp: [],
-  ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment'],
+  ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment', 'create_work_item'],
   memory: ['read_workspace_memory', 'write_workspace_memory', 'list_workspace_memory', 'set_memory'],
 }
 
@@ -127,6 +129,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   apply_diff: 'Apply diff',
   update_work_item_state: 'Update state',
   add_comment: 'Add comment',
+  create_work_item: 'Create work item',
   delegate_to_agent: 'Delegate to agent',
   read_workspace_memory: 'Read workspace memory',
   write_workspace_memory: 'Write workspace memory',

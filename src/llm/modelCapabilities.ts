@@ -26,6 +26,8 @@ export interface ModelInfo {
   id: string;
   vision?: boolean;
   tools?: boolean;
+  /** Context window size in tokens — extracted from live /models data when available. */
+  contextWindow?: number;
 }
 
 /** Per-model user override: { model, vision?, tools? } — user knowledge beats
@@ -126,8 +128,39 @@ export function toModelInfo(raw: unknown): ModelInfo | null {
   const id = String(entry.id ?? entry.name ?? entry.model ?? '').trim();
   if (!id) return null;
   const live = capabilitiesFromGateway(entry);
+  const contextWindow = extractContextWindow(entry);
   const info: ModelInfo = { id };
   if (live.vision !== undefined) info.vision = live.vision;
   if (live.tools !== undefined) info.tools = live.tools;
+  if (contextWindow !== undefined) info.contextWindow = contextWindow;
   return info;
+}
+
+/**
+ * Extract context-window size from a raw /models entry.
+ *
+ * Supports multiple gateway formats:
+ *  - Ollama / llama.cpp: meta.n_ctx
+ *  - OpenRouter: context_length
+ *  - Misc providers: max_context_length, max_tokens (with a sanity floor)
+ */
+function extractContextWindow(entry: Record<string, any>): number | undefined {
+  // Ollama / llama.cpp: meta.n_ctx
+  const meta = entry.meta;
+  if (meta && typeof meta === 'object' && typeof meta.n_ctx === 'number' && meta.n_ctx > 0) {
+    return meta.n_ctx;
+  }
+  // OpenRouter: context_length
+  if (typeof entry.context_length === 'number' && entry.context_length > 0) {
+    return entry.context_length;
+  }
+  // Some providers: max_context_length
+  if (typeof entry.max_context_length === 'number' && entry.max_context_length > 0) {
+    return entry.max_context_length;
+  }
+  // max_tokens — only if it looks like a context window (> 8192)
+  if (typeof entry.max_tokens === 'number' && entry.max_tokens > 8192) {
+    return entry.max_tokens;
+  }
+  return undefined;
 }

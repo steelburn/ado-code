@@ -147,6 +147,8 @@ export class AnthropicV2Provider extends BaseProvider {
     let currentToolId = "";
     let currentToolName = "";
     let currentToolInput = "";
+    // Claude extended thinking state
+    let currentThinkingActive = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -183,6 +185,9 @@ export class AnthropicV2Provider extends BaseProvider {
               currentToolId = block.id;
               currentToolName = block.name;
               currentToolInput = "";
+            } else if (block?.type === "thinking") {
+              // Claude extended thinking — thinking block started
+              currentThinkingActive = true;
             }
             break;
           }
@@ -197,6 +202,12 @@ export class AnthropicV2Provider extends BaseProvider {
               const text = delta.text || "";
               if (text) {
                 yield { type: "text", text };
+              }
+            } else if (delta.type === "thinking_delta") {
+              // Claude extended thinking — thinking content delta
+              const thinking = delta.thinking || "";
+              if (thinking) {
+                yield { type: "thinking", thinking };
               }
             } else if (delta.type === "input_json_delta") {
               // Accumulate tool input JSON

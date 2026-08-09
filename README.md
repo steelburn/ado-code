@@ -6,7 +6,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 
 - Fetch work items assigned to you from Azure DevOps (My Work Items + Unassigned trees, hierarchical Epic → Feature → User Story → Task)
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
-- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act modes)
+- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes)
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, Pi, and more)
 - **Git worktree isolation**: Concurrent agents run in isolated worktrees — no branch conflicts
@@ -22,10 +22,29 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - User memory: AI remembers your preferences across sessions
 - Workspace memory: project-specific conventions in `.ado-code/memory/` — kept out of git/Docker via auto-ignore
 - **`.ado-code` auto-ignore**: The workspace data directory is offered to be added to `.gitignore`/`.dockerignore` on load (setting `adoCode.ignore.dotAdoCode`, default on)
-- Direct mode selection: click Chat/Plan/Act to switch modes instantly
+- Direct mode selection: click Chat/Plan/Act/YOLO to switch modes instantly
 - In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
 - **AI merge flow**: For finished agent runs, the assistant can commit, push, and open an ADO pull request itself (`commit_worktree` → `push_worktree` → `create_pull_request`) — never force-pushes, never touches protected branches (`adoCode.git.protectedBranches`, default `main`/`master`), refuses to commit failed runs unless it explicitly overrides after reviewing, and can resolve merge conflicts (`resolve_pr_conflicts`) then re-commit/re-push until the PR is clean
+- **Dynamic context window detection**: Context window size auto-detected from the `/models` API endpoint (Ollama `n_ctx`, OpenRouter `context_length`, etc.) — live data overrides the hardcoded table; content-aware token counting (code ~3.5, prose ~4.5 chars/token) with expanded model table (27 models) and 128k default
+- **Context management**: Priority-based conversation truncation replaces naive 20-turn cutoff; real token counter replaces rough char/4 estimation; conversation auto-condenses at 75% context via LLM summarization; token status bar shows accurate model-aware counts
+- **Mode-aware system prompt**: Dynamic prompt generation includes mode-specific role, available tools, tool guidelines, and environment context
+- **MCP server management**: Right-click MCP servers in the Status Panel to disconnect, reconnect, or view details
+Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through inline/plan/act/yolo
+- **Worktree batch cleanup**: Remove All Completed action on the Worktrees root node
+- **Agent run history**: Recent Runs section in the Status Panel shows last 10 completed runs with status icons, timestamps, and context menus
+- **Agent details panel**: Right-click agent in Status Panel to view name, binary, version, supported modes, and CLI arguments
+- **Memory search**: QuickPick fuzzy search across all user and workspace memory entries
+- **Memory import/export**: Export memories to JSON; import with merge or replace option
+- **Work item filtering**: Filter Work Items tree by state, type, or text search with smart parent visibility
+- **Agent auto-review**: Git diff automatically reviewed by LLM on agent completion with merge recommendation
+- **Worktree diff viewer**: Show Changes opens VS Code diff editor for worktree files
+- **Generate tasks from user stories**: `/generate-tasks` slash command + context menu action trigger the AI to analyze a user story and create child tasks via the `create_work_item` LLM tool
+- **Task draft editor**: When the AI calls `create_work_item`, an editable markdown tab opens for you to review and modify all fields before the work item is created in ADO
+- **Child task delegation**: When delegating a work item to an agent, the system checks for child work items in ADO and warns the user — include them in the agent's context or skip them
+- **Agent progress in chat**: Agent delegation shows start/completion messages in the chat thread alongside the streaming output panel
+- **Changelog notification on update**: After a version change, a one-time notification offers to show the new version's changelog in a styled webview panel
+- **Keyboard shortcuts**: Ctrl+Shift+M (cycle mode), Ctrl+Shift+/ (search memories), Ctrl+Alt+R (refresh status)
 - **Clean Up After Merge**: Removes a merged run's worktree and deletes its branch (only when the PR is actually merged and the branch is fully merged) — from the Worktrees view context menu or an auto-offer after a merged PR
 - **Working indicator**: A status-bar spinner shows while any LLM turn or agent run is in flight — visible even when the chat view is hidden, with live detail ("thinking…", "tool: edit_file")
 - Full detail view: right-click → "Show Full Details" opens a formatted panel in the editor
@@ -62,9 +81,12 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.llmModel` | LLM model name |
 | `adoCode.llm.choiceDetectionModel` | Optional cheaper model for AI choice-prompt detection (empty = main model, `off` = regex-only) |
 | `adoCode.llm.capabilityOverrides` | Per-model capability overrides (array of `{ model, vision?, tools? }`) — beats auto-detection |
-| `adoCode.mode` | Tool-use mode: `inline`, `plan`, or `act` |
+| `adoCode.mode` | Tool-use mode: `inline`, `plan`, `act`, or `yolo` |
 | `adoCode.act.toolBudget` | Max tool calls per act-mode turn |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
+| `adoCode.consent.harmlessAutoApprove` | Auto-approve harmless (read-only) terminal commands after a timer (default `false`) |
+| `adoCode.consent.harmlessAutoApproveSeconds` | Seconds before a harmless command auto-approves (default `20`, range 1–30) |
+| `adoCode.chat.showThinking` | Show the model's thinking/reasoning text while it processes (default `true`) |
 | `adoCode.git.requireGitRepo` | Block task pickup outside a git repo |
 | `adoCode.git.createBranchOnTaskStart` | Auto-create `feature/ADO-<id>-<slug>` branch |
 | `adoCode.git.requireCleanTree` | Warn on branch switch with uncommitted changes |
@@ -78,6 +100,7 @@ Configure in VS Code settings under `adoCode.*`:
 | `adoCode.agents.enabled` | Which external agents may be delegated to |
 | `adoCode.agents.verifyCommand` | Shell command run after an agent finishes |
 | `adoCode.agents.autoSelect` | Default agent when none is specified |
+| `adoCode.agents.autoReview` | Auto-review agent changes via LLM when a run completes (default `true`) |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 
 ## Slash Commands
@@ -91,7 +114,7 @@ Type `/` in the chat input to see available commands:
 | `/pick` | Select a work item from the list |
 | `/assign <who>` | Reassign the active work item |
 | `/clear` | Clear chat history |
-| `/mode <mode>` | Switch mode (inline, plan, act) |
+| `/mode <mode>` | Switch mode (inline, plan, act, yolo) |
 | `/undo` | Restore files to the last checkpoint |
 | `/help` | Show available commands |
 | `/delegate [agent]` | Delegate to an external agent |
@@ -142,6 +165,36 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### 0.5.7
+
+- **Task draft editor**: AI `create_work_item` tool opens an editable markdown tab for review before creating work items in ADO
+- YOLO mode: fully-autonomous mode that auto-approves every tool including shell commands — no consent prompts, no allowlist
+- Consent auto-approve timer: harmless (read-only) terminal commands show a countdown timer and auto-approve on expiry (configurable, default 20s)
+- Show AI thinking: models with reasoning tokens (o1/o3, Claude extended thinking) display their internal reasoning in a collapsible block
+- Improved context size detection: content-aware token counting (code ~3.5, prose ~4.5 chars/token), expanded model table (27 models), better substring matching, default raised to 128k
+- Dynamic context window auto-detection from `/models` API (Ollama n_ctx, OpenRouter context_length, etc.) — live data overrides hardcoded table
+- Context management with priority-based truncation and auto-condensation
+- Mode-aware system prompts with tool filtering
+- MCP server management (disconnect/reconnect per server)
+- Mode quick-cycle from Status Panel
+- Worktree batch cleanup (Remove All Completed)
+- Agent run history with status icons and context menus
+- Agent details panel (view agent info)
+- Memory search, import/export
+- Work item filtering (by state, type, text)
+- Agent auto-review on completion (LLM-powered code review)
+- Worktree diff viewer (VS Code diff editor)
+- Keyboard shortcuts for common actions
+- Generate tasks from user stories (`/generate-tasks` + context menu)
+- Agent progress shown in chat thread (delegation start/completion messages)
+- Changelog notification on package update
+- Merge-flow guardrails round 2: `commit_worktree` refuses failed runs unless `allowFailed` is set; `create_pull_request` refuses protected branches (`adoCode.git.protectedBranches`); new `resolve_pr_conflicts` tool surfaces git merge conflicts (base/our/their contents) for LLM-driven resolution
+- Child task delegation: agent delegation now checks for child work items and warns the user before including them in the agent context
+- Clean Up After Merge: context-menu action + auto-offer after merged PR removes the run's worktree and deletes its branch (only when the PR is actually merged and the branch is fully merged)
+- Capability overrides: `adoCode.llm.capabilityOverrides` lets you declare vision/tool-calling support per model id, beating every auto-detection layer — structured editor in Configuration page
+- Live model capabilities: detection is now three layers — user override > live gateway data (OpenRouter/Ollama `/models`) > name heuristic (now covers gpt-5, o1–o9, llama-4, gemma-3, deepseek-vl, glm-4.5v)
+- Pre-commit hook clears git env vars so test suites don't inherit hook state
 
 ### 0.5.6
 

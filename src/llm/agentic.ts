@@ -1,6 +1,7 @@
 import { LlmClient } from './client';
 import { LlmMessage, LlmTool, ToolCall, LlmAgenticResult } from './types';
 import { ToolExecutor } from './tools';
+import { logger } from '../services/logger';
 
 const DEFAULT_MAX_ITERATIONS = 8;
 
@@ -40,13 +41,23 @@ export async function runAgenticChat(
     // C1 fix: ONE tool message per result, each carrying its own toolCallId
     // (OpenAI requires one role:'tool' message per tool_call_id).
     for (const call of toolCalls) {
+      // Log every tool call with name, args, and iteration number.
+      const argsSummary = Object.keys(call.arguments).length > 0
+        ? JSON.stringify(call.arguments)
+        : '(no args)';
+      logger.info(`Tool call [${i + 1}/${maxIterations}]: ${call.name} ${argsSummary}`);
+
       // Let the host surface what the AI is doing (status-bar detail).
       onProgress?.({ tool: { name: call.name, args: call.arguments } });
       let content: string;
       try {
         content = await executor.execute(call.name, call.arguments);
+        // Log the result (truncated to keep output readable).
+        const resultPreview = content.length > 200 ? content.slice(0, 200) + '…' : content;
+        logger.info(`Tool result [${call.name}]: ${resultPreview}`);
       } catch (err) {
         content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+        logger.error(`Tool error [${call.name}]: ${content}`);
       }
       messages.push({ role: 'tool', content, toolCallId: call.id });
     }

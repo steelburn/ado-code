@@ -161,8 +161,12 @@ suite('GitService', () => {
     // Remote really has it.
     cp.execSync('git ls-remote origin feature/ADO-42-fix-login', { cwd: tmpDir });
 
-    // Protected-branch refusal: a worktree on 'main' must refuse.
-    await service.createWorktree('run-2-1', 'main');
+    // Protected-branch refusal: a worktree on a protected branch must refuse.
+    // Create 'master' branch so we can make a worktree on it (can't use 'main'
+    // because it's already checked out as the default branch).
+    cp.execSync('git checkout -b master', { cwd: tmpDir });
+    cp.execSync('git checkout main', { cwd: tmpDir });
+    await service.createWorktree('run-2-1', 'master');
     const refused = await service.pushWorktreeBranch('run-2-1');
     assert.strictEqual(refused.pushed, false);
     assert.ok(String(refused.reason).includes('protected'));

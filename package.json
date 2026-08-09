@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -34,9 +34,21 @@
     "onCommand:adoCode.editMemory",
     "onCommand:adoCode.clearMemory",
     "onCommand:adoCode.showWorkspaceMemory",
+    "onCommand:adoCode.memoryExport",
+    "onCommand:adoCode.memoryImport",
     "onCommand:adoCode.setMode",
     "onCommand:adoCode.listCheckpoints",
-    "onCommand:adoCode.showTokenUsage"
+    "onCommand:adoCode.showTokenUsage",
+    "onCommand:adoCode.mcpDisconnect",
+    "onCommand:adoCode.mcpReconnect",
+    "onCommand:adoCode.mcpViewDetails",
+    "onCommand:adoCode.agentViewDetail",
+    "onCommand:adoCode.memorySearch",
+    "onCommand:adoCode.workItemsFilter",
+    "onCommand:adoCode.workItemsSearch",
+    "onCommand:adoCode.workItemsClearFilters",
+    "onCommand:adoCode.worktreeShowChanges",
+    "onCommand:adoCode.generateTasks"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -169,6 +181,12 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.worktreeShowChanges",
+        "title": "Show Changes",
+        "icon": "$(diff)",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.generateCommitMessage",
         "title": "Generate Commit Message",
         "icon": "$(sparkle)",
@@ -183,6 +201,12 @@
       {
         "command": "adoCode.refreshWorktrees",
         "title": "Refresh Worktrees",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreesRemoveAllCompleted",
+        "title": "Remove All Completed Worktrees",
+        "icon": "$(trash)",
         "category": "ADO Code"
       },
       {
@@ -211,6 +235,23 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.memoryExport",
+        "title": "Export Memories",
+        "icon": "$(export)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.memoryImport",
+        "title": "Import Memories",
+        "icon": "$(import)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.memorySearch",
+        "title": "Search Memories",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.setMode",
         "title": "Set Mode…",
         "category": "ADO Code"
@@ -224,6 +265,62 @@
         "command": "adoCode.showTokenUsage",
         "title": "Show Token Usage",
         "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.cycleMode",
+        "title": "Cycle Mode",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.mcpDisconnect",
+        "title": "Disconnect",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.mcpReconnect",
+        "title": "Reconnect",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.mcpViewDetails",
+        "title": "View Details",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.runViewSummary",
+        "title": "View Summary"
+      },
+      {
+        "command": "adoCode.runOpenWorktree",
+        "title": "Open Worktree"
+      },
+      {
+        "command": "adoCode.runCopyId",
+        "title": "Copy Run ID"
+      },
+      {
+        "command": "adoCode.agentViewDetail",
+        "title": "View Details"
+      },
+      {
+        "command": "adoCode.workItemsFilter",
+        "title": "Filter Work Items",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "adoCode.workItemsSearch",
+        "title": "Search Work Items",
+        "icon": "$(search)"
+      },
+      {
+        "command": "adoCode.workItemsClearFilters",
+        "title": "Clear Filters",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "adoCode.generateTasks",
+        "title": "Generate Tasks",
+        "icon": "$(list-tree)"
       }
     ],
     "keybindings": [
@@ -236,6 +333,24 @@
         "command": "adoCode.refreshWorkItems",
         "key": "ctrl+shift+r",
         "mac": "cmd+shift+r"
+      },
+      {
+        "command": "adoCode.cycleMode",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "view == adoCode.status"
+      },
+      {
+        "command": "adoCode.refreshStatus",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "view == adoCode.status"
+      },
+      {
+        "command": "adoCode.memorySearch",
+        "key": "ctrl+shift+/",
+        "mac": "cmd+shift+/",
+        "when": "view == adoCode.status"
       }
     ],
     "menus": {
@@ -246,17 +361,43 @@
           "group": "navigation"
         }
       ],
-      "view/title": [],
+      "view/title": [
+        {
+          "command": "adoCode.workItemsFilter",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.workItemsSearch",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.workItemsClearFilters",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.workItemsFilter",
+          "when": "view == adoCode.unassignedWorkItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.workItemsSearch",
+          "when": "view == adoCode.unassignedWorkItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.workItemsClearFilters",
+          "when": "view == adoCode.unassignedWorkItems",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
           "command": "adoCode.startTask",
           "when": "viewItem == workItemNode",
           "group": "inline"
-        },
-        {
-          "command": "adoCode.selectWorkItem",
-          "when": "viewItem == workItemNode",
-          "group": "1_workItem@1"
         },
         {
           "command": "adoCode.reviewTaskDetail",
@@ -287,6 +428,11 @@
           "command": "adoCode.changeWorkItemState",
           "when": "viewItem == workItemNode",
           "group": "4_state@1"
+        },
+        {
+          "command": "adoCode.generateTasks",
+          "when": "viewItem == workItemNode",
+          "group": "6_generate@1"
         },
         {
           "command": "adoCode.showWorkItemDetail",
@@ -329,6 +475,16 @@
           "group": "2_memory@1"
         },
         {
+          "command": "adoCode.memoryExport",
+          "when": "view == adoCode.status && viewItem == statusMemory",
+          "group": "1_memory@2"
+        },
+        {
+          "command": "adoCode.memoryImport",
+          "when": "view == adoCode.status && viewItem == statusMemory",
+          "group": "1_memory@3"
+        },
+        {
           "command": "adoCode.openAgentInTerminal",
           "when": "viewItem == statusAgent",
           "group": "1_agent@1"
@@ -337,6 +493,11 @@
           "command": "adoCode.copyAgentName",
           "when": "viewItem == statusAgent",
           "group": "2_agent@1"
+        },
+        {
+          "command": "adoCode.agentViewDetail",
+          "when": "viewItem == statusAgent",
+          "group": "3_agent@1"
         },
         {
           "command": "adoCode.openWorktreeInTerminal",
@@ -367,6 +528,66 @@
           "command": "adoCode.showAgentOutput",
           "when": "viewItem == statusWorktree || viewItem == worktreeNode",
           "group": "3_worktree@1"
+        },
+        {
+          "command": "adoCode.worktreeShowChanges",
+          "when": "viewItem == worktreeNode",
+          "group": "1_worktree@3"
+        },
+        {
+          "command": "adoCode.worktreeShowChanges",
+          "when": "view == adoCode.status && viewItem == statusRun",
+          "group": "1_run@4"
+        },
+        {
+          "command": "adoCode.cycleMode",
+          "when": "view == adoCode.status && viewItem == statusMode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.memorySearch",
+          "when": "view == adoCode.status && viewItem == statusMemory",
+          "group": "1_memory@1"
+        },
+        {
+          "command": "adoCode.setMode",
+          "when": "view == adoCode.status && viewItem == statusMode",
+          "group": "1_mode@1"
+        },
+        {
+          "command": "adoCode.mcpDisconnect",
+          "when": "viewItem == statusMcpServer",
+          "group": "1_mcp@1"
+        },
+        {
+          "command": "adoCode.mcpReconnect",
+          "when": "viewItem == statusMcpServer",
+          "group": "1_mcp@2"
+        },
+        {
+          "command": "adoCode.mcpViewDetails",
+          "when": "viewItem == statusMcpServer",
+          "group": "1_mcp@3"
+        },
+        {
+          "command": "adoCode.worktreesRemoveAllCompleted",
+          "when": "viewItem == worktreesRoot",
+          "group": "cleanup@1"
+        },
+        {
+          "command": "adoCode.runViewSummary",
+          "when": "view == adoCode.status && viewItem == statusRun",
+          "group": "1_run@1"
+        },
+        {
+          "command": "adoCode.runOpenWorktree",
+          "when": "view == adoCode.status && viewItem == statusRun",
+          "group": "1_run@2"
+        },
+        {
+          "command": "adoCode.runCopyId",
+          "when": "view == adoCode.status && viewItem == statusRun",
+          "group": "1_run@3"
         }
       ]
     },
@@ -526,7 +747,7 @@
         },
         "adoCode.act.toolBudget": {
           "type": "number",
-          "default": 25,
+          "default": 50,
           "description": "Max tool calls per act-mode turn"
         },
         "adoCode.act.terminalAllowlist": {
@@ -627,6 +848,11 @@
             "cursor-agent"
           ],
           "description": "Default agent for delegation when none is specified (M-9: includes all 9 registered agents)"
+        },
+        "adoCode.agents.autoReview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically review agent changes via LLM when a run completes"
         },
         "adoCode.mcp.servers": {
           "type": "array",

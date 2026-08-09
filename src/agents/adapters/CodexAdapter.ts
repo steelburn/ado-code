@@ -13,12 +13,17 @@ export class CodexAdapter implements AgentAdapter {
 
   private spawn(args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = this.spawnFn('codex', args, { cwd, signal }) as any;
-      let output = '';
-      child.stdout.on('data', (d: any) => { output += d.toString(); });
-      child.stderr.on('data', (d: any) => { output += d.toString(); });
-      child.on('error', (err: any) => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
-      child.on('close', (code: number | null) => resolve({ exitCode: code, output }));
+      try {
+        const child = this.spawnFn('codex', args, { cwd, signal }) as any;
+        let output = '';
+        child.stdout.on('data', (d: any) => { output += d.toString(); });
+        child.stderr.on('data', (d: any) => { output += d.toString(); });
+        child.on('error', (err: any) => resolve({ exitCode: 1, output: `failed to spawn: ${err.message}` }));
+        child.on('close', (code: number | null) => resolve({ exitCode: code, output }));
+      } catch (err: any) {
+        // Synchronous spawn failure (e.g. ELOOP, ENOENT on some platforms)
+        resolve({ exitCode: 1, output: `failed to spawn: ${err.message ?? err}` });
+      }
     });
   }
 

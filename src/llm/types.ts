@@ -15,6 +15,8 @@ export interface LlmMessage {
 export interface LlmStreamChunk {
   content: string;
   done: boolean;
+  /** Model's internal reasoning/thinking text (o1/o3 reasoning_content, Claude extended thinking). */
+  thinking?: string;
 }
 
 export interface LlmConfig {

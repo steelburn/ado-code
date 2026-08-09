@@ -28,6 +28,7 @@ export {
   type AutoApprovalDecision,
   getToolApprovalCategory,
   formatToolParams,
+  isHarmlessCommand,
 } from './consent'
 
 // ─── Session-wide tool approval cache ───────────────────────────────────────

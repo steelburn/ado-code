@@ -209,6 +209,85 @@ export function resolveToolApprovalSettings(proxy: {
 }
 
 // ---------------------------------------------------------------------------
+// Harmless command classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only git subcommands — safe to auto-approve with a timer.
+ * Used by `isHarmlessCommand()` to classify terminal commands.
+ */
+const HARMLESS_GIT_SUBCMDS = new Set([
+  'status', 'diff', 'log', 'show', 'branch', 'remote', 'tag',
+  'blame', 'shortlog', 'describe', 'rev-parse', 'rev-list',
+  'ls-files', 'ls-remote', 'config', 'assume-unchanged',
+])
+
+/**
+ * Base commands that are always read-only (no subcommand needed).
+ */
+const HARMLESS_BASE_CMDS = new Set([
+  'ls', 'dir', 'pwd', 'tree', 'find', 'fd',
+  'cat', 'head', 'tail', 'less', 'more',
+  'wc', 'grep', 'rg', 'ag', 'ack',
+  'echo', 'date', 'whoami', 'hostname', 'uname',
+  'which', 'where', 'type', 'file', 'stat',
+  'env', 'printenv',
+  'node', 'python', 'python3', 'npx',
+  'cargo', 'rustc',
+  'curl', 'wget',
+])
+
+/**
+ * Commands with read-only subcommands (first arg determines safety).
+ */
+const HARMLESS_SUBCMD_MAP: Record<string, Set<string>> = {
+  git: HARMLESS_GIT_SUBCMDS,
+  npm: new Set(['test', 'run', 'list', 'ls', 'info', 'view', 'outdated', 'doctor']),
+  pip: new Set(['list', 'show', 'check']),
+  yarn: new Set(['list', 'info', 'outdated']),
+  pnpm: new Set(['list', 'info', 'outdated']),
+}
+
+/**
+ * Determine whether a terminal command is harmless (read-only) and safe to
+ * auto-approve after a timer. A command is harmless when:
+ *
+ * 1. It contains no shell operators (`&`, `|`, `;`, backtick, `$`, `<`, `>`,
+ *    `(`, `)`, newlines).
+ * 2. Its base command + optional subcommand match a known read-only pattern.
+ *
+ * This is used by the consent timer to decide whether to start a countdown
+ * on the consent card. The timer is an additional safety layer — the user
+ * can still manually approve or reject before it expires.
+ */
+export function isHarmlessCommand(command: string): boolean {
+  const trimmed = command.trim()
+  if (!trimmed) return false
+
+  // Reject shell operators — multi-word commands are fine (e.g. "npm test"),
+  // but operators enable injection.
+  if (!/^[^&|;`$<>()\r\n]*$/.test(trimmed)) return false
+
+  const tokens = trimmed.match(/"[^"]*"|\S+/g) ?? []
+  if (tokens.length === 0) return false
+
+  const base = tokens[0]!.toLowerCase()
+
+  // Base commands that are always safe (no subcommand needed)
+  if (HARMLESS_BASE_CMDS.has(base)) return true
+
+  // Commands with subcommand-based safety (e.g. git status, npm test)
+  const allowedSubs = HARMLESS_SUBCMD_MAP[base]
+  if (allowedSubs) {
+    const subcmd = tokens[1]?.toLowerCase()
+    if (!subcmd) return false
+    return allowedSubs.has(subcmd)
+  }
+
+  return false
+}
+
+// ---------------------------------------------------------------------------
 // End of tool-level approval support
 // ---------------------------------------------------------------------------
 

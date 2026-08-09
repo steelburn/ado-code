@@ -30,9 +30,15 @@ suite('WorktreesTreeProvider', () => {
     provider.setAgentRunner({ listRuns: () => [sampleRun] } as any);
     await provider.refresh();
 
+    // getChildren() returns [rootNode]; worktree nodes are children of root
     const roots = provider.getChildren();
     assert.strictEqual(roots.length, 1);
-    const root = roots[0];
+    const rootNode = roots[0];
+    assert.strictEqual(String(rootNode.label), 'Worktrees');
+
+    const worktreeNodes = provider.getChildren(rootNode);
+    assert.strictEqual(worktreeNodes.length, 1);
+    const root = worktreeNodes[0];
     assert.strictEqual(root.label, 'feature/ADO-42-fix-login');
     assert.ok(String(root.description).includes('#ADO-42'));
     assert.ok(String(root.description).includes('claude'));
@@ -64,7 +70,9 @@ suite('WorktreesTreeProvider', () => {
     provider.setAgentRunner({ listRuns: () => [] } as any);
     await provider.refresh();
 
-    const root = provider.getChildren()[0];
+    const rootNode = provider.getChildren()[0];
+    const worktreeNodes = provider.getChildren(rootNode);
+    const root = worktreeNodes[0];
     assert.ok(String(root.description).includes('no run record'));
     const labels = provider.getChildren(root).map(c => String(c.label));
     assert.ok(labels.some(l => l.includes('Files: clean')));
@@ -79,7 +87,9 @@ suite('WorktreesTreeProvider', () => {
     };
     const provider = new WorktreesTreeProvider({ git } as any);
     await provider.refresh();
-    assert.strictEqual(provider.getChildren().length, 0);
+    // Root node is always present; its children should be empty
+    const rootNode = provider.getChildren()[0];
+    assert.strictEqual(provider.getChildren(rootNode).length, 0);
   });
 
   test('refreshIfChanged reloads only on status transitions', async () => {

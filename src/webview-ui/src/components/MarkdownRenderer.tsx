@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify'; // H-9 fix: import the sanitizer
+import { highlightCode } from '../utils/highlightCode';
 
 interface Props {
   content: string;
@@ -131,7 +132,19 @@ export function MarkdownRenderer({ content }: Props) {
       // SECURITY: marked does NOT sanitize; LLM output is untrusted and may
       // contain raw HTML. DOMPurify strips scripts/event handlers before the
       // HTML touches the DOM (paired with the webview CSP from Task 3).
-      const raw = marked.parse(markdown) as string;
+      let raw = marked.parse(markdown) as string;
+
+      // Apply syntax highlighting to code blocks before sanitization.
+      // marked renders code blocks as <pre><code class="language-xxx">...</code></pre>
+      raw = raw.replace(
+        /<pre><code class="language-(\w+)">([\s\S]*?)<\/code><\/pre>/gi,
+        (_match: string, lang: string, code: string) => {
+          const decoded = decodeEntities(code);
+          const highlighted = highlightCode(decoded, lang);
+          return `<pre><code class="language-${lang}">${highlighted}</code></pre>`;
+        }
+      );
+
       ref.current.innerHTML = DOMPurify.sanitize(raw);
     }
   }, [content]);

@@ -116,6 +116,29 @@ export class AdoClient {
   }
 
   /**
+   * Fetch child work items (tasks under a parent) via WIQL.
+   * Returns work items whose System.Parent matches the given parentId.
+   * Used by delegate_to_agent to include child tasks in the agent context.
+   */
+  async getChildWorkItems(project: string, parentId: number): Promise<AdoWorkItem[]> {
+    const projectLiteral = project.replace(/'/g, "''");
+    const wiqlQuery = {
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.Parent] = ${parentId} ORDER BY [System.Id] ASC`
+    };
+
+    const wiqlResponse = await this.post<WiqlResult>(
+      `/${project}/_apis/wit/wiql?api-version=7.1`,
+      wiqlQuery
+    );
+
+    if (!wiqlResponse.workItems || wiqlResponse.workItems.length === 0) {
+      return [];
+    }
+
+    return this.fetchWorkItemsByIds(wiqlResponse.workItems.map(wi => wi.id));
+  }
+
+  /**
    * People in the project (all project teams' members, deduped) for the
    * reassign picker. Org-level teams endpoint carries projectName; members
    * carry identity.uniqueName (email) which the AssignedTo PATCH accepts.
@@ -178,6 +201,50 @@ export class AdoClient {
       `/${project}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.4`,
       { text }
     );
+  }
+
+  /**
+   * Create a new work item (Task, Bug, etc.) in Azure DevOps.
+   * Uses JSON Patch (application/json-patch+json) with optional parent link.
+   */
+  async createWorkItem(
+    project: string,
+    workItemType: string,
+    fields: {
+      title: string;
+      description?: string;
+      acceptanceCriteria?: string;
+      tags?: string;
+      assignedTo?: string;
+    },
+    parentWorkItemId?: number
+  ): Promise<{ id: number; url: string }> {
+    const body: Array<{ op: string; path: string; value: any }> = [
+      { op: 'add', path: '/fields/System.Title', value: fields.title },
+    ];
+    if (fields.description) body.push({ op: 'add', path: '/fields/System.Description', value: fields.description });
+    if (fields.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: fields.acceptanceCriteria });
+    if (fields.tags) body.push({ op: 'add', path: '/fields/System.Tags', value: fields.tags });
+    if (fields.assignedTo) body.push({ op: 'add', path: '/fields/System.AssignedTo', value: fields.assignedTo });
+
+    // Add parent link if specified
+    if (parentWorkItemId) {
+      body.push({
+        op: 'add',
+        path: '/relations/-',
+        value: {
+          rel: 'System.LinkTypes.Hierarchy-Reverse',
+          url: `${this.baseUrl}/${project}/_apis/wit/workItems/${parentWorkItemId}`,
+        },
+      });
+    }
+
+    const result = await this.post<any>(
+      `/${project}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}?api-version=${GA_VERSION}`,
+      body,
+      { 'Content-Type': 'application/json-patch+json' }
+    );
+    return { id: result.id, url: result._links?.html?.href ?? '' };
   }
 
   /** List all projects in the organization the authenticated user has access to. */
@@ -318,12 +385,12 @@ export class AdoClient {
     return response.json() as Promise<T>;
   }
 
-  private async post<T>(endpoint: string, body: any): Promise<T> {
+  private async post<T>(endpoint: string, body: any, headers?: Record<string, string>): Promise<T> {
     const url = this.buildUrl(endpoint);
     const response = await this.fetchWithFallback(url, {
       method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify(body),
+      headers: { ...this.headers, ...headers },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
     });
     return response.json() as Promise<T>;
   }

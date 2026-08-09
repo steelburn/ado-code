@@ -43,7 +43,7 @@ const globalStateSchema = z.object({
   autoApproveReadOnly: z.boolean().default(true),
   autoApproveWrite: z.boolean().default(false),
   customInstructions: z.string().default(''),
-  mode: z.enum(['inline', 'plan', 'act']).default('inline'),
+  mode: z.enum(['inline', 'plan', 'act', 'yolo']).default('inline'),
   customModes: z
     .array(
       z.object({

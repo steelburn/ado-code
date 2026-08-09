@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
 import { AgentSummaryPanel } from './webview/AgentSummaryPanel';
+import { AgentDetailPanel } from './webview/AgentDetailPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
@@ -71,6 +74,14 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider('adoCode.worktrees', worktreesProvider),
     vscode.commands.registerCommand('adoCode.refreshWorktrees', () => {
       worktreesProvider.refresh();
+    }),
+    vscode.commands.registerCommand('adoCode.worktreesRemoveAllCompleted', async () => {
+      const removed = await worktreesProvider.removeAllCompleted();
+      if (removed === 0) {
+        vscode.window.showInformationMessage('ADO Code: no completed worktrees to remove.');
+      } else {
+        vscode.window.showInformationMessage(`ADO Code: removed ${removed} completed worktree(s).`);
+      }
     })
   );
 
@@ -174,6 +185,123 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // ── Work Item Filters ──────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.workItemsFilter', async () => {
+      // Gather all work items from the provider's internal list via a
+      // temporary snapshot. We call refresh with the same data to get
+      // a fresh snapshot — the provider stores them internally.
+      // Instead, we peek at what's available by reading the unfiltered
+      // count from the tree. Since the provider doesn't expose the raw
+      // array, we temporarily clear filters to collect unique values.
+      const hasFilters = treeProvider.hasActiveFilters();
+      if (hasFilters) {
+        treeProvider.clearFilters();
+      }
+
+      // We need the full item list. Ask chatProvider to re-fetch,
+      // which will call treeProvider.refresh() and populate it.
+      // Instead, use a simpler approach: capture items via refreshWorkItems
+      // and read unique values after it settles. But that's async.
+      // Best approach: add a method to get unique values.
+      // For now, we'll use a helper that reads from the provider.
+      const allItems = treeProvider.getUniqueFilterValues();
+
+      if (allItems.length === 0) {
+        vscode.window.showInformationMessage('ADO Code: No work items loaded. Refresh first.');
+        return;
+      }
+
+      // Collect unique states and types
+      const allStates = [...new Set(allItems.map(i => i.state))].sort();
+      const allTypes = [...new Set(allItems.map(i => i.workItemType))].sort();
+
+      // Step 1: Pick states
+      const stateItems: vscode.QuickPickItem[] = [
+        { label: '$(check) All States', description: 'Show all states (clear filter)' },
+        ...allStates.map(s => ({
+          label: s,
+          picked: treeProvider.getActiveFilters().states.length === 0 ||
+                  treeProvider.getActiveFilters().states.includes(s),
+        })),
+      ];
+      const pickedStates = await vscode.window.showQuickPick(stateItems, {
+        placeHolder: 'Select work item states to show',
+        canPickMany: true,
+        matchOnDescription: true,
+      });
+      if (pickedStates === undefined) return; // cancelled
+
+      // Step 2: Pick types
+      const typeItems: vscode.QuickPickItem[] = [
+        { label: '$(check) All Types', description: 'Show all types (clear filter)' },
+        ...allTypes.map(t => ({
+          label: t,
+          picked: treeProvider.getActiveFilters().types.length === 0 ||
+                  treeProvider.getActiveFilters().types.includes(t),
+        })),
+      ];
+      const pickedTypes = await vscode.window.showQuickPick(typeItems, {
+        placeHolder: 'Select work item types to show',
+        canPickMany: true,
+        matchOnDescription: true,
+      });
+      if (pickedTypes === undefined) return; // cancelled
+
+      // Apply state filter
+      const hasAllStates = pickedStates.some(p => p.label === '$(check) All States');
+      const selectedStates = hasAllStates
+        ? []
+        : pickedStates.map(p => p.label).filter(l => l !== '$(check) All States');
+      treeProvider.setFilterState(selectedStates);
+
+      // Apply type filter
+      const hasAllTypes = pickedTypes.some(p => p.label === '$(check) All Types');
+      const selectedTypes = hasAllTypes
+        ? []
+        : pickedTypes.map(p => p.label).filter(l => l !== '$(check) All Types');
+      treeProvider.setFilterType(selectedTypes);
+
+      // Show info
+      const total = allItems.length;
+      const showing = treeProvider.getVisibleCount();
+      if (treeProvider.hasActiveFilters()) {
+        vscode.window.showInformationMessage(
+          `ADO Code: Showing ${showing} of ${total} work items (filtered)`
+        );
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.workItemsSearch', async () => {
+      const text = await vscode.window.showInputBox({
+        prompt: 'Filter work items by title',
+        placeHolder: 'Type to search work item titles...',
+        value: treeProvider.getActiveFilters().text,
+      });
+      if (text === undefined) return; // cancelled
+
+      treeProvider.setFilterText(text);
+
+      if (text.length > 0) {
+        const allItems = treeProvider.getUniqueFilterValues();
+        const total = allItems.length;
+        const showing = treeProvider.getVisibleCount();
+        vscode.window.showInformationMessage(
+          `ADO Code: Showing ${showing} of ${total} work items matching "${text}"`
+        );
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.workItemsClearFilters', () => {
+      treeProvider.clearFilters();
+      vscode.window.showInformationMessage('ADO Code: all work item filters cleared.');
+    })
+  );
+
   // Task 9: tree-item commands (node-first signature — H4). The methods they
   // dispatch to land in Task 10 (startTask) and Task 13 (selectWorkItem).
   context.subscriptions.push(
@@ -195,6 +323,33 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('adoCode.startTask', (node: WorkItemNode) => {
       chatProvider.startTask(node.workItemId, node.workItemTitle);
+    }),
+    vscode.commands.registerCommand('adoCode.generateTasks', (node: WorkItemNode) => {
+      // First select the work item so the AI has context, then inject the
+      // generate-tasks prompt into the chat.
+      chatProvider.selectWorkItem(node.workItemId);
+      treeProvider.setSelected(node.workItemId);
+      unassignedTreeProvider.setSelected(node.workItemId);
+      void vscode.commands.executeCommand('setContext', 'adoCode.workItemSelected', true);
+      const msg = `Generate child tasks for the active user story: #${node.workItemId} — "${node.workItemTitle}". Read the user story details (description, acceptance criteria) using get_work_item. Break it down into actionable child work items (Tasks, Bugs, etc.).
+
+IMPORTANT: Do NOT use the create_work_item tool. Instead, output a JSON block under a "## PROPOSED_TASKS" heading with all proposed tasks. Format:
+## PROPOSED_TASKS
+\`\`\`json
+[
+  {
+    "workItemType": "Task",
+    "title": "Task title",
+    "description": "Detailed description",
+    "acceptanceCriteria": "Criteria",
+    "assignedTo": "",
+    "tags": ""
+  }
+]
+\`\`\`
+
+First analyze the user story and explain your breakdown reasoning, then output the PROPOSED_TASKS JSON block. The user will review and select which tasks to create.`;
+      chatProvider.injectChatMessage(msg);
     })
   );
 
@@ -381,6 +536,172 @@ Generate ONLY the commit message, nothing else.`;
     })
   );
 
+  // ── Memory Search: QuickPick to search/filter all memory entries ──
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.memorySearch', async () => {
+      const items: (vscode.QuickPickItem & { detail?: string })[] = [];
+
+      // User memories
+      for (const entry of services.memory.getAll()) {
+        items.push({
+          label: `[${entry.category}] ${entry.key}`,
+          description: entry.content.substring(0, 80),
+          detail: entry.content,
+        });
+      }
+
+      // Workspace memories
+      for (const key of services.workspaceMemory.list()) {
+        const content = services.workspaceMemory.read(key) ?? '';
+        items.push({
+          label: `[workspace] ${key}`,
+          description: content.substring(0, 80),
+          detail: content,
+        });
+      }
+
+      if (items.length === 0) {
+        vscode.window.showInformationMessage('No memory entries stored.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Search memories...',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      });
+
+      if (picked?.detail) {
+        vscode.window.showInformationMessage(picked.detail, { modal: true });
+      }
+    })
+  );
+
+  // ── Memory Import/Export ──────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.memoryExport', async () => {
+      // Gather all user memories
+      const userEntries = services.memory.getAll();
+
+      // Gather all workspace memories
+      const workspaceKeys = services.workspaceMemory.list();
+      const workspaceEntries: Record<string, string> = {};
+      for (const key of workspaceKeys) {
+        const value = services.workspaceMemory.read(key);
+        if (value !== null) {
+          workspaceEntries[key] = value;
+        }
+      }
+
+      const exportData = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        userMemory: userEntries,
+        workspaceMemory: workspaceEntries,
+      };
+
+      // Show save dialog
+      const uri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file('ado-code-memory.json'),
+        filters: { 'JSON': ['json'] },
+      });
+
+      if (!uri) return; // cancelled
+
+      try {
+        const json = JSON.stringify(exportData, null, 2);
+        fs.writeFileSync(uri.fsPath, json, 'utf8');
+        vscode.window.showInformationMessage(
+          `Exported ${userEntries.length} user + ${workspaceKeys.length} workspace memories`
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Failed to export memories: ${err instanceof Error ? err.message : err}`
+        );
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.memoryImport', async () => {
+      // Show open dialog
+      const uris = await vscode.window.showOpenDialog({
+        filters: { 'JSON': ['json'] },
+        canSelectFiles: true,
+        canSelectMany: false,
+      });
+
+      if (!uris || uris.length === 0) return; // cancelled
+
+      const filePath = uris[0].fsPath;
+
+      // Read and parse the JSON file
+      let data: any;
+      try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        data = JSON.parse(content);
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Failed to read JSON file: ${err instanceof Error ? err.message : err}`
+        );
+        return;
+      }
+
+      // Validate structure
+      if (!data.version || (!data.userMemory && !data.workspaceMemory)) {
+        vscode.window.showErrorMessage(
+          'Invalid memory file: missing version or memory data'
+        );
+        return;
+      }
+
+      // Choose import mode
+      const importMode = await vscode.window.showQuickPick(
+        [
+          { label: 'Merge', description: 'Keep existing memories, add/update from file' },
+          { label: 'Replace', description: 'Clear existing memories first, then import' },
+        ],
+        { placeHolder: 'How should memories be imported?' }
+      );
+
+      if (!importMode) return; // cancelled
+
+      // If replace mode, clear existing memories first
+      if (importMode.label === 'Replace') {
+        services.memory.clear();
+      }
+
+      // Import user memories
+      let userImported = 0;
+      if (Array.isArray(data.userMemory)) {
+        for (const entry of data.userMemory) {
+          if (entry.key && entry.category && entry.content) {
+            services.memory.set(entry.key, entry.category, entry.content);
+            userImported++;
+          }
+        }
+      }
+
+      // Import workspace memories
+      let wsImported = 0;
+      if (data.workspaceMemory && typeof data.workspaceMemory === 'object') {
+        for (const [key, value] of Object.entries(data.workspaceMemory)) {
+          if (typeof value === 'string') {
+            services.workspaceMemory.write(key, value);
+            wsImported++;
+          }
+        }
+      }
+
+      // Refresh status panel
+      statusProvider.refreshLight();
+
+      vscode.window.showInformationMessage(
+        `Imported ${userImported} user + ${wsImported} workspace memories`
+      );
+    })
+  );
+
   // ── Task 5.1: setMode command ────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.setMode', async () => {
@@ -397,6 +718,20 @@ Generate ONLY the commit message, nothing else.`;
         await config.update('mode', picked.value, vscode.ConfigurationTarget.Global);
         vscode.window.showInformationMessage(`Mode set to ${picked.label}`);
       }
+    })
+  );
+
+  // ── Cycle Mode: right-click on Status Mode item ─────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.cycleMode', async () => {
+      const cycle = ['inline', 'plan', 'act'] as const;
+      const current = getSettings().mode;
+      const idx = cycle.indexOf(current as typeof cycle[number]);
+      const next = cycle[(idx + 1) % cycle.length];
+      const config = vscode.workspace.getConfiguration('adoCode');
+      await config.update('mode', next, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage(`Mode: ${next}`);
+      statusProvider.refreshLight();
     })
   );
 
@@ -643,6 +978,10 @@ Generate ONLY the commit message, nothing else.`;
           chatProvider.setWorking(run.status === 'running');
         }
         worktreesProvider.refreshIfChanged(run);
+        // Auto-review: stream an LLM code review for succeeded runs.
+        if (run.status === 'succeeded') {
+          void chatProvider.reviewAgentRun(run);
+        }
       },
     },
     {
@@ -657,6 +996,7 @@ Generate ONLY the commit message, nothing else.`;
   );
   chatProvider.setAgentRunner(agentRunner);
   worktreesProvider.setAgentRunner(agentRunner);
+  statusProvider.setAgentRunner(agentRunner);
 
   // Q7: offer to resume interrupted runs (with a session id) after reload.
   const interrupted = agentRunner.listRuns().filter(r => r.status === 'interrupted' && r.sessionId);
@@ -730,6 +1070,44 @@ Generate ONLY the commit message, nothing else.`;
       if (!meta) return;
       vscode.env.clipboard.writeText(meta.name);
       vscode.window.showInformationMessage(`ADO Code: copied "${meta.name}" to clipboard.`);
+    }),
+    vscode.commands.registerCommand('adoCode.agentViewDetail', (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.name) return;
+      const agentName = meta.name as import('./agents/types').AgentName;
+      services.agents.detect().then(capabilities => {
+        const capability = capabilities.find(c => c.name === agentName);
+        if (capability) {
+          AgentDetailPanel.show(agentName, capability);
+        } else {
+          vscode.window.showWarningMessage(`ADO Code: agent "${agentName}" not found.`);
+        }
+      });
+    })
+  );
+
+  // Run commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.runViewSummary', (item: any) => {
+      const meta = item?.meta;
+      if (!meta) return;
+      const summary = meta.summary;
+      if (summary) {
+        vscode.window.showInformationMessage(`Summary: ${summary}`);
+      } else {
+        vscode.window.showInformationMessage('No summary available');
+      }
+    }),
+    vscode.commands.registerCommand('adoCode.runOpenWorktree', (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.worktreePath) return;
+      vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(meta.worktreePath), false);
+    }),
+    vscode.commands.registerCommand('adoCode.runCopyId', (item: any) => {
+      const meta = item?.meta;
+      if (!meta) return;
+      vscode.env.clipboard.writeText(meta.runId);
+      vscode.window.showInformationMessage(`ADO Code: copied run ID "${meta.runId}" to clipboard.`);
     })
   );
 
@@ -859,6 +1237,145 @@ Generate ONLY the commit message, nothing else.`;
     })
   );
 
+  // Worktree Show Changes: open VS Code diff editor for changed files
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.worktreeShowChanges', async (item: any) => {
+      const meta = item?.meta;
+      const worktreePath = meta?.path ?? meta?.worktreePath;
+      if (!worktreePath) {
+        vscode.window.showWarningMessage('ADO Code: no worktree path available for this item.');
+        return;
+      }
+
+      const workspaceRoot = services.git.workspaceRoot;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('ADO Code: no workspace root available.');
+        return;
+      }
+
+      try {
+        // Get changed files in the worktree (uncommitted + untracked)
+        const statusOutput = await services.git.gitInWorktree(worktreePath, [
+          'status', '--porcelain', '--no-renames',
+        ]);
+        if (!statusOutput.trim()) {
+          vscode.window.showInformationMessage('ADO Code: no changes in this worktree.');
+          return;
+        }
+
+        // Parse porcelain status: "XY filename" (2-char status + space + path)
+        const files: Array<{ status: string; filePath: string }> = [];
+        for (const line of statusOutput.split('\n')) {
+          if (!line.trim()) continue;
+          const status = line.substring(0, 2).trim();
+          const filePath = line.substring(3).trim();
+          if (filePath && !filePath.endsWith('/')) {
+            files.push({ status, filePath });
+          }
+        }
+
+        if (files.length === 0) {
+          vscode.window.showInformationMessage('ADO Code: no changes in this worktree.');
+          return;
+        }
+
+        // For a single file, open diff directly
+        if (files.length === 1) {
+          const f = files[0];
+          const baseUri = vscode.Uri.file(path.join(workspaceRoot, f.filePath));
+          const worktreeUri = vscode.Uri.file(path.join(worktreePath, f.filePath));
+          const title = `${f.filePath} — worktree changes`;
+          if (f.status === 'A') {
+            // New file: show empty vs worktree
+            await vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(''), worktreeUri, title);
+          } else {
+            await vscode.commands.executeCommand('vscode.diff', baseUri, worktreeUri, title);
+          }
+          return;
+        }
+
+        // Multiple files: show QuickPick to select which file to diff
+        const items: (vscode.QuickPickItem & { filePath: string; status: string })[] = files.map(f => {
+          const statusLabel = f.status === 'A' ? '+ Added' :
+            f.status === 'D' ? '- Deleted' :
+            f.status === 'M' ? '~ Modified' :
+            f.status === '??' ? '? Untracked' :
+            f.status;
+          return {
+            label: f.filePath,
+            description: statusLabel,
+            filePath: f.filePath,
+            status: f.status,
+          };
+        });
+
+        const picked = await vscode.window.showQuickPick(items, {
+          placeHolder: `${files.length} file(s) changed — pick a file to diff`,
+          matchOnDescription: true,
+        });
+
+        if (!picked) return;
+
+        const baseUri = vscode.Uri.file(path.join(workspaceRoot, picked.filePath));
+        const worktreeUri = vscode.Uri.file(path.join(worktreePath, picked.filePath));
+        const title = `${picked.filePath} — worktree changes`;
+        if (picked.status === 'A') {
+          await vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(''), worktreeUri, title);
+        } else {
+          await vscode.commands.executeCommand('vscode.diff', baseUri, worktreeUri, title);
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `ADO Code: failed to show worktree changes — ${err instanceof Error ? err.message : err}`
+        );
+      }
+    })
+  );
+
+  // MCP server commands (Status Panel context menu)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.mcpDisconnect', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.name) return;
+      const disconnected = await services.mcp.disconnectServer(meta.name);
+      if (disconnected) {
+        vscode.window.showInformationMessage(`ADO Code: disconnected from MCP server "${meta.name}".`);
+      } else {
+        vscode.window.showWarningMessage(`ADO Code: MCP server "${meta.name}" not found.`);
+      }
+      statusProvider.refreshLight();
+    }),
+    vscode.commands.registerCommand('adoCode.mcpReconnect', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.name) return;
+      vscode.window.showInformationMessage(`ADO Code: reconnecting to MCP server "${meta.name}"...`);
+      const success = await services.mcp.reconnectServer(meta.name);
+      if (success) {
+        vscode.window.showInformationMessage(`ADO Code: reconnected to MCP server "${meta.name}".`);
+      } else {
+        vscode.window.showErrorMessage(`ADO Code: failed to reconnect to MCP server "${meta.name}".`);
+      }
+      statusProvider.refreshLight();
+    }),
+    vscode.commands.registerCommand('adoCode.mcpViewDetails', (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.name) return;
+      const config = services.mcp.getServerConfig(meta.name);
+      if (!config) {
+        vscode.window.showWarningMessage(`ADO Code: no configuration found for MCP server "${meta.name}".`);
+        return;
+      }
+      const details = [
+        `Name: ${config.name}`,
+        `Command: ${config.command}`,
+        `Args: ${(config.args ?? []).join(' ') || '(none)'}`,
+        `Timeout: ${config.timeout ?? 30000}ms`,
+        config.env ? `Env: ${Object.keys(config.env).join(', ')}` : 'Env: (none)',
+      ].join('\n');
+      vscode.window.showInformationMessage(details, { modal: true });
+    })
+  );
+
   // Keep services in sync with settings / workspace changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -886,6 +1403,61 @@ Generate ONLY the commit message, nothing else.`;
       }
     })
   );
+
+  // ── Show changelog once after package update ────────────────────
+  const currentVersion = context.extension.packageJSON.version as string;
+  const lastSeenVersion = context.globalState.get<string>('adoCode.lastSeenVersion', '');
+  if (lastSeenVersion && lastSeenVersion !== currentVersion) {
+    try {
+      const changelogPath = path.join(context.extensionPath, 'CHANGELOG.md');
+      const changelog = fs.readFileSync(changelogPath, 'utf8');
+      // Find the section for the current version
+      const versionRegex = new RegExp(`## \\[${currentVersion.replace(/\./g, '\\.')}\\]([\\s\\S]*?)(?=## \\[|$)`);
+      const match = changelog.match(versionRegex);
+      if (match) {
+        const entry = match[1].trim();
+        const action = await vscode.window.showInformationMessage(
+          `ADO Code updated to ${currentVersion}`,
+          'Show Changelog',
+          'Dismiss'
+        );
+        if (action === 'Show Changelog') {
+          const panel = vscode.window.createWebviewPanel(
+            'adoCodeChangelog',
+            `ADO Code ${currentVersion} — What's New`,
+            vscode.ViewColumn.One,
+            { enableScripts: false }
+          );
+          panel.webview.html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 20px; line-height: 1.6; }
+    h2 { color: var(--vscode-charts-green); }
+    h3 { margin-top: 16px; }
+    ul { padding-left: 20px; }
+    li { margin-bottom: 6px; }
+    strong { color: var(--vscode-charts-blue); }
+  </style>
+</head>
+<body>
+  <h2>ADO Code ${currentVersion}</h2>
+  ${entry.split('\n').map(line => {
+    if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
+    if (line.startsWith('- **')) return `<li>${line.slice(2).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</li>`;
+    if (line.startsWith('- ')) return `<li>${line.slice(2)}</li>`;
+    return '';
+  }).join('\n')}
+</body>
+</html>`;
+        }
+      }
+    } catch {
+      // Changelog read failed — silently skip
+    }
+  }
+  // Always update the stored version
+  await context.globalState.update('adoCode.lastSeenVersion', currentVersion);
 }
 
 export function deactivate() {}

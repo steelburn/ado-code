@@ -32,7 +32,8 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
   private _onDidChangeTreeData = new vscode.EventEmitter<WorktreeNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  private roots: WorktreeNode[] = [];
+  private worktreeNodes: WorktreeNode[] = [];
+  private rootNode!: WorktreeNode;
   private agentRunner?: AgentRunner;
   // Last seen run status per run id — reload the tree only when the status
   // actually changes (start/cancel/complete) instead of on every streamed chunk.
@@ -42,11 +43,46 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
   private reloadChain: Promise<void> = Promise.resolve();
 
   constructor(private services: Services) {
+    this.rootNode = new WorktreeNode(
+      'Worktrees',
+      vscode.TreeItemCollapsibleState.Expanded
+    );
+    this.rootNode.contextValue = 'worktreesRoot';
+    this.rootNode.iconPath = new vscode.ThemeIcon('git-branch');
     void this.enqueueReload();
   }
 
   setAgentRunner(runner: AgentRunner): void {
     this.agentRunner = runner;
+  }
+
+  /**
+   * Remove all worktrees whose agent run is in a terminal (completed)
+   * state: succeeded, failed, cancelled, or interrupted.
+   * Returns the number of worktrees removed.
+   */
+  async removeAllCompleted(): Promise<number> {
+    if (!this.agentRunner) return 0;
+    const runs = this.agentRunner.listRuns();
+    const completed = runs.filter(
+      (r) =>
+        r.status === 'succeeded' ||
+        r.status === 'failed' ||
+        r.status === 'cancelled' ||
+        r.status === 'interrupted'
+    );
+    let removed = 0;
+    for (const run of completed) {
+      try {
+        await this.services.git.removeWorktree(run.id);
+        await this.services.git.deleteBranchIfMerged(run.branch ?? '');
+        removed++;
+      } catch {
+        // Best effort — worktree may already be gone or branch may not exist
+      }
+    }
+    await this.enqueueReload();
+    return removed;
   }
 
   /** Called after each successful reload with the fresh entries — the host
@@ -88,13 +124,15 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
           return { runId: wt.runId, path: wt.path, branch: wt.branch, run, ...info };
         })
       );
-      this.roots = entries.map((e) => this.toNode(e));
+      this.worktreeNodes = entries.map((e) => this.toNode(e));
+      this.rootNode.children = this.worktreeNodes;
       // Host hook: post-merge cleanup auto-offer (fire-and-forget — the
       // host throttles ADO polling per run).
       try { this.onReloaded?.(entries); } catch { /* never break the tree */ }
     } catch (err) {
       logger.error('Worktrees: reload failed', err);
-      this.roots = [];
+      this.worktreeNodes = [];
+      this.rootNode.children = [];
     }
     this._onDidChangeTreeData.fire(undefined);
   }
@@ -166,7 +204,7 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
   }
 
   getChildren(element?: WorktreeNode): WorktreeNode[] {
-    if (!element) return this.roots;
+    if (!element) return [this.rootNode];
     return element.children ?? [];
   }
 }

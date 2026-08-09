@@ -21,6 +21,8 @@ interface ToolCallInfo {
 interface Props {
   messages: Message[];
   loading: boolean;
+  /** AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking) */
+  thinking?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -272,13 +274,13 @@ const MarkdownWithCodeCopy: React.FC<{ content: string }> = ({ content }) => {
 
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading }: Props) {
+export function MessageList({ messages, loading, thinking }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
+  }, [messages, loading, thinking]);
 
   if (messages.length === 0 && !loading) {
     return (
@@ -384,12 +386,22 @@ export function MessageList({ messages, loading }: Props) {
             <div className="message-header">
               <span className="message-author">ADO Code</span>
             </div>
-            <div className="loading-indicator">
-              <div className="loading-dots">
-                <span /><span /><span />
+            {thinking ? (
+              <div className="thinking-block">
+                <div className="thinking-header">
+                  <span className="thinking-icon">💭</span>
+                  <span className="thinking-label">Thinking</span>
+                </div>
+                <div className="thinking-content">{thinking}</div>
               </div>
-              Thinking…
-            </div>
+            ) : (
+              <div className="loading-indicator">
+                <div className="loading-dots">
+                  <span /><span /><span />
+                </div>
+                Thinking…
+              </div>
+            )}
           </div>
         </div>
       )}

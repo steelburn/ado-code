@@ -94,11 +94,17 @@ export interface ApiStreamUsageChunk {
   outputTokens: number;
 }
 
+export interface ApiStreamThinkingChunk {
+  type: "thinking";
+  thinking: string;
+}
+
 export type ApiStreamChunk =
   | ApiStreamTextChunk
   | ApiStreamToolUseChunk
   | ApiStreamToolResultChunk
-  | ApiStreamUsageChunk;
+  | ApiStreamUsageChunk
+  | ApiStreamThinkingChunk;
 
 /** The streaming return type for createMessage. */
 export type ApiStream = AsyncGenerator<ApiStreamChunk>;

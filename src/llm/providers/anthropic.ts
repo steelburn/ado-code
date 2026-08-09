@@ -65,6 +65,7 @@ export class AnthropicProvider implements LlmProvider {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let inThinkingBlock = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -85,10 +86,25 @@ export class AnthropicProvider implements LlmProvider {
           }
           try {
             const parsed = JSON.parse(data);
-            if (parsed.type === 'content_block_delta') {
-              const content = parsed.delta?.text || '';
-              if (content) {
-                yield { content, done: false };
+            if (parsed.type === 'content_block_start') {
+              // Claude extended thinking — thinking block started
+              if (parsed.content_block?.type === 'thinking') {
+                inThinkingBlock = true;
+              }
+            } else if (parsed.type === 'content_block_stop') {
+              inThinkingBlock = false;
+            } else if (parsed.type === 'content_block_delta') {
+              if (inThinkingBlock && parsed.delta?.type === 'thinking_delta') {
+                // Claude extended thinking content
+                const thinking = parsed.delta?.thinking || '';
+                if (thinking) {
+                  yield { content: '', done: false, thinking };
+                }
+              } else {
+                const content = parsed.delta?.text || '';
+                if (content) {
+                  yield { content, done: false };
+                }
               }
             } else if (parsed.type === 'message_stop') {
               yield { content: '', done: true };

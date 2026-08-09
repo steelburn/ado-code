@@ -20,6 +20,9 @@ interface ConfigSetting {
   label: string;
   type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides';
   description: string;
+  hint?: string;
+  min?: number;
+  max?: number;
   options?: string[];
   placeholder?: string;
 }
@@ -54,7 +57,7 @@ const SECTIONS: ConfigSection[] = [
     title: 'Mode',
     icon: '⚡',
     settings: [
-      { key: 'mode', label: 'Default Mode', type: 'enum', description: 'Tool-use mode for new conversations', options: ['inline', 'plan', 'act'] },
+      { key: 'mode', label: 'Default Mode', type: 'enum', description: 'Tool-use mode for new conversations', options: ['inline', 'plan', 'act', 'yolo'] },
     ],
   },
   {
@@ -89,8 +92,16 @@ const SECTIONS: ConfigSection[] = [
     title: 'Act Mode',
     icon: '🚀',
     settings: [
-      { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn' },
+      { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn', hint: 'Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
       { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed command prefixes in act mode' },
+    ],
+  },
+  {
+    title: 'Consent',
+    icon: '🔐',
+    settings: [
+      { key: 'consent.harmlessAutoApprove', label: 'Auto-approve harmless commands', type: 'boolean', description: 'Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires.', hint: 'Read-only terminal commands like git status, git diff, npm test, ls, etc. are detected automatically. You can still approve or reject before the timer expires.' },
+      { key: 'consent.harmlessAutoApproveSeconds', label: 'Auto-approve delay (seconds)', type: 'number', description: 'Seconds before a harmless command auto-approves', hint: 'How long to wait before auto-approving a harmless command. Lower = faster, higher = more time to review. Range: 1–30 seconds.', min: 1, max: 30 },
     ],
   },
   {
@@ -107,6 +118,14 @@ const SECTIONS: ConfigSection[] = [
       { key: 'agents.enabled', label: 'Enabled agents', type: 'array', description: 'Which agents may be delegated to' },
       { key: 'agents.verifyCommand', label: 'Verify command', type: 'string', description: 'Shell command to run after agent finishes (e.g. npm test)', placeholder: 'npm test' },
       { key: 'agents.autoSelect', label: 'Default agent', type: 'enum', description: 'Default agent when none specified', options: ['', 'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent'] },
+      { key: 'agents.autoReview', label: 'Auto-review agent changes', type: 'boolean', description: 'Automatically review agent changes via LLM when a run completes' },
+    ],
+  },
+  {
+    title: 'Chat',
+    icon: '💬',
+    settings: [
+      { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: 'Display the model\'s thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)', hint: 'When enabled, the model\'s internal reasoning appears in a blue thinking block while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don\'t support it.' },
     ],
   },
   {
@@ -285,6 +304,38 @@ function McpServersInput({ value, onChange }: { value: McpServer[]; onChange: (s
       <button className="config-mcp-add" onClick={addServer} type="button">
         + Add Server
       </button>
+      <details className="config-mcp-guide">
+        <summary>Remote MCP Server Setup Guide</summary>
+        <div className="config-mcp-guide-content">
+          <p>ADO Code connects to MCP servers via <strong>stdio transport</strong> (spawning a local process). To connect to a <strong>remote HTTP/SSE MCP server</strong>, use <code>mcp-remote</code> as a bridge:</p>
+          <div className="config-mcp-guide-example">
+            <strong>Example: Remote server via mcp-remote</strong>
+            <pre>{`{
+  "name": "my-remote-server",
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://your-server.example.com/sse"]
+}`}</pre>
+          </div>
+          <p><strong>Common remote MCP servers:</strong></p>
+          <ul>
+            <li><code>npx -y mcp-remote &lt;url&gt;</code> — Generic bridge for any HTTP/SSE MCP server</li>
+            <li><code>npx -y @modelcontextprotocol/server-everything &lt;url&gt;</code> — Reference server for testing</li>
+          </ul>
+          <p><strong>With authentication:</strong></p>
+          <pre>{`{
+  "name": "auth-server",
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://server.example.com/sse", "--header", "Authorization:Bearer YOUR_TOKEN"],
+  "env": { "API_KEY": "your-key" }
+}`}</pre>
+          <p><strong>Local stdio servers</strong> (no bridge needed):</p>
+          <pre>{`{
+  "name": "filesystem",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+}`}</pre>
+        </div>
+      </details>
     </div>
   );
 }
@@ -640,6 +691,7 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
               <div key={setting.key} className="config-field">
                 <label className="config-label">{setting.label}</label>
                 <div className="config-desc">{setting.description}</div>
+                {setting.hint && <div className="config-desc" style={{ fontStyle: 'italic', opacity: 0.7, marginTop: -4, marginBottom: 4 }}>{setting.hint}</div>}
                 {setting.type === 'boolean' ? (
                   <label className="config-toggle">
                     <input
@@ -663,6 +715,8 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                   <input
                     className="config-input"
                     type="number"
+                    min={setting.min}
+                    max={setting.max}
                     value={config[setting.key] ?? ''}
                     onChange={e => handleChange(setting.key, Number(e.target.value))}
                   />
