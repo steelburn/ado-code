@@ -15,6 +15,14 @@ export class ProjectCreationService {
     request: ProjectCreationRequest
   ): Promise<{ success: boolean; path: string; error?: string }> {
     try {
+      // Guard against empty targetPath (webview sends '' expecting host resolution)
+      if (!request.targetPath) {
+        return {
+          success: false,
+          path: '',
+          error: 'No target path specified',
+        };
+      }
       const projectDir = path.join(request.targetPath, request.projectName);
 
       logger.info(`ProjectCreation: creating project "${request.projectName}" with template "${request.templateId}"`);

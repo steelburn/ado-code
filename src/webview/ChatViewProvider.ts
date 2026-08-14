@@ -54,6 +54,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly confirmBroker = createConfirmationBroker();
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
+  /** True when chat content has changed since last refresh cycle. */
+  private _dirty = false;
+  /** Timestamp of the last user interaction (message sent, config change). */
+  private _lastUserInteraction = Date.now();
+  /** Idle threshold before a background refresh is allowed (5 minutes). */
+  private static readonly IDLE_THRESHOLD_MS = 5 * 60 * 1000;
   // Task 4.1: token usage status bar — wired via setTokenStatusBar from extension.ts
   private tokenStatusBar?: vscode.StatusBarItem;
   // Working indicator: status-bar spinner shown while the LLM turn or any
@@ -1084,14 +1090,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    // Auto-refresh work items every 5 minutes if configured
+    // Auto-refresh work items — only when dirty, view is active, and idle.
+    // The timer checks every minute; the actual refresh fires only when all
+    // three conditions are satisfied (dirty flag, VS Code focused, idle > 5 min).
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = setInterval(() => {
       const s = getSettings();
-      if (s.adoOrganization && s.adoProject && s.adoPat) {
-        this.refreshWorkItems();
-      }
-    }, 5 * 60 * 1000);
+      if (!s.adoOrganization || !s.adoProject || !s.adoPat) return;
+      if (!this._dirty) return;
+      if (!vscode.window.state.focused) return;
+      if (Date.now() - this._lastUserInteraction < ChatViewProvider.IDLE_THRESHOLD_MS) return;
+      this._dirty = false;
+      void this.refreshWorkItems();
+    }, 60_000);
 
     // Check workspace state: empty dir, git init, AGENTS.md
     this.checkWorkspaceInit();
@@ -1101,6 +1112,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       async (message: WebviewToExtensionMessage) => {
         switch (message.type) {
           case 'userMessage':
+            this.touchIdle();
             await this.handleUserMessage(message.content, message.images);
             break;
           case 'sendMessage':
@@ -1108,6 +1120,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // arrive here — same turn path as a typed message. Without this
             // case the message was silently dropped and the chat went stale
             // (spinner on, no LLM turn ever started).
+            this.touchIdle();
             await this.handleUserMessage(message.content);
             break;
           case 'fetchWorkItems':
@@ -1128,6 +1141,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               await cfg.update(key, value, vscode.ConfigurationTarget.Global);
             }
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            this.markDirty();
             if (this._sanitizedConfig().configured) {
               await this.refreshWorkItems();
             }
@@ -1136,6 +1150,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'updateConfig':
             await this.applyConfigUpdate(message.config);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            this.markDirty();
             // Auto-fetch work items after config save if fully configured
             if (this._sanitizedConfig().configured) {
               await this.refreshWorkItems();
@@ -1164,6 +1179,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
+            this.markDirty();
             break;
           case 'stopGeneration':
             // Abort any in-flight LLM stream and deny pending consent prompts
@@ -1243,6 +1259,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await vscode.workspace.getConfiguration('adoCode').update('mode', selected, vscode.ConfigurationTarget.Global);
             this.executor?.setMode(selected);
             this.postMessage({ type: 'modeChanged', mode: selected });
+            this.markDirty();
             break;
           }
           case 'fetchProjects': {
@@ -1279,6 +1296,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (root) this.checkProjectBinding(root);
             // Auto-refresh work items with new project
             await this.refreshWorkItems();
+            this.markDirty();
             break;
           }
           case 'consentResponse': {
@@ -1421,6 +1439,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public postMessage(message: any) {
     this._view?.webview.postMessage(message);
+  }
+
+  /** Mark content as changed — the next idle refresh cycle will pick it up. */
+  private markDirty(): void {
+    this._dirty = true;
+  }
+
+  /** Record user interaction — resets the idle timer. */
+  private touchIdle(): void {
+    this._lastUserInteraction = Date.now();
   }
 
   /**

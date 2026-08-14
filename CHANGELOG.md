@@ -4,6 +4,10 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [0.5.8] - 2026-08-10
 
+### Improvements
+- **Smart background refresh**: Work item auto-refresh now only fires when content has changed (dirty flag), the VS Code window has focus, and the user has been idle for 5+ minutes — stops unnecessary refreshes of the chat window
+- **Project creation fix**: Resolved ENOENT error when creating projects via the wizard — workspace root is now correctly resolved by the host instead of relying on the empty path from the webview
+
 ### Features
 - **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js TypeScript/JavaScript, Python, React, Next.js, PHP Laravel, .NET Web API/Console, Empty) — configure per-template options (ESLint, testing, Docker, etc.), optional ADO work item creation, git initialization with branch naming, review step before creation. New slash command: `/new-project`
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 6 built-in skills (Code Review, Documentation Generator, Test Generator, Refactoring Assistant, Security Audit, Performance Profiler) with search, category filtering, and enable/disable toggle. New slash command: `/skills`
