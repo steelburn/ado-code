@@ -320,8 +320,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Open an editor tab with proposed tasks and wire up the save handler.
-   * On save, fires the proposedTasksSaveEmitter so the confirmation flow
-   * can read the editor content and create selected tasks.
+   * Shows a helpful message in chat explaining the workflow.
+   * On save, shows a confirmation card so the user can create the tasks.
    */
   private async showProposedTasksInEditor(
     parentId: number,
@@ -347,37 +347,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Store tasks for reference
     this.proposedTasksByParent.set(parentId, tasks);
 
-    // Wire up the save handler — listen for saves on this specific file
-    this.proposedTasksSaveDisposable?.dispose();
-    this.proposedTasksSaveDisposable = vscode.workspace.onDidSaveTextDocument((savedDoc) => {
-      if (savedDoc.uri.fsPath === filePath.fsPath) {
-        this.proposedTasksSaveEmitter.fire(savedDoc.uri);
-      }
+    // Show instructions in chat (using blockquote for visibility)
+    this.postMessage({
+      type: 'assistantMessage',
+      content: `> 📝 **Proposed tasks for #${parentId}: ${parentTitle}**\n> \n> I've created ${tasks.length} task(s) in the editor tab. You can:\n> 1. **Edit** the task details (title, description, acceptance criteria, etc.)\n> 2. **Uncheck** tasks you don't want by changing \`[x]\` to \`[ ]\`\n> 3. **Save** the file (Ctrl+S) when ready\n> \n> After saving, I'll ask if you want to create the selected tasks in ADO.`,
+      done: true,
     });
 
-    // Show confirmation card in chat
-    const confirmOptions: ConfirmationOption[] = [
-      { label: '✅ Create Selected Tasks', value: 'create' },
-      { label: '✏️ Edit Tasks Again', value: 'edit' },
-      { label: '❌ Cancel', value: 'cancel' },
-    ];
-    const decision = await this.requestConfirmation(
-      'Create Tasks in ADO',
-      `Review the proposed tasks in the editor tab, then choose an action. Uncheck tasks you don't want by removing the [x] and replacing with [ ].`,
-      confirmOptions,
-    );
+    // Wire up the save handler — listen for saves on this specific file
+    // When the user saves, show the confirmation card
+    this.proposedTasksSaveDisposable?.dispose();
+    this.proposedTasksSaveDisposable = vscode.workspace.onDidSaveTextDocument(async (savedDoc) => {
+      if (savedDoc.uri.fsPath === filePath.fsPath) {
+        // Show confirmation card after user saves
+        const confirmOptions: ConfirmationOption[] = [
+          { label: '✅ Create Selected Tasks', value: 'create' },
+          { label: '✏️ Edit Tasks Again', value: 'edit' },
+          { label: '❌ Cancel', value: 'cancel' },
+        ];
+        const decision = await this.requestConfirmation(
+          'Create Tasks in ADO',
+          `Ready to create the checked tasks? Unchecked tasks will be skipped.`,
+          confirmOptions,
+        );
 
-    if (decision === 'create') {
-      await this.createProposedTasksFromEditor(parentId, filePath);
-    } else if (decision === 'edit') {
-      // Re-focus the editor so the user can continue editing
-      this.proposedTasksEditor?.show();
-    }
-    // On cancel: do nothing, editor stays open for manual cleanup
+        if (decision === 'create') {
+          await this.createProposedTasksFromEditor(parentId, filePath);
+        } else if (decision === 'edit') {
+          // Re-focus the editor so the user can continue editing
+          this.proposedTasksEditor?.show();
+        }
+        // On cancel: do nothing, editor stays open for manual cleanup
+      }
+    });
   }
 
   /**
    * Parse the editor content for checked tasks and create them in ADO.
+   * Checks for existing child items with matching titles to prevent duplicates.
    */
   private async createProposedTasksFromEditor(parentId: number, fileUri: vscode.Uri): Promise<void> {
     try {
@@ -391,9 +398,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const project = this.activeProject();
-      const created: Array<{ id: number; title: string }> = [];
+
+      // Check for existing child items to prevent duplicates
+      let existingChildren: Array<{ id: number; title: string }> = [];
+      try {
+        const children = await this.services.ado.getChildWorkItems(project, parentId);
+        existingChildren = children.map(c => ({ id: c.id, title: c.fields?.['System.Title'] || '' }));
+      } catch (err) {
+        logger.warn('Chat: failed to fetch existing child items for duplicate check', err);
+        // Continue without duplicate check if we can't fetch children
+      }
+
+      // Find potential duplicates (case-insensitive title match)
+      const duplicates: Array<{ task: ProposedTask; existing: { id: number; title: string } }> = [];
+      const tasksToCreate: ProposedTask[] = [];
 
       for (const task of tasks) {
+        const existing = existingChildren.find(
+          e => e.title.toLowerCase() === task.title.toLowerCase()
+        );
+        if (existing) {
+          duplicates.push({ task, existing });
+        } else {
+          tasksToCreate.push(task);
+        }
+      }
+
+      // If duplicates found, ask user what to do
+      let decision: string | null = 'all'; // Default: create all
+      if (duplicates.length > 0) {
+        const duplicateList = duplicates.map(d => 
+          `- **"${d.task.title}"** matches existing #${d.existing.id}`
+        ).join('\n');
+
+        const confirmOptions: ConfirmationOption[] = [
+          { label: '✅ Create Only Non-Duplicates', value: 'skip' },
+          { label: '⚠️ Create All (Including Duplicates)', value: 'all' },
+          { label: '❌ Cancel', value: 'cancel' },
+        ];
+
+        decision = await this.requestConfirmation(
+          'Duplicate Tasks Found',
+          `Found ${duplicates.length} task(s) with matching titles:\n\n${duplicateList}\n\nWhat would you like to do?`,
+          confirmOptions,
+        );
+
+        if (decision === null || decision === 'cancel') {
+          return;
+        } else if (decision === 'skip') {
+          // Only create non-duplicate tasks
+          if (tasksToCreate.length === 0) {
+            vscode.window.showInformationMessage('ADO Code: all tasks are duplicates, nothing to create.');
+            return;
+          }
+        }
+        // If decision === 'all', continue with all tasks
+      }
+
+      const created: Array<{ id: number; title: string }> = [];
+      const finalTasks = duplicates.length > 0 && decision === 'skip' ? tasksToCreate : tasks;
+
+      for (const task of finalTasks) {
         try {
           const result = await this.services.ado.createWorkItem(
             project,
@@ -416,9 +481,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Report results in chat
       if (created.length > 0) {
         const summary = created.map(t => `- **#${t.id}** — ${t.title}`).join('\n');
+        let message = `✅ Created ${created.length} task(s) under #${parentId}:\n\n${summary}`;
+        
+        if (duplicates.length > 0) {
+          const skipped = decision === 'skip' ? duplicates.length : 0;
+          const createdDupes = decision === 'all' ? duplicates.length : 0;
+          if (skipped > 0) {
+            message += `\n\n⏭️ Skipped ${skipped} duplicate(s)`;
+          }
+          if (createdDupes > 0) {
+            message += `\n\n⚠️ Created ${createdDupes} duplicate(s)`;
+          }
+        }
+
         this.postMessage({
           type: 'assistantMessage',
-          content: `✅ Created ${created.length} task(s) under #${parentId}:\n\n${summary}`,
+          content: message,
           done: true,
         });
         this.postMessage({ type: 'proposedTasksCreated', count: created.length, parentId });

@@ -43,8 +43,8 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 - **Work item filtering**: Filter Work Items tree by state, type, or text search with smart parent visibility
 - **Agent auto-review**: Git diff automatically reviewed by LLM on agent completion with merge recommendation
 - **Worktree diff viewer**: Show Changes opens VS Code diff editor for worktree files
-- **Generate tasks from user stories**: `/generate-tasks` slash command + context menu action trigger the AI to analyze a user story and create child tasks via the `create_work_item` LLM tool
-- **Task draft editor**: When the AI calls `create_work_item`, an editable markdown tab opens for you to review and modify all fields before the work item is created in ADO
+- **Generate tasks from user stories**: `/generate-tasks` slash command + context menu action trigger the AI to analyze a user story and create child tasks via the `create_work_item` LLM tool — **with duplicate prevention** (checks for existing child items before creating)
+- **Task draft editor**: When the AI calls `create_work_item`, an editable markdown tab opens for you to review and modify all fields before the work item is created in ADO — **markdown content is automatically converted to HTML** for proper rendering in ADO
 - **Child task delegation**: When delegating a work item to an agent, the system checks for child work items in ADO and warns the user — include them in the agent's context or skip them
 - **Agent progress in chat**: Agent delegation shows start/completion messages in the chat thread alongside the streaming output panel
 - **Changelog notification on update**: After a version change, a one-time notification offers to show the new version's changelog in a styled webview panel

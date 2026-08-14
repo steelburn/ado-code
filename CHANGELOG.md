@@ -5,6 +5,10 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.5.8] - 2026-08-10
 
 ### Improvements
+- **Duplicate task prevention**: When creating tasks from the generate-tasks flow, the system now checks for existing child work items with matching titles and warns you before creating duplicates — choose to skip duplicates, create all, or cancel
+- **Improved task generation workflow**: The task review flow now shows helpful instructions in chat explaining how to edit tasks, then only shows the confirmation card after you save the markdown file — no more confusing premature confirmation dialogs
+- **Improved reassign work item reliability**: The reassign feature now uses a fallback mechanism - if the org-level teams endpoint fails or returns no members, it automatically tries the project-level teams endpoint, ensuring the member picker works across different ADO organization configurations
+- **Markdown to HTML conversion for ADO work items**: Task descriptions and acceptance criteria are now automatically converted from markdown to HTML when creating work items in ADO, matching the format ADO expects for rich text fields
 - **Smart background refresh**: Work item auto-refresh now only fires when content has changed (dirty flag), the VS Code window has focus, and the user has been idle for 5+ minutes — stops unnecessary refreshes of the chat window
 - **Project creation fix**: Resolved ENOENT error when creating projects via the wizard — workspace root is now correctly resolved by the host instead of relying on the empty path from the webview
 
