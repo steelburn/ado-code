@@ -9,31 +9,35 @@ import './styles.css';
 
 interface Props {
   onClose: () => void;
+  onExecute?: (skillId: string, skillName: string) => void;
 }
 
-const CATEGORIES: { value: SkillCategory | 'all'; label: string }[] = [
-  { value: 'all', label: 'All Skills' },
-  { value: 'code-review', label: 'Code Review' },
-  { value: 'documentation', label: 'Documentation' },
-  { value: 'testing', label: 'Testing' },
-  { value: 'refactoring', label: 'Refactoring' },
-  { value: 'security', label: 'Security' },
-  { value: 'performance', label: 'Performance' },
-  { value: 'custom', label: 'Custom' },
+const CATEGORIES: { value: SkillCategory | 'all'; label: string; icon: string }[] = [
+  { value: 'all', label: 'All Skills', icon: '✦' },
+  { value: 'code-review', label: 'Code Review', icon: '🔍' },
+  { value: 'documentation', label: 'Documentation', icon: '📝' },
+  { value: 'testing', label: 'Testing', icon: '🧪' },
+  { value: 'refactoring', label: 'Refactoring', icon: '♻️' },
+  { value: 'security', label: 'Security', icon: '🔒' },
+  { value: 'performance', label: 'Performance', icon: '⚡' },
+  { value: 'deployment', label: 'Deployment', icon: '🚀' },
+  { value: 'database', label: 'Database', icon: '🗄️' },
+  { value: 'accessibility', label: 'Accessibility', icon: '♿' },
+  { value: 'custom', label: 'Custom', icon: '🧩' },
 ];
 
-export function SkillCatalog({ onClose }: Props) {
+export function SkillCatalog({ onClose, onExecute }: Props) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<SkillCategory | 'all'>('all');
   const [installedFilter, setInstalledFilter] = useState<boolean | null>(null);
-  
+
   // Fetch skills on mount
   useEffect(() => {
     vscode.postMessage({ type: 'getSkillCatalog' });
-    
+
     const handler = (event: MessageEvent) => {
       const msg = event.data;
       if (msg.type === 'skillCatalog') {
@@ -44,11 +48,11 @@ export function SkillCatalog({ onClose }: Props) {
         vscode.postMessage({ type: 'getSkillCatalog' });
       }
     };
-    
+
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, []);
-  
+
   const filteredSkills = skills.filter(skill => {
     const matchesSearch = skill.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          skill.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -57,27 +61,31 @@ export function SkillCatalog({ onClose }: Props) {
     const matchesInstalled = installedFilter === null || skill.installed === installedFilter;
     return matchesSearch && matchesCategory && matchesInstalled;
   });
-  
+
   const selectedSkill = selectedSkillId ? skills.find(s => s.id === selectedSkillId) : null;
-  
+
+  const installedCount = skills.filter(s => s.installed).length;
+  const enabledCount = skills.filter(s => s.installed && s.enabled).length;
+
   const handleInstall = useCallback((skillId: string) => {
     vscode.postMessage({ type: 'installSkill', skillId });
   }, []);
-  
+
   const handleUninstall = useCallback((skillId: string) => {
     vscode.postMessage({ type: 'uninstallSkill', skillId });
   }, []);
-  
+
   const handleToggle = useCallback((skillId: string, enabled: boolean) => {
     vscode.postMessage({ type: enabled ? 'enableSkill' : 'disableSkill', skillId });
   }, []);
-  
+
   const handleExecute = useCallback((skillId: string) => {
-    // This would trigger skill execution in the chat
+    const skill = skills.find(s => s.id === skillId);
     vscode.postMessage({ type: 'executeSkill', request: { skillId, input: '' } });
+    onExecute?.(skillId, skill?.name || skillId);
     onClose();
-  }, [onClose]);
-  
+  }, [skills, onExecute, onClose]);
+
   if (selectedSkill) {
     return (
       <SkillDetail
@@ -90,56 +98,103 @@ export function SkillCatalog({ onClose }: Props) {
       />
     );
   }
-  
+
   return (
     <div className="skill-catalog">
+      {/* Header */}
       <div className="skill-catalog-header">
-        <h2>Skill Catalog</h2>
+        <div className="skill-catalog-header-left">
+          <div className="skill-catalog-title-row">
+            <span className="skill-catalog-icon">⚡</span>
+            <h2 className="skill-catalog-title">Skill Catalog</h2>
+          </div>
+          <p className="skill-catalog-subtitle">
+            {installedCount} installed · {enabledCount} active
+          </p>
+        </div>
         <button className="skill-catalog-close" onClick={onClose}>×</button>
       </div>
-      
-      <div className="skill-catalog-filters">
-        <input
-          className="skill-search"
-          type="text"
-          placeholder="Search skills..."
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-        />
-        
-        <select
-          className="skill-category-filter"
-          value={categoryFilter}
-          onChange={e => setCategoryFilter(e.target.value as any)}
-        >
-          {CATEGORIES.map(cat => (
-            <option key={cat.value} value={cat.value}>{cat.label}</option>
-          ))}
-        </select>
-        
-        <select
-          className="skill-installed-filter"
-          value={installedFilter === null ? 'all' : installedFilter ? 'installed' : 'available'}
-          onChange={e => {
-            const val = e.target.value;
-            setInstalledFilter(val === 'all' ? null : val === 'installed');
-          }}
-        >
-          <option value="all">All</option>
-          <option value="installed">Installed</option>
-          <option value="available">Available</option>
-        </select>
+
+      {/* Toolbar: Search + Import */}
+      <div className="skill-catalog-toolbar">
+        <div className="skill-search-wrapper">
+          <span className="skill-search-icon">⌕</span>
+          <input
+            className="skill-search"
+            type="text"
+            placeholder="Search by name, description, or tag..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button className="skill-search-clear" onClick={() => setSearchQuery('')}>×</button>
+          )}
+        </div>
+        <button className="skill-import-btn" onClick={() => vscode.postMessage({ type: 'importSkillFromDisk' })}>
+          <span className="skill-import-btn-icon">+</span>
+          Import
+        </button>
       </div>
-      
-      <div className="skill-catalog-stats">
-        <span>{filteredSkills.length} skills</span>
-        <span>{skills.filter(s => s.installed).length} installed</span>
+
+      {/* Category Pills */}
+      <div className="skill-catalog-categories">
+        {CATEGORIES.map(cat => (
+          <button
+            key={cat.value}
+            className={`skill-category-pill ${categoryFilter === cat.value ? 'skill-category-pill-active' : ''}`}
+            onClick={() => setCategoryFilter(cat.value)}
+          >
+            <span className="skill-category-pill-icon">{cat.icon}</span>
+            {cat.label}
+          </button>
+        ))}
       </div>
-      
+
+      {/* Installed filter tabs */}
+      <div className="skill-catalog-tabs">
+        <button
+          className={`skill-tab ${installedFilter === null ? 'skill-tab-active' : ''}`}
+          onClick={() => setInstalledFilter(null)}
+        >
+          All
+          <span className="skill-tab-count">{skills.length}</span>
+        </button>
+        <button
+          className={`skill-tab ${installedFilter === true ? 'skill-tab-active' : ''}`}
+          onClick={() => setInstalledFilter(true)}
+        >
+          Installed
+          <span className="skill-tab-count">{installedCount}</span>
+        </button>
+        <button
+          className={`skill-tab ${installedFilter === false ? 'skill-tab-active' : ''}`}
+          onClick={() => setInstalledFilter(false)}
+        >
+          Available
+          <span className="skill-tab-count">{skills.length - installedCount}</span>
+        </button>
+      </div>
+
+      {/* Content */}
       {loading ? (
-        <div className="skill-catalog-loading">Loading skills...</div>
+        <div className="skill-catalog-loading">
+          <div className="skill-loading-spinner" />
+          <p>Loading skills...</p>
+        </div>
       ) : filteredSkills.length === 0 ? (
-        <div className="skill-catalog-empty">No skills found</div>
+        <div className="skill-catalog-empty">
+          <span className="skill-empty-icon">
+            {searchQuery ? '🔍' : '✅'}
+          </span>
+          <p className="skill-empty-title">
+            {searchQuery ? 'No skills found' : 'All skills are loaded'}
+          </p>
+          <p className="skill-empty-desc">
+            {searchQuery
+              ? `No results for "${searchQuery}"`
+              : 'All builtin skills are installed and enabled. Import a custom skill to add more.'}
+          </p>
+        </div>
       ) : (
         <div className="skill-catalog-grid">
           {filteredSkills.map(skill => (

@@ -2,21 +2,19 @@
 
 All notable changes to ADO Code will be documented in this file.
 
-## [0.5.8] - 2026-08-10
+## [0.5.8] - 2026-08-15
 
 ### Improvements
-- **Duplicate task prevention**: When creating tasks from the generate-tasks flow, the system now checks for existing child work items with matching titles and warns you before creating duplicates — choose to skip duplicates, create all, or cancel
-- **Improved task generation workflow**: The task review flow now shows helpful instructions in chat explaining how to edit tasks, then only shows the confirmation card after you save the markdown file — no more confusing premature confirmation dialogs
-- **Improved reassign work item reliability**: The reassign feature now uses a fallback mechanism - if the org-level teams endpoint fails or returns no members, it automatically tries the project-level teams endpoint, ensuring the member picker works across different ADO organization configurations
-- **Markdown to HTML conversion for ADO work items**: Task descriptions and acceptance criteria are now automatically converted from markdown to HTML when creating work items in ADO, matching the format ADO expects for rich text fields
-- **Smart background refresh**: Work item auto-refresh now only fires when content has changed (dirty flag), the VS Code window has focus, and the user has been idle for 5+ minutes — stops unnecessary refreshes of the chat window
-- **Project creation fix**: Resolved ENOENT error when creating projects via the wizard — workspace root is now correctly resolved by the host instead of relying on the empty path from the webview
+- **Skill Catalog UI overhaul**: Redesigned with pill-style category filters, search with icon and clear button, accent stripes on cards, status indicators (active/disabled), collapsible prompt preview sections, and polished detail view with hero header
+- **Activity indicator in chat**: Shows a spinner + text banner while executing skills ("Executing skill: Code Review…") or generating tasks ("Generating tasks…") — clears when the AI response arrives
+- **Instant chat refresh**: Session switches and history restores now jump straight to the latest message instead of scrolling from top to bottom
+- **Skill persistence**: Imported skills now survive VS Code restarts — full skill data is stored in globalState, not just IDs
+- **Fixed "Execute in Chat"**: Previously sent the skill prompt to the extension but never injected it into the chat — now properly injects the skill's prompt as a user message and triggers the LLM
 
 ### Features
-- **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js TypeScript/JavaScript, Python, React, Next.js, PHP Laravel, .NET Web API/Console, Empty) — configure per-template options (ESLint, testing, Docker, etc.), optional ADO work item creation, git initialization with branch naming, review step before creation. New slash command: `/new-project`
-- **Skill Management System**: Browse, install, and manage reusable AI skills — 6 built-in skills (Code Review, Documentation Generator, Test Generator, Refactoring Assistant, Security Audit, Performance Profiler) with search, category filtering, and enable/disable toggle. New slash command: `/skills`
-- **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — skills are injected into the system prompt so the AI knows what's available. New LLM tool: `execute_skill`
-- **Express/Advanced Configuration**: New configuration mode toggle in the Configuration page — Express (default) uses one model for all modes, Advanced enables per-mode model selection and reasoning effort tuning (low/medium/high) for reasoning models like o1/o3. New settings: `adoCode.advancedConfig`, `adoCode.llm.modeConfigs`, `adoCode.llm.modeReasoningEffort`
+- **Skill import from local files**: Import skills from .json files, SKILL.md files (YAML frontmatter + markdown body), or .tar.gz/.tgz/.zip archives containing skill packages
+- **Expanded builtin skills**: 4 new builtin skills — Deployment Checklist, Database Schema Review, Accessibility Audit (now 10 total across 10 categories)
+- **Local skill import button**: "+" Import button in the Skill Catalog toolbar opens a file picker supporting all skill formats
 
 ## [0.5.7] - 2026-08-09
 

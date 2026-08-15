@@ -23,6 +23,8 @@ interface Props {
   loading: boolean;
   /** AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking) */
   thinking?: string;
+  /** Activity indicator text (e.g., "Executing skill: Code Review") */
+  activity?: string | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -274,13 +276,20 @@ const MarkdownWithCodeCopy: React.FC<{ content: string }> = ({ content }) => {
 
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading, thinking }: Props) {
+export function MessageList({ messages, loading, thinking, activity }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(messages.length);
 
-  // Auto-scroll on new messages
+  // Auto-scroll on new messages — instant for bulk loads (refresh/session switch),
+  // smooth for single new messages (streaming).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading, thinking]);
+    const countDelta = messages.length - prevCountRef.current;
+    prevCountRef.current = messages.length;
+    // Bulk load (refresh, session switch) → instant scroll, no animation
+    // Single message → smooth scroll
+    const behavior = countDelta > 1 ? 'instant' : 'smooth';
+    bottomRef.current?.scrollIntoView({ behavior });
+  }, [messages, loading, thinking, activity]);
 
   if (messages.length === 0 && !loading) {
     return (
@@ -386,7 +395,12 @@ export function MessageList({ messages, loading, thinking }: Props) {
             <div className="message-header">
               <span className="message-author">ADO Code</span>
             </div>
-            {thinking ? (
+            {activity ? (
+              <div className="activity-indicator">
+                <div className="activity-spinner" />
+                <span className="activity-text">{activity}…</span>
+              </div>
+            ) : thinking ? (
               <div className="thinking-block">
                 <div className="thinking-header">
                   <span className="thinking-icon">💭</span>

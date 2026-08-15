@@ -5,6 +5,7 @@
  * - Loading built-in and user-installed skills
  * - Listing available skills
  * - Executing skills by ID with input context
+ * - Persisting imported skills across VS Code restarts
  *
  * Skills are defined in src/shared/skillTypes.ts.
  */
@@ -24,10 +25,10 @@ import {
 
 /** Skills configuration persisted in VS Code globalState. */
 interface SkillsState {
-  /** User-installed skill IDs (beyond built-in). */
-  installedIds: string[];
   /** Disabled skill IDs (built-in or installed). */
   disabledIds: string[];
+  /** Full skill objects for user-imported skills (survives restart). */
+  importedSkills: Skill[];
 }
 
 // ---------------------------------------------------------------------------
@@ -40,15 +41,35 @@ export class SkillManager {
   private static readonly STATE_KEY = 'adoCode.skillsState';
 
   constructor(private context: vscode.ExtensionContext) {
-    // Restore persisted state or default
-    this.state = context.globalState.get<SkillsState>(
-      SkillManager.STATE_KEY,
-      { installedIds: [], disabledIds: [] },
-    );
+    // Restore persisted state or default — with error handling for corrupt state
+    try {
+      this.state = context.globalState.get<SkillsState>(
+        SkillManager.STATE_KEY,
+        { disabledIds: [], importedSkills: [] },
+      );
+    } catch (err) {
+      logger.warn('SkillManager: failed to restore state, using defaults', err);
+      this.state = { disabledIds: [], importedSkills: [] };
+    }
+
+    // Validate state shape — handle old format or corrupt data
+    if (!this.state || !Array.isArray(this.state.disabledIds)) {
+      this.state = { disabledIds: [], importedSkills: [] };
+    }
+    if (!Array.isArray(this.state.importedSkills)) {
+      this.state.importedSkills = [];
+    }
 
     // Load built-in skills
     for (const skill of BUILTIN_SKILLS) {
       this.skills.set(skill.id, { ...skill });
+    }
+
+    // Restore imported skills from persistence
+    for (const skill of this.state.importedSkills) {
+      if (!this.skills.has(skill.id)) {
+        this.skills.set(skill.id, { ...skill, installed: true });
+      }
     }
 
     // Apply persisted enabled/disabled state
@@ -89,6 +110,8 @@ export class SkillManager {
       return false;
     }
     this.skills.set(skill.id, { ...skill, installed: true, enabled: true });
+    // Persist the full skill object for imported skills
+    this.state.importedSkills.push({ ...skill, installed: true, enabled: true });
     this.persistState();
     logger.info(`SkillManager: installed skill "${skill.id}"`);
     return true;
@@ -102,6 +125,10 @@ export class SkillManager {
       return false;
     }
     this.skills.delete(id);
+    // Remove from persisted imported skills
+    this.state.importedSkills = this.state.importedSkills.filter((s) => s.id !== id);
+    // Also remove from disabled list if present
+    this.state.disabledIds = this.state.disabledIds.filter((d) => d !== id);
     this.persistState();
     logger.info(`SkillManager: uninstalled skill "${id}"`);
     return true;
@@ -116,6 +143,8 @@ export class SkillManager {
     }
     skill.enabled = true;
     this.state.disabledIds = this.state.disabledIds.filter((d) => d !== id);
+    // Update persisted imported skill state
+    this.updateImportedSkillState(id, { enabled: true });
     this.persistState();
     logger.info(`SkillManager: enabled skill "${id}"`);
     return true;
@@ -132,6 +161,8 @@ export class SkillManager {
     if (!this.state.disabledIds.includes(id)) {
       this.state.disabledIds.push(id);
     }
+    // Update persisted imported skill state
+    this.updateImportedSkillState(id, { enabled: false });
     this.persistState();
     logger.info(`SkillManager: disabled skill "${id}"`);
     return true;
@@ -154,6 +185,9 @@ export class SkillManager {
     } else {
       this.state.disabledIds = this.state.disabledIds.filter((d) => d !== id);
     }
+
+    // Update persisted imported skill state
+    this.updateImportedSkillState(id, { enabled: skill.enabled });
 
     await this.persistState();
     logger.info(`SkillManager: toggled skill "${id}" to ${skill.enabled ? 'enabled' : 'disabled'}`);
@@ -225,6 +259,17 @@ export class SkillManager {
   }
 
   // ── Persistence ─────────────────────────────────────────────────────────
+
+  /** Update a field on a persisted imported skill. */
+  private updateImportedSkillState(id: string, updates: Partial<Skill>): void {
+    const idx = this.state.importedSkills.findIndex((s) => s.id === id);
+    if (idx >= 0) {
+      this.state.importedSkills[idx] = {
+        ...this.state.importedSkills[idx],
+        ...updates,
+      };
+    }
+  }
 
   private async persistState(): Promise<void> {
     await this.context.globalState.update(SkillManager.STATE_KEY, this.state);

@@ -13,6 +13,8 @@ import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
+import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
+import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker, isHarmlessCommand } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals } from '../llm/tool-approval-ui';
@@ -1481,11 +1483,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
             break;
           case 'executeSkill': {
-            const execResult = await this.services.skills.executeSkill(message.request);
-            this.postMessage({
-              type: 'skillExecutionResult',
-              result: execResult,
-            });
+            // Inject the skill's prompt as a user message into the chat
+            const skill = this.services.skills.getSkill(message.request.skillId);
+            if (skill && skill.enabled) {
+              const prompt = skill.prompt || skill.knowledge || '';
+              if (prompt) {
+                // Build the content with skill context
+                const skillContent = `[Skill: ${skill.name}]\n\n${prompt}`;
+                await this.handleUserMessage(skillContent);
+              } else {
+                this.postMessage({
+                  type: 'error',
+                  message: `Skill "${skill.name}" has no prompt or knowledge content to execute.`,
+                });
+              }
+            } else if (skill && !skill.enabled) {
+              this.postMessage({
+                type: 'error',
+                message: `Skill "${skill.name}" is disabled. Enable it first.`,
+              });
+            } else {
+              this.postMessage({
+                type: 'error',
+                message: `Skill "${message.request.skillId}" not found.`,
+              });
+            }
             break;
           }
           case 'getSkillDetail': {
@@ -1494,6 +1516,176 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'skillDetail',
               skill: skill || null,
             });
+            break;
+          }
+          case 'importSkillFromDisk': {
+            // Open file picker for .json, .md, .tar.gz, .tgz, .zip skill files
+            const uris = await vscode.window.showOpenDialog({
+              canSelectFiles: true,
+              canSelectFolders: false,
+              canSelectMany: false,
+              filters: {
+                'Skill Files': ['json', 'md', 'tar.gz', 'tgz', 'zip'],
+                'JSON Skills': ['json'],
+                'SKILL.md': ['md'],
+                'Skill Archives': ['tar.gz', 'tgz', 'zip'],
+              },
+              title: 'Import Skill',
+            });
+            if (!uris || uris.length === 0) {
+              this.postMessage({ type: 'skillImportResult', success: false, error: 'No file selected' });
+              break;
+            }
+
+            const filePath = uris[0].fsPath;
+            const ext = filePath.toLowerCase();
+
+            try {
+              let importedSkill: any = null;
+
+              if (ext.endsWith('.json')) {
+                // ── JSON skill file ─────────────────────────────
+                const raw = await vscode.workspace.fs.readFile(uris[0]);
+                const text = Buffer.from(raw).toString('utf-8');
+                const parsed = JSON.parse(text);
+                if (!parsed.id || !parsed.name || !parsed.description) {
+                  this.postMessage({
+                    type: 'skillImportResult',
+                    success: false,
+                    error: 'Invalid skill file: missing required fields (id, name, description)',
+                  });
+                  break;
+                }
+                importedSkill = {
+                  id: parsed.id,
+                  name: parsed.name,
+                  description: parsed.description,
+                  version: parsed.version || '1.0.0',
+                  author: parsed.author || 'Custom',
+                  category: parsed.category || 'custom',
+                  tags: parsed.tags || [],
+                  icon: parsed.icon || '🧩',
+                  prompt: parsed.prompt,
+                  toolChain: parsed.toolChain,
+                  knowledge: parsed.knowledge,
+                  installed: true,
+                  enabled: true,
+                  builtin: false,
+                  source: 'local' as const,
+                  config: parsed.config,
+                };
+
+              } else if (ext.endsWith('.md')) {
+                // ── SKILL.md file ───────────────────────────────
+                const raw = await vscode.workspace.fs.readFile(uris[0]);
+                const text = Buffer.from(raw).toString('utf-8');
+                const parsed = parseSkillMd(text);
+                const partial = skillFromParsedMd(parsed, filePath);
+                importedSkill = {
+                  ...partial,
+                  installed: true,
+                  enabled: true,
+                  builtin: false,
+                  source: 'local' as const,
+                };
+
+              } else if (ext.endsWith('.tar.gz') || ext.endsWith('.tgz') || ext.endsWith('.zip')) {
+                // ── Archive (.tar.gz / .tgz / .zip) ─────────────
+                const { dir } = await extractSkillArchive(filePath);
+                let extractedSkill: any = null;
+
+                // Try SKILL.md first, then .json
+                const skillMdPath = findSkillMd(dir);
+                if (skillMdPath) {
+                  const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(skillMdPath));
+                  const text = Buffer.from(raw).toString('utf-8');
+                  const parsed = parseSkillMd(text);
+                  const partial = skillFromParsedMd(parsed, skillMdPath);
+                  extractedSkill = {
+                    ...partial,
+                    installed: true,
+                    enabled: true,
+                    builtin: false,
+                    source: 'local' as const,
+                  };
+                } else {
+                  const jsonPath = findSkillJson(dir);
+                  if (jsonPath) {
+                    const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(jsonPath));
+                    const text = Buffer.from(raw).toString('utf-8');
+                    const parsed = JSON.parse(text);
+                    extractedSkill = {
+                      id: parsed.id || slugify(parsed.name || 'imported'),
+                      name: parsed.name || 'Imported Skill',
+                      description: parsed.description || 'No description',
+                      version: parsed.version || '1.0.0',
+                      author: parsed.author || 'Custom',
+                      category: parsed.category || 'custom',
+                      tags: parsed.tags || [],
+                      icon: parsed.icon || '🧩',
+                      prompt: parsed.prompt,
+                      toolChain: parsed.toolChain,
+                      knowledge: parsed.knowledge,
+                      installed: true,
+                      enabled: true,
+                      builtin: false,
+                      source: 'local' as const,
+                      config: parsed.config,
+                    };
+                  }
+                }
+
+                // Collect included files for reference
+                const files = collectFiles(dir);
+                if (extractedSkill && files.length > 0) {
+                  extractedSkill._archiveFiles = files;
+                  extractedSkill._archiveDir = dir;
+                } else {
+                  cleanupTempDir(dir);
+                }
+
+                importedSkill = extractedSkill;
+
+              } else {
+                this.postMessage({
+                  type: 'skillImportResult',
+                  success: false,
+                  error: `Unsupported file type: ${ext}. Use .json, .md, .tar.gz, .tgz, or .zip`,
+                });
+                break;
+              }
+
+              if (!importedSkill) {
+                this.postMessage({
+                  type: 'skillImportResult',
+                  success: false,
+                  error: 'Could not find a valid skill definition in the file or archive',
+                });
+                break;
+              }
+
+              const ok = this.services.skills.installSkill(importedSkill);
+              if (ok) {
+                this.postMessage({ type: 'skillImportResult', success: true, skill: importedSkill });
+                // Refresh the catalog
+                this.postMessage({
+                  type: 'skillCatalog',
+                  skills: this.services.skills.getAllSkills(),
+                });
+              } else {
+                this.postMessage({
+                  type: 'skillImportResult',
+                  success: false,
+                  error: `Skill "${importedSkill.id}" already exists`,
+                });
+              }
+            } catch (err: any) {
+              this.postMessage({
+                type: 'skillImportResult',
+                success: false,
+                error: `Failed to import: ${err.message || String(err)}`,
+              });
+            }
             break;
           }
           // Project creation wizard

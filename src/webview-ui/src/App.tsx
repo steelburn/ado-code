@@ -90,6 +90,8 @@ function App() {
   const [showProjectWizard, setShowProjectWizard] = useState(false);
   // Skill catalog
   const [showSkillCatalog, setShowSkillCatalog] = useState(false);
+  // Activity indicator — shows a banner while a skill is executing or tasks are generating
+  const [activeActivity, setActiveActivity] = useState<string | null>(null);
 
   // ── Message handler ────────────────────────────────────────────
   useEffect(() => {
@@ -108,6 +110,7 @@ function App() {
           if (msg.done) {
             setLoading(false);
             setThinking(''); // Turn finished — clear thinking text
+            setActiveActivity(null); // Clear activity indicator
           } else {
             setLoading(true);
           }
@@ -146,6 +149,7 @@ function App() {
           // An error ends the turn — no consent prompt can still be pending.
           setConsent(null);
           setThinking(''); // Clear thinking on error
+          setActiveActivity(null); // Clear activity indicator on error
           break;
 
         case 'consentRequest':
@@ -374,6 +378,10 @@ function App() {
     // prompt; drop the card here too.
     setConsent(null);
     setThinking('');
+    // Activity indicator for specific commands
+    if (content.trim().toLowerCase().startsWith('/generate-tasks')) {
+      setActiveActivity('Generating tasks');
+    }
   }, []);
 
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
@@ -544,7 +552,13 @@ function App() {
   if (showSkillCatalog) {
     return (
       <div className="app">
-        <SkillCatalog onClose={() => setShowSkillCatalog(false)} />
+        <SkillCatalog
+          onClose={() => setShowSkillCatalog(false)}
+          onExecute={(_skillId, skillName) => {
+            setActiveActivity(`Executing skill: ${skillName}`);
+            setLoading(true);
+          }}
+        />
       </div>
     );
   }
@@ -623,7 +637,7 @@ function App() {
       ))}
 
       {/* Messages */}
-      <MessageList messages={messages} loading={loading} thinking={thinking} />
+      <MessageList messages={messages} loading={loading} thinking={thinking} activity={activeActivity} />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
       {consent && (

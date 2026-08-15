@@ -75,7 +75,9 @@ export type WebviewToExtensionMessage =
   | { type: 'enableSkill'; skillId: string }
   | { type: 'disableSkill'; skillId: string }
   | { type: 'executeSkill'; request: SkillExecutionRequest }
-  | { type: 'getSkillDetail'; skillId: string };
+  | { type: 'getSkillDetail'; skillId: string }
+  // Skill import from local .json file
+  | { type: 'importSkillFromDisk' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -136,7 +138,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'skillUninstalled'; skillId: string; success: boolean }
   | { type: 'skillEnabled'; skillId: string; enabled: boolean }
   | { type: 'skillDetail'; skill: Skill }
-  | { type: 'skillExecutionResult'; result: SkillExecutionResult };
+  | { type: 'skillExecutionResult'; result: SkillExecutionResult }
+  // Skill import result
+  | { type: 'skillImportResult'; success: boolean; skill?: Skill; error?: string };
 
 // Shared types
 export interface MessageContext {

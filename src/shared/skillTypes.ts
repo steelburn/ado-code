@@ -200,4 +200,70 @@ Provide specific optimization suggestions with expected impact.`,
     builtin: true,
     source: 'builtin',
   },
+  {
+    id: 'deployment-checklist',
+    name: 'Deployment Checklist',
+    description: 'Generate deployment readiness checklists and infrastructure configs',
+    version: '1.0.0',
+    author: 'ADO Code',
+    category: 'deployment',
+    tags: ['deploy', 'ci-cd', 'infrastructure', 'docker'],
+    icon: '🚀',
+    prompt: `Analyze the project and generate a deployment checklist:
+1. **Environment Variables**: Required secrets and configuration
+2. **Dependencies**: Runtime requirements and version pinning
+3. **Health Checks**: Endpoints and monitoring setup
+4. **Rollback Plan**: Steps to revert if deployment fails
+5. **Infrastructure**: Dockerfile, docker-compose, or IaC templates needed
+
+Include specific commands and configuration snippets.`,
+    installed: true,
+    enabled: true,
+    builtin: true,
+    source: 'builtin',
+  },
+  {
+    id: 'db-schema-review',
+    name: 'Database Schema Review',
+    description: 'Review database schemas, migrations, and query patterns',
+    version: '1.0.0',
+    author: 'ADO Code',
+    category: 'database',
+    tags: ['database', 'sql', 'schema', 'migration'],
+    icon: '🗄️',
+    prompt: `Review database-related code:
+1. **Schema Design**: Normalization, indexes, constraints
+2. **Migrations**: Safety, rollback capability, data integrity
+3. **Query Performance**: N+1 queries, missing indexes, full scans
+4. **Security**: SQL injection, parameterized queries, access control
+5. **Data Model**: Entity relationships, foreign keys, cascade rules
+
+Suggest improvements with specific SQL examples.`,
+    installed: true,
+    enabled: true,
+    builtin: true,
+    source: 'builtin',
+  },
+  {
+    id: 'a11y-audit',
+    name: 'Accessibility Audit',
+    description: 'Audit code for WCAG compliance and accessibility best practices',
+    version: '1.0.0',
+    author: 'ADO Code',
+    category: 'accessibility',
+    tags: ['a11y', 'wcag', 'aria', 'screen-reader'],
+    icon: '♿',
+    prompt: `Audit the code for accessibility:
+1. **Semantic HTML**: Proper heading hierarchy, landmark regions
+2. **ARIA Attributes**: Labels, roles, states, live regions
+3. **Keyboard Navigation**: Tab order, focus management, shortcuts
+4. **Color & Contrast**: Text visibility, color-blind friendly palettes
+5. **Screen Readers**: Alt text, hidden content, announcements
+
+Reference WCAG 2.1 AA criteria. Provide fix examples.`,
+    installed: true,
+    enabled: true,
+    builtin: true,
+    source: 'builtin',
+  },
 ];

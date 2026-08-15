@@ -137,7 +137,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'openProjectWizard' }
   | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
   // Skill catalog
-  | { type: 'openSkillCatalog' };
+  | { type: 'openSkillCatalog' }
+  // Skill import
+  | { type: 'importSkillFromDisk' };
 
 // Shared types
 export interface MessageContext {
