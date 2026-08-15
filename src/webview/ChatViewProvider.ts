@@ -1108,9 +1108,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // no timeout, so a view close should cancel them (never block forever).
     webviewView.onDidDispose(() => { this.confirmBroker.rejectAll(); });
 
-    webviewView.webview.options = {
+    // When the view becomes visible again, re-announce the loading state
+    // so the "Thinking…" indicator re-appears.  With retainContextWhenHidden
+    // the React state is preserved, but the browser may have suspended CSS
+    // animations while the frame was hidden.  Re-postting loading:true is
+    // idempotent if the state was already correct.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible && this.workingActive) {
+        this.postMessage({ type: 'loading', loading: true });
+      }
+    });
+
+    // retainContextWhenHidden keeps the React app alive when the user
+    // switches away from Chat, so streaming responses aren't lost.
+    // The property exists at runtime but is missing from the
+    // WebviewOptions TypeScript type — cast to satisfy the compiler.
+    (webviewView.webview.options as any) = {
       enableScripts: true,
       localResourceRoots: [this._extensionUri],
+      retainContextWhenHidden: true,
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
