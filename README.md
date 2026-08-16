@@ -131,7 +131,7 @@ Type `/` in the chat input to see available commands:
 | `/assign <who>` | Assign the active work item to a team member (name or email) |
 | `/clear` | Clear all chat messages and start fresh |
 | `/clear-sessions` | Delete all chat sessions and start completely fresh |
-| `/mode [mode]` | Switch mode (inline, plan, act, yolo) — omit mode to pick from list |
+| `/mode [mode]` | Switch tool mode: inline (ask), plan (read-only), act (auto-approve), or yolo (full autonomy) — omit mode to pick from list |
 | `/undo` | Revert the last state change made to the active work item |
 | `/help` | List all available slash commands with usage examples |
 | `/delegate [agent] <prompt>` | Hand off the active task to an external agent (claude, codex, opencode, hermes, pi, gemini) |
@@ -189,9 +189,15 @@ The extension infers the active model's capabilities from its id:
 ### 0.5.8
 
 - **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js TypeScript/JavaScript, Python, React, Next.js, PHP Laravel, .NET Web API/Console, Empty) — configure per-template options (ESLint, testing, Docker, etc.), optional ADO work item creation, git initialization with branch naming, review step before creation (`/new-project`)
-- **Skill Management System**: Browse, install, and manage reusable AI skills — 6 built-in skills (Code Review, Documentation Generator, Test Generator, Refactoring Assistant, Security Audit, Performance Profiler) with search, category filtering, and enable/disable toggle (`/skills`)
-- **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — skills are injected into the system prompt so the AI knows what's available
+- **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, category filtering, and enable/disable toggle (`/skills`)
+- **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — "Execute in Chat" button injects the skill prompt and triggers the LLM
+- **Skill import**: Import custom skills from local .json files, SKILL.md files (YAML frontmatter + markdown), or .tar.gz/.zip archives — imported skills persist across VS Code restarts
 - **Express/Advanced Configuration**: New configuration mode toggle — Express (default) uses one model for all modes, Advanced enables per-mode model selection and reasoning effort tuning (low/medium/high) for reasoning models like o1/o3
+- **Send Selection to Chat**: Right-click selected text in the editor → "ADO Code: Send Selection to Chat" inserts it as a fenced code block in the chat draft
+- **Send File to Chat**: Right-click a file in the Explorer → "ADO Code: Send File to Chat" attaches it as a chip above the input bar with full content ready to send
+- **Delete All Sessions**: `/clear-sessions` slash command + "🗑️ Delete All Sessions" in session history and kebab menu — wipes all sessions after in-chat confirmation
+- **Confirmation cards for destructive operations**: Single session delete and delete-all show in-chat confirmation cards with danger styling instead of silently executing
+- **Categorized `/help`**: Help output is grouped into Work Items, Chat, AI, and Other sections with autocomplete tip
 
 ### 0.5.7
 
