@@ -147,17 +147,41 @@
 
 /* ── Category Pills ───────────────────────────────────────────── */
 .skill-catalog-categories {
+  position: relative;
   display: flex;
   gap: 6px;
   padding: 10px 20px;
   overflow-x: auto;
   flex-shrink: 0;
   border-bottom: 1px solid var(--vscode-widget-border);
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 }
 
 .skill-catalog-categories::-webkit-scrollbar {
-  display: none;
+  height: 4px;
+}
+
+.skill-catalog-categories::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 2px;
+}
+
+.skill-catalog-categories::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Fade edge when overflowing right */
+.skill-catalog-categories::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 40px;
+  background: linear-gradient(to right, transparent, var(--vscode-editor-background));
+  pointer-events: none;
+  z-index: 1;
 }
 
 .skill-category-pill {
@@ -200,6 +224,44 @@
 .skill-category-pill-icon {
   font-size: 0.95em;
   line-height: 1;
+}
+
+/* ── View Mode Tabs (Catalog | Registry) ──────────────────────── */
+.skill-catalog-view-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  flex-shrink: 0;
+}
+
+.skill-view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--vscode-descriptionForeground);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.skill-view-tab:hover {
+  color: var(--vscode-foreground);
+}
+
+.skill-view-tab-active {
+  color: var(--vscode-foreground);
+  border-bottom-color: var(--vscode-focusBorder);
+}
+
+.skill-view-tab-icon {
+  font-size: 1em;
 }
 
 /* ── Installed/Available Tabs ─────────────────────────────────── */
@@ -316,6 +378,7 @@
 .skill-card {
   position: relative;
   display: flex;
+  min-height: 120px;
   background: var(--vscode-sideBar-background);
   border: 1px solid var(--vscode-widget-border);
   border-radius: 8px;
@@ -350,9 +413,13 @@
   background: var(--vscode-terminal-ansiGreen);
 }
 
+.skill-card-stripe-registry {
+  background: var(--vscode-terminal-ansiMagenta) !important;
+}
+
 .skill-card-body {
   flex: 1;
-  padding: 14px 16px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -378,8 +445,8 @@
 }
 
 .skill-card-name {
-  margin: 0 0 2px;
-  font-size: 0.95em;
+  margin: 0 0 3px;
+  font-size: 1em;
   font-weight: 600;
   color: var(--vscode-foreground);
   white-space: nowrap;
@@ -388,7 +455,7 @@
 }
 
 .skill-card-author {
-  font-size: 0.78em;
+  font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
 }
 
@@ -398,12 +465,12 @@
 
 /* Card description */
 .skill-card-desc {
-  margin: 0 0 10px;
-  font-size: 0.83em;
+  margin: 0 0 12px;
+  font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
-  line-height: 1.45;
+  line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -428,7 +495,7 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 0.72em;
+  font-size: 0.75em;
   color: var(--vscode-badge-foreground);
   background: var(--vscode-badge-background);
   padding: 2px 8px;
@@ -451,7 +518,7 @@
 }
 
 .skill-tag {
-  font-size: 0.7em;
+  font-size: 0.73em;
   color: var(--vscode-descriptionForeground);
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-widget-border);
@@ -582,6 +649,18 @@
 
 .skill-install-btn:active {
   transform: scale(0.98);
+}
+
+/* ── Registry Installed Badge ──────────────────────────────────── */
+.skill-registry-installed-badge {
+  padding: 4px 10px;
+  font-size: 0.75em;
+  font-family: var(--vscode-font-family);
+  font-weight: 500;
+  color: var(--vscode-terminal-ansiGreen);
+  background: rgba(80, 200, 120, 0.12);
+  border-radius: 4px;
+  white-space: nowrap;
 }
 
 /* ── Import Button ────────────────────────────────────────────── */
@@ -795,6 +874,11 @@
 .skill-source-local {
   background: var(--vscode-editorWidget-background);
   color: var(--vscode-descriptionForeground);
+}
+
+.skill-source-registry {
+  background: rgba(187, 128, 255, 0.15);
+  color: var(--vscode-terminal-ansiMagenta);
 }
 
 /* ── Sections ─────────────────────────────────────────────────── */

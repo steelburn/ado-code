@@ -247,11 +247,12 @@ export interface Skill {
   installed: boolean;
   enabled: boolean;
   builtin: boolean;
-  source: 'builtin' | 'marketplace' | 'local';
+  source: 'builtin' | 'marketplace' | 'local' | 'registry';
   config?: SkillConfig[];
 }
 
 export type SkillCategory =
+  // Builtin ADO Code categories
   | 'code-review'
   | 'documentation'
   | 'testing'
@@ -261,6 +262,24 @@ export type SkillCategory =
   | 'security'
   | 'performance'
   | 'accessibility'
+  // UI Skills registry categories
+  | 'motion'
+  | 'systems'
+  | 'visual'
+  | 'interaction'
+  | 'craft'
+  | 'taste'
+  | 'typography'
+  | 'color'
+  | '3d'
+  | 'frontend'
+  | 'architecture'
+  | 'debugging'
+  | 'code-quality'
+  | 'tooling'
+  | 'video'
+  | 'frameworks'
+  // Fallback
   | 'custom';
 
 export interface ToolChainStep {
