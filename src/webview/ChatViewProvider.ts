@@ -13,6 +13,8 @@ import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
+import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
+import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker, isHarmlessCommand } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals } from '../llm/tool-approval-ui';
@@ -54,6 +56,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly confirmBroker = createConfirmationBroker();
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
+  /** True when chat content has changed since last refresh cycle. */
+  private _dirty = false;
+  /** Timestamp of the last user interaction (message sent, config change). */
+  private _lastUserInteraction = Date.now();
+  /** Idle threshold before a background refresh is allowed (5 minutes). */
+  private static readonly IDLE_THRESHOLD_MS = 5 * 60 * 1000;
   // Task 4.1: token usage status bar — wired via setTokenStatusBar from extension.ts
   private tokenStatusBar?: vscode.StatusBarItem;
   // Working indicator: status-bar spinner shown while the LLM turn or any
@@ -314,8 +322,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Open an editor tab with proposed tasks and wire up the save handler.
-   * On save, fires the proposedTasksSaveEmitter so the confirmation flow
-   * can read the editor content and create selected tasks.
+   * Shows a helpful message in chat explaining the workflow.
+   * On save, shows a confirmation card so the user can create the tasks.
    */
   private async showProposedTasksInEditor(
     parentId: number,
@@ -341,37 +349,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Store tasks for reference
     this.proposedTasksByParent.set(parentId, tasks);
 
-    // Wire up the save handler — listen for saves on this specific file
-    this.proposedTasksSaveDisposable?.dispose();
-    this.proposedTasksSaveDisposable = vscode.workspace.onDidSaveTextDocument((savedDoc) => {
-      if (savedDoc.uri.fsPath === filePath.fsPath) {
-        this.proposedTasksSaveEmitter.fire(savedDoc.uri);
-      }
+    // Show instructions in chat (using blockquote for visibility)
+    this.postMessage({
+      type: 'assistantMessage',
+      content: `> 📝 **Proposed tasks for #${parentId}: ${parentTitle}**\n> \n> I've created ${tasks.length} task(s) in the editor tab. You can:\n> 1. **Edit** the task details (title, description, acceptance criteria, etc.)\n> 2. **Uncheck** tasks you don't want by changing \`[x]\` to \`[ ]\`\n> 3. **Save** the file (Ctrl+S) when ready\n> \n> After saving, I'll ask if you want to create the selected tasks in ADO.`,
+      done: true,
     });
 
-    // Show confirmation card in chat
-    const confirmOptions: ConfirmationOption[] = [
-      { label: '✅ Create Selected Tasks', value: 'create' },
-      { label: '✏️ Edit Tasks Again', value: 'edit' },
-      { label: '❌ Cancel', value: 'cancel' },
-    ];
-    const decision = await this.requestConfirmation(
-      'Create Tasks in ADO',
-      `Review the proposed tasks in the editor tab, then choose an action. Uncheck tasks you don't want by removing the [x] and replacing with [ ].`,
-      confirmOptions,
-    );
+    // Wire up the save handler — listen for saves on this specific file
+    // When the user saves, show the confirmation card
+    this.proposedTasksSaveDisposable?.dispose();
+    this.proposedTasksSaveDisposable = vscode.workspace.onDidSaveTextDocument(async (savedDoc) => {
+      if (savedDoc.uri.fsPath === filePath.fsPath) {
+        // Show confirmation card after user saves
+        const confirmOptions: ConfirmationOption[] = [
+          { label: '✅ Create Selected Tasks', value: 'create' },
+          { label: '✏️ Edit Tasks Again', value: 'edit' },
+          { label: '❌ Cancel', value: 'cancel' },
+        ];
+        const decision = await this.requestConfirmation(
+          'Create Tasks in ADO',
+          `Ready to create the checked tasks? Unchecked tasks will be skipped.`,
+          confirmOptions,
+        );
 
-    if (decision === 'create') {
-      await this.createProposedTasksFromEditor(parentId, filePath);
-    } else if (decision === 'edit') {
-      // Re-focus the editor so the user can continue editing
-      this.proposedTasksEditor?.show();
-    }
-    // On cancel: do nothing, editor stays open for manual cleanup
+        if (decision === 'create') {
+          await this.createProposedTasksFromEditor(parentId, filePath);
+        } else if (decision === 'edit') {
+          // Re-focus the editor so the user can continue editing
+          this.proposedTasksEditor?.show();
+        }
+        // On cancel: do nothing, editor stays open for manual cleanup
+      }
+    });
   }
 
   /**
    * Parse the editor content for checked tasks and create them in ADO.
+   * Checks for existing child items with matching titles to prevent duplicates.
    */
   private async createProposedTasksFromEditor(parentId: number, fileUri: vscode.Uri): Promise<void> {
     try {
@@ -385,9 +400,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const project = this.activeProject();
-      const created: Array<{ id: number; title: string }> = [];
+
+      // Check for existing child items to prevent duplicates
+      let existingChildren: Array<{ id: number; title: string }> = [];
+      try {
+        const children = await this.services.ado.getChildWorkItems(project, parentId);
+        existingChildren = children.map(c => ({ id: c.id, title: c.fields?.['System.Title'] || '' }));
+      } catch (err) {
+        logger.warn('Chat: failed to fetch existing child items for duplicate check', err);
+        // Continue without duplicate check if we can't fetch children
+      }
+
+      // Find potential duplicates (case-insensitive title match)
+      const duplicates: Array<{ task: ProposedTask; existing: { id: number; title: string } }> = [];
+      const tasksToCreate: ProposedTask[] = [];
 
       for (const task of tasks) {
+        const existing = existingChildren.find(
+          e => e.title.toLowerCase() === task.title.toLowerCase()
+        );
+        if (existing) {
+          duplicates.push({ task, existing });
+        } else {
+          tasksToCreate.push(task);
+        }
+      }
+
+      // If duplicates found, ask user what to do
+      let decision: string | null = 'all'; // Default: create all
+      if (duplicates.length > 0) {
+        const duplicateList = duplicates.map(d => 
+          `- **"${d.task.title}"** matches existing #${d.existing.id}`
+        ).join('\n');
+
+        const confirmOptions: ConfirmationOption[] = [
+          { label: '✅ Create Only Non-Duplicates', value: 'skip' },
+          { label: '⚠️ Create All (Including Duplicates)', value: 'all' },
+          { label: '❌ Cancel', value: 'cancel' },
+        ];
+
+        decision = await this.requestConfirmation(
+          'Duplicate Tasks Found',
+          `Found ${duplicates.length} task(s) with matching titles:\n\n${duplicateList}\n\nWhat would you like to do?`,
+          confirmOptions,
+        );
+
+        if (decision === null || decision === 'cancel') {
+          return;
+        } else if (decision === 'skip') {
+          // Only create non-duplicate tasks
+          if (tasksToCreate.length === 0) {
+            vscode.window.showInformationMessage('ADO Code: all tasks are duplicates, nothing to create.');
+            return;
+          }
+        }
+        // If decision === 'all', continue with all tasks
+      }
+
+      const created: Array<{ id: number; title: string }> = [];
+      const finalTasks = duplicates.length > 0 && decision === 'skip' ? tasksToCreate : tasks;
+
+      for (const task of finalTasks) {
         try {
           const result = await this.services.ado.createWorkItem(
             project,
@@ -410,9 +483,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Report results in chat
       if (created.length > 0) {
         const summary = created.map(t => `- **#${t.id}** — ${t.title}`).join('\n');
+        let message = `✅ Created ${created.length} task(s) under #${parentId}:\n\n${summary}`;
+        
+        if (duplicates.length > 0) {
+          const skipped = decision === 'skip' ? duplicates.length : 0;
+          const createdDupes = decision === 'all' ? duplicates.length : 0;
+          if (skipped > 0) {
+            message += `\n\n⏭️ Skipped ${skipped} duplicate(s)`;
+          }
+          if (createdDupes > 0) {
+            message += `\n\n⚠️ Created ${createdDupes} duplicate(s)`;
+          }
+        }
+
         this.postMessage({
           type: 'assistantMessage',
-          content: `✅ Created ${created.length} task(s) under #${parentId}:\n\n${summary}`,
+          content: message,
           done: true,
         });
         this.postMessage({ type: 'proposedTasksCreated', count: created.length, parentId });
@@ -1022,9 +1108,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // no timeout, so a view close should cancel them (never block forever).
     webviewView.onDidDispose(() => { this.confirmBroker.rejectAll(); });
 
-    webviewView.webview.options = {
+    // When the view becomes visible again, re-announce the loading state
+    // so the "Thinking…" indicator re-appears.  With retainContextWhenHidden
+    // the React state is preserved, but the browser may have suspended CSS
+    // animations while the frame was hidden.  Re-postting loading:true is
+    // idempotent if the state was already correct.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible && this.workingActive) {
+        this.postMessage({ type: 'loading', loading: true });
+      }
+    });
+
+    // retainContextWhenHidden keeps the React app alive when the user
+    // switches away from Chat, so streaming responses aren't lost.
+    // The property exists at runtime but is missing from the
+    // WebviewOptions TypeScript type — cast to satisfy the compiler.
+    (webviewView.webview.options as any) = {
       enableScripts: true,
       localResourceRoots: [this._extensionUri],
+      retainContextWhenHidden: true,
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
@@ -1084,14 +1186,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    // Auto-refresh work items every 5 minutes if configured
+    // Auto-refresh work items — only when dirty, view is active, and idle.
+    // The timer checks every minute; the actual refresh fires only when all
+    // three conditions are satisfied (dirty flag, VS Code focused, idle > 5 min).
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = setInterval(() => {
       const s = getSettings();
-      if (s.adoOrganization && s.adoProject && s.adoPat) {
-        this.refreshWorkItems();
-      }
-    }, 5 * 60 * 1000);
+      if (!s.adoOrganization || !s.adoProject || !s.adoPat) return;
+      if (!this._dirty) return;
+      if (!vscode.window.state.focused) return;
+      if (Date.now() - this._lastUserInteraction < ChatViewProvider.IDLE_THRESHOLD_MS) return;
+      this._dirty = false;
+      void this.refreshWorkItems();
+    }, 60_000);
 
     // Check workspace state: empty dir, git init, AGENTS.md
     this.checkWorkspaceInit();
@@ -1101,6 +1208,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       async (message: WebviewToExtensionMessage) => {
         switch (message.type) {
           case 'userMessage':
+            this.touchIdle();
             await this.handleUserMessage(message.content, message.images);
             break;
           case 'sendMessage':
@@ -1108,6 +1216,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // arrive here — same turn path as a typed message. Without this
             // case the message was silently dropped and the chat went stale
             // (spinner on, no LLM turn ever started).
+            this.touchIdle();
             await this.handleUserMessage(message.content);
             break;
           case 'fetchWorkItems':
@@ -1128,6 +1237,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               await cfg.update(key, value, vscode.ConfigurationTarget.Global);
             }
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            this.markDirty();
             if (this._sanitizedConfig().configured) {
               await this.refreshWorkItems();
             }
@@ -1136,6 +1246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'updateConfig':
             await this.applyConfigUpdate(message.config);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            this.markDirty();
             // Auto-fetch work items after config save if fully configured
             if (this._sanitizedConfig().configured) {
               await this.refreshWorkItems();
@@ -1164,6 +1275,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
+            this.markDirty();
             break;
           case 'stopGeneration':
             // Abort any in-flight LLM stream and deny pending consent prompts
@@ -1243,6 +1355,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await vscode.workspace.getConfiguration('adoCode').update('mode', selected, vscode.ConfigurationTarget.Global);
             this.executor?.setMode(selected);
             this.postMessage({ type: 'modeChanged', mode: selected });
+            this.markDirty();
             break;
           }
           case 'fetchProjects': {
@@ -1279,6 +1392,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (root) this.checkProjectBinding(root);
             // Auto-refresh work items with new project
             await this.refreshWorkItems();
+            this.markDirty();
             break;
           }
           case 'consentResponse': {
@@ -1327,6 +1441,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'deleteSession': {
+            // Ask for confirmation before deleting the session
+            const delSession = this.getSessions().find(s => s.id === message.sessionId);
+            const delConfirmOptions: ConfirmationOption[] = [
+              { label: '🗑️ Delete Session', value: 'confirm', isDangerous: true },
+              { label: '❌ Cancel', value: 'cancel' },
+            ];
+            const delDecision = await this.requestConfirmation(
+              'Delete Session',
+              `Delete "${delSession?.name ?? 'this session'}"? This cannot be undone.`,
+              delConfirmOptions,
+            );
+            if (delDecision !== 'confirm') break;
             const updatedSessions = this.getSessions().filter(s => s.id !== message.sessionId);
             await this.saveSessions(updatedSessions);
             // If we deleted the active session, switch to the last remaining one
@@ -1343,6 +1469,292 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.sendSessionList();
             break;
           }
+          case 'clearAllSessions': {
+            // Ask for confirmation before wiping all sessions
+            const confirmOptions: ConfirmationOption[] = [
+              { label: '🗑️ Delete All Sessions', value: 'confirm', isDangerous: true },
+              { label: '❌ Cancel', value: 'cancel' },
+            ];
+            const decision = await this.requestConfirmation(
+              'Delete All Sessions',
+              'This will permanently delete all chat sessions. This cannot be undone.',
+              confirmOptions,
+            );
+            if (decision !== 'confirm') break;
+            // Abort any in-flight LLM stream and clear pending approvals
+            this.llmAbort?.abort();
+            this.consentBroker.rejectAll();
+            this.confirmBroker.rejectAll();
+            clearSessionAutoApprovals();
+            // Wipe all sessions
+            await this.saveSessions([]);
+            await this.setActiveSessionId('');
+            this.conversation = [];
+            this.postMessage({ type: 'historyRestored', messages: [] });
+            this.postMessage({ type: 'loading', loading: false });
+            this.sendSessionList();
+            this.markDirty();
+            break;
+          }
+          // Skill management
+          case 'getSkillCatalog':
+            this.postMessage({
+              type: 'skillCatalog',
+              skills: this.services.skills.getAllSkills(),
+            });
+            break;
+          case 'installSkill': {
+            const installResult = this.services.skills.installSkill(message.skill);
+            this.postMessage({
+              type: 'skillInstalled',
+              skillId: message.skillId,
+              success: installResult,
+            });
+            break;
+          }
+          case 'uninstallSkill': {
+            const uninstallResult = this.services.skills.uninstallSkill(message.skillId);
+            this.postMessage({
+              type: 'skillUninstalled',
+              skillId: message.skillId,
+              success: uninstallResult,
+            });
+            break;
+          }
+          case 'enableSkill':
+            this.services.skills.enableSkill(message.skillId);
+            this.postMessage({
+              type: 'skillEnabled',
+              skillId: message.skillId,
+              enabled: true,
+            });
+            break;
+          case 'disableSkill':
+            this.services.skills.disableSkill(message.skillId);
+            this.postMessage({
+              type: 'skillEnabled',
+              skillId: message.skillId,
+              enabled: false,
+            });
+            break;
+          case 'executeSkill': {
+            // Inject the skill's prompt as a user message into the chat
+            const skill = this.services.skills.getSkill(message.request.skillId);
+            if (skill && skill.enabled) {
+              const prompt = skill.prompt || skill.knowledge || '';
+              if (prompt) {
+                // Build the content with skill context
+                const skillContent = `[Skill: ${skill.name}]\n\n${prompt}`;
+                await this.handleUserMessage(skillContent);
+              } else {
+                this.postMessage({
+                  type: 'error',
+                  message: `Skill "${skill.name}" has no prompt or knowledge content to execute.`,
+                });
+              }
+            } else if (skill && !skill.enabled) {
+              this.postMessage({
+                type: 'error',
+                message: `Skill "${skill.name}" is disabled. Enable it first.`,
+              });
+            } else {
+              this.postMessage({
+                type: 'error',
+                message: `Skill "${message.request.skillId}" not found.`,
+              });
+            }
+            break;
+          }
+          case 'getSkillDetail': {
+            const skill = this.services.skills.getSkill(message.skillId);
+            this.postMessage({
+              type: 'skillDetail',
+              skill: skill || null,
+            });
+            break;
+          }
+          case 'importSkillFromDisk': {
+            // Open file picker for .json, .md, .tar.gz, .tgz, .zip skill files
+            const uris = await vscode.window.showOpenDialog({
+              canSelectFiles: true,
+              canSelectFolders: false,
+              canSelectMany: false,
+              filters: {
+                'Skill Files': ['json', 'md', 'tar.gz', 'tgz', 'zip'],
+                'JSON Skills': ['json'],
+                'SKILL.md': ['md'],
+                'Skill Archives': ['tar.gz', 'tgz', 'zip'],
+              },
+              title: 'Import Skill',
+            });
+            if (!uris || uris.length === 0) {
+              this.postMessage({ type: 'skillImportResult', success: false, error: 'No file selected' });
+              break;
+            }
+
+            const filePath = uris[0].fsPath;
+            const ext = filePath.toLowerCase();
+
+            try {
+              let importedSkill: any = null;
+
+              if (ext.endsWith('.json')) {
+                // ── JSON skill file ─────────────────────────────
+                const raw = await vscode.workspace.fs.readFile(uris[0]);
+                const text = Buffer.from(raw).toString('utf-8');
+                const parsed = JSON.parse(text);
+                if (!parsed.id || !parsed.name || !parsed.description) {
+                  this.postMessage({
+                    type: 'skillImportResult',
+                    success: false,
+                    error: 'Invalid skill file: missing required fields (id, name, description)',
+                  });
+                  break;
+                }
+                importedSkill = {
+                  id: parsed.id,
+                  name: parsed.name,
+                  description: parsed.description,
+                  version: parsed.version || '1.0.0',
+                  author: parsed.author || 'Custom',
+                  category: parsed.category || 'custom',
+                  tags: parsed.tags || [],
+                  icon: parsed.icon || '🧩',
+                  prompt: parsed.prompt,
+                  toolChain: parsed.toolChain,
+                  knowledge: parsed.knowledge,
+                  installed: true,
+                  enabled: true,
+                  builtin: false,
+                  source: 'local' as const,
+                  config: parsed.config,
+                };
+
+              } else if (ext.endsWith('.md')) {
+                // ── SKILL.md file ───────────────────────────────
+                const raw = await vscode.workspace.fs.readFile(uris[0]);
+                const text = Buffer.from(raw).toString('utf-8');
+                const parsed = parseSkillMd(text);
+                const partial = skillFromParsedMd(parsed, filePath);
+                importedSkill = {
+                  ...partial,
+                  installed: true,
+                  enabled: true,
+                  builtin: false,
+                  source: 'local' as const,
+                };
+
+              } else if (ext.endsWith('.tar.gz') || ext.endsWith('.tgz') || ext.endsWith('.zip')) {
+                // ── Archive (.tar.gz / .tgz / .zip) ─────────────
+                const { dir } = await extractSkillArchive(filePath);
+                let extractedSkill: any = null;
+
+                // Try SKILL.md first, then .json
+                const skillMdPath = findSkillMd(dir);
+                if (skillMdPath) {
+                  const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(skillMdPath));
+                  const text = Buffer.from(raw).toString('utf-8');
+                  const parsed = parseSkillMd(text);
+                  const partial = skillFromParsedMd(parsed, skillMdPath);
+                  extractedSkill = {
+                    ...partial,
+                    installed: true,
+                    enabled: true,
+                    builtin: false,
+                    source: 'local' as const,
+                  };
+                } else {
+                  const jsonPath = findSkillJson(dir);
+                  if (jsonPath) {
+                    const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(jsonPath));
+                    const text = Buffer.from(raw).toString('utf-8');
+                    const parsed = JSON.parse(text);
+                    extractedSkill = {
+                      id: parsed.id || slugify(parsed.name || 'imported'),
+                      name: parsed.name || 'Imported Skill',
+                      description: parsed.description || 'No description',
+                      version: parsed.version || '1.0.0',
+                      author: parsed.author || 'Custom',
+                      category: parsed.category || 'custom',
+                      tags: parsed.tags || [],
+                      icon: parsed.icon || '🧩',
+                      prompt: parsed.prompt,
+                      toolChain: parsed.toolChain,
+                      knowledge: parsed.knowledge,
+                      installed: true,
+                      enabled: true,
+                      builtin: false,
+                      source: 'local' as const,
+                      config: parsed.config,
+                    };
+                  }
+                }
+
+                // Collect included files for reference
+                const files = collectFiles(dir);
+                if (extractedSkill && files.length > 0) {
+                  extractedSkill._archiveFiles = files;
+                  extractedSkill._archiveDir = dir;
+                } else {
+                  cleanupTempDir(dir);
+                }
+
+                importedSkill = extractedSkill;
+
+              } else {
+                this.postMessage({
+                  type: 'skillImportResult',
+                  success: false,
+                  error: `Unsupported file type: ${ext}. Use .json, .md, .tar.gz, .tgz, or .zip`,
+                });
+                break;
+              }
+
+              if (!importedSkill) {
+                this.postMessage({
+                  type: 'skillImportResult',
+                  success: false,
+                  error: 'Could not find a valid skill definition in the file or archive',
+                });
+                break;
+              }
+
+              const ok = this.services.skills.installSkill(importedSkill);
+              if (ok) {
+                this.postMessage({ type: 'skillImportResult', success: true, skill: importedSkill });
+                // Refresh the catalog
+                this.postMessage({
+                  type: 'skillCatalog',
+                  skills: this.services.skills.getAllSkills(),
+                });
+              } else {
+                this.postMessage({
+                  type: 'skillImportResult',
+                  success: false,
+                  error: `Skill "${importedSkill.id}" already exists`,
+                });
+              }
+            } catch (err: any) {
+              this.postMessage({
+                type: 'skillImportResult',
+                success: false,
+                error: `Failed to import: ${err.message || String(err)}`,
+              });
+            }
+            break;
+          }
+          // Project creation wizard
+          case 'projectWizardCreate': {
+            logger.info('ChatViewProvider: projectWizardCreate received');
+            const projectResult = await this.services.projectCreation.createProject(message.request);
+            this.postMessage({
+              type: 'projectWizardCreated',
+              success: projectResult.success,
+              path: projectResult.path,
+              error: projectResult.error,
+            });
+            break;
+          }
         }
       },
       undefined,
@@ -1352,6 +1764,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public postMessage(message: any) {
     this._view?.webview.postMessage(message);
+  }
+
+  /**
+   * Insert text into the chat draft from an external source (right-click
+   * context menu). Shows the chat panel if hidden, then posts the text.
+   */
+  public sendTextToChat(text: string): void {
+    this.focus();
+    this.postMessage({ type: 'insertText', text });
+  }
+
+  /**
+   * Attach a file to the chat draft from the right-click context menu.
+   * Uses the same `attachedFiles` message as the input-bar "Attach files"
+   * button so the webview shows the [Attached file: ...] indicator.
+   */
+  public sendFileToChat(fileName: string, content: string): void {
+    this.focus();
+    this.postMessage({ type: 'attachedFiles', files: [{ name: fileName, content }] });
+  }
+
+  /** Mark content as changed — the next idle refresh cycle will pick it up. */
+  private markDirty(): void {
+    this._dirty = true;
+  }
+
+  /** Record user interaction — resets the idle timer. */
+  private touchIdle(): void {
+    this._lastUserInteraction = Date.now();
   }
 
   /**
@@ -1439,9 +1880,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion', 'git.protectedBranches',
       'changelog.enabled', 'changelog.autoCommit', 'changelog.postToAdo',
       'ado.clarificationState', 'ado.warnOnSparseTask',
+      'advancedConfig',
+      'llm.modeConfigs', 'llm.modeReasoningEffort',
       'act.toolBudget', 'act.terminalAllowlist',
       'sessions.maxPerProject',
-      'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect',
+      'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect', 'agents.autoReview',
+      'consent.harmlessAutoApprove', 'consent.harmlessAutoApproveSeconds',
+      'chat.showThinking',
       'ignore.dotAdoCode',
       'mcp.servers',
     ];
@@ -2487,7 +2932,7 @@ app.Run();
     try {
       // Use the real token counter instead of rough char/4 estimation
       const used = countMessageTokens(this.conversation);
-      const model = llmConfigFromSettings().model;
+      const model = llmConfigFromSettings(this.executor?.mode).model;
       const maxTokens = estimateContextWindow({ apiModelId: model }, this.lastModelInfos);
       const remaining = Math.max(0, maxTokens - used);
       const percentage = Math.min(100, Math.round((used / maxTokens) * 100));
@@ -2500,7 +2945,7 @@ app.Run();
 
   /** Fresh client from current settings (avoids stale config after changes). */
   private llmClient(): LlmClient {
-    return new LlmClient(llmConfigFromSettings());
+    return new LlmClient(llmConfigFromSettings(this.executor?.mode));
   }
 
   private async handleUserMessage(content: string, images?: ImageAttachment[]): Promise<void> {
@@ -2675,7 +3120,7 @@ app.Run();
       let choicePrompt = parseChoicePrompt(result.text);
       if (!choicePrompt && getSettings().llmChoiceDetectionModel !== 'off') {
         try {
-          const cfg = llmConfigFromSettings();
+          const cfg = llmConfigFromSettings(this.executor?.mode);
           const model = getSettings().llmChoiceDetectionModel || cfg.model;
           choicePrompt = await detectChoicePrompt(result.text, new LlmClient({ ...cfg, model }));
         } catch (err) {
@@ -2879,6 +3324,33 @@ app.Run();
         vscode.window.showInformationMessage('ADO Code: chat cleared.');
         break;
       }
+      case 'clear-sessions': {
+        // Ask for confirmation before wiping all sessions
+        const clearConfirmOptions: ConfirmationOption[] = [
+          { label: '🗑️ Delete All Sessions', value: 'confirm', isDangerous: true },
+          { label: '❌ Cancel', value: 'cancel' },
+        ];
+        const clearDecision = await this.requestConfirmation(
+          'Delete All Sessions',
+          'This will permanently delete all chat sessions. This cannot be undone.',
+          clearConfirmOptions,
+        );
+        if (clearDecision !== 'confirm') break;
+        // Full reset: abort in-flight streams, clear approvals, wipe all sessions
+        this.llmAbort?.abort();
+        this.consentBroker.rejectAll();
+        this.confirmBroker.rejectAll();
+        clearSessionAutoApprovals();
+        await this.saveSessions([]);
+        await this.setActiveSessionId('');
+        this.conversation = [];
+        this.postMessage({ type: 'historyRestored', messages: [] });
+        this.postMessage({ type: 'loading', loading: false });
+        this.sendSessionList();
+        this.markDirty();
+        vscode.window.showInformationMessage('ADO Code: all sessions deleted.');
+        break;
+      }
       case 'mode': {
         const modes = ['inline', 'plan', 'act', 'yolo'] as const;
         const target = args.trim().toLowerCase();
@@ -2917,9 +3389,35 @@ app.Run();
         break;
       }
       case 'help': {
-        const helpText = SLASH_COMMANDS.map(cmd =>
-          `**${cmd.usage}** — ${cmd.description}`
-        ).join('\n');
+        const workItemCmds = SLASH_COMMANDS.filter(c => ['status', 'comment', 'pick', 'assign', 'undo', 'generate-tasks'].includes(c.name));
+        const chatCmds = SLASH_COMMANDS.filter(c => ['clear', 'clear-sessions', 'resume', 'mode'].includes(c.name));
+        const aiCmds = SLASH_COMMANDS.filter(c => ['delegate', 'remember', 'forget'].includes(c.name));
+        const otherCmds = SLASH_COMMANDS.filter(c => ['help', 'new-project', 'skills'].includes(c.name));
+
+        const fmt = (cmds: typeof SLASH_COMMANDS) =>
+          cmds.map(c => `\`${c.usage}\`\n_${c.description}_`).join('\n\n');
+
+        const helpText = [
+          '## Available Commands',
+          '',
+          '**📋 Work Items**',
+          '',
+          fmt(workItemCmds),
+          '',
+          '**💬 Chat**',
+          '',
+          fmt(chatCmds),
+          '',
+          '**🤖 AI**',
+          '',
+          fmt(aiCmds),
+          '',
+          '**⚙️ Other**',
+          '',
+          fmt(otherCmds),
+          '',
+          '_Tip: Type `/` in the input bar to see autocomplete suggestions._',
+        ].join('\n');
         this.postMessage({ type: 'assistantMessage', content: helpText, done: true });
         break;
       }
@@ -3006,6 +3504,18 @@ First analyze the user story and explain your breakdown reasoning, then output t
         } else {
           vscode.window.showWarningMessage('ADO Code: no saved notes to clear.');
         }
+        break;
+      }
+      case 'new-project': {
+        logger.info('ChatViewProvider: /new-project command received');
+        this.postMessage({ type: 'openProjectWizard' });
+        this.postMessage({ type: 'loading', loading: false });
+        break;
+      }
+      case 'skills': {
+        logger.info('ChatViewProvider: /skills command received');
+        this.postMessage({ type: 'openSkillCatalog' });
+        this.postMessage({ type: 'loading', loading: false });
         break;
       }
       default: {

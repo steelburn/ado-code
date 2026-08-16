@@ -9,6 +9,7 @@
 import type { ModeConfig } from '../modes';
 import { TOOL_GROUPS, getToolsForMode } from '../modes';
 import { TOOL_DISPLAY_NAMES, type ToolName } from '../tools/types';
+import type { Skill } from '../../shared/skillTypes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +31,8 @@ export interface SystemPromptOptions {
   memoryPrompt?: string;
   /** Optional workspace memory prompt string (from WorkspaceMemory.toPromptString()). */
   workspaceMemoryPrompt?: string;
+  /** Optional enabled skills for the execute_skill tool. */
+  enabledSkills?: Skill[];
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +173,34 @@ function buildWorkspaceMemorySection(workspaceMemoryPrompt?: string): string {
   return workspaceMemoryPrompt.trim();
 }
 
+/** Available skills — list enabled skills and the execute_skill tool. */
+function buildSkillsSection(enabledSkills?: Skill[]): string {
+  if (!enabledSkills || enabledSkills.length === 0) {
+    return '';
+  }
+
+  const lines = ['## Available Skills', ''];
+
+  lines.push(
+    'You have access to specialized skills that can perform focused tasks.',
+    'Use the `execute_skill` tool with the skill ID and relevant input when a skill matches the user\'s request.',
+    '',
+  );
+
+  for (const skill of enabledSkills) {
+    lines.push(`### ${skill.icon} ${skill.name}`);
+    lines.push(skill.description);
+    lines.push(`Category: ${skill.category} | Tags: ${skill.tags.join(', ')}`);
+    lines.push('');
+  }
+
+  lines.push(
+    'To use a skill, invoke the `execute_skill` tool with the skill ID and relevant input.',
+  );
+
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -198,13 +229,14 @@ function formatOsName(osId: string): string {
  * and extend without touching a single monolithic template string.
  */
 export function generateSystemPrompt(options: SystemPromptOptions): string {
-  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt } =
+  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, enabledSkills } =
     options;
 
   const sections: string[] = [
     buildRoleSection(mode),
     buildToolsSection(mode, availableTools),
     buildToolGuidelines(mode),
+    buildSkillsSection(enabledSkills),
     buildMemorySection(memoryPrompt),
     buildWorkspaceMemorySection(workspaceMemoryPrompt),
     buildEnvironmentSection(workspacePath, os),

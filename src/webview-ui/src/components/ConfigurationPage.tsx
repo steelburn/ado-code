@@ -18,7 +18,7 @@ interface ConfigSection {
 interface ConfigSetting {
   key: string;
   label: string;
-  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides';
+  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides' | 'model';
   description: string;
   hint?: string;
   min?: number;
@@ -27,15 +27,13 @@ interface ConfigSetting {
   placeholder?: string;
 }
 
-const SECTIONS: ConfigSection[] = [
+/** Express Configuration — simplified settings for most users. */
+const EXPRESS_SECTIONS: ConfigSection[] = [
   {
     title: 'Azure DevOps',
     icon: '🔵',
     settings: [
       { key: 'adoOrganization', label: 'Organization', type: 'string', description: 'ADO organization name (e.g. mycompany)', placeholder: 'mycompany' },
-      // Active ADO project is intentionally NOT here: the project is bound
-      // per workspace (.ado-code/config.json) and switched from the chat
-      // header / work item trees.
       { key: 'adoPat', label: 'Personal Access Token', type: 'password', description: 'ADO PAT with Work Items + Project scope', placeholder: 'vso.work_write' },
       { key: 'adoServerUrl', label: 'Server URL (on-prem)', type: 'string', description: 'For ADO Server (TFS) — leave empty for cloud', placeholder: 'https://ado.corp.local/tfs/DefaultCollection' },
       { key: 'organizations', label: 'Organizations', type: 'orgs', description: 'ADO organizations the developer works with. The ACTIVE org is picked per workspace.' },
@@ -48,9 +46,7 @@ const SECTIONS: ConfigSection[] = [
       { key: 'llmProvider', label: 'Provider', type: 'enum', description: 'LLM API format', options: ['openai', 'anthropic'] },
       { key: 'llmApiUrl', label: 'API URL', type: 'string', description: 'LLM API base URL', placeholder: 'https://api.openai.com/v1' },
       { key: 'llmApiKey', label: 'API Key', type: 'password', description: 'LLM API key', placeholder: 'sk-...' },
-      { key: 'llmModel', label: 'Model', type: 'string', description: 'Model name', placeholder: 'gpt-4o' },
-      { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'string', description: 'Optional CHEAPER model for detecting choice prompts in AI responses (e.g. gpt-4o-mini). Empty = use the main model. Set to "off" to disable LLM-assisted detection.', placeholder: 'gpt-4o-mini' },
-      { key: 'llm.capabilityOverrides', label: 'Capability overrides', type: 'capOverrides', description: 'Per-model vision/tool-calling overrides. You know your model best: declare it here and it beats auto-detection. Leave a field unset to keep the detected value.' },
+      { key: 'llmModel', label: 'Model', type: 'model', description: 'Model name (used for all modes)', placeholder: 'gpt-4o' },
     ],
   },
   {
@@ -89,14 +85,6 @@ const SECTIONS: ConfigSection[] = [
     ],
   },
   {
-    title: 'Act Mode',
-    icon: '🚀',
-    settings: [
-      { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn', hint: 'Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
-      { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed command prefixes in act mode' },
-    ],
-  },
-  {
     title: 'Consent',
     icon: '🔐',
     settings: [
@@ -125,7 +113,7 @@ const SECTIONS: ConfigSection[] = [
     title: 'Chat',
     icon: '💬',
     settings: [
-      { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: 'Display the model\'s thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)', hint: 'When enabled, the model\'s internal reasoning appears in a blue thinking block while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don\'t support it.' },
+      { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)", hint: "When enabled, the model's internal reasoning appears in a blue thinking block while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don't support it." },
     ],
   },
   {
@@ -139,7 +127,19 @@ const SECTIONS: ConfigSection[] = [
     title: 'Workspace',
     icon: '🛡',
     settings: [
-      { key: 'ignore.dotAdoCode', label: 'Keep .ado-code out of version control', type: 'boolean', description: 'Auto-add .ado-code to .gitignore / .dockerignore (prompts once per workspace; "Skip" is remembered)' },
+      { key: 'ignore.dotAdoCode', label: 'Keep .ado-code out of version control', type: 'boolean', description: 'Auto-add .ado-code to .gitignore / .dockerignore (prompts once per workspace; \"Skip\" is remembered)' },
+    ],
+  },
+];
+
+/** Advanced Configuration — extra sections only shown in Advanced mode. */
+const ADVANCED_EXTRA_SECTIONS: ConfigSection[] = [
+  {
+    title: 'Act Mode',
+    icon: '🚀',
+    settings: [
+      { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn', hint: 'Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
+      { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed command prefixes in act mode' },
     ],
   },
 ];
@@ -310,11 +310,7 @@ function McpServersInput({ value, onChange }: { value: McpServer[]; onChange: (s
           <p>ADO Code connects to MCP servers via <strong>stdio transport</strong> (spawning a local process). To connect to a <strong>remote HTTP/SSE MCP server</strong>, use <code>mcp-remote</code> as a bridge:</p>
           <div className="config-mcp-guide-example">
             <strong>Example: Remote server via mcp-remote</strong>
-            <pre>{`{
-  "name": "my-remote-server",
-  "command": "npx",
-  "args": ["-y", "mcp-remote", "https://your-server.example.com/sse"]
-}`}</pre>
+            <pre>{`{\n  "name": "my-remote-server",\n  "command": "npx",\n  "args": ["-y", "mcp-remote", "https://your-server.example.com/sse"]\n}`}</pre>
           </div>
           <p><strong>Common remote MCP servers:</strong></p>
           <ul>
@@ -322,18 +318,9 @@ function McpServersInput({ value, onChange }: { value: McpServer[]; onChange: (s
             <li><code>npx -y @modelcontextprotocol/server-everything &lt;url&gt;</code> — Reference server for testing</li>
           </ul>
           <p><strong>With authentication:</strong></p>
-          <pre>{`{
-  "name": "auth-server",
-  "command": "npx",
-  "args": ["-y", "mcp-remote", "https://server.example.com/sse", "--header", "Authorization:Bearer YOUR_TOKEN"],
-  "env": { "API_KEY": "your-key" }
-}`}</pre>
+          <pre>{`{\n  "name": "auth-server",\n  "command": "npx",\n  "args": ["-y", "mcp-remote", "https://server.example.com/sse", "--header", "Authorization:Bearer ***"],\n  "env": { "API_KEY": "your-key" }\n}`}</pre>
           <p><strong>Local stdio servers</strong> (no bridge needed):</p>
-          <pre>{`{
-  "name": "filesystem",
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
-}`}</pre>
+          <pre>{`{\n  "name": "filesystem",\n  "command": "npx",\n  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]\n}`}</pre>
         </div>
       </details>
     </div>
@@ -427,7 +414,7 @@ interface CapOverride {
 
 /** Editor for per-model capability overrides — add/remove rows with model id
  *  + vision/tools toggles (unset = keep auto-detected). Mirrors McpServersInput. */
-function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; onChange: (rows: CapOverride[]) => void }) {
+function CapabilityOverridesInput({ value, models, onChange }: { value: CapOverride[]; models: Array<{ id: string; vision?: boolean; tools?: boolean }>; onChange: (rows: CapOverride[]) => void }) {
   const addRow = () => {
     onChange([...value, { model: '' }]);
   };
@@ -461,11 +448,10 @@ function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; o
           <div className="config-mcp-fields">
             <div className="config-mcp-row">
               <label className="config-mcp-label">Model id</label>
-              <input
-                className="config-input"
-                type="text"
+              <ModelInput
                 value={row.model}
-                onChange={e => updateRow(idx, 'model', e.target.value)}
+                models={models}
+                onChange={model => updateRow(idx, 'model', model)}
                 placeholder="deepseek-v4"
               />
             </div>
@@ -494,6 +480,100 @@ function CapabilityOverridesInput({ value, onChange }: { value: CapOverride[]; o
       <button className="config-mcp-add" onClick={addRow} type="button">
         + Add Override
       </button>
+    </div>
+  );
+}
+
+/**
+ * Model input with dropdown for fetched models + custom input option.
+ * Shows a select dropdown when models are available, with an extra option
+ * to type a custom model not in the list.
+ */
+function ModelInput({
+  value,
+  models,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
+  placeholder?: string;
+  onChange: (model: string) => void;
+}) {
+  const [customMode, setCustomMode] = useState(false);
+  const [customValue, setCustomValue] = useState('');
+
+  // If models are available and user hasn't opted for custom mode
+  if (models.length > 0 && !customMode) {
+    // Check if current value is a custom model (not in the list)
+    const isCustom = value && !models.some(m => m.id === value);
+
+    return (
+      <div className="config-model-input">
+        <select
+          className="config-select"
+          value={isCustom ? '__custom__' : value}
+          onChange={e => {
+            if (e.target.value === '__custom__') {
+              setCustomMode(true);
+              setCustomValue(value);
+            } else {
+              onChange(e.target.value);
+            }
+          }}
+        >
+          <option value="">— pick a model —</option>
+          {models.map(m => (
+            <option key={m.id} value={m.id}>{m.id}</option>
+          ))}
+          {isCustom && <option value="__custom__">{value} (custom)</option>}
+          <option value="__custom__">✏️ Type custom model…</option>
+        </select>
+      </div>
+    );
+  }
+
+  // Custom input mode or no models available
+  return (
+    <div className="config-model-input">
+      <div className="config-model-input-row">
+        <input
+          className="config-input"
+          type="text"
+          value={customMode ? customValue : value}
+          onChange={e => {
+            if (customMode) {
+              setCustomValue(e.target.value);
+            } else {
+              onChange(e.target.value);
+            }
+          }}
+          onBlur={() => {
+            if (customMode) {
+              onChange(customValue);
+            }
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && customMode) {
+              onChange(customValue);
+            }
+          }}
+          placeholder={placeholder || 'e.g. gpt-4o, claude-sonnet-4-20250514'}
+        />
+        {customMode && models.length > 0 && (
+          <button
+            className="config-model-input-back"
+            onClick={() => {
+              setCustomMode(false);
+              setCustomValue('');
+            }}
+            title="Back to model list"
+            type="button"
+          >
+            ↩
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -540,14 +620,12 @@ function ModelFetcher({
   loading,
   error,
   onFetch,
-  onPick,
 }: {
   config: Record<string, any>;
   models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
   loading: boolean;
   error: string | null;
   onFetch: (provider?: string, apiUrl?: string, apiKey?: string) => void;
-  onPick: (model: string) => void;
 }) {
   const url = String(config.llmApiUrl ?? '').trim();
   const key = String(config.llmApiKey ?? '').trim();
@@ -558,7 +636,6 @@ function ModelFetcher({
       </div>
     );
   }
-  const current = String(config.llmModel ?? '');
   return (
     <div className="config-models">
       <button
@@ -572,20 +649,7 @@ function ModelFetcher({
       {loading && <div className="config-desc">Fetching models from {url}…</div>}
       {error && <div className="config-models-error">{error}</div>}
       {!loading && models.length > 0 && (
-        <select
-          className="config-select"
-          value={current}
-          onChange={e => onPick(e.target.value)}
-          title={`${models.length} models available`}
-        >
-          <option value="">— pick a model —</option>
-          {current && !models.some(m => m.id === current) && (
-            <option value={current}>{current} (current)</option>
-          )}
-          {models.map(m => (
-            <option key={m.id} value={m.id}>{m.id}</option>
-          ))}
-        </select>
+        <div className="config-desc">{models.length} models available — select from the dropdown above</div>
       )}
     </div>
   );
@@ -615,6 +679,77 @@ function ModelCapabilitiesLine({ model, models, overrides }: {
       {!caps.tools && (
         <div className="config-models-error">
           ⚠ This model doesn't support tool calling — agentic modes (Chat/Plan/Act) will degrade to plain chat without tools, file edits, or delegation.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Per-mode model configuration row in Advanced mode. */
+function ModeModelConfig({
+  mode,
+  modeLabel,
+  modeIcon,
+  modelValue,
+  reasoningEffortValue,
+  models,
+  overrides,
+  config,
+  onModelChange,
+  onReasoningEffortChange,
+  onFetch,
+}: {
+  mode: string;
+  modeLabel: string;
+  modeIcon: string;
+  modelValue: string;
+  reasoningEffortValue: string;
+  models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
+  overrides?: CapOverride[];
+  config: Record<string, any>;
+  onModelChange: (model: string) => void;
+  onReasoningEffortChange: (effort: string) => void;
+  onFetch: (provider?: string, apiUrl?: string, apiKey?: string) => void;
+}) {
+  const url = String(config.llmApiUrl ?? '').trim();
+  const key = String(config.llmApiKey ?? '').trim();
+  return (
+    <div className="config-mode-model">
+      <div className="config-mode-model-header">
+        <span className="config-mode-model-icon">{modeIcon}</span>
+        <span className="config-mode-model-label">{modeLabel}</span>
+      </div>
+      <div className="config-mode-model-fields">
+        <div className="config-mode-model-row">
+          <label className="config-mcp-label">Model</label>
+          <ModelInput
+            value={modelValue}
+            models={models}
+            placeholder="e.g. gpt-4o, o3"
+            onChange={onModelChange}
+          />
+        </div>
+        <div className="config-mode-model-row">
+          <label className="config-mcp-label">Reasoning Effort</label>
+          <select
+            className="config-select"
+            value={reasoningEffortValue}
+            onChange={e => onReasoningEffortChange(e.target.value)}
+          >
+            <option value="">— none —</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+      {modelValue && (
+        <div className="config-mode-model-caps">
+          <ModelCapabilitiesLine
+            model={modelValue}
+            models={models}
+            overrides={overrides}
+          />
         </div>
       )}
     </div>
@@ -658,6 +793,44 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
     setTimeout(() => setSaved(false), 2000);
   }, [config]);
 
+  const handleToggleAdvanced = useCallback(() => {
+    const next = !config.advancedConfig;
+    setConfig(prev => ({ ...prev, advancedConfig: next }));
+    setDirty(true);
+    setSaved(false);
+  }, [config.advancedConfig]);
+
+  const isAdvanced = !!config.advancedConfig;
+
+  // Handle per-mode model config changes
+  const handleModeModelChange = useCallback((mode: string, model: string) => {
+    setConfig(prev => {
+      const modeConfigs = { ...(prev['llm.modeConfigs'] || {}) };
+      if (model) {
+        modeConfigs[mode] = { model };
+      } else {
+        delete modeConfigs[mode];
+      }
+      return { ...prev, 'llm.modeConfigs': modeConfigs };
+    });
+    setDirty(true);
+    setSaved(false);
+  }, []);
+
+  const handleModeReasoningEffortChange = useCallback((mode: string, effort: string) => {
+    setConfig(prev => {
+      const modeReasoning = { ...(prev['llm.modeReasoningEffort'] || {}) };
+      if (effort) {
+        modeReasoning[mode] = effort;
+      } else {
+        delete modeReasoning[mode];
+      }
+      return { ...prev, 'llm.modeReasoningEffort': modeReasoning };
+    });
+    setDirty(true);
+    setSaved(false);
+  }, []);
+
   if (loading) {
     return (
       <div className="config-page">
@@ -665,6 +838,10 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
       </div>
     );
   }
+
+  const modeConfigs = config['llm.modeConfigs'] || {};
+  const modeReasoningEffort = config['llm.modeReasoningEffort'] || {};
+  const sections = [...EXPRESS_SECTIONS, ...(isAdvanced ? ADVANCED_EXTRA_SECTIONS : [])];
 
   return (
     <div className="config-page">
@@ -680,8 +857,26 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
         </button>
       </div>
 
+      {/* Advanced mode toggle */}
+      <div className="config-advanced-toggle">
+        <label className="config-toggle">
+          <input
+            type="checkbox"
+            checked={isAdvanced}
+            onChange={handleToggleAdvanced}
+          />
+          <span className="config-toggle-slider" />
+        </label>
+        <div className="config-advanced-toggle-text">
+          <div className="config-advanced-toggle-label">Advanced Configuration</div>
+          <div className="config-advanced-toggle-desc">
+            Enable per-mode model selection and reasoning effort tuning
+          </div>
+        </div>
+      </div>
+
       <div className="config-body">
-        {SECTIONS.map(section => (
+        {sections.map(section => (
           <div key={section.title} className="config-section">
             <h3 className="config-section-title">
               <span className="config-section-icon">{section.icon}</span>
@@ -739,7 +934,15 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                 ) : setting.type === 'capOverrides' ? (
                   <CapabilityOverridesInput
                     value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                    models={models ?? []}
                     onChange={rows => handleChange(setting.key, rows)}
+                  />
+                ) : setting.type === 'model' ? (
+                  <ModelInput
+                    value={config[setting.key] ?? ''}
+                    models={models ?? []}
+                    placeholder={setting.placeholder}
+                    onChange={model => handleChange(setting.key, model)}
                   />
                 ) : (
                   <input
@@ -763,7 +966,6 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                     setFetchError(null);
                     onFetchModels?.(provider, apiUrl, apiKey);
                   }}
-                  onPick={model => handleChange('llmModel', model)}
                 />
                 <ModelCapabilitiesLine
                   model={String(config.llmModel ?? '')}
@@ -774,6 +976,83 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
             )}
           </div>
         ))}
+
+        {/* Advanced: Per-mode model configuration */}
+        {isAdvanced && (
+          <div className="config-section">
+            <h3 className="config-section-title">
+              <span className="config-section-icon">🎯</span>
+              Per-Mode Model Configuration
+            </h3>
+            <div className="config-desc" style={{ marginBottom: 12 }}>
+              Configure a different model for each mode. Leave empty to use the default model from the LLM Provider section above.
+            </div>
+            <ModeModelConfig
+              mode="inline"
+              modeLabel="Chat (Inline)"
+              modeIcon="💬"
+              modelValue={modeConfigs.inline?.model ?? ''}
+              reasoningEffortValue={modeReasoningEffort.inline ?? ''}
+              models={models ?? []}
+              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+              config={config}
+              onModelChange={model => handleModeModelChange('inline', model)}
+              onReasoningEffortChange={effort => handleModeReasoningEffortChange('inline', effort)}
+              onFetch={(provider, apiUrl, apiKey) => {
+                setFetchError(null);
+                onFetchModels?.(provider, apiUrl, apiKey);
+              }}
+            />
+            <ModeModelConfig
+              mode="plan"
+              modeLabel="Plan"
+              modeIcon="📋"
+              modelValue={modeConfigs.plan?.model ?? ''}
+              reasoningEffortValue={modeReasoningEffort.plan ?? ''}
+              models={models ?? []}
+              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+              config={config}
+              onModelChange={model => handleModeModelChange('plan', model)}
+              onReasoningEffortChange={effort => handleModeReasoningEffortChange('plan', effort)}
+              onFetch={(provider, apiUrl, apiKey) => {
+                setFetchError(null);
+                onFetchModels?.(provider, apiUrl, apiKey);
+              }}
+            />
+            <ModeModelConfig
+              mode="act"
+              modeLabel="Act"
+              modeIcon="🚀"
+              modelValue={modeConfigs.act?.model ?? ''}
+              reasoningEffortValue={modeReasoningEffort.act ?? ''}
+              models={models ?? []}
+              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+              config={config}
+              onModelChange={model => handleModeModelChange('act', model)}
+              onReasoningEffortChange={effort => handleModeReasoningEffortChange('act', effort)}
+              onFetch={(provider, apiUrl, apiKey) => {
+                setFetchError(null);
+                onFetchModels?.(provider, apiUrl, apiKey);
+              }}
+            />
+            <ModeModelConfig
+              mode="yolo"
+              modeLabel="YOLO"
+              modeIcon="⚡"
+              modelValue={modeConfigs.yolo?.model ?? ''}
+              reasoningEffortValue={modeReasoningEffort.yolo ?? ''}
+              models={models ?? []}
+              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+              config={config}
+              onModelChange={model => handleModeModelChange('yolo', model)}
+              onReasoningEffortChange={effort => handleModeReasoningEffortChange('yolo', effort)}
+              onFetch={(provider, apiUrl, apiKey) => {
+                setFetchError(null);
+                onFetchModels?.(provider, apiUrl, apiKey);
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

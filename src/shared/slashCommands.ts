@@ -32,6 +32,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'resume',    description: 'Switch to a previous chat session to continue where you left off',  usage: '/resume',             requiresArgs: false },
   { name: 'remember',  description: 'Store a preference or instruction the AI will remember across sessions',  usage: '/remember <text>',    requiresArgs: true },
   { name: 'forget',    description: 'Remove all saved notes and preferences',                     usage: '/forget',             requiresArgs: false },
+  { name: 'new-project', description: 'Open the project creation wizard',                         usage: '/new-project',         requiresArgs: false },
+  { name: 'clear-sessions', description: 'Delete all chat sessions and start completely fresh', usage: '/clear-sessions', requiresArgs: false },
+  { name: 'skills',      description: 'Open the skill catalog to browse and manage AI skills',    usage: '/skills',              requiresArgs: false },
 ];
 
 /**

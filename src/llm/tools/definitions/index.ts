@@ -14,6 +14,7 @@ import edit_file from './edit_file'
 import list_files from './list_files'
 import execute_command from './execute_command'
 import write_to_file from './write_to_file'
+import execute_skill from './execute_skill'
 
 export { default as read_file } from './read_file'
 export { default as search_files } from './search_files'
@@ -21,6 +22,7 @@ export { default as edit_file } from './edit_file'
 export { default as list_files } from './list_files'
 export { default as execute_command } from './execute_command'
 export { default as write_to_file } from './write_to_file'
+export { default as execute_skill } from './execute_skill'
 
 /**
  * All native tool definitions.
@@ -32,6 +34,7 @@ export const ALL_NATIVE_TOOLS = [
   list_files,
   execute_command,
   write_to_file,
+  execute_skill,
 ]
 
 /**

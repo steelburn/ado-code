@@ -11,6 +11,8 @@ import { ConsentCard, ConsentRequest } from './components/ConsentCard';
 import { ConfirmationCard, ConfirmationRequest } from './components/ConfirmationCard';
 import { SessionHistory } from './components/SessionHistory';
 import { ConfigurationPage } from './components/ConfigurationPage';
+import { ProjectCreationWizard } from './components/ProjectCreationWizard';
+import { SkillCatalog } from './components/SkillCatalog';
 import { vscode } from './vscode';
 import './styles/app.css';
 import './styles/markdown.css';
@@ -66,6 +68,8 @@ function App() {
   // Input draft lives in App so toolbar tools (add context / attach files) can
   // append to it; InputBar renders it controlled.
   const [draft, setDraft] = useState('');
+  // Pending attached files from context menu (right-click → send file to chat)
+  const [attachedFiles, setAttachedFiles] = useState<Array<{ name: string; content: string }>>([]);
   // Pending consent: the agent (inline mode) wants to run a mutating tool.
   const [consent, setConsent] = useState<ConsentRequest | null>(null);
   // Pending confirmation: in-chat card replacing native VS Code dialogs.
@@ -84,6 +88,12 @@ function App() {
 
   // Configuration page
   const [showConfig, setShowConfig] = useState(false);
+  // Project creation wizard
+  const [showProjectWizard, setShowProjectWizard] = useState(false);
+  // Skill catalog
+  const [showSkillCatalog, setShowSkillCatalog] = useState(false);
+  // Activity indicator — shows a banner while a skill is executing or tasks are generating
+  const [activeActivity, setActiveActivity] = useState<string | null>(null);
 
   // ── Message handler ────────────────────────────────────────────
   useEffect(() => {
@@ -102,6 +112,7 @@ function App() {
           if (msg.done) {
             setLoading(false);
             setThinking(''); // Turn finished — clear thinking text
+            setActiveActivity(null); // Clear activity indicator
           } else {
             setLoading(true);
           }
@@ -140,6 +151,7 @@ function App() {
           // An error ends the turn — no consent prompt can still be pending.
           setConsent(null);
           setThinking(''); // Clear thinking on error
+          setActiveActivity(null); // Clear activity indicator on error
           break;
 
         case 'consentRequest':
@@ -292,13 +304,32 @@ function App() {
           break;
 
         case 'attachedFiles':
-          // "Attach files" — host returns picked file contents; insert them
-          // into the draft as fenced blocks.
+          // "Attach files" — host returns picked file contents; add them
+          // to the file-attachment indicator (not the draft).
           if (msg.files.length > 0) {
-            setDraft(prev => {
-              const blocks = msg.files.map(f => `[Attached file: ${f.name}]\n${f.content}\n[/file]`);
-              return (prev ? prev + '\n\n' : '') + blocks.join('\n\n');
-            });
+            setAttachedFiles(prev => [...prev, ...msg.files]);
+          }
+          break;
+
+        case 'openProjectWizard':
+          setShowProjectWizard(true);
+          break;
+
+        case 'projectWizardCreated':
+          if (msg.success) {
+            setShowProjectWizard(false);
+          } else {
+            setError(msg.error || 'Failed to create project');
+          }
+          break;
+        case 'openSkillCatalog':
+          setShowSkillCatalog(true);
+          break;
+
+        case 'insertText':
+          // Right-click context menu: insert text into the chat draft
+          if (msg.text) {
+            setDraft(prev => (prev ? prev + '\n\n' : '') + msg.text);
           }
           break;
       }
@@ -314,6 +345,17 @@ function App() {
     if (saved?.detail) {
       setDetail(saved.detail);
     }
+    // Restore wizard/catalog visibility states
+    if (saved?.showProjectWizard) {
+      setShowProjectWizard(true);
+    }
+    if (saved?.showSkillCatalog) {
+      setShowSkillCatalog(true);
+    }
+    // Restore attached files from context menu
+    if (saved?.attachedFiles && Array.isArray(saved.attachedFiles) && saved.attachedFiles.length > 0) {
+      setAttachedFiles(saved.attachedFiles);
+    }
 
     vscode.postMessage({ type: 'getConfig' });
     vscode.postMessage({ type: 'listAgents' });
@@ -325,22 +367,38 @@ function App() {
 
   // Persist history + task detail so the chat restores after panel collapse/reopen
   useEffect(() => {
-    vscode.setState({ history: messages, detail });
-  }, [messages, detail]);
+    vscode.setState({
+      history: messages,
+      detail,
+      showProjectWizard,
+      showSkillCatalog,
+      attachedFiles,
+    });
+  }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles]);
 
   // ── Actions ────────────────────────────────────────────────────
   const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
-    const displayContent = images?.length
-      ? (content ? `${content}\n\n${images.map(i => `[Image: ${i.name}]`).join(' ')}` : images.map(i => `[Image: ${i.name}]`).join(' '))
+    // Prepend attached file contents to the message so the LLM sees them
+    const fileBlocks = attachedFiles.map(f => `[File: ${f.name}]\n${f.content}\n[/file]`);
+    const fullContent = fileBlocks.length > 0
+      ? (content ? fileBlocks.join('\n\n') + '\n\n' + content : fileBlocks.join('\n\n'))
       : content;
+    const displayContent = images?.length
+      ? (fullContent ? `${fullContent}\n\n${images.map(i => `[Image: ${i.name}]`).join(' ')}` : images.map(i => `[Image: ${i.name}]`).join(' '))
+      : fullContent;
     setMessages(prev => [...prev, { role: 'user', content: displayContent }]);
-    vscode.postMessage({ type: 'userMessage', content, images });
+    vscode.postMessage({ type: 'userMessage', content: fullContent, images });
     setDraft('');
+    setAttachedFiles([]);
     setLoading(true); // Show loading indicator immediately
     // A new turn aborts any in-flight run — the host denies the pending
     // prompt; drop the card here too.
     setConsent(null);
     setThinking('');
+    // Activity indicator for specific commands
+    if (content.trim().toLowerCase().startsWith('/generate-tasks')) {
+      setActiveActivity('Generating tasks');
+    }
   }, []);
 
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
@@ -423,6 +481,12 @@ function App() {
     vscode.postMessage({ type: 'deleteSession', sessionId });
   }, []);
 
+  const handleDeleteAllSessions = useCallback(() => {
+    vscode.postMessage({ type: 'clearAllSessions' });
+    setMessages([]);
+    setActiveSessionId(null);
+  }, []);
+
   // ── Kebab menu actions ───────────────────────────────────────
   const handleKebabAction = useCallback((action: string) => {
     switch (action) {
@@ -435,8 +499,11 @@ function App() {
       case 'openSettings':
         setShowConfig(true);
         break;
+      case 'clearAllSessions':
+        handleDeleteAllSessions();
+        break;
     }
-  }, []);
+  }, [handleDeleteAllSessions]);
 
   const handleFetchProjects = useCallback((organization?: string, pat?: string) => {
     setProjectsLoading(true);
@@ -507,6 +574,20 @@ function App() {
       </div>
     );
   }
+  // Skill catalog
+  if (showSkillCatalog) {
+    return (
+      <div className="app">
+        <SkillCatalog
+          onClose={() => setShowSkillCatalog(false)}
+          onExecute={(_skillId, skillName) => {
+            setActiveActivity(`Executing skill: ${skillName}`);
+            setLoading(true);
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="app chat-layout">
@@ -538,6 +619,7 @@ function App() {
           onNew={handleNewSession}
           onRename={handleRenameSession}
           onDelete={handleDeleteSession}
+          onDeleteAll={handleDeleteAllSessions}
         />
         <ProjectSwitcher
           projects={projects}
@@ -551,6 +633,8 @@ function App() {
             { label: 'Refresh Work Items', icon: '↻', action: 'refreshWorkItems' },
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
             { label: 'Configuration…', icon: '⚙', action: 'openSettings' },
+            { label: '', action: '', separator: true },
+            { label: 'Clear Chat History', icon: '🗑️', action: 'clearAllSessions' },
           ]}
           onSelect={handleKebabAction}
         />
@@ -582,7 +666,7 @@ function App() {
       ))}
 
       {/* Messages */}
-      <MessageList messages={messages} loading={loading} thinking={thinking} />
+      <MessageList messages={messages} loading={loading} thinking={thinking} activity={activeActivity} />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
       {consent && (
@@ -613,11 +697,17 @@ function App() {
         onAttachFiles={() => vscode.postMessage({ type: 'pickFiles' })}
         loading={loading ? mode : ''}
         canAttachImages={config.modelCapabilities?.vision ?? true}
+        attachedFiles={attachedFiles}
+        onRemoveAttachedFile={(index) => setAttachedFiles(prev => prev.filter((_, i) => i !== index))}
       />
       {config.configured && config.modelCapabilities && !config.modelCapabilities.tools && (
         <div className="model-capability-warning" title="Tool calling unavailable for the active model">
           ⚠ <strong>{config.llmModel}</strong> doesn't support tool calling — Chat/Plan/Act run as plain chat (no tools, no file edits, no delegation).
         </div>
+      )}
+      {/* Project creation wizard */}
+      {showProjectWizard && (
+        <ProjectCreationWizard onClose={() => setShowProjectWizard(false)} />
       )}
     </div>
   );

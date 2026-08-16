@@ -26,6 +26,8 @@ export interface AgentRun {
   summary?: string;
 }
 
+import { ProjectCreationRequest } from './components/ProjectCreationWizard/types';
+
 /** An image pasted into the chat, carried as a base64 data URL. */
 export interface ImageAttachment {
   id: string;
@@ -46,6 +48,8 @@ export type WebviewToExtensionMessage =
   | { type: 'updateWorkItem'; workItemId: number; fields: Record<string, any> }
   | { type: 'addComment'; workItemId: number; text: string }
   | { type: 'getConfig' }
+  | { type: 'getFullConfig' }
+  | { type: 'saveConfig'; config: Record<string, any> }
   | { type: 'updateConfig'; config: Partial<ExtensionConfig> }
   // Task 24: agent delegation protocol
   | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
@@ -82,7 +86,10 @@ export type WebviewToExtensionMessage =
   | { type: 'switchSession'; sessionId: string }
   | { type: 'newSession' }
   | { type: 'renameSession'; sessionId: string; name: string }
-  | { type: 'deleteSession'; sessionId: string };
+  | { type: 'deleteSession'; sessionId: string }
+  | { type: 'clearAllSessions' }
+  // Project creation wizard
+  | { type: 'projectWizardCreate'; request: ProjectCreationRequest };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -99,6 +106,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'toolResult'; callId: string; content: string }
   | { type: 'planReady'; plan: string } // plan mode: "Begin implementation" button
   | { type: 'config'; config: ExtensionConfig }
+  | { type: 'fullConfig'; config: Record<string, any> }
   | { type: 'error'; message: string }
   | { type: 'loading'; loading: boolean }
   // Task 24: agent delegation protocol
@@ -128,7 +136,16 @@ export type ExtensionToWebviewMessage =
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history
   | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
-  | { type: 'sessionSwitched'; session: Session };
+  | { type: 'sessionSwitched'; session: Session }
+  // Project creation wizard
+  | { type: 'openProjectWizard' }
+  | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
+  // Skill catalog
+  | { type: 'openSkillCatalog' }
+  // Skill import
+  | { type: 'importSkillFromDisk' }
+  // Right-click context menu: insert text into chat draft
+  | { type: 'insertText'; text: string };
 
 // Shared types
 export interface MessageContext {
@@ -209,4 +226,68 @@ export interface Session {
   name: string;
   createdAt: string;
   messages: Array<{ role: string; content: string }>;
+}
+
+// ── Skill System Types ──────────────────────────────────────────────
+// Duplicated from src/shared/skillTypes.ts because the webview-ui project
+// cannot resolve cross-project imports (separate tsconfig + webpack).
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  category: SkillCategory;
+  tags: string[];
+  icon: string;
+  prompt?: string;
+  toolChain?: ToolChainStep[];
+  knowledge?: string;
+  installed: boolean;
+  enabled: boolean;
+  builtin: boolean;
+  source: 'builtin' | 'marketplace' | 'local';
+  config?: SkillConfig[];
+}
+
+export type SkillCategory =
+  | 'code-review'
+  | 'documentation'
+  | 'testing'
+  | 'refactoring'
+  | 'deployment'
+  | 'database'
+  | 'security'
+  | 'performance'
+  | 'accessibility'
+  | 'custom';
+
+export interface ToolChainStep {
+  tool: string;
+  args: Record<string, any>;
+  condition?: string;
+}
+
+export interface SkillConfig {
+  id: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'select';
+  default: any;
+  options?: string[];
+  description?: string;
+}
+
+export interface SkillExecutionRequest {
+  skillId: string;
+  input: string;
+  context?: Record<string, any>;
+  config?: Record<string, any>;
+}
+
+export interface SkillExecutionResult {
+  success: boolean;
+  output: string;
+  toolCalls?: Array<{ tool: string; args: any; result: any }>;
+  error?: string;
 }

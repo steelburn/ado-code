@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { MarkdownRenderer } from './MarkdownRenderer';
+import React, { useState, useRef, useEffect } from 'react';
+import DOMPurify from 'dompurify';
 
 interface TaskDetail {
   id: number;
@@ -42,6 +42,39 @@ function getCommentAuthor(c: { author?: string; createdBy?: { displayName: strin
 
 function getCommentDate(c: { date?: string; createdDate?: string }): string | undefined {
   return c.date || c.createdDate;
+}
+
+/**
+ * Render ADO HTML content: sanitize dangerous tags, make images responsive.
+ * Preserves ADO's rich-text structure (picklist spans, tables, etc.)
+ * unlike htmlToMarkdown which strips meaningful elements.
+ */
+function renderAdoHtml(text: string): string {
+  if (!text) return '';
+  let html = text;
+  // Strip dangerous tags (script, iframe, object, embed, form, input, style)
+  html = html.replace(/<\s*(script|iframe|object|embed|form|input|style|textarea|select|button)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '');
+  html = html.replace(/<\s*(script|iframe|object|embed|form|input|style|textarea|select|button)[^>]*\/?>/gi, '');
+  // Strip on* event handlers
+  html = html.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // Make images responsive
+  html = html.replace(/<img\s/gi, '<img style="max-width:100%;height:auto;border-radius:4px;margin:4px 0;display:block;" ');
+  // Make tables readable
+  html = html.replace(/<table/gi, '<table style="border-collapse:collapse;width:100%;margin:8px 0;"');
+  html = html.replace(/<th/gi, '<th style="border:1px solid var(--vscode-widget-border,#333);padding:6px 10px;text-align:left;background:var(--vscode-sideBarBackground,#252526);"');
+  html = html.replace(/<td/gi, '<td style="border:1px solid var(--vscode-widget-border,#333);padding:6px 10px;"');
+  return html;
+}
+
+/** Render ADO HTML into a div (sanitized). */
+function AdoHtmlContent({ html }: { html: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.innerHTML = DOMPurify.sanitize(renderAdoHtml(html));
+    }
+  }, [html]);
+  return <div ref={ref} className="task-detail-section-content" />;
 }
 
 export function TaskDetailPanel({ detail, onClarify, onCheckReplies, onClose }: Props) {
@@ -103,36 +136,28 @@ export function TaskDetailPanel({ detail, onClarify, onCheckReplies, onClose }: 
           {detail.description && (
             <div className="task-detail-section">
               <div className="task-detail-section-title">Description</div>
-              <div className="task-detail-section-content">
-                <MarkdownRenderer content={detail.description} />
-              </div>
+              <AdoHtmlContent html={detail.description} />
             </div>
           )}
 
           {detail.acceptanceCriteria && (
             <div className="task-detail-section">
               <div className="task-detail-section-title">Acceptance Criteria</div>
-              <div className="task-detail-section-content">
-                <MarkdownRenderer content={detail.acceptanceCriteria} />
-              </div>
+              <AdoHtmlContent html={detail.acceptanceCriteria} />
             </div>
           )}
 
           {detail.reproSteps && (
             <div className="task-detail-section">
               <div className="task-detail-section-title">Repro Steps</div>
-              <div className="task-detail-section-content">
-                <MarkdownRenderer content={detail.reproSteps} />
-              </div>
+              <AdoHtmlContent html={detail.reproSteps} />
             </div>
           )}
 
           {detail.systemInfo && (
             <div className="task-detail-section">
               <div className="task-detail-section-title">System Info</div>
-              <div className="task-detail-section-content">
-                <MarkdownRenderer content={detail.systemInfo} />
-              </div>
+              <AdoHtmlContent html={detail.systemInfo} />
             </div>
           )}
 
@@ -163,7 +188,7 @@ export function TaskDetailPanel({ detail, onClarify, onCheckReplies, onClose }: 
                     )}
                   </div>
                   <div className="task-detail-comment-text">
-                    <MarkdownRenderer content={c.text} />
+                    <AdoHtmlContent html={c.text} />
                   </div>
                 </div>
               ))}

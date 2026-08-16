@@ -1,4 +1,5 @@
 import { AdoWorkItem, AdoWorkItemReference, WiqlResult, AdoComment } from './types';
+import { markdownToHtml } from './markdownToHtml';
 
 const GA_VERSION = '7.1';
 const PREVIEW_VERSION = '7.1-preview.4';
@@ -142,30 +143,64 @@ export class AdoClient {
    * People in the project (all project teams' members, deduped) for the
    * reassign picker. Org-level teams endpoint carries projectName; members
    * carry identity.uniqueName (email) which the AssignedTo PATCH accepts.
+   * Falls back to project-level teams endpoint if org-level returns no results.
    */
   async getProjectTeamMembers(project: string): Promise<import('./types').AdoTeamMember[]> {
-    const teams = await this.get<{ value: Array<{ id: string; projectId: string; projectName: string }> }>(
-      `/_apis/teams?api-version=7.1`
-    );
-    const projectTeams = (teams.value || []).filter(t => t.projectName === project);
-
     const seen = new Set<string>();
     const members: import('./types').AdoTeamMember[] = [];
-    for (const team of projectTeams) {
+
+    // Primary: org-level teams endpoint (works for most organizations)
+    try {
+      const teams = await this.get<{ value: Array<{ id: string; projectId: string; projectName: string }> }>(
+        `/_apis/teams?api-version=7.1`
+      );
+      const projectTeams = (teams.value || []).filter(t => t.projectName === project);
+      
+      for (const team of projectTeams) {
+        try {
+          const res = await this.get<{ value: Array<{ identity: { displayName: string; uniqueName: string } }> }>(
+            `/_apis/projects/${team.projectId}/teams/${team.id}/members?api-version=7.1`
+          );
+          for (const m of res.value || []) {
+            const { displayName, uniqueName } = m.identity || {};
+            if (!uniqueName || seen.has(uniqueName)) continue;
+            seen.add(uniqueName);
+            members.push({ displayName: displayName || uniqueName, uniqueName });
+          }
+        } catch {
+          // A team failing to list members shouldn't kill the whole picker.
+        }
+      }
+    } catch {
+      // Org-level teams endpoint failed, will try project-level fallback below.
+    }
+
+    // Fallback: project-level teams endpoint (if org-level returned no members)
+    if (members.length === 0) {
       try {
-        const res = await this.get<{ value: Array<{ identity: { displayName: string; uniqueName: string } }> }>(
-          `/_apis/projects/${team.projectId}/teams/${team.id}/members?api-version=7.1`
+        const teams = await this.get<{ value: Array<{ id: string; name: string }> }>(
+          `/_apis/projects/${encodeURIComponent(project)}/teams?api-version=7.1`
         );
-        for (const m of res.value || []) {
-          const { displayName, uniqueName } = m.identity || {};
-          if (!uniqueName || seen.has(uniqueName)) continue;
-          seen.add(uniqueName);
-          members.push({ displayName: displayName || uniqueName, uniqueName });
+        for (const team of teams.value || []) {
+          try {
+            const res = await this.get<{ value: Array<{ identity: { displayName: string; uniqueName: string } }> }>(
+              `/_apis/projects/${encodeURIComponent(project)}/teams/${team.id}/members?api-version=7.1`
+            );
+            for (const m of res.value || []) {
+              const { displayName, uniqueName } = m.identity || {};
+              if (!uniqueName || seen.has(uniqueName)) continue;
+              seen.add(uniqueName);
+              members.push({ displayName: displayName || uniqueName, uniqueName });
+            }
+          } catch {
+            // A team failing to list members shouldn't kill the whole picker.
+          }
         }
       } catch {
-        // A team failing to list members shouldn't kill the whole picker.
+        // Project-level teams endpoint also failed, return empty array.
       }
     }
+
     return members.sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
@@ -222,8 +257,9 @@ export class AdoClient {
     const body: Array<{ op: string; path: string; value: any }> = [
       { op: 'add', path: '/fields/System.Title', value: fields.title },
     ];
-    if (fields.description) body.push({ op: 'add', path: '/fields/System.Description', value: fields.description });
-    if (fields.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: fields.acceptanceCriteria });
+    // Convert markdown to HTML for rich text fields that ADO expects
+    if (fields.description) body.push({ op: 'add', path: '/fields/System.Description', value: markdownToHtml(fields.description) });
+    if (fields.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: markdownToHtml(fields.acceptanceCriteria) });
     if (fields.tags) body.push({ op: 'add', path: '/fields/System.Tags', value: fields.tags });
     if (fields.assignedTo) body.push({ op: 'add', path: '/fields/System.AssignedTo', value: fields.assignedTo });
 

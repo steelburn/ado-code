@@ -16,6 +16,12 @@ export interface AdoCodeSettings {
   llmChoiceDetectionModel: string;
   /** Per-model capability overrides — user knowledge beats heuristics. */
   llmCapabilityOverrides: Array<{ model: string; vision?: boolean; tools?: boolean }>;
+  /** Enable Advanced Configuration mode (per-mode model + reasoning effort). */
+  advancedConfig: boolean;
+  /** Per-mode model overrides — keys: inline, plan, act, yolo. */
+  llmModeConfigs: Record<string, { model: string }>;
+  /** Per-mode reasoning effort — keys: inline, plan, act, yolo; values: low, medium, high. */
+  llmModeReasoningEffort: Record<string, string>;
   mode: 'inline' | 'plan' | 'act';
   actToolBudget: number;
   actTerminalAllowlist: string[];
@@ -51,6 +57,9 @@ export function getSettings(): AdoCodeSettings {
     llmModel: config.get<string>('llmModel', 'gpt-4o'),
     llmChoiceDetectionModel: config.get<string>('llm.choiceDetectionModel', ''),
     llmCapabilityOverrides: config.get<Array<{ model: string; vision?: boolean; tools?: boolean }>>('llm.capabilityOverrides', []),
+    advancedConfig: config.get<boolean>('advancedConfig', false),
+    llmModeConfigs: config.get<Record<string, { model: string }>>('llm.modeConfigs', {}),
+    llmModeReasoningEffort: config.get<Record<string, string>>('llm.modeReasoningEffort', {}),
     mode: config.get<'inline' | 'plan' | 'act'>('mode', 'inline'),
     actToolBudget: config.get<number>('act.toolBudget', 50),
     actTerminalAllowlist: config.get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']),
@@ -116,12 +125,22 @@ export function getActiveOrgBaseUrl(settings: AdoCodeSettings, activeName?: stri
 }
 
 /** Build an LlmConfig from current settings (Task 13). */
-export function llmConfigFromSettings(): any {
+export function llmConfigFromSettings(mode?: string): any {
   const s = getSettings();
+  // In advanced mode, resolve per-mode model override
+  let model = s.llmModel;
+  let reasoningEffort: string | undefined;
+  if (s.advancedConfig && mode && s.llmModeConfigs[mode]?.model) {
+    model = s.llmModeConfigs[mode].model;
+  }
+  if (s.advancedConfig && mode && s.llmModeReasoningEffort[mode]) {
+    reasoningEffort = s.llmModeReasoningEffort[mode];
+  }
   return {
     provider: s.llmProvider,
     apiUrl: s.llmApiUrl,
     apiKey: s.llmApiKey,
-    model: s.llmModel,
+    model,
+    reasoningEffort,
   };
 }

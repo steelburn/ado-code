@@ -1,0 +1,1018 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Skill Catalog — Prettified Styles
+   Uses VS Code CSS variables for seamless theme integration.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Catalog Container ────────────────────────────────────────── */
+.skill-catalog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--vscode-editor-background);
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+  overflow: hidden;
+}
+
+/* ── Header ───────────────────────────────────────────────────── */
+.skill-catalog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  flex-shrink: 0;
+}
+
+.skill-catalog-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-catalog-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-catalog-icon {
+  font-size: 1.3em;
+  filter: drop-shadow(0 0 4px rgba(255, 200, 0, 0.3));
+}
+
+.skill-catalog-title {
+  margin: 0;
+  font-size: 1.2em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.skill-catalog-subtitle {
+  margin: 0;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.skill-catalog-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--vscode-foreground);
+  font-size: 1.4em;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.skill-catalog-close:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: var(--vscode-widget-border);
+}
+
+/* ── Toolbar (Search + Import) ──────────────────────────────────── */
+.skill-catalog-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  flex-shrink: 0;
+}
+
+.skill-search-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.skill-search-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 1em;
+  color: var(--vscode-descriptionForeground);
+  pointer-events: none;
+}
+
+.skill-search {
+  width: 100%;
+  padding: 8px 32px 8px 32px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.9em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.skill-search:focus {
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.skill-search::placeholder {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+}
+
+.skill-search-clear {
+  position: absolute;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vscode-toolbar-hoverBackground);
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.skill-search-clear:hover {
+  background: var(--vscode-inputValidation-errorBackground);
+  color: var(--vscode-errorForeground);
+}
+
+/* ── Category Pills ───────────────────────────────────────────── */
+.skill-catalog-categories {
+  display: flex;
+  gap: 6px;
+  padding: 10px 20px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  scrollbar-width: none;
+}
+
+.skill-catalog-categories::-webkit-scrollbar {
+  display: none;
+}
+
+.skill-category-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.skill-category-pill:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: var(--vscode-descriptionForeground);
+  color: var(--vscode-foreground);
+}
+
+.skill-category-pill-active {
+  background: var(--vscode-focusBorder);
+  border-color: var(--vscode-focusBorder);
+  color: var(--vscode-editor-background);
+  font-weight: 500;
+}
+
+.skill-category-pill-active:hover {
+  background: var(--vscode-focusBorder);
+  border-color: var(--vscode-focusBorder);
+  color: var(--vscode-editor-background);
+  opacity: 0.9;
+}
+
+.skill-category-pill-icon {
+  font-size: 0.95em;
+  line-height: 1;
+}
+
+/* ── Installed/Available Tabs ─────────────────────────────────── */
+.skill-catalog-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  flex-shrink: 0;
+}
+
+.skill-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.skill-tab:hover {
+  color: var(--vscode-foreground);
+}
+
+.skill-tab-active {
+  color: var(--vscode-foreground);
+  border-bottom-color: var(--vscode-focusBorder);
+  font-weight: 500;
+}
+
+.skill-tab-count {
+  font-size: 0.8em;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  line-height: 1.2;
+}
+
+/* ── Loading & Empty States ───────────────────────────────────── */
+.skill-catalog-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 12px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.skill-loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--vscode-widget-border);
+  border-top-color: var(--vscode-focusBorder);
+  border-radius: 50%;
+  animation: skill-spin 0.8s linear infinite;
+}
+
+@keyframes skill-spin {
+  to { transform: rotate(360deg); }
+}
+
+.skill-catalog-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 8px;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.skill-empty-icon {
+  font-size: 2.5em;
+  opacity: 0.5;
+  margin-bottom: 4px;
+}
+
+.skill-empty-title {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.skill-empty-desc {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  max-width: 300px;
+}
+
+/* ── Skill Grid ───────────────────────────────────────────────── */
+.skill-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: start;
+}
+
+/* ── Skill Card ───────────────────────────────────────────────── */
+.skill-card {
+  position: relative;
+  display: flex;
+  background: var(--vscode-sideBar-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+.skill-card:hover {
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+.skill-card:active {
+  transform: translateY(0);
+}
+
+/* Left accent stripe */
+.skill-card-stripe {
+  width: 3px;
+  flex-shrink: 0;
+  background: var(--vscode-widget-border);
+  transition: background 0.2s;
+}
+
+.skill-card-installed .skill-card-stripe {
+  background: var(--vscode-focusBorder);
+}
+
+.skill-card-enabled .skill-card-stripe {
+  background: var(--vscode-terminal-ansiGreen);
+}
+
+.skill-card-body {
+  flex: 1;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Card header */
+.skill-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.skill-card-icon {
+  font-size: 1.4em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.skill-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-card-name {
+  margin: 0 0 2px;
+  font-size: 0.95em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-card-author {
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.skill-card-actions {
+  flex-shrink: 0;
+}
+
+/* Card description */
+.skill-card-desc {
+  margin: 0 0 10px;
+  font-size: 0.83em;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Card footer */
+.skill-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.skill-card-meta-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skill-card-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72em;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: capitalize;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.skill-card-cat-icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.skill-card-tags {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.skill-tag {
+  font-size: 0.7em;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.skill-tag-lg {
+  font-size: 0.8em;
+  padding: 3px 10px;
+}
+
+.skill-card-version {
+  font-size: 0.72em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+/* Card status indicator */
+.skill-card-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: 500;
+}
+
+.skill-status-active {
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.skill-status-disabled {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.6;
+}
+
+.skill-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skill-status-active .skill-status-dot {
+  background: var(--vscode-terminal-ansiGreen);
+  box-shadow: 0 0 4px var(--vscode-terminal-ansiGreen);
+}
+
+.skill-status-disabled .skill-status-dot {
+  background: var(--vscode-descriptionForeground);
+}
+
+/* ── Toggle Switch ────────────────────────────────────────────── */
+.skill-toggle {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.skill-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.skill-toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--vscode-button-secondaryBackground);
+  border-radius: 9px;
+  transition: background 0.2s ease;
+}
+
+.skill-toggle-slider::before {
+  content: '';
+  position: absolute;
+  height: 12px;
+  width: 12px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--vscode-button-secondaryForeground);
+  border-radius: 50%;
+  transition: transform 0.2s ease, background 0.2s;
+}
+
+.skill-toggle input:checked + .skill-toggle-slider {
+  background: var(--vscode-terminal-ansiGreen);
+}
+
+.skill-toggle input:checked + .skill-toggle-slider::before {
+  transform: translateX(16px);
+  background: white;
+}
+
+.skill-toggle:hover .skill-toggle-slider {
+  opacity: 0.9;
+}
+
+/* ── Install Button ───────────────────────────────────────────── */
+.skill-install-btn {
+  padding: 4px 12px;
+  font-size: 0.8em;
+  font-family: var(--vscode-font-family);
+  font-weight: 500;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.skill-install-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+  transform: scale(1.02);
+}
+
+.skill-install-btn:active {
+  transform: scale(0.98);
+}
+
+/* ── Import Button ────────────────────────────────────────────── */
+.skill-import-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  font-size: 0.82em;
+  font-family: var(--vscode-font-family);
+  font-weight: 500;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.skill-import-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+  border-color: var(--vscode-focusBorder);
+}
+
+.skill-import-btn-icon {
+  font-size: 1.1em;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DETAIL VIEW
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Detail Container ─────────────────────────────────────────── */
+.skill-detail {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--vscode-editor-background);
+  display: flex;
+  flex-direction: column;
+  z-index: 1001;
+  overflow-y: auto;
+}
+
+/* ── Nav Bar ──────────────────────────────────────────────────── */
+.skill-detail-nav {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.skill-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  background: none;
+  border: none;
+  color: var(--vscode-textLink-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.skill-back:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.skill-back-arrow {
+  font-size: 1.1em;
+  transition: transform 0.15s;
+}
+
+.skill-back:hover .skill-back-arrow {
+  transform: translateX(-2px);
+}
+
+/* ── Hero Header ──────────────────────────────────────────────── */
+.skill-detail-hero {
+  padding: 24px 24px 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  background: var(--vscode-sideBar-background);
+}
+
+.skill-detail-hero-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.skill-detail-icon-wrapper {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.skill-detail-icon {
+  font-size: 2em;
+  line-height: 1;
+}
+
+.skill-detail-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.skill-detail-name {
+  margin: 0;
+  font-size: 1.35em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.skill-detail-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.7em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.skill-detail-status-active {
+  background: rgba(80, 200, 120, 0.15);
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.skill-detail-status-disabled {
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-descriptionForeground);
+}
+
+.skill-detail-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.skill-detail-status-active .skill-detail-status-dot {
+  background: var(--vscode-terminal-ansiGreen);
+  box-shadow: 0 0 4px var(--vscode-terminal-ansiGreen);
+}
+
+.skill-detail-status-disabled .skill-detail-status-dot {
+  background: var(--vscode-descriptionForeground);
+}
+
+.skill-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.skill-detail-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.skill-detail-meta-icon {
+  font-size: 0.9em;
+  opacity: 0.7;
+}
+
+/* ── Source Badge ─────────────────────────────────────────────── */
+.skill-source {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.skill-source-builtin {
+  background: rgba(80, 200, 120, 0.15);
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.skill-source-marketplace {
+  background: rgba(0, 122, 204, 0.15);
+  color: var(--vscode-focusBorder);
+}
+
+.skill-source-local {
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ── Sections ─────────────────────────────────────────────────── */
+.skill-detail-section {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.skill-detail-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  background: none;
+  border: none;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 1em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.skill-detail-section-header:hover {
+  color: var(--vscode-focusBorder);
+}
+
+.skill-detail-section-toggle {
+  font-size: 0.8em;
+  opacity: 0.6;
+  transition: transform 0.2s;
+}
+
+.skill-detail-section-title {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+/* Description */
+.skill-detail-desc {
+  margin: 0;
+  font-size: 0.95em;
+  color: var(--vscode-foreground);
+  line-height: 1.6;
+}
+
+/* Tags */
+.skill-detail-tags-section {
+  padding-top: 0;
+  padding-bottom: 16px;
+}
+
+.skill-detail-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Action Bar ───────────────────────────────────────────────── */
+.skill-detail-actions {
+  display: flex;
+  gap: 8px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+  flex-wrap: wrap;
+}
+
+.skill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 0.88em;
+  font-family: var(--vscode-font-family);
+  font-weight: 500;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+
+.skill-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.skill-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.skill-btn-icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.skill-btn-lg {
+  padding: 9px 20px;
+  font-size: 0.92em;
+}
+
+.skill-btn-primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.skill-btn-primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.skill-btn-secondary {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+
+.skill-btn-secondary:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.skill-btn-danger {
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+}
+
+.skill-btn-danger:hover:not(:disabled) {
+  background: var(--vscode-inputValidation-errorForeground);
+  color: var(--vscode-editor-background);
+}
+
+/* ── Prompt Preview ───────────────────────────────────────────── */
+.skill-prompt-preview {
+  margin-top: 12px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.83em;
+  color: var(--vscode-foreground);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-x: auto;
+  max-height: 280px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* ── Config List ──────────────────────────────────────────────── */
+.skill-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.skill-config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  transition: border-color 0.15s;
+}
+
+.skill-config-item:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+.skill-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.skill-config-label {
+  font-size: 0.88em;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.skill-config-type {
+  font-size: 0.72em;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editor-background);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+}
+
+.skill-config-desc {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.4;
+}
+
+.skill-config-default {
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.skill-config-default code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.95em;
+  background: var(--vscode-editor-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* ── Bottom Padding ───────────────────────────────────────────── */
+.skill-detail-bottom-pad {
+  height: 40px;
+  flex-shrink: 0;
+}

@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -48,7 +48,9 @@
     "onCommand:adoCode.workItemsSearch",
     "onCommand:adoCode.workItemsClearFilters",
     "onCommand:adoCode.worktreeShowChanges",
-    "onCommand:adoCode.generateTasks"
+    "onCommand:adoCode.generateTasks",
+    "onCommand:adoCode.sendSelectionToChat",
+    "onCommand:adoCode.sendFileToChat"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -321,6 +323,18 @@
         "command": "adoCode.generateTasks",
         "title": "Generate Tasks",
         "icon": "$(list-tree)"
+      },
+      {
+        "command": "adoCode.sendSelectionToChat",
+        "title": "ADO Code: Send Selection to Chat",
+        "icon": "$(comment-discussion)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.sendFileToChat",
+        "title": "ADO Code: Send File to Chat",
+        "icon": "$(comment-discussion)",
+        "category": "ADO Code"
       }
     ],
     "keybindings": [
@@ -589,6 +603,20 @@
           "when": "view == adoCode.status && viewItem == statusRun",
           "group": "1_run@3"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "adoCode.sendSelectionToChat",
+          "when": "editorHasSelection",
+          "group": "1_adoCode@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "adoCode.sendFileToChat",
+          "when": "!explorerResourceIsFolder",
+          "group": "1_adoCode@1"
+        }
       ]
     },
     "viewsContainers": {
@@ -704,6 +732,21 @@
           "default": [],
           "description": "Per-model capability overrides: [{ \"model\": \"deepseek-v4\", \"vision\": true }] — user-declared values beat both gateway capability hints and name heuristics. Leave a field unset to keep the auto-detected value."
         },
+        "adoCode.llm.modeConfigs": {
+          "type": "object",
+          "default": {},
+          "description": "Per-mode model overrides in Advanced mode: { \"inline\": { \"model\": \"gpt-4o\" }, \"plan\": { \"model\": \"gpt-4o\" }, \"act\": { \"model\": \"o3\" } }. Each mode can use a different model. Empty object = use the global llmModel."
+        },
+        "adoCode.llm.modeReasoningEffort": {
+          "type": "object",
+          "default": {},
+          "description": "Per-mode reasoning effort for reasoning models (o1, o3, o4-mini, etc.): { \"inline\": \"low\", \"plan\": \"medium\", \"act\": \"high\" }. Values: 'low', 'medium', 'high'. Empty object = no reasoning effort override."
+        },
+        "adoCode.advancedConfig": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Advanced Configuration mode — allows per-mode model selection and reasoning effort tuning."
+        },
         "adoCode.git.requireGitRepo": {
           "type": "boolean",
           "default": true,
@@ -726,8 +769,13 @@
         },
         "adoCode.git.protectedBranches": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["main", "master"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "main",
+            "master"
+          ],
           "description": "Branches create_pull_request must never target — the AI merge flow refuses to open a PR against these"
         },
         "adoCode.mode": {
@@ -858,6 +906,23 @@
           "type": "array",
           "default": [],
           "description": "MCP servers to connect to: [{ \"name\": \"myserver\", \"command\": \"npx\", \"args\": [\"-y\", \"@myorg/mcp-server\"] }]"
+        },
+        "adoCode.consent.harmlessAutoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires."
+        },
+        "adoCode.consent.harmlessAutoApproveSeconds": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Seconds before a harmless command auto-approves. Lower = faster, higher = more time to review."
+        },
+        "adoCode.chat.showThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)."
         }
       }
     }

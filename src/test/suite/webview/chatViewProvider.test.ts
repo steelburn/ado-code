@@ -145,6 +145,7 @@ suite('ChatViewProvider', () => {
     const handlers: Array<(msg: any) => void> = [];
     const webviewView: any = {
       onDidDispose: () => {},
+      onDidChangeVisibility: () => {},
       webview: {
         options: {},
         html: '',
@@ -169,6 +170,7 @@ suite('ChatViewProvider', () => {
     const handlers: Array<(msg: any) => void> = [];
     const webviewView: any = {
       onDidDispose: () => {},
+      onDidChangeVisibility: () => {},
       webview: {
         options: {},
         html: '',

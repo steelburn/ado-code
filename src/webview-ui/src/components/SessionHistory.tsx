@@ -14,6 +14,7 @@ interface Props {
   onNew: () => void;
   onRename: (sessionId: string, name: string) => void;
   onDelete: (sessionId: string) => void;
+  onDeleteAll: () => void;
 }
 
 export function SessionHistory({
@@ -23,6 +24,7 @@ export function SessionHistory({
   onNew,
   onRename,
   onDelete,
+  onDeleteAll,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -156,20 +158,33 @@ export function SessionHistory({
                   )}
                 </button>
 
-                {session.id !== activeId && (
-                  <button
-                    className="session-history-delete"
-                    onClick={e => {
-                      e.stopPropagation();
-                      onDelete(session.id);
-                    }}
-                    title="Delete session"
-                  >
-                    ×
-                  </button>
-                )}
+                <button
+                  className="session-history-delete"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onDelete(session.id);
+                  }}
+                  title="Delete session"
+                >
+                  ×
+                </button>
               </div>
             ))
+          )}
+
+          {sortedSessions.length > 0 && (
+            <>
+              <div className="session-history-separator" />
+              <button
+                className="session-history-delete-all"
+                onClick={() => {
+                  onDeleteAll();
+                  setOpen(false);
+                }}
+              >
+                🗑️ Delete All Sessions
+              </button>
+            </>
           )}
         </div>
       )}

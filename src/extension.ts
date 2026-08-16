@@ -1376,6 +1376,36 @@ Generate ONLY the commit message, nothing else.`;
     })
   );
 
+  // ── Right-click context menu: send to chat ──────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.sendSelectionToChat', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage('ADO Code: No active editor.');
+        return;
+      }
+      const selection = editor.document.getText(editor.selection);
+      if (!selection) {
+        vscode.window.showWarningMessage('ADO Code: No text selected.');
+        return;
+      }
+      chatProvider.sendTextToChat("```\n" + selection + "\n```");
+    }),
+    vscode.commands.registerCommand('adoCode.sendFileToChat', async (uri: vscode.Uri) => {
+      if (!uri) {
+        vscode.window.showWarningMessage('ADO Code: No file selected.');
+        return;
+      }
+      try {
+        const content = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+        const fileName = uri.path.split('/').pop() || uri.path;
+        chatProvider.sendFileToChat(fileName, content);
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: Failed to read file: ${err instanceof Error ? err.message : err}`);
+      }
+    })
+  );
+
   // Keep services in sync with settings / workspace changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
