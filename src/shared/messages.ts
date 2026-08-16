@@ -60,6 +60,7 @@ export type WebviewToExtensionMessage =
   | { type: 'newSession' }
   | { type: 'renameSession'; sessionId: string; name: string }
   | { type: 'deleteSession'; sessionId: string }
+  | { type: 'clearAllSessions' }
   // Configuration page
   | { type: 'getFullConfig' }
   | { type: 'saveConfig'; config: Record<string, any> }
@@ -140,7 +141,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'skillDetail'; skill: Skill }
   | { type: 'skillExecutionResult'; result: SkillExecutionResult }
   // Skill import result
-  | { type: 'skillImportResult'; success: boolean; skill?: Skill; error?: string };
+  | { type: 'skillImportResult'; success: boolean; skill?: Skill; error?: string }
+  // Right-click context menu: insert text into chat draft
+  | { type: 'insertText'; text: string };
 
 // Shared types
 export interface MessageContext {

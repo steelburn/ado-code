@@ -48,7 +48,9 @@
     "onCommand:adoCode.workItemsSearch",
     "onCommand:adoCode.workItemsClearFilters",
     "onCommand:adoCode.worktreeShowChanges",
-    "onCommand:adoCode.generateTasks"
+    "onCommand:adoCode.generateTasks",
+    "onCommand:adoCode.sendSelectionToChat",
+    "onCommand:adoCode.sendFileToChat"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -321,6 +323,18 @@
         "command": "adoCode.generateTasks",
         "title": "Generate Tasks",
         "icon": "$(list-tree)"
+      },
+      {
+        "command": "adoCode.sendSelectionToChat",
+        "title": "ADO Code: Send Selection to Chat",
+        "icon": "$(comment-discussion)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.sendFileToChat",
+        "title": "ADO Code: Send File to Chat",
+        "icon": "$(comment-discussion)",
+        "category": "ADO Code"
       }
     ],
     "keybindings": [
@@ -588,6 +602,20 @@
           "command": "adoCode.runCopyId",
           "when": "view == adoCode.status && viewItem == statusRun",
           "group": "1_run@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "adoCode.sendSelectionToChat",
+          "when": "editorHasSelection",
+          "group": "1_adoCode@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "adoCode.sendFileToChat",
+          "when": "!explorerResourceIsFolder",
+          "group": "1_adoCode@1"
         }
       ]
     },
@@ -878,6 +906,23 @@
           "type": "array",
           "default": [],
           "description": "MCP servers to connect to: [{ \"name\": \"myserver\", \"command\": \"npx\", \"args\": [\"-y\", \"@myorg/mcp-server\"] }]"
+        },
+        "adoCode.consent.harmlessAutoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires."
+        },
+        "adoCode.consent.harmlessAutoApproveSeconds": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Seconds before a harmless command auto-approves. Lower = faster, higher = more time to review."
+        },
+        "adoCode.chat.showThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)."
         }
       }
     }

@@ -25,6 +25,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'forget',    description: 'Remove all saved notes and preferences',            usage: '/forget' },
   { name: 'generate-tasks', description: 'Generate child tasks for the active user story', usage: '/generate-tasks' },
   { name: 'new-project', description: 'Open the project creation wizard', usage: '/new-project' },
+  { name: 'clear-sessions', description: 'Delete all chat sessions', usage: '/clear-sessions' },
   { name: 'skills',      description: 'Open the skill catalog to browse and manage AI skills', usage: '/skills' },
 ];
 
@@ -45,6 +46,10 @@ interface Props {
   loading: string; // 'inline' | 'plan' | 'act' | 'yolo' | ''
   /** Active model can accept image input — gates the image button + paste. */
   canAttachImages?: boolean;
+  /** Files attached via right-click context menu — shown as a chip strip above the input. */
+  attachedFiles?: Array<{ name: string; content: string }>;
+  /** Remove an attached file by index. */
+  onRemoveAttachedFile?: (index: number) => void;
 }
 
 interface ImageAttachment {
@@ -58,7 +63,7 @@ interface FileSuggestion {
   name: string;
 }
 
-export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, onModeSelect, onAddContext, onAttachFiles, loading, canAttachImages = true }: Props) {
+export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, onModeSelect, onAddContext, onAttachFiles, loading, canAttachImages = true, attachedFiles = [], onRemoveAttachedFile }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -619,6 +624,50 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
         {/* Toolbar row */}
         <div className="input-toolbar">
           <div className="toolbar-left">
+            {/* Attached-file chips */}
+            {attachedFiles.map((f, i) => (
+              <span
+                key={`${f.name}-${i}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 3,
+                  padding: '1px 5px',
+                  borderRadius: 4,
+                  border: '1px solid var(--vscode-input-border)',
+                  background: 'var(--vscode-editor-background)',
+                  fontSize: '0.75em',
+                  color: 'var(--vscode-foreground)',
+                  maxWidth: 120,
+                }}
+                title={f.name}
+              >
+                <span style={{ flexShrink: 0 }}>📄</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                {onRemoveAttachedFile && (
+                  <button
+                    onClick={() => onRemoveAttachedFile(i)}
+                    style={{
+                      flexShrink: 0,
+                      width: 12,
+                      height: 12,
+                      borderRadius: '50%',
+                      background: 'rgba(0,0,0,0.4)',
+                      color: '#fff',
+                      border: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 8,
+                      lineHeight: 1,
+                      padding: 0,
+                    }}
+                    title={`Remove ${f.name}`}
+                  >✕</button>
+                )}
+              </span>
+            ))}
             <button
               className="toolbar-btn"
               title="Add context (@)"
@@ -637,8 +686,8 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
               disabled={!!loading}
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
-                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+                <path d="M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 1 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z"/>
+                <path d="M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-.793.792c.112.42.155.855.128 1.287l1.372-1.372a3 3 0 1 0-4.243-4.243L6.586 4.672z"/>
               </svg>
             </button>
             <button

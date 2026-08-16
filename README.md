@@ -30,6 +30,11 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, filtering, and enable/disable toggle (`/skills`)
 - **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — "Execute in Chat" button injects the skill prompt and triggers the LLM
 - **Skill import**: Import custom skills from local .json files, SKILL.md files (YAML frontmatter + markdown), or .tar.gz/.zip archives — imported skills persist across VS Code restarts
+- **Send Selection to Chat**: Right-click selected text in the editor → "ADO Code: Send Selection to Chat" inserts it as a fenced code block in the chat draft
+- **Send File to Chat**: Right-click a file in the Explorer → "ADO Code: Send File to Chat" attaches it as a chip above the input bar with full content ready to send
+- **Delete All Sessions**: `/clear-sessions` slash command + "🗑️ Delete All Sessions" in session history and kebab menu — wipes all sessions after in-chat confirmation
+- **Confirmation cards for destructive operations**: Single session delete and delete-all show in-chat confirmation cards with danger styling instead of silently executing
+- **Categorized `/help`**: Help output is grouped into Work Items, Chat, AI, and Other sections with autocomplete tip
 - **AI merge flow**: For finished agent runs, the assistant can commit, push, and open an ADO pull request itself (`commit_worktree` → `push_worktree` → `create_pull_request`) — never force-pushes, never touches protected branches (`adoCode.git.protectedBranches`, default `main`/`master`), refuses to commit failed runs unless it explicitly overrides after reviewing, and can resolve merge conflicts (`resolve_pr_conflicts`) then re-commit/re-push until the PR is clean
 - **Dynamic context window detection**: Context window size auto-detected from the `/models` API endpoint (Ollama `n_ctx`, OpenRouter `context_length`, etc.) — live data overrides the hardcoded table; content-aware token counting (code ~3.5, prose ~4.5 chars/token) with expanded model table (27 models) and 128k default
 - **Context management**: Priority-based conversation truncation replaces naive 20-turn cutoff; real token counter replaces rough char/4 estimation; conversation auto-condenses at 75% context via LLM summarization; token status bar shows accurate model-aware counts
@@ -125,6 +130,7 @@ Type `/` in the chat input to see available commands:
 | `/pick` | Browse and select a work item from the tree to set as active context |
 | `/assign <who>` | Assign the active work item to a team member (name or email) |
 | `/clear` | Clear all chat messages and start fresh |
+| `/clear-sessions` | Delete all chat sessions and start completely fresh |
 | `/mode [mode]` | Switch mode (inline, plan, act, yolo) — omit mode to pick from list |
 | `/undo` | Revert the last state change made to the active work item |
 | `/help` | List all available slash commands with usage examples |

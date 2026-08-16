@@ -15,6 +15,15 @@ All notable changes to ADO Code will be documented in this file.
 - **Skill import from local files**: Import skills from .json files, SKILL.md files (YAML frontmatter + markdown body), or .tar.gz/.tgz/.zip archives containing skill packages
 - **Expanded builtin skills**: 4 new builtin skills — Deployment Checklist, Database Schema Review, Accessibility Audit (now 10 total across 10 categories)
 - **Local skill import button**: "+" Import button in the Skill Catalog toolbar opens a file picker supporting all skill formats
+- **Send Selection to Chat**: Right-click any selected text in the editor → "ADO Code: Send Selection to Chat" inserts it as a fenced code block in the chat draft — the chat panel auto-focuses if hidden
+- **Send File to Chat**: Right-click a file in the Explorer → "ADO Code: Send File to Chat" attaches it as a chip above the input bar with full content ready to send
+- **Delete All Sessions**: New `/clear-sessions` slash command + "🗑️ Delete All Sessions" button in the session history dropdown and kebab menu — wipes all sessions after in-chat confirmation (with `isDangerous: true`)
+- **Confirmation cards for destructive operations**: Single session delete and delete-all now show in-chat confirmation cards instead of silently executing
+- **Categorized `/help`**: The help output is now grouped into Work Items, Chat, AI, and Other sections with a tip about autocomplete
+
+### Fixed
+- **Configuration settings not persisting**: Advanced Configuration toggle, consent auto-approve settings, agent auto-review, chat show-thinking, per-mode model config, and per-mode reasoning effort were not loaded by `_allSettings()` — the ConfigurationPage showed defaults instead of saved values, and saving would overwrite real values with defaults
+- **Missing VS Code settings declarations**: Added `adoCode.consent.harmlessAutoApprove`, `adoCode.consent.harmlessAutoApproveSeconds`, and `adoCode.chat.showThinking` to `package.json` contributes.configuration so they appear in VS Code's native Settings UI
 
 ## [0.5.7] - 2026-08-09
 

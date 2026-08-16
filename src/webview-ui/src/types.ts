@@ -48,6 +48,8 @@ export type WebviewToExtensionMessage =
   | { type: 'updateWorkItem'; workItemId: number; fields: Record<string, any> }
   | { type: 'addComment'; workItemId: number; text: string }
   | { type: 'getConfig' }
+  | { type: 'getFullConfig' }
+  | { type: 'saveConfig'; config: Record<string, any> }
   | { type: 'updateConfig'; config: Partial<ExtensionConfig> }
   // Task 24: agent delegation protocol
   | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
@@ -85,6 +87,7 @@ export type WebviewToExtensionMessage =
   | { type: 'newSession' }
   | { type: 'renameSession'; sessionId: string; name: string }
   | { type: 'deleteSession'; sessionId: string }
+  | { type: 'clearAllSessions' }
   // Project creation wizard
   | { type: 'projectWizardCreate'; request: ProjectCreationRequest };
 
@@ -103,6 +106,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'toolResult'; callId: string; content: string }
   | { type: 'planReady'; plan: string } // plan mode: "Begin implementation" button
   | { type: 'config'; config: ExtensionConfig }
+  | { type: 'fullConfig'; config: Record<string, any> }
   | { type: 'error'; message: string }
   | { type: 'loading'; loading: boolean }
   // Task 24: agent delegation protocol
@@ -139,7 +143,9 @@ export type ExtensionToWebviewMessage =
   // Skill catalog
   | { type: 'openSkillCatalog' }
   // Skill import
-  | { type: 'importSkillFromDisk' };
+  | { type: 'importSkillFromDisk' }
+  // Right-click context menu: insert text into chat draft
+  | { type: 'insertText'; text: string };
 
 // Shared types
 export interface MessageContext {

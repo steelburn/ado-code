@@ -1441,6 +1441,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'deleteSession': {
+            // Ask for confirmation before deleting the session
+            const delSession = this.getSessions().find(s => s.id === message.sessionId);
+            const delConfirmOptions: ConfirmationOption[] = [
+              { label: '🗑️ Delete Session', value: 'confirm', isDangerous: true },
+              { label: '❌ Cancel', value: 'cancel' },
+            ];
+            const delDecision = await this.requestConfirmation(
+              'Delete Session',
+              `Delete "${delSession?.name ?? 'this session'}"? This cannot be undone.`,
+              delConfirmOptions,
+            );
+            if (delDecision !== 'confirm') break;
             const updatedSessions = this.getSessions().filter(s => s.id !== message.sessionId);
             await this.saveSessions(updatedSessions);
             // If we deleted the active session, switch to the last remaining one
@@ -1455,6 +1467,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
             }
             this.sendSessionList();
+            break;
+          }
+          case 'clearAllSessions': {
+            // Ask for confirmation before wiping all sessions
+            const confirmOptions: ConfirmationOption[] = [
+              { label: '🗑️ Delete All Sessions', value: 'confirm', isDangerous: true },
+              { label: '❌ Cancel', value: 'cancel' },
+            ];
+            const decision = await this.requestConfirmation(
+              'Delete All Sessions',
+              'This will permanently delete all chat sessions. This cannot be undone.',
+              confirmOptions,
+            );
+            if (decision !== 'confirm') break;
+            // Abort any in-flight LLM stream and clear pending approvals
+            this.llmAbort?.abort();
+            this.consentBroker.rejectAll();
+            this.confirmBroker.rejectAll();
+            clearSessionAutoApprovals();
+            // Wipe all sessions
+            await this.saveSessions([]);
+            await this.setActiveSessionId('');
+            this.conversation = [];
+            this.postMessage({ type: 'historyRestored', messages: [] });
+            this.postMessage({ type: 'loading', loading: false });
+            this.sendSessionList();
+            this.markDirty();
             break;
           }
           // Skill management
@@ -1727,6 +1766,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
   }
 
+  /**
+   * Insert text into the chat draft from an external source (right-click
+   * context menu). Shows the chat panel if hidden, then posts the text.
+   */
+  public sendTextToChat(text: string): void {
+    this.focus();
+    this.postMessage({ type: 'insertText', text });
+  }
+
+  /**
+   * Attach a file to the chat draft from the right-click context menu.
+   * Uses the same `attachedFiles` message as the input-bar "Attach files"
+   * button so the webview shows the [Attached file: ...] indicator.
+   */
+  public sendFileToChat(fileName: string, content: string): void {
+    this.focus();
+    this.postMessage({ type: 'attachedFiles', files: [{ name: fileName, content }] });
+  }
+
   /** Mark content as changed — the next idle refresh cycle will pick it up. */
   private markDirty(): void {
     this._dirty = true;
@@ -1822,9 +1880,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion', 'git.protectedBranches',
       'changelog.enabled', 'changelog.autoCommit', 'changelog.postToAdo',
       'ado.clarificationState', 'ado.warnOnSparseTask',
+      'advancedConfig',
+      'llm.modeConfigs', 'llm.modeReasoningEffort',
       'act.toolBudget', 'act.terminalAllowlist',
       'sessions.maxPerProject',
-      'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect',
+      'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect', 'agents.autoReview',
+      'consent.harmlessAutoApprove', 'consent.harmlessAutoApproveSeconds',
+      'chat.showThinking',
       'ignore.dotAdoCode',
       'mcp.servers',
     ];
@@ -3262,6 +3324,33 @@ app.Run();
         vscode.window.showInformationMessage('ADO Code: chat cleared.');
         break;
       }
+      case 'clear-sessions': {
+        // Ask for confirmation before wiping all sessions
+        const clearConfirmOptions: ConfirmationOption[] = [
+          { label: '🗑️ Delete All Sessions', value: 'confirm', isDangerous: true },
+          { label: '❌ Cancel', value: 'cancel' },
+        ];
+        const clearDecision = await this.requestConfirmation(
+          'Delete All Sessions',
+          'This will permanently delete all chat sessions. This cannot be undone.',
+          clearConfirmOptions,
+        );
+        if (clearDecision !== 'confirm') break;
+        // Full reset: abort in-flight streams, clear approvals, wipe all sessions
+        this.llmAbort?.abort();
+        this.consentBroker.rejectAll();
+        this.confirmBroker.rejectAll();
+        clearSessionAutoApprovals();
+        await this.saveSessions([]);
+        await this.setActiveSessionId('');
+        this.conversation = [];
+        this.postMessage({ type: 'historyRestored', messages: [] });
+        this.postMessage({ type: 'loading', loading: false });
+        this.sendSessionList();
+        this.markDirty();
+        vscode.window.showInformationMessage('ADO Code: all sessions deleted.');
+        break;
+      }
       case 'mode': {
         const modes = ['inline', 'plan', 'act', 'yolo'] as const;
         const target = args.trim().toLowerCase();
@@ -3300,9 +3389,35 @@ app.Run();
         break;
       }
       case 'help': {
-        const helpText = SLASH_COMMANDS.map(cmd =>
-          `**${cmd.usage}** — ${cmd.description}`
-        ).join('\n');
+        const workItemCmds = SLASH_COMMANDS.filter(c => ['status', 'comment', 'pick', 'assign', 'undo', 'generate-tasks'].includes(c.name));
+        const chatCmds = SLASH_COMMANDS.filter(c => ['clear', 'clear-sessions', 'resume', 'mode'].includes(c.name));
+        const aiCmds = SLASH_COMMANDS.filter(c => ['delegate', 'remember', 'forget'].includes(c.name));
+        const otherCmds = SLASH_COMMANDS.filter(c => ['help', 'new-project', 'skills'].includes(c.name));
+
+        const fmt = (cmds: typeof SLASH_COMMANDS) =>
+          cmds.map(c => `\`${c.usage}\`\n_${c.description}_`).join('\n\n');
+
+        const helpText = [
+          '## Available Commands',
+          '',
+          '**📋 Work Items**',
+          '',
+          fmt(workItemCmds),
+          '',
+          '**💬 Chat**',
+          '',
+          fmt(chatCmds),
+          '',
+          '**🤖 AI**',
+          '',
+          fmt(aiCmds),
+          '',
+          '**⚙️ Other**',
+          '',
+          fmt(otherCmds),
+          '',
+          '_Tip: Type `/` in the input bar to see autocomplete suggestions._',
+        ].join('\n');
         this.postMessage({ type: 'assistantMessage', content: helpText, done: true });
         break;
       }
