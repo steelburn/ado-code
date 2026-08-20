@@ -196,3 +196,43 @@ suite('AnthropicProvider chatWithTools', () => {
     assert.ok(updates.includes('tool:echo'), 'tool execution reported');
   });
 });
+
+suite('agentic loop token compaction', () => {
+  test('older tool results are stubbed while the most recent stays full', async () => {
+    const bodies: any[] = [];
+    let callCount = 0;
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      callCount += 1;
+      if (callCount <= 4) {
+        // Keep calling a tool for the first 4 requests, then stop.
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: `call_${callCount}`, type: 'function', function: { name: 'echo', arguments: '{"value":"hi"}' } }] } }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    await runAgenticChat(client, stubExecutor(), [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'echo a few times' },
+    ]);
+
+    // Request index 2 is the 3rd request — at that point iteration 0's result
+    // should have been stubbed but iteration 1's still full.
+    const third = bodies[2];
+    const toolMsgs = third.messages.filter((m: any) => m.role === 'tool');
+    assert.strictEqual(toolMsgs.length, 2, 'two tool results present (messages kept, not removed)');
+    assert.ok(
+      toolMsgs.some((m: any) => String(m.content).includes('truncated')),
+      'older tool result is stubbed'
+    );
+    assert.ok(
+      toolMsgs.some((m: any) => String(m.content).includes('echoed: hi')),
+      'most recent tool result still full'
+    );
+  });
+});

@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { createConsentBroker, isHarmlessCommand } from '../../../llm/consent';
+import { createConsentBroker, isHarmlessCommand, matchesToolPattern, matchesCommandPattern } from '../../../llm/consent';
 import {
   isCommandSessionApproved,
   addSessionCommandApproval,
@@ -252,5 +252,64 @@ suite('isHarmlessCommand', () => {
     assert.strictEqual(isHarmlessCommand('Git Status'), true);
     assert.strictEqual(isHarmlessCommand('GIT DIFF'), true);
     assert.strictEqual(isHarmlessCommand('NPM Test'), true);
+  });
+});
+
+suite('wildcard permission matchers', () => {
+
+  test('tool name patterns: exact and glob', () => {
+    assert.strictEqual(matchesToolPattern('read_file', ['read_*']), true);
+    assert.strictEqual(matchesToolPattern('read_workspace_memory', ['read_*']), true);
+    assert.strictEqual(matchesToolPattern('get_work_items', ['get_*']), true);
+    assert.strictEqual(matchesToolPattern('get_work_item', ['get_*']), true);
+    assert.strictEqual(matchesToolPattern('edit_file', ['read_*', 'get_*']), false);
+    assert.strictEqual(matchesToolPattern('edit_file', ['edit_file']), true);
+    assert.strictEqual(matchesToolPattern('edit_file', []), false);
+    assert.strictEqual(matchesToolPattern('write_to_file', ['*_file']), true);
+    assert.strictEqual(matchesToolPattern('edit_file', ['e?it_*']), true);
+  });
+
+  test('command patterns: exact entries still require same token count', () => {
+    const allowlist = ['git diff', 'npm test'];
+    assert.strictEqual(matchesCommandPattern('git diff', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('git diff --stat', allowlist), false);
+    assert.strictEqual(matchesCommandPattern('npm test', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('npm test -- --coverage', allowlist), false);
+  });
+
+  test('command patterns: trailing * swallows remaining tokens', () => {
+    const allowlist = ['git *', 'npm run *'];
+    assert.strictEqual(matchesCommandPattern('git status', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('git push origin main', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('git', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('npm run build', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('npm run test -- --watch', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('pip install x', allowlist), false);
+  });
+
+  test('command patterns: prefix scoping limits the wildcard', () => {
+    const allowlist = ['git push *'];
+    assert.strictEqual(matchesCommandPattern('git push origin main', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('git status', allowlist), false);
+    assert.strictEqual(matchesCommandPattern('git push', allowlist), true);
+  });
+
+  test('command patterns: quoted chunks stay a single token', () => {
+    const allowlist = ['git commit -m *'];
+    assert.strictEqual(matchesCommandPattern('git commit -m "hello world"', allowlist), true);
+    assert.strictEqual(matchesCommandPattern('git commit -m hi', allowlist), true);
+  });
+
+  test('session approvals honor wildcard entries', () => {
+    clearSessionAutoApprovals();
+    addSessionToolApproval('read_*');
+    assert.strictEqual(isSessionAutoApproved('read_file'), true);
+    assert.strictEqual(isSessionAutoApproved('read_workspace_memory'), true);
+    assert.strictEqual(isSessionAutoApproved('edit_file'), false);
+
+    addSessionCommandApproval('git *');
+    assert.strictEqual(isCommandSessionApproved('git status'), true);
+    assert.strictEqual(isCommandSessionApproved('git push origin main'), true);
+    assert.strictEqual(isCommandSessionApproved('docker ps'), false);
   });
 });

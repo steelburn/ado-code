@@ -25,6 +25,8 @@ interface SanitizedConfig {
   llmModel: string;
   mode?: 'inline' | 'plan' | 'act' | 'yolo';
   configured: boolean;
+  /** ADO is optional — false when the user skipped it in the setup wizard. */
+  adoConfigured?: boolean;
   modelCapabilities?: { vision: boolean; tools: boolean };
 }
 
@@ -49,6 +51,30 @@ interface WorkItemDetail {
   comments?: Array<any>;
 }
 
+/** A tool call surfaced live by the agentic loop while the turn is running. */
+interface LiveToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+  result?: string;
+  /** false when the user hid tool calls in chat — only a "…" indicator shows. */
+  showDetails?: boolean;
+  /** Completion flag for hidden calls, which never carry result content. */
+  done?: boolean;
+}
+
+/** Serialize a completed tool call back into the fenced block format that
+ *  MessageList.parseToolCalls renders as a collapsible card. Kept as a
+ *  permanent record in the final assistant message. */
+function toolCallToFence(tc: LiveToolCall): string {
+  const record: Record<string, any> = { id: tc.id, name: tc.name, arguments: tc.arguments };
+  if (tc.result !== undefined) {
+    // Cap stored result so overlarge tool output can't bloat the message.
+    record.result = tc.result.length > 8000 ? tc.result.slice(0, 8000) + '\n…(truncated)' : tc.result;
+  }
+  return '```tool_call\n' + JSON.stringify(record) + '\n```';
+}
+
 function App() {
   // ── State ──────────────────────────────────────────────────────
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
@@ -59,6 +85,20 @@ function App() {
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
   const [thinking, setThinking] = useState('');
+  // Live tool calls from the agentic loop — each starts as "running" and
+  // flips to "completed" when the host posts its result. Shown while the
+  // turn is in flight, then merged into the final assistant message.
+  const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
+  // Mirror of liveToolCalls for the (stale-closure) message handler — the
+  // useEffect below mounts once, so plain state reads there are frozen.
+  const liveToolCallsRef = useRef<LiveToolCall[]>([]);
+  const updateLiveToolCalls = useCallback(
+    (updater: (prev: LiveToolCall[]) => LiveToolCall[]) => {
+      liveToolCallsRef.current = updater(liveToolCallsRef.current);
+      setLiveToolCalls(liveToolCallsRef.current);
+    },
+    []
+  );
 
   // Agent state — supports multiple concurrent runs
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -88,6 +128,8 @@ function App() {
 
   // Configuration page
   const [showConfig, setShowConfig] = useState(false);
+  // ADO-not-configured reminder banner (dismissed per webview session).
+  const [adoReminderDismissed, setAdoReminderDismissed] = useState(false);
   // Project creation wizard
   const [showProjectWizard, setShowProjectWizard] = useState(false);
   // Skill catalog
@@ -109,22 +151,42 @@ function App() {
           // A reply arriving means the agentic turn finished — no consent
           // prompt can still be pending.
           setConsent(null);
+          /* Clear turn-live state (thinking + tool-call cards). */
+          const finishTurn = () => {
+            setThinking('');
+            setActiveActivity(null);
+            liveToolCallsRef.current = [];
+            setLiveToolCalls([]);
+          };
           if (msg.done) {
             setLoading(false);
-            setThinking(''); // Turn finished — clear thinking text
-            setActiveActivity(null); // Clear activity indicator
           } else {
             setLoading(true);
           }
-          if (!msg.content) break;
+          // Snapshot the tools run this turn BEFORE finishTurn wipes them.
+          // Hidden tool calls (chat.showToolCalls=false) are excluded — the
+          // user asked for them to stay out of the chat, so they are neither
+          // merged into the final message nor persisted to session history.
+          const finishedToolCalls = msg.done
+            ? liveToolCallsRef.current.filter(tc => tc.showDetails !== false)
+            : [];
+          if (msg.done) finishTurn();
+
+          // The turn just finished — merge the live tool-call record into the
+          // assistant message so the tools the agent ran stay visible as
+          // collapsible cards above the answer (and survive session history).
+          const toolLog = msg.done && finishedToolCalls.length > 0
+            ? finishedToolCalls.map(toolCallToFence).join('\n\n')
+            : '';
+
+          if (!msg.content && !toolLog) break;
           setMessages(prev => {
             const last = prev[prev.length - 1];
+            const content = toolLog ? toolLog + '\n\n' + msg.content : msg.content;
             if (last && last.role === 'assistant') {
-              const updated = [...prev];
-              updated[updated.length - 1] = { role: 'assistant', content: last.content + msg.content };
-              return updated;
+              return [...prev.slice(0, -1), { role: 'assistant', content: last.content + content }];
             }
-            return [...prev, { role: 'assistant', content: msg.content }];
+            return [...prev, { role: 'assistant', content }];
           });
           break;
 
@@ -135,6 +197,39 @@ function App() {
           } else {
             setThinking('');
           }
+          break;
+
+        case 'toolCall':
+          // Agentic loop is about to run a tool — add a live "running" card
+          // (or a bare heartbeat when the user hid tool details).
+          updateLiveToolCalls(prev => {
+            if (prev.some(t => t.id === msg.call.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: msg.call.id,
+                name: msg.call.name,
+                arguments: msg.call.arguments || {},
+                showDetails: msg.call.showDetails !== false,
+              },
+            ];
+          });
+          break;
+
+        case 'toolResult':
+          // Tool finished — mark its card completed with the result.
+          updateLiveToolCalls(prev =>
+            prev.map(t => (t.id === msg.callId ? { ...t, result: msg.content, done: true } : t))
+          );
+          break;
+
+        case 'toolCallDone':
+          // Hidden tool calls (chat.showToolCalls=false) never carry result
+          // content — the host posts this bare tick so the "Working…"
+          // disclosure can flip the row from running to completed.
+          updateLiveToolCalls(prev =>
+            prev.map(t => (t.id === msg.callId ? { ...t, done: true } : t))
+          );
           break;
 
         case 'loading':
@@ -152,6 +247,8 @@ function App() {
           setConsent(null);
           setThinking(''); // Clear thinking on error
           setActiveActivity(null); // Clear activity indicator on error
+          liveToolCallsRef.current = []; // Clear live tool cards
+          setLiveToolCalls([]);
           break;
 
         case 'consentRequest':
@@ -194,8 +291,10 @@ function App() {
           // webview reloads fresh, but the host kept the stored mode).
           if (cfg.mode) setMode(cfg.mode);
           // Project switcher: fetch the org project list once the wizard is
-          // configured (no creds in the message → host uses saved settings).
-          if (cfg.configured && !projectsRequestedRef.current) {
+          // fully configured (no creds in the message → host uses saved
+          // settings). ADO may be skipped — never auto-fetch projects when it
+          // isn't configured (the host would only error out).
+          if (cfg.configured && cfg.adoConfigured === true && !projectsRequestedRef.current) {
             projectsRequestedRef.current = true;
             setProjectsLoading(true);
             vscode.postMessage({ type: 'fetchProjects' });
@@ -228,6 +327,8 @@ function App() {
 
         case 'historyRestored':
           setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
+          liveToolCallsRef.current = [];
+          setLiveToolCalls([]);
           break;
 
         case 'sessionList':
@@ -237,6 +338,8 @@ function App() {
         case 'sessionSwitched':
           setMessages(msg.session.messages.map(m => ({ role: m.role, content: m.content })));
           setActiveSessionId(msg.session.id);
+          liveToolCallsRef.current = [];
+          setLiveToolCalls([]);
           break;
 
         case 'workItemDetail':
@@ -395,6 +498,8 @@ function App() {
     // prompt; drop the card here too.
     setConsent(null);
     setThinking('');
+    liveToolCallsRef.current = []; // New turn — clear any stale tool cards
+    setLiveToolCalls([]);
     // Activity indicator for specific commands
     if (content.trim().toLowerCase().startsWith('/generate-tasks')) {
       setActiveActivity('Generating tasks');
@@ -566,7 +671,11 @@ function App() {
     return (
       <div className="app">
         <ConfigurationPage
-          onBack={() => setShowConfig(false)}
+          onBack={() => {
+            setShowConfig(false);
+            // Closing Configuration re-arms the ADO reminder (still skipped).
+            setAdoReminderDismissed(false);
+          }}
           onFetchModels={handleFetchModels}
           models={models}
           modelsLoading={modelsLoading}
@@ -599,6 +708,33 @@ function App() {
           onCheckReplies={handleCheckReplies}
           onClose={handleCloseDetail}
         />
+      )}
+
+      {/* ADO-not-configured reminder — ADO may be skipped in the setup wizard,
+          so keep nudging until it's set up (banner reappears on reload / after
+          closing Configuration if still skipped; dismissed only for this page
+          session via the ✕ button). */}
+      {config.configured && config.adoConfigured !== true && !adoReminderDismissed && (
+        <div className="ado-not-configured-banner">
+          <span className="ado-not-configured-text">
+            <strong>Azure DevOps isn't configured</strong> — work items, ADO task tracking, branches, and pull requests are disabled.
+          </span>
+          <button
+            className="btn btn-secondary"
+            onClick={() => setShowConfig(true)}
+            type="button"
+          >
+            Configure…
+          </button>
+          <button
+            className="ado-not-configured-dismiss"
+            onClick={() => setAdoReminderDismissed(true)}
+            title="Dismiss (reminder returns after reload)"
+            type="button"
+          >
+            ✕
+          </button>
+        </div>
       )}
 
       {/* Error banner */}
@@ -666,7 +802,7 @@ function App() {
       ))}
 
       {/* Messages */}
-      <MessageList messages={messages} loading={loading} thinking={thinking} activity={activeActivity} />
+      <MessageList messages={messages} loading={loading} thinking={thinking} activity={activeActivity} liveToolCalls={liveToolCalls} />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
       {consent && (

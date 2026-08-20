@@ -36,8 +36,16 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
     llmModel: config.llmModel || 'gpt-4o',
   });
 
+  // Azure DevOps is OPTIONAL: the user may skip it and configure it later
+  // (the chat view keeps reminding them until it's set up). Collapsing the
+  // card hides its fields; "Configure now" re-opens them.
+  const [adoSkipped, setAdoSkipped] = useState(false);
+
   const update = (field: string, value: string) =>
     setForm(prev => ({ ...prev, [field]: value }));
+
+  // Live check: are all ADO creds present on the form right now?
+  const adoFormComplete = Boolean(form.adoOrganization && form.adoProject && form.adoPat);
 
   // Auto-fetch projects once org+PAT are filled, using the TYPED credentials
   // (the host fetches with them before they're saved). Guard with a ref so a
@@ -87,67 +95,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
         <p>AI coding assistant with Azure DevOps integration</p>
       </div>
 
-      <div className="welcome-card">
-        <h2>Azure DevOps</h2>
-
-        <div className="form-group">
-          <label className="form-label">Organization</label>
-          <input
-            className="form-input"
-            value={form.adoOrganization}
-            onChange={e => update('adoOrganization', e.target.value)}
-            placeholder="mycompany"
-          />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Personal Access Token</label>
-          <input
-            className="form-input"
-            type="password"
-            value={form.adoPat}
-            onChange={e => update('adoPat', e.target.value)}
-            placeholder="vso.work_write scope"
-          />
-          <div className="form-hint">
-            Create at <a href="https://dev.azure.com">dev.azure.com</a> → User Settings → PATs.
-            Required scope: <code>Work Items (Read, Write &amp; Manage)</code> + <code>Project & Team (Read)</code>.
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Project</label>
-          {projects.length > 0 ? (
-            <select
-              className="form-select"
-              value={form.adoProject}
-              onChange={e => update('adoProject', e.target.value)}
-            >
-              <option value="">Select a project…</option>
-              {projects.map(p => (
-                <option key={p.id} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-          ) : (
-            <input
-              className="form-input"
-              value={form.adoProject}
-              onChange={e => update('adoProject', e.target.value)}
-              placeholder={projectsLoading ? 'Fetching projects…' : 'MyProject'}
-              disabled={projectsLoading}
-            />
-          )}
-          {projectsLoading && (
-            <div className="form-hint">Fetching projects from ADO…</div>
-          )}
-          {!projectsLoading && projects.length === 0 && form.adoOrganization && form.adoPat && (
-            <div className="form-hint">
-              <a href="#" onClick={e => { e.preventDefault(); onFetchProjects(form.adoOrganization, form.adoPat); }}>Refresh project list</a>
-            </div>
-          )}
-        </div>
-      </div>
-
+      {/* LLM Provider comes FIRST — it's the only required step. */}
       <div className="welcome-card">
         <h2>LLM Provider</h2>
 
@@ -238,10 +186,107 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
         </div>
       </div>
 
+      {/* Azure DevOps comes SECOND — OPTIONAL, can be skipped and configured later. */}
+      <div className="welcome-card">
+        <div className="welcome-card-header">
+          <h2>Azure DevOps <span className="welcome-card-badge">Optional</span></h2>
+          <button
+            className="welcome-skip"
+            onClick={() => setAdoSkipped(v => !v)}
+            type="button"
+          >
+            {adoSkipped ? 'Configure' : 'Skip for now'}
+          </button>
+        </div>
+
+        {adoSkipped ? (
+          <div className="welcome-ado-skipped">
+            <div>
+              <strong>Azure DevOps isn't configured.</strong> Work items, ADO task tracking, branches, and pull requests are disabled.
+            </div>
+            <div>
+              You can set it up later anytime from the <strong>⋯ menu → Configuration</strong>, or by re-running this wizard.
+            </div>
+            <button className="btn btn-secondary" onClick={() => setAdoSkipped(false)} type="button">
+              Configure now
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="form-group">
+              <label className="form-label">Organization</label>
+              <input
+                className="form-input"
+                value={form.adoOrganization}
+                onChange={e => update('adoOrganization', e.target.value)}
+                placeholder="mycompany"
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Personal Access Token</label>
+              <input
+                className="form-input"
+                type="password"
+                value={form.adoPat}
+                onChange={e => update('adoPat', e.target.value)}
+                placeholder="vso.work_write scope"
+              />
+              <div className="form-hint">
+                Create at <a href="https://dev.azure.com">dev.azure.com</a> → User Settings → PATs.
+                Required scope: <code>Work Items (Read, Write &amp; Manage)</code> + <code>Project & Team (Read)</code>.
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Project</label>
+              {projects.length > 0 ? (
+                <select
+                  className="form-select"
+                  value={form.adoProject}
+                  onChange={e => update('adoProject', e.target.value)}
+                >
+                  <option value="">Select a project…</option>
+                  {projects.map(p => (
+                    <option key={p.id} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="form-input"
+                  value={form.adoProject}
+                  onChange={e => update('adoProject', e.target.value)}
+                  placeholder={projectsLoading ? 'Fetching projects…' : 'MyProject'}
+                  disabled={projectsLoading}
+                />
+              )}
+              {projectsLoading && (
+                <div className="form-hint">Fetching projects from ADO…</div>
+              )}
+              {!projectsLoading && projects.length === 0 && form.adoOrganization && form.adoPat && (
+                <div className="form-hint">
+                  <a href="#" onClick={e => { e.preventDefault(); onFetchProjects(form.adoOrganization, form.adoPat); }}>Refresh project list</a>
+                </div>
+              )}
+            </div>
+
+            <div className="form-hint">
+              Skipping is fine — you can continue with just the LLM Provider and add ADO later.
+            </div>
+          </>
+        )}
+      </div>
+
+      {form.llmApiKey && !adoFormComplete && (
+        <div className="welcome-save-hint">
+          ⚠ You're about to continue without Azure DevOps — work items, task tracking, and PR flows will stay disabled. You can configure ADO later from the ⋯ menu → Configuration.
+        </div>
+      )}
+
       <button
         className="btn btn-primary btn-block"
         onClick={() => onSave(form)}
-        disabled={!form.adoOrganization || !form.adoProject || !form.adoPat || !form.llmApiKey}
+        disabled={!form.llmApiKey}
       >
         Save &amp; Continue
       </button>

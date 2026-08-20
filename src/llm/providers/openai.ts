@@ -131,6 +131,59 @@ export class OpenAiProvider implements LlmProvider {
   async listModels(config: LlmConfig): Promise<ModelInfo[]> {
     return listModelsOpenAi(config);
   }
+
+  /**
+   * Native token count for OpenAI-compatible endpoints.
+   *
+   * OpenAI has NO free count endpoint (unlike Anthropic), so this uses the
+   * provider's own tokenizer via a minimal `max_tokens: 1` completion and
+   * reads `usage.prompt_tokens`. Returns `undefined` on any failure/absence
+   * of usage so callers fall back to the local heuristic. Because this costs
+   * a (tiny) model call, the HOST throttles it and uses it only for display /
+   * periodic calibration — never on hot paths.
+   */
+  async countTokens(messages: LlmMessage[], config: LlmConfig): Promise<number | undefined> {
+    try {
+      const nativeMessages = messages.map(m => {
+        if (m.role === 'tool' && m.toolCallId) {
+          return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
+        }
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          return {
+            role: 'assistant',
+            content: convertContent(m.content),
+            tool_calls: m.toolCalls.map(tc => ({
+              id: tc.id,
+              type: 'function',
+              function: { name: tc.name, arguments: tc.arguments },
+            })),
+          };
+        }
+        return { role: m.role, content: convertContent(m.content) };
+      });
+
+      const response = await fetch(`${config.apiUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          messages: nativeMessages,
+          max_tokens: 1,
+          // Non-streaming so the completion returns synchronous usage.
+          stream: false,
+        }),
+      });
+      if (!response.ok) return undefined;
+      const parsed = (await response.json()) as any;
+      const promptTokens = parsed?.usage?.prompt_tokens;
+      return typeof promptTokens === 'number' && promptTokens >= 0 ? promptTokens : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 /** Robust tool-arguments parse: empty/unparseable → {} instead of throwing. */

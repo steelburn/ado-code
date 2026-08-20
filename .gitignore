@@ -3,3 +3,6 @@ node_modules/
 .vscode-test/
 *.vsix
 dist/
+
+# ADO Code workspace data (per-user, machine-local)
+.ado-code

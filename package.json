@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -809,7 +809,7 @@
             "git diff",
             "git status"
           ],
-          "description": "Allowed command prefixes for run_terminal_command in act mode"
+          "description": "Allowed commands for run_terminal_command in act mode. Exact commands (\"npm test\") or wildcard patterns (\"git *\", \"npm run *\") — a trailing * matches any remaining tokens."
         },
         "adoCode.changelog.enabled": {
           "type": "boolean",
@@ -919,10 +919,28 @@
           "maximum": 30,
           "description": "Seconds before a harmless command auto-approves. Lower = faster, higher = more time to review."
         },
+        "adoCode.consent.autoApproveTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Tool names or glob patterns that run WITHOUT a consent prompt (e.g. \"read_*\", \"get_*\", \"edit_file\"). Matching tools skip the consent card in inline and act modes; plan mode stays read-only."
+        },
         "adoCode.chat.showThinking": {
           "type": "boolean",
           "default": true,
           "description": "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)."
+        },
+        "adoCode.chat.showToolCalls": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display tool calls as live cards (running → completed, with arguments and results) in the chat while the AI works. When off, tools run normally but chat shows only a subtle '…' indicator — no tool names, arguments, or results."
+        },
+        "adoCode.llm.useNativeTokenCounting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the provider's own tokenizer for the token status bar (Anthropic /v1/messages/count_tokens; OpenAI-compatible endpoints via usage.prompt_tokens from a minimal request). More accurate than the local heuristic, but may issue a tiny model request for OpenAI-compatible gateways. Off = always use the instant local estimate."
         }
       }
     }

@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { createToolExecutor, ToolExecutor } from '../../../llm/tools';
+import { createToolExecutor, ToolExecutor, capToolResult } from '../../../llm/tools';
 
 function stubServices(): any {
   return {
@@ -233,5 +233,44 @@ suite('ToolExecutor security', () => {
     const parsed = JSON.parse(res);
     assert.strictEqual(parsed[0].path, 'f.txt');
     assert.strictEqual(parsed[0].ours, 'o');
+  });
+});
+
+suite('ToolExecutor token optimization', () => {
+  test('capToolResult leaves short results unchanged', () => {
+    const s = 'hello short result';
+    assert.strictEqual(capToolResult(s, 4000), s);
+    assert.strictEqual(capToolResult('', 4000), '');
+    assert.strictEqual(capToolResult('', 4000), '');
+  });
+
+  test('capToolResult truncates long output with head+tail and a marker', () => {
+    const big = 'x'.repeat(20000); // ~5000 token-equivalents by heuristic
+    const capped = capToolResult(big, 400);
+    assert.ok(capped.length < big.length, 'output is trimmed');
+    assert.ok(capped.includes('truncated'), 'truncation marker present');
+    assert.ok(capped.startsWith('x'), 'head preserved');
+    assert.ok(capped.endsWith('x'), 'tail preserved');
+  });
+
+  test('plan mode exposes ONLY read-only tools to the model', () => {
+    const ex = makeExecutor('plan');
+    const names = ex.tools.map(t => t.name);
+    assert.ok(names.includes('read_file'));
+    assert.ok(names.includes('get_work_items'));
+    assert.ok(names.includes('get_selection'));
+    // Mutating / terminal tools must not be offered (or callable) in plan mode
+    assert.ok(!names.includes('edit_file'));
+    assert.ok(!names.includes('write_to_file'));
+    assert.ok(!names.includes('run_terminal_command'));
+    assert.ok(!names.includes('update_work_item_state'));
+  });
+
+  test('inline mode exposes the full tool set', () => {
+    const ex = makeExecutor('inline');
+    const names = ex.tools.map(t => t.name);
+    assert.ok(names.includes('edit_file'));
+    assert.ok(names.includes('run_terminal_command'));
+    assert.ok(names.includes('read_file'));
   });
 });

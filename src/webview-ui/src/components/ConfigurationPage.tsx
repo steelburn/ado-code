@@ -15,6 +15,15 @@ interface ConfigSection {
   settings: ConfigSetting[];
 }
 
+interface ConfigCategory {
+  id: string;
+  title: string;
+  icon: string;
+  sections: ConfigSection[];
+  /** Extra setting count not captured in sections (e.g. per-mode model rows). */
+  extraCount?: number;
+}
+
 interface ConfigSetting {
   key: string;
   label: string;
@@ -27,122 +36,183 @@ interface ConfigSetting {
   placeholder?: string;
 }
 
-/** Express Configuration — simplified settings for most users. */
-const EXPRESS_SECTIONS: ConfigSection[] = [
+/** Express Configuration — simplified settings for most users, grouped into
+ *  navigable categories in the sidebar. */
+const CATEGORIES: ConfigCategory[] = [
   {
-    title: 'Azure DevOps',
-    icon: '🔵',
-    settings: [
-      { key: 'adoOrganization', label: 'Organization', type: 'string', description: 'ADO organization name (e.g. mycompany)', placeholder: 'mycompany' },
-      { key: 'adoPat', label: 'Personal Access Token', type: 'password', description: 'ADO PAT with Work Items + Project scope', placeholder: 'vso.work_write' },
-      { key: 'adoServerUrl', label: 'Server URL (on-prem)', type: 'string', description: 'For ADO Server (TFS) — leave empty for cloud', placeholder: 'https://ado.corp.local/tfs/DefaultCollection' },
-      { key: 'organizations', label: 'Organizations', type: 'orgs', description: 'ADO organizations the developer works with. The ACTIVE org is picked per workspace.' },
-    ],
-  },
-  {
-    title: 'LLM Provider',
-    icon: '🤖',
-    settings: [
-      { key: 'llmProvider', label: 'Provider', type: 'enum', description: 'LLM API format', options: ['openai', 'anthropic'] },
-      { key: 'llmApiUrl', label: 'API URL', type: 'string', description: 'LLM API base URL', placeholder: 'https://api.openai.com/v1' },
-      { key: 'llmApiKey', label: 'API Key', type: 'password', description: 'LLM API key', placeholder: 'sk-...' },
-      { key: 'llmModel', label: 'Model', type: 'model', description: 'Model name (used for all modes)', placeholder: 'gpt-4o' },
-    ],
-  },
-  {
-    title: 'Mode',
-    icon: '⚡',
-    settings: [
-      { key: 'mode', label: 'Default Mode', type: 'enum', description: 'Tool-use mode for new conversations', options: ['inline', 'plan', 'act', 'yolo'] },
-    ],
-  },
-  {
-    title: 'Git',
-    icon: '🌿',
-    settings: [
-      { key: 'git.requireGitRepo', label: 'Require Git repo', type: 'boolean', description: 'Block task pickup when not in a git repo' },
-      { key: 'git.createBranchOnTaskStart', label: 'Create branch on task start', type: 'boolean', description: 'Auto-create feature/ADO-<id> branch' },
-      { key: 'git.requireCleanTree', label: 'Require clean tree', type: 'boolean', description: 'Warn on branch switch with uncommitted changes' },
-      { key: 'git.prOnCompletion', label: 'PR on completion', type: 'boolean', description: 'Offer to push + create PR via gh on task done' },
-      { key: 'git.protectedBranches', label: 'Protected PR targets', type: 'array', description: 'Branches create_pull_request must never target (comma-separated)' },
-    ],
-  },
-  {
-    title: 'Changelog',
-    icon: '📝',
-    settings: [
-      { key: 'changelog.enabled', label: 'Enabled', type: 'boolean', description: 'Update CHANGELOG.md on task completion' },
-      { key: 'changelog.autoCommit', label: 'Auto-commit', type: 'boolean', description: 'Commit CHANGELOG.md automatically' },
-      { key: 'changelog.postToAdo', label: 'Post to ADO', type: 'boolean', description: 'Add changelog entry as ADO comment' },
-    ],
-  },
-  {
-    title: 'Work Items',
-    icon: '📋',
-    settings: [
-      { key: 'ado.clarificationState', label: 'Clarification state', type: 'string', description: 'State to set when clarification is requested', placeholder: 'Blocked' },
-      { key: 'ado.warnOnSparseTask', label: 'Warn on sparse tasks', type: 'boolean', description: 'Warn before starting tasks with no description or AC' },
-    ],
-  },
-  {
-    title: 'Consent',
-    icon: '🔐',
-    settings: [
-      { key: 'consent.harmlessAutoApprove', label: 'Auto-approve harmless commands', type: 'boolean', description: 'Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires.', hint: 'Read-only terminal commands like git status, git diff, npm test, ls, etc. are detected automatically. You can still approve or reject before the timer expires.' },
-      { key: 'consent.harmlessAutoApproveSeconds', label: 'Auto-approve delay (seconds)', type: 'number', description: 'Seconds before a harmless command auto-approves', hint: 'How long to wait before auto-approving a harmless command. Lower = faster, higher = more time to review. Range: 1–30 seconds.', min: 1, max: 30 },
-    ],
-  },
-  {
-    title: 'Sessions',
-    icon: '🕐',
-    settings: [
-      { key: 'sessions.maxPerProject', label: 'Max sessions per project', type: 'number', description: 'Older sessions auto-pruned beyond this limit' },
-    ],
-  },
-  {
-    title: 'Agents',
-    icon: '🧑‍💻',
-    settings: [
-      { key: 'agents.enabled', label: 'Enabled agents', type: 'array', description: 'Which agents may be delegated to' },
-      { key: 'agents.verifyCommand', label: 'Verify command', type: 'string', description: 'Shell command to run after agent finishes (e.g. npm test)', placeholder: 'npm test' },
-      { key: 'agents.autoSelect', label: 'Default agent', type: 'enum', description: 'Default agent when none specified', options: ['', 'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent'] },
-      { key: 'agents.autoReview', label: 'Auto-review agent changes', type: 'boolean', description: 'Automatically review agent changes via LLM when a run completes' },
-    ],
-  },
-  {
-    title: 'Chat',
-    icon: '💬',
-    settings: [
-      { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)", hint: "When enabled, the model's internal reasoning appears in a blue thinking block while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don't support it." },
-    ],
-  },
-  {
-    title: 'MCP Servers',
+    id: 'connection',
+    title: 'Connection',
     icon: '🔌',
-    settings: [
-      { key: 'mcp.servers', label: 'Server configurations', type: 'mcp', description: 'Model Context Protocol server connections — each server exposes tools the AI can use' },
+    sections: [
+      {
+        title: 'Azure DevOps',
+        icon: '🔵',
+        settings: [
+          { key: 'adoOrganization', label: 'Organization', type: 'string', description: 'ADO organization name (e.g. mycompany)', placeholder: 'mycompany' },
+          { key: 'adoPat', label: 'Personal Access Token', type: 'password', description: 'ADO PAT with Work Items + Project scope', placeholder: 'vso.work_write' },
+          { key: 'adoServerUrl', label: 'Server URL (on-prem)', type: 'string', description: 'For ADO Server (TFS) — leave empty for cloud', placeholder: 'https://ado.corp.local/tfs/DefaultCollection' },
+          { key: 'organizations', label: 'Organizations', type: 'orgs', description: 'ADO organizations the developer works with. The ACTIVE org is picked per workspace.' },
+        ],
+      },
+      {
+        title: 'LLM Provider',
+        icon: '🤖',
+        settings: [
+          { key: 'llmProvider', label: 'Provider', type: 'enum', description: 'LLM API format', options: ['openai', 'anthropic'] },
+          { key: 'llmApiUrl', label: 'API URL', type: 'string', description: 'LLM API base URL', placeholder: 'https://api.openai.com/v1' },
+          { key: 'llmApiKey', label: 'API Key', type: 'password', description: 'LLM API key', placeholder: 'sk-...' },
+          { key: 'llmModel', label: 'Model', type: 'model', description: 'Model name (used for all modes)', placeholder: 'gpt-4o' },
+        ],
+      },
     ],
   },
   {
-    title: 'Workspace',
-    icon: '🛡',
-    settings: [
-      { key: 'ignore.dotAdoCode', label: 'Keep .ado-code out of version control', type: 'boolean', description: 'Auto-add .ado-code to .gitignore / .dockerignore (prompts once per workspace; \"Skip\" is remembered)' },
+    id: 'ai-modes',
+    title: 'AI & Modes',
+    icon: '🤖',
+    sections: [
+      {
+        title: 'Mode',
+        icon: '⚡',
+        settings: [
+          { key: 'mode', label: 'Default Mode', type: 'enum', description: 'Tool-use mode for new conversations', options: ['inline', 'plan', 'act', 'yolo'] },
+        ],
+      },
+      {
+        title: 'Act Mode',
+        icon: '🚀',
+        settings: [
+          { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn', hint: 'Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
+          { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed commands in act mode (supports wildcards, e.g. "git *", "npm run *")', hint: 'Entries are matched token-by-token, so they are safe from shell operators. A trailing * matches any remaining tokens: "git *" allows every git subcommand, "git push *" only pushes. Commands not matching any entry ask for approval.' },
+        ],
+      },
+      {
+        title: 'Chat',
+        icon: '💬',
+        settings: [
+          { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)", hint: "When enabled, the model's internal reasoning appears in a blue thinking block while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don't support it." },
+          { key: 'chat.showToolCalls', label: 'Show tool calls in chat', type: 'boolean', description: 'Display tool calls as live cards in the chat while the AI works (running → completed, with arguments and results)', hint: "When enabled, every tool the AI runs appears as a card that flips from running to completed. Turn it off to keep tool details out of the chat — you'll still see a subtle '…' indicator while the AI works, and the tools still run normally." },
+        ],
+      },
+      {
+        title: 'Sessions',
+        icon: '🕐',
+        settings: [
+          { key: 'sessions.maxPerProject', label: 'Max sessions per project', type: 'number', description: 'Older sessions auto-pruned beyond this limit' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'permissions',
+    title: 'Permissions',
+    icon: '🔐',
+    sections: [
+      {
+        title: 'Consent',
+        icon: '🔐',
+        settings: [
+          { key: 'consent.harmlessAutoApprove', label: 'Auto-approve harmless commands', type: 'boolean', description: 'Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires.', hint: 'Read-only terminal commands like git status, git diff, npm test, ls, etc. are detected automatically. You can still approve or reject before the timer expires.' },
+          { key: 'consent.harmlessAutoApproveSeconds', label: 'Auto-approve delay (seconds)', type: 'number', description: 'Seconds before a harmless command auto-approves', hint: 'How long to wait before auto-approving a harmless command. Lower = faster, higher = more time to review. Range: 1–30 seconds.', min: 1, max: 30 },
+          { key: 'consent.autoApproveTools', label: 'Auto-approve tools (wildcards)', type: 'array', description: 'Tool names (or patterns) that run without a consent prompt', hint: 'Enter tool names like edit_file, or patterns with * and ? — e.g. "read_*" auto-approves read_file and read_workspace_memory, "get_*" auto-approves all get_* tools. Tools matching here skip the consent card in inline and act modes (plan mode still stays read-only). Terminal commands: "run_terminal_command" or "run_*" auto-approves ALL shell commands — treat that like yolo mode.' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'workflow',
+    title: 'Workflow',
+    icon: '🛠️',
+    sections: [
+      {
+        title: 'Git',
+        icon: '🌿',
+        settings: [
+          { key: 'git.requireGitRepo', label: 'Require Git repo', type: 'boolean', description: 'Block task pickup when not in a git repo' },
+          { key: 'git.createBranchOnTaskStart', label: 'Create branch on task start', type: 'boolean', description: 'Auto-create feature/ADO-<id> branch' },
+          { key: 'git.requireCleanTree', label: 'Require clean tree', type: 'boolean', description: 'Warn on branch switch with uncommitted changes' },
+          { key: 'git.prOnCompletion', label: 'PR on completion', type: 'boolean', description: 'Offer to push + create PR via gh on task done' },
+          { key: 'git.protectedBranches', label: 'Protected PR targets', type: 'array', description: 'Branches create_pull_request must never target (comma-separated)' },
+        ],
+      },
+      {
+        title: 'Changelog',
+        icon: '📝',
+        settings: [
+          { key: 'changelog.enabled', label: 'Enabled', type: 'boolean', description: 'Update CHANGELOG.md on task completion' },
+          { key: 'changelog.autoCommit', label: 'Auto-commit', type: 'boolean', description: 'Commit CHANGELOG.md automatically' },
+          { key: 'changelog.postToAdo', label: 'Post to ADO', type: 'boolean', description: 'Add changelog entry as ADO comment' },
+        ],
+      },
+      {
+        title: 'Work Items',
+        icon: '📋',
+        settings: [
+          { key: 'ado.clarificationState', label: 'Clarification state', type: 'string', description: 'State to set when clarification is requested', placeholder: 'Blocked' },
+          { key: 'ado.warnOnSparseTask', label: 'Warn on sparse tasks', type: 'boolean', description: 'Warn before starting tasks with no description or AC' },
+        ],
+      },
+      {
+        title: 'Workspace',
+        icon: '🛡',
+        settings: [
+          { key: 'ignore.dotAdoCode', label: 'Keep .ado-code out of version control', type: 'boolean', description: 'Auto-add .ado-code to .gitignore / .dockerignore (prompts once per workspace; "Skip" is remembered)' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'integrations',
+    title: 'Integrations',
+    icon: '🧩',
+    sections: [
+      {
+        title: 'Agents',
+        icon: '🧑‍💻',
+        settings: [
+          { key: 'agents.enabled', label: 'Enabled agents', type: 'array', description: 'Which agents may be delegated to' },
+          { key: 'agents.verifyCommand', label: 'Verify command', type: 'string', description: 'Shell command to run after agent finishes (e.g. npm test)', placeholder: 'npm test' },
+          { key: 'agents.autoSelect', label: 'Default agent', type: 'enum', description: 'Default agent when none specified', options: ['', 'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent'] },
+          { key: 'agents.autoReview', label: 'Auto-review agent changes', type: 'boolean', description: 'Automatically review agent changes via LLM when a run completes' },
+        ],
+      },
+      {
+        title: 'MCP Servers',
+        icon: '🔌',
+        settings: [
+          { key: 'mcp.servers', label: 'Server configurations', type: 'mcp', description: 'Model Context Protocol server connections — each server exposes tools the AI can use' },
+        ],
+      },
     ],
   },
 ];
 
-/** Advanced Configuration — extra sections only shown in Advanced mode. */
-const ADVANCED_EXTRA_SECTIONS: ConfigSection[] = [
-  {
-    title: 'Act Mode',
-    icon: '🚀',
-    settings: [
-      { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn', hint: 'Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
-      { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed command prefixes in act mode' },
-    ],
-  },
-];
+/** Advanced Configuration — gated by the Advanced toggle in the sidebar.
+ *  Per-Mode Model Configuration is special-cased in the render (it needs the
+ *  ModeModelConfig components), so its 4 rows are counted via extraCount. */
+const ADVANCED_CATEGORY: ConfigCategory = {
+  id: 'advanced',
+  title: 'Advanced',
+  icon: '⚙️',
+  extraCount: 4,
+  sections: [
+    {
+      title: 'Model Capability Overrides',
+      icon: '🧠',
+      settings: [
+        { key: 'llm.capabilityOverrides', label: 'Capability overrides', type: 'capOverrides', description: 'Per-model vision / tool-calling declarations for models the auto-detection gets wrong', hint: 'Add a row per model id. Leaving a toggle unchecked keeps the auto-detected value.' },
+      ],
+    },
+    {
+      title: 'Model & Counting',
+      icon: '🔢',
+      settings: [
+        { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'string', description: 'Optional cheaper model for AI choice-prompt detection (empty = use the main model)', placeholder: 'e.g. gpt-4o-mini, claude-haiku' },
+        { key: 'llm.useNativeTokenCounting', label: 'Native token counting', type: 'boolean', description: 'Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) for status-bar accuracy' },
+      ],
+    },
+  ],
+};
 
 /** Tag/chip input for array settings */
 function ArrayInput({ value, placeholder, onChange }: { value: string[]; placeholder?: string; onChange: (items: string[]) => void }) {
@@ -764,6 +834,9 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
   // Inline display for host fetch failures (the global error banner is not
   // rendered on this page).
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Active sidebar category (the Advanced category is only reachable while the
+  // Advanced Configuration toggle is on).
+  const [activeCategory, setActiveCategory] = useState('connection');
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -798,7 +871,14 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
     setConfig(prev => ({ ...prev, advancedConfig: next }));
     setDirty(true);
     setSaved(false);
-  }, [config.advancedConfig]);
+    // Toggling on jumps straight to the Advanced category; toggling off while
+    // viewing it falls back to Connection.
+    if (next) {
+      setActiveCategory('advanced');
+    } else if (activeCategory === 'advanced') {
+      setActiveCategory('connection');
+    }
+  }, [config.advancedConfig, activeCategory]);
 
   const isAdvanced = !!config.advancedConfig;
 
@@ -841,7 +921,11 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
 
   const modeConfigs = config['llm.modeConfigs'] || {};
   const modeReasoningEffort = config['llm.modeReasoningEffort'] || {};
-  const sections = [...EXPRESS_SECTIONS, ...(isAdvanced ? ADVANCED_EXTRA_SECTIONS : [])];
+  // Sidebar categories — Advanced only appears while the toggle is on.
+  const categories = isAdvanced ? [...CATEGORIES, ADVANCED_CATEGORY] : CATEGORIES;
+  const active = categories.find(c => c.id === activeCategory) ?? categories[0];
+  const categorySettingCount = (c: ConfigCategory) =>
+    c.sections.reduce((n, s) => n + s.settings.length, 0) + (c.extraCount ?? 0);
 
   return (
     <div className="config-page">
@@ -857,202 +941,230 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
         </button>
       </div>
 
-      {/* Advanced mode toggle */}
-      <div className="config-advanced-toggle">
-        <label className="config-toggle">
-          <input
-            type="checkbox"
-            checked={isAdvanced}
-            onChange={handleToggleAdvanced}
-          />
-          <span className="config-toggle-slider" />
-        </label>
-        <div className="config-advanced-toggle-text">
-          <div className="config-advanced-toggle-label">Advanced Configuration</div>
-          <div className="config-advanced-toggle-desc">
-            Enable per-mode model selection and reasoning effort tuning
-          </div>
-        </div>
-      </div>
+      <div className="config-layout">
+        {/* Sidebar navigation — one entry per category; Advanced appears
+            only while the Advanced Configuration toggle is on. */}
+        <nav className="config-nav">
+          {categories.map(category => (
+            <button
+              key={category.id}
+              type="button"
+              className={`config-nav-item ${active.id === category.id ? 'config-nav-item-active' : ''}`}
+              onClick={() => setActiveCategory(category.id)}
+              title={category.title}
+            >
+              <span className="config-nav-icon">{category.icon}</span>
+              <span className="config-nav-label">{category.title}</span>
+              <span className="config-nav-badge">{categorySettingCount(category)}</span>
+            </button>
+          ))}
 
-      <div className="config-body">
-        {sections.map(section => (
-          <div key={section.title} className="config-section">
-            <h3 className="config-section-title">
-              <span className="config-section-icon">{section.icon}</span>
-              {section.title}
-            </h3>
-            {section.settings.map(setting => (
-              <div key={setting.key} className="config-field">
-                <label className="config-label">{setting.label}</label>
-                <div className="config-desc">{setting.description}</div>
-                {setting.hint && <div className="config-desc" style={{ fontStyle: 'italic', opacity: 0.7, marginTop: -4, marginBottom: 4 }}>{setting.hint}</div>}
-                {setting.type === 'boolean' ? (
-                  <label className="config-toggle">
-                    <input
-                      type="checkbox"
-                      checked={!!config[setting.key]}
-                      onChange={e => handleChange(setting.key, e.target.checked)}
-                    />
-                    <span className="config-toggle-slider" />
-                  </label>
-                ) : setting.type === 'enum' ? (
-                  <select
-                    className="config-select"
-                    value={config[setting.key] ?? ''}
-                    onChange={e => handleChange(setting.key, e.target.value)}
-                  >
-                    {setting.options?.map(opt => (
-                      <option key={opt} value={opt}>{opt || '(none)'}</option>
-                    ))}
-                  </select>
-                ) : setting.type === 'number' ? (
-                  <input
-                    className="config-input"
-                    type="number"
-                    min={setting.min}
-                    max={setting.max}
-                    value={config[setting.key] ?? ''}
-                    onChange={e => handleChange(setting.key, Number(e.target.value))}
-                  />
-                ) : setting.type === 'array' ? (
-                  <ArrayInput
-                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
-                    placeholder={setting.placeholder}
-                    onChange={items => handleChange(setting.key, items)}
-                  />
-                ) : setting.type === 'mcp' ? (
-                  <McpServersInput
-                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
-                    onChange={servers => handleChange(setting.key, servers)}
-                  />
-                ) : setting.type === 'orgs' ? (
-                  <OrganizationsInput
-                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
-                    onChange={orgs => handleChange(setting.key, orgs)}
-                  />
-                ) : setting.type === 'capOverrides' ? (
-                  <CapabilityOverridesInput
-                    value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
-                    models={models ?? []}
-                    onChange={rows => handleChange(setting.key, rows)}
-                  />
-                ) : setting.type === 'model' ? (
-                  <ModelInput
-                    value={config[setting.key] ?? ''}
-                    models={models ?? []}
-                    placeholder={setting.placeholder}
-                    onChange={model => handleChange(setting.key, model)}
-                  />
-                ) : (
-                  <input
-                    className="config-input"
-                    type={setting.type === 'password' ? 'password' : 'text'}
-                    value={config[setting.key] ?? ''}
-                    onChange={e => handleChange(setting.key, e.target.value)}
-                    placeholder={setting.placeholder}
-                  />
-                )}
+          <div className="config-nav-footer">
+            <div className="config-nav-divider" />
+            <div className="config-advanced-toggle">
+              <label className="config-toggle">
+                <input
+                  type="checkbox"
+                  checked={isAdvanced}
+                  onChange={handleToggleAdvanced}
+                />
+                <span className="config-toggle-slider" />
+              </label>
+              <div className="config-advanced-toggle-text">
+                <div className="config-advanced-toggle-label">Advanced Configuration</div>
+                <div className="config-advanced-toggle-desc">
+                  Per-mode models, capability overrides, token counting
+                </div>
               </div>
-            ))}
-            {section.title === 'LLM Provider' && (
-              <>
-                <ModelFetcher
-                  config={config}
-                  models={models ?? []}
-                  loading={modelsLoading ?? false}
-                  error={fetchError}
-                  onFetch={(provider, apiUrl, apiKey) => {
-                    setFetchError(null);
-                    onFetchModels?.(provider, apiUrl, apiKey);
-                  }}
-                />
-                <ModelCapabilitiesLine
-                  model={String(config.llmModel ?? '')}
-                  models={models ?? []}
-                  overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
-                />
-              </>
-            )}
-          </div>
-        ))}
-
-        {/* Advanced: Per-mode model configuration */}
-        {isAdvanced && (
-          <div className="config-section">
-            <h3 className="config-section-title">
-              <span className="config-section-icon">🎯</span>
-              Per-Mode Model Configuration
-            </h3>
-            <div className="config-desc" style={{ marginBottom: 12 }}>
-              Configure a different model for each mode. Leave empty to use the default model from the LLM Provider section above.
             </div>
-            <ModeModelConfig
-              mode="inline"
-              modeLabel="Chat (Inline)"
-              modeIcon="💬"
-              modelValue={modeConfigs.inline?.model ?? ''}
-              reasoningEffortValue={modeReasoningEffort.inline ?? ''}
-              models={models ?? []}
-              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
-              config={config}
-              onModelChange={model => handleModeModelChange('inline', model)}
-              onReasoningEffortChange={effort => handleModeReasoningEffortChange('inline', effort)}
-              onFetch={(provider, apiUrl, apiKey) => {
-                setFetchError(null);
-                onFetchModels?.(provider, apiUrl, apiKey);
-              }}
-            />
-            <ModeModelConfig
-              mode="plan"
-              modeLabel="Plan"
-              modeIcon="📋"
-              modelValue={modeConfigs.plan?.model ?? ''}
-              reasoningEffortValue={modeReasoningEffort.plan ?? ''}
-              models={models ?? []}
-              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
-              config={config}
-              onModelChange={model => handleModeModelChange('plan', model)}
-              onReasoningEffortChange={effort => handleModeReasoningEffortChange('plan', effort)}
-              onFetch={(provider, apiUrl, apiKey) => {
-                setFetchError(null);
-                onFetchModels?.(provider, apiUrl, apiKey);
-              }}
-            />
-            <ModeModelConfig
-              mode="act"
-              modeLabel="Act"
-              modeIcon="🚀"
-              modelValue={modeConfigs.act?.model ?? ''}
-              reasoningEffortValue={modeReasoningEffort.act ?? ''}
-              models={models ?? []}
-              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
-              config={config}
-              onModelChange={model => handleModeModelChange('act', model)}
-              onReasoningEffortChange={effort => handleModeReasoningEffortChange('act', effort)}
-              onFetch={(provider, apiUrl, apiKey) => {
-                setFetchError(null);
-                onFetchModels?.(provider, apiUrl, apiKey);
-              }}
-            />
-            <ModeModelConfig
-              mode="yolo"
-              modeLabel="YOLO"
-              modeIcon="⚡"
-              modelValue={modeConfigs.yolo?.model ?? ''}
-              reasoningEffortValue={modeReasoningEffort.yolo ?? ''}
-              models={models ?? []}
-              overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
-              config={config}
-              onModelChange={model => handleModeModelChange('yolo', model)}
-              onReasoningEffortChange={effort => handleModeReasoningEffortChange('yolo', effort)}
-              onFetch={(provider, apiUrl, apiKey) => {
-                setFetchError(null);
-                onFetchModels?.(provider, apiUrl, apiKey);
-              }}
-            />
           </div>
-        )}
+        </nav>
+
+        {/* Content pane — sections of the active category */}
+        <div className="config-content">
+          <div className="config-category-heading">
+            <span className="config-category-icon">{active.icon}</span>
+            <span className="config-category-title">{active.title}</span>
+          </div>
+
+          {/* Advanced: Per-mode model configuration (special-cased) */}
+          {active.id === 'advanced' && (
+            <div className="config-section">
+              <h3 className="config-section-title">
+                <span className="config-section-icon">🎯</span>
+                Per-Mode Model Configuration
+              </h3>
+              <div className="config-desc" style={{ marginBottom: 12 }}>
+                Configure a different model for each mode. Leave empty to use the default model from the LLM Provider section above.
+              </div>
+              <ModeModelConfig
+                mode="inline"
+                modeLabel="Chat (Inline)"
+                modeIcon="💬"
+                modelValue={modeConfigs.inline?.model ?? ''}
+                reasoningEffortValue={modeReasoningEffort.inline ?? ''}
+                models={models ?? []}
+                overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+                config={config}
+                onModelChange={model => handleModeModelChange('inline', model)}
+                onReasoningEffortChange={effort => handleModeReasoningEffortChange('inline', effort)}
+                onFetch={(provider, apiUrl, apiKey) => {
+                  setFetchError(null);
+                  onFetchModels?.(provider, apiUrl, apiKey);
+                }}
+              />
+              <ModeModelConfig
+                mode="plan"
+                modeLabel="Plan"
+                modeIcon="📋"
+                modelValue={modeConfigs.plan?.model ?? ''}
+                reasoningEffortValue={modeReasoningEffort.plan ?? ''}
+                models={models ?? []}
+                overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+                config={config}
+                onModelChange={model => handleModeModelChange('plan', model)}
+                onReasoningEffortChange={effort => handleModeReasoningEffortChange('plan', effort)}
+                onFetch={(provider, apiUrl, apiKey) => {
+                  setFetchError(null);
+                  onFetchModels?.(provider, apiUrl, apiKey);
+                }}
+              />
+              <ModeModelConfig
+                mode="act"
+                modeLabel="Act"
+                modeIcon="🚀"
+                modelValue={modeConfigs.act?.model ?? ''}
+                reasoningEffortValue={modeReasoningEffort.act ?? ''}
+                models={models ?? []}
+                overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+                config={config}
+                onModelChange={model => handleModeModelChange('act', model)}
+                onReasoningEffortChange={effort => handleModeReasoningEffortChange('act', effort)}
+                onFetch={(provider, apiUrl, apiKey) => {
+                  setFetchError(null);
+                  onFetchModels?.(provider, apiUrl, apiKey);
+                }}
+              />
+              <ModeModelConfig
+                mode="yolo"
+                modeLabel="YOLO"
+                modeIcon="⚡"
+                modelValue={modeConfigs.yolo?.model ?? ''}
+                reasoningEffortValue={modeReasoningEffort.yolo ?? ''}
+                models={models ?? []}
+                overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+                config={config}
+                onModelChange={model => handleModeModelChange('yolo', model)}
+                onReasoningEffortChange={effort => handleModeReasoningEffortChange('yolo', effort)}
+                onFetch={(provider, apiUrl, apiKey) => {
+                  setFetchError(null);
+                  onFetchModels?.(provider, apiUrl, apiKey);
+                }}
+              />
+            </div>
+          )}
+
+          {active.sections.map(section => (
+            <div key={section.title} className="config-section">
+              <h3 className="config-section-title">
+                <span className="config-section-icon">{section.icon}</span>
+                {section.title}
+              </h3>
+              {section.settings.map(setting => (
+                <div key={setting.key} className="config-field">
+                  <label className="config-label">{setting.label}</label>
+                  <div className="config-desc">{setting.description}</div>
+                  {setting.hint && <div className="config-desc" style={{ fontStyle: 'italic', opacity: 0.7, marginTop: -4, marginBottom: 4 }}>{setting.hint}</div>}
+                  {setting.type === 'boolean' ? (
+                    <label className="config-toggle">
+                      <input
+                        type="checkbox"
+                        checked={!!config[setting.key]}
+                        onChange={e => handleChange(setting.key, e.target.checked)}
+                      />
+                      <span className="config-toggle-slider" />
+                    </label>
+                  ) : setting.type === 'enum' ? (
+                    <select
+                      className="config-select"
+                      value={config[setting.key] ?? ''}
+                      onChange={e => handleChange(setting.key, e.target.value)}
+                    >
+                      {setting.options?.map(opt => (
+                        <option key={opt} value={opt}>{opt || '(none)'}</option>
+                      ))}
+                    </select>
+                  ) : setting.type === 'number' ? (
+                    <input
+                      className="config-input"
+                      type="number"
+                      min={setting.min}
+                      max={setting.max}
+                      value={config[setting.key] ?? ''}
+                      onChange={e => handleChange(setting.key, Number(e.target.value))}
+                    />
+                  ) : setting.type === 'array' ? (
+                    <ArrayInput
+                      value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                      placeholder={setting.placeholder}
+                      onChange={items => handleChange(setting.key, items)}
+                    />
+                  ) : setting.type === 'mcp' ? (
+                    <McpServersInput
+                      value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                      onChange={servers => handleChange(setting.key, servers)}
+                    />
+                  ) : setting.type === 'orgs' ? (
+                    <OrganizationsInput
+                      value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                      onChange={orgs => handleChange(setting.key, orgs)}
+                    />
+                  ) : setting.type === 'capOverrides' ? (
+                    <CapabilityOverridesInput
+                      value={Array.isArray(config[setting.key]) ? config[setting.key] : []}
+                      models={models ?? []}
+                      onChange={rows => handleChange(setting.key, rows)}
+                    />
+                  ) : setting.type === 'model' ? (
+                    <ModelInput
+                      value={config[setting.key] ?? ''}
+                      models={models ?? []}
+                      placeholder={setting.placeholder}
+                      onChange={model => handleChange(setting.key, model)}
+                    />
+                  ) : (
+                    <input
+                      className="config-input"
+                      type={setting.type === 'password' ? 'password' : 'text'}
+                      value={config[setting.key] ?? ''}
+                      onChange={e => handleChange(setting.key, e.target.value)}
+                      placeholder={setting.placeholder}
+                    />
+                  )}
+                </div>
+              ))}
+              {section.title === 'LLM Provider' && (
+                <>
+                  <ModelFetcher
+                    config={config}
+                    models={models ?? []}
+                    loading={modelsLoading ?? false}
+                    error={fetchError}
+                    onFetch={(provider, apiUrl, apiKey) => {
+                      setFetchError(null);
+                      onFetchModels?.(provider, apiUrl, apiKey);
+                    }}
+                  />
+                  <ModelCapabilitiesLine
+                    model={String(config.llmModel ?? '')}
+                    models={models ?? []}
+                    overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
+                  />
+                </>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

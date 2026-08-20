@@ -40,7 +40,13 @@ export interface AdoCodeSettings {
   agentsAutoReview: boolean;
   consentHarmlessAutoApprove: boolean;
   consentHarmlessAutoApproveSeconds: number;
+  /** Tool-name glob patterns auto-approved without a consent prompt (e.g. "read_*", "get_*"). */
+  consentAutoApproveTools: string[];
   chatShowThinking: boolean;
+  /** Hide the live tool-call cards in the chat (running/completed cards still execute normally). */
+  chatShowToolCalls: boolean;
+  /** Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) for status-bar accuracy. */
+  useNativeTokenCounting: boolean;
 }
 
 export function getSettings(): AdoCodeSettings {
@@ -77,7 +83,10 @@ export function getSettings(): AdoCodeSettings {
     agentsAutoReview: config.get<boolean>('agents.autoReview', true),
     consentHarmlessAutoApprove: config.get<boolean>('consent.harmlessAutoApprove', false),
     consentHarmlessAutoApproveSeconds: config.get<number>('consent.harmlessAutoApproveSeconds', 20),
+    consentAutoApproveTools: config.get<string[]>('consent.autoApproveTools', []),
     chatShowThinking: config.get<boolean>('chat.showThinking', true),
+    chatShowToolCalls: config.get<boolean>('chat.showToolCalls', true),
+    useNativeTokenCounting: config.get<boolean>('llm.useNativeTokenCounting', true),
   };
 }
 

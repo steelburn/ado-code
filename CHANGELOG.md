@@ -2,6 +2,25 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.5.9] - 2026-08-21
+
+### Improvements
+- **Live thinking + tool progress in chat**: While the AI works, the chat window now streams its reasoning into a 💭 Thinking block and shows every tool call as a live card — the card appears as **running…** with a spinner (arguments visible) while the tool executes, then flips to **completed** (or **error**) with its result. No more sitting through a silent "Thinking…" until the final answer
+- **Permanent tool-call record**: When the turn finishes, the tool cards are merged into the assistant message above the answer as collapsible blocks — review what the agent did, expand any call to see its arguments and result, and they survive session history
+- **Hide tool calls in chat**: New `adoCode.chat.showToolCalls` setting (default on, in Configuration → Chat) hides the tool cards — tools still run normally, but the chat shows only a subtle pulsing "…" indicator and no tool names, arguments, or results ever reach the chat (or session history)
+- **Show AI thinking is now enforced**: The existing `adoCode.chat.showThinking` toggle (Configuration → Chat) previously had no effect — thinking text was always displayed. It now actually hides/shows the reasoning block in every path (agentic loop, streaming fallback, auto-review)
+- **Wildcard permissions**: Two ways to grant broader permission "to a certain extent":
+  - `adoCode.consent.autoApproveTools` (Configuration → Consent) — tool names or glob patterns like `read_*`, `get_*`, `edit_file` run without a consent prompt in inline/act modes (plan stays read-only). Setting `run_terminal_command`/`run_*` behaves like yolo for shell commands
+  - `adoCode.act.terminalAllowlist` entries now support wildcards: `git *` allows every git subcommand, `git push *` only pushes, `npm run *` any npm run script — matched token-by-token with no shell operators, so `*` can't smuggle in `&&`/`|`
+- **Wildcard-aware session approvals**: "Allow for Session" choices also honor patterns, so approving `git *` once covers every git command for the rest of the session
+- **Token consumption optimization for the agentic loop**: tool results are capped to a token budget (`read_file` defaults to a bounded window, terminal/work-item/list output is trimmed head+tail) and older tool results are compacted to stubs once the model has seen them — the largest source of re-send cost on long turns; plan mode now sends only read-only tool schemas
+- **Provider-native token counting**: the token status bar now uses the provider's own tokenizer (Anthropic `/v1/messages/count_tokens`, free; OpenAI-compatible via `usage.prompt_tokens`), throttled with the local heuristic as an instant fallback. Toggle `adoCode.llm.useNativeTokenCounting` (default on)
+- **Accurate token budget**: context truncation/condensing and the status bar now account for the system prompt + tool schemas that ride along with every request, not just the conversation text
+
+### Changed
+- **Reorganized Configuration UI**: Settings are now grouped into navigable sidebar categories — **Connection** (Azure DevOps + LLM Provider), **AI & Modes** (Mode, Act Mode, Chat, Sessions), **Permissions** (Consent), **Workflow** (Git, Changelog, Work Items, Workspace), and **Integrations** (Agents + MCP Servers) — each with a setting-count badge, so you can jump straight to what you need instead of scrolling past everything to find it
+- **Advanced Configuration is now a real category**: The Advanced toggle (in the sidebar) gates a dedicated **Advanced** category that bundles the per-mode model selection, **Model Capability Overrides** (previously only editable in settings.json — now structured rows in the UI), the **choice detection model** (`adoCode.llm.choiceDetectionModel`), and the **native token counting** toggle (`adoCode.llm.useNativeTokenCounting`). Toggling it on jumps straight to the advanced settings; toggling it off while viewing them returns to Connection
+
 ## [0.5.8] - 2026-08-15
 
 ### Improvements

@@ -16,6 +16,7 @@
  */
 
 import * as vscode from 'vscode'
+import { matchesToolPattern, matchesCommandPattern } from './consent'
 
 // Re-export pure utilities for convenience
 export {
@@ -29,6 +30,8 @@ export {
   getToolApprovalCategory,
   formatToolParams,
   isHarmlessCommand,
+  matchesToolPattern,
+  matchesCommandPattern,
 } from './consent'
 
 // ─── Session-wide tool approval cache ───────────────────────────────────────
@@ -42,7 +45,8 @@ const sessionAutoApprove = new Set<string>()
 
 /** Check if a tool has been session-approved ("Allow for Session"). */
 export function isSessionAutoApproved(toolName: string): boolean {
-  return sessionAutoApprove.has(toolName)
+  // Exact matches AND wildcard patterns (e.g. the user approved "read_*").
+  return matchesToolPattern(toolName, [...sessionAutoApprove]);
 }
 
 /** Add a tool to the session approval cache. */
@@ -66,7 +70,8 @@ const sessionCommandApprove = new Set<string>()
 
 /** Check if a terminal command has been session-approved. */
 export function isCommandSessionApproved(command: string): boolean {
-  return sessionCommandApprove.has(command.trim())
+  // Exact matches AND wildcard patterns (e.g. the user approved "git *").
+  return matchesCommandPattern(command.trim(), [...sessionCommandApprove]);
 }
 
 /** Add a terminal command to the session approval cache. */

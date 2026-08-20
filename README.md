@@ -25,7 +25,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - Direct mode selection: click Chat/Plan/Act/YOLO to switch modes instantly
 - In-chat confirmation cards: task start, mode switch, and other prompts render as styled cards inside the chat
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
-- **Express/Advanced Configuration**: Toggle between simple (one model for all modes) and advanced (per-mode model selection + reasoning effort tuning) configuration modes — Advanced mode lets you use different models for Chat vs Act, and set reasoning effort (low/medium/high) for reasoning models like o1/o3
+- **Reorganized Configuration UI**: Settings are grouped into navigable sidebar categories — Connection, AI & Modes, Permissions, Workflow, and Integrations — each with a setting-count badge, so you can jump straight to what you need instead of scrolling. The Advanced toggle gates a dedicated **Advanced** category: per-mode model selection, capability overrides, the choice detection model, and native token counting
 - **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js, Python, React, Next.js, Laravel, .NET) — configure options, ADO integration, and git setup before creation (`/new-project`)
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, filtering, and enable/disable toggle (`/skills`)
 - **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — "Execute in Chat" button injects the skill prompt and triggers the LLM
@@ -74,10 +74,16 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 
 ## Extension Settings
 
-Configure in VS Code settings under `adoCode.*`. The Configuration page offers two modes:
+Configure in VS Code settings under `adoCode.*`. The **Configuration page** organizes these into sidebar categories, each with a setting-count badge:
 
-- **Express Configuration** (default): Simple setup with one model for all modes
-- **Advanced Configuration**: Toggle the switch to enable per-mode model selection and reasoning effort tuning
+- **Connection** — Azure DevOps + LLM Provider
+- **AI & Modes** — Mode, Act Mode, Chat, Sessions
+- **Permissions** — Consent
+- **Workflow** — Git, Changelog, Work Items, Workspace
+- **Integrations** — Agents + MCP Servers
+- **Advanced** — gated by the Advanced Configuration toggle; holds per-mode model selection, capability overrides, choice detection model, and native token counting (toggling it on jumps straight there)
+
+The **Advanced Configuration** toggle in the sidebar enables the Advanced category for per-mode model selection and reasoning effort tuning.
 
 | Setting | Description |
 |---------|-------------|
@@ -97,12 +103,15 @@ Configure in VS Code settings under `adoCode.*`. The Configuration page offers t
 | `adoCode.advancedConfig` | Enable Advanced Configuration mode for per-mode model selection (default `false`) |
 | `adoCode.llm.modeConfigs` | Per-mode model overrides in Advanced mode: `{ "inline": { "model": "gpt-4o" }, "act": { "model": "o3" } }` |
 | `adoCode.llm.modeReasoningEffort` | Per-mode reasoning effort for reasoning models: `{ "inline": "low", "act": "high" }` — values: `low`, `medium`, `high` |
+| `adoCode.llm.useNativeTokenCounting` | Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible usage.prompt_tokens) for status-bar accuracy (default `true`) |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, `act`, or `yolo` |
 | `adoCode.act.toolBudget` | Max tool calls per act-mode turn |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
 | `adoCode.consent.harmlessAutoApprove` | Auto-approve harmless (read-only) terminal commands after a timer (default `false`) |
 | `adoCode.consent.harmlessAutoApproveSeconds` | Seconds before a harmless command auto-approves (default `20`, range 1–30) |
+| `adoCode.consent.autoApproveTools` | Tool names or glob patterns (`read_*`, `get_*`, `edit_file`) that skip the consent prompt in inline/act modes (default `[]`) |
 | `adoCode.chat.showThinking` | Show the model's thinking/reasoning text while it processes (default `true`) |
+| `adoCode.chat.showToolCalls` | Show live tool-call cards in the chat while the AI works (default `true`; off shows only a pulsing "…" indicator) |
 | `adoCode.git.requireGitRepo` | Block task pickup outside a git repo |
 | `adoCode.git.createBranchOnTaskStart` | Auto-create `feature/ADO-<id>-<slug>` branch |
 | `adoCode.git.requireCleanTree` | Warn on branch switch with uncommitted changes |
@@ -185,6 +194,17 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### 0.5.9
+
+- **Reorganized Configuration UI**: Settings are now grouped into navigable sidebar categories — Connection, AI & Modes, Permissions, Workflow, and Integrations — each with a setting-count badge, so you can jump straight to what you need instead of scrolling through everything. The **Advanced** toggle now gates a dedicated Advanced category: per-mode model selection, **Model Capability Overrides** (previously settings.json-only), the **choice detection model**, and **native token counting** are all editable in the UI — toggling it on jumps straight there
+- **Live thinking + tool progress**: The chat window now streams the AI's reasoning into a 💭 Thinking block and shows each tool call as a live card that appears as **running…** (spinner, arguments visible) and flips to **completed**/**error** with its result when done — clear progress instead of waiting through a silent "Thinking…" for the final answer
+- **Permanent tool-call record**: Tool cards are merged into the final assistant message as collapsible blocks above the answer — expand any call to see its arguments and result, and the record survives session history
+- **Hide tool calls in chat**: Configuration → Chat → *Show tool calls in chat* (default on) hides the cards; tools still run, and chat shows only a subtle pulsing "…" — no tool names, arguments, or results leave the host
+- **Show AI thinking now enforced**: The *Show AI thinking* toggle (Configuration → Chat) previously had no effect — it now actually shows/hides the reasoning block in every streaming path
+- **Wildcard permissions**: Configuration → Consent → *Auto-approve tools (wildcards)* accepts patterns like `read_*`, `get_*`, or exact names (`edit_file`) that skip the consent prompt in inline/act modes. Act-mode **Terminal allowlist** entries also support wildcards: `git *`, `git push *`, `npm run *` — token-by-token matching with no shell operators
+- **Token consumption optimization**: tool results are capped to a token budget and older results are compacted once the model has seen them; plan mode sends only read-only tool schemas; the token budget now counts the system prompt + tools
+- **Provider-native token counting**: the token status bar uses the provider's own tokenizer (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) with the local estimate as fallback — toggle `adoCode.llm.useNativeTokenCounting` (default on)
 
 ### 0.5.8
 

@@ -16,6 +16,10 @@ interface ToolCallInfo {
   name: string;
   arguments: Record<string, any>;
   result?: string;
+  /** false when the user hid tool calls in chat — rendered as a "…" indicator. */
+  showDetails?: boolean;
+  /** Completion flag for hidden calls, which never carry result content. */
+  done?: boolean;
 }
 
 interface Props {
@@ -25,6 +29,8 @@ interface Props {
   thinking?: string;
   /** Activity indicator text (e.g., "Executing skill: Code Review") */
   activity?: string | null;
+  /** Live tool calls from the agentic loop — shown while the turn runs. */
+  liveToolCalls?: ToolCallInfo[];
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -86,16 +92,42 @@ function parseToolCalls(content: string): { toolCalls: ToolCallInfo[]; textParts
   return { toolCalls, textParts };
 }
 
+/** True when a tool result is the JSON error envelope tools return on failure. */
+function isErrorResult(result: string): boolean {
+  const trimmed = result.trim();
+  if (!trimmed.startsWith('{')) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return !!parsed && typeof parsed === 'object' && !!((parsed as any).error || (parsed as any).errorMessage);
+  } catch {
+    return false;
+  }
+}
+
 // ── Sub-components ───────────────────────────────────────────────
 
 const ToolCallBlock: React.FC<{ tc: ToolCallInfo }> = ({ tc }) => {
-  const [expanded, setExpanded] = useState(false);
+  // Running cards start expanded (so args are visible while the tool works);
+  // completed cards collapse to just the header + status badge. The user can
+  // always override either way.
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  const expanded = userExpanded ?? !tc.result;
 
-  const status = tc.result ? 'completed' : 'running';
-  const statusVariant = tc.result ? ('success' as const) : ('info' as const);
+  // Status: running → spinner badge; done → success; JSON error result → error
+  const statusBadge = !tc.result ? (
+    <span className="tool-status tool-status-running">
+      <span className="tool-status-spinner" />
+      running…
+    </span>
+  ) : (
+    <Badge variant={isErrorResult(tc.result) ? 'error' : 'success'}>
+      {isErrorResult(tc.result) ? 'error' : 'completed'}
+    </Badge>
+  );
 
   return (
     <div
+      className="tool-block"
       style={{
         margin: '6px 0',
         border: '1px solid var(--vscode-panel-border)',
@@ -106,7 +138,7 @@ const ToolCallBlock: React.FC<{ tc: ToolCallInfo }> = ({ tc }) => {
     >
       {/* Header — always visible, clickable */}
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => setUserExpanded(!expanded)}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -125,7 +157,7 @@ const ToolCallBlock: React.FC<{ tc: ToolCallInfo }> = ({ tc }) => {
           ▶
         </span>
         <span style={{ fontWeight: 600 }}>🔧 {tc.name}</span>
-        <Badge variant={statusVariant}>{status}</Badge>
+        {statusBadge}
       </button>
 
       {/* Collapsible details */}
@@ -274,9 +306,71 @@ const MarkdownWithCodeCopy: React.FC<{ content: string }> = ({ content }) => {
   );
 };
 
+/**
+ * Compact disclosure for tool calls the user asked to keep out of chat
+ * (chat.showToolCalls=false). The host never forwards arguments or result
+ * payloads in this mode — this card only lists which tools ran and their
+ * status, revealed on an explicit click. Nothing here is persisted to chat
+ * history (hidden calls are excluded from the final message merge).
+ */
+const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
+  const [expanded, setExpanded] = useState(false);
+  const doneCount = calls.filter(c => c.done || !!c.result).length;
+
+  return (
+    <div className={expanded ? 'tool-hidden-group expanded' : 'tool-hidden-group'} style={{ marginTop: 4 }}>
+      <button
+        className="activity-indicator tool-hidden-toggle"
+        onClick={() => setExpanded(!expanded)}
+        title={expanded ? 'Hide tool activity' : 'Reveal the tools the agent is running'}
+      >
+        <span
+          className="tool-hidden-chevron"
+          style={{ transition: 'transform 0.15s', transform: expanded ? 'rotate(90deg)' : 'none' }}
+        >
+          ▶
+        </span>
+        <div className="activity-spinner" />
+        <span className="activity-text">Working…</span>
+        <span className="tool-hidden-count">
+          {doneCount}/{calls.length} tools
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="tool-hidden-list">
+          {calls.map(tc => {
+            const err = !!tc.result && isErrorResult(tc.result);
+            const done = tc.done || !!tc.result;
+            return (
+              <div key={tc.id} className="tool-hidden-row">
+                <span className="tool-hidden-row-icon">🔧</span>
+                <span className="tool-hidden-row-name">{tc.name || 'unknown tool'}</span>
+                {done ? (
+                  <span className={`tool-hidden-row-status ${err ? 'tool-hidden-row-error' : 'tool-hidden-row-done'}`}>
+                    {err ? 'error' : 'completed'}
+                  </span>
+                ) : (
+                  <span className="tool-hidden-row-status tool-hidden-row-running">
+                    <span className="tool-status-spinner" />
+                    running…
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <div className="tool-hidden-note">
+            Arguments and results stay hidden (chat.showToolCalls=false) — nothing here is saved to chat history.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading, thinking, activity }: Props) {
+export function MessageList({ messages, loading, thinking, activity, liveToolCalls = [] }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(messages.length);
 
@@ -289,7 +383,7 @@ export function MessageList({ messages, loading, thinking, activity }: Props) {
     // Single message → smooth scroll
     const behavior = countDelta > 1 ? 'instant' : 'smooth';
     bottomRef.current?.scrollIntoView({ behavior });
-  }, [messages, loading, thinking, activity]);
+  }, [messages, loading, thinking, activity, liveToolCalls]);
 
   if (messages.length === 0 && !loading) {
     return (
@@ -395,27 +489,42 @@ export function MessageList({ messages, loading, thinking, activity }: Props) {
             <div className="message-header">
               <span className="message-author">ADO Code</span>
             </div>
-            {activity ? (
+            <div className="message-content">
+              {/* Headline: what the AI is doing right now */}
               <div className="activity-indicator">
                 <div className="activity-spinner" />
-                <span className="activity-text">{activity}…</span>
+                <span className="activity-text">{activity ? `${activity}…` : 'Thinking…'}</span>
               </div>
-            ) : thinking ? (
-              <div className="thinking-block">
-                <div className="thinking-header">
-                  <span className="thinking-icon">💭</span>
-                  <span className="thinking-label">Thinking</span>
+
+              {/* Live tool calls — running → completed as results land.
+                  Detail cards render full arguments/results; hidden calls
+                  (chat.showToolCalls=false) collapse into a clickable
+                  "Working…" disclosure that lists the tool names on demand
+                  (no payload ever leaves the host). */}
+              {liveToolCalls.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  {liveToolCalls
+                    .filter(tc => tc.showDetails !== false)
+                    .map(tc => (
+                      <ToolCallBlock key={tc.id} tc={tc} />
+                    ))}
+                  {liveToolCalls.some(tc => tc.showDetails === false) && (
+                    <HiddenToolCalls calls={liveToolCalls.filter(tc => tc.showDetails === false)} />
+                  )}
                 </div>
-                <div className="thinking-content">{thinking}</div>
-              </div>
-            ) : (
-              <div className="loading-indicator">
-                <div className="loading-dots">
-                  <span /><span /><span />
+              )}
+
+              {/* Thinking/reasoning text */}
+              {!!thinking && thinking.trim().length > 0 && (
+                <div className="thinking-block">
+                  <div className="thinking-header">
+                    <span className="thinking-icon">💭</span>
+                    <span className="thinking-label">Thinking</span>
+                  </div>
+                  <div className="thinking-content">{thinking}</div>
                 </div>
-                Thinking…
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -219,6 +219,59 @@ export class AnthropicProvider implements LlmProvider {
   async listModels(config: LlmConfig): Promise<ModelInfo[]> {
     return listModelsAnthropic(config);
   }
+
+  /**
+   * Native token count via Anthropic's /v1/messages/count_tokens endpoint
+   * (free, first-class). Returns `undefined` on any failure so callers fall
+   * back to the local heuristic. Counts the system prompt + messages exactly
+   * as the API would bill them.
+   */
+  async countTokens(messages: LlmMessage[], config: LlmConfig): Promise<number | undefined> {
+    try {
+      const systemMessage = messages.find(m => m.role === 'system');
+      const nonSystem = messages.filter(m => m.role !== 'system');
+      // Merge consecutive same-role messages — same shape the API requires
+      // (and that streamChat sends).
+      const convo: Array<{ role: 'user' | 'assistant'; content: string | ContentBlockParam[] }> = [];
+      for (const m of nonSystem) {
+        const role = m.role as 'user' | 'assistant';
+        const last = convo[convo.length - 1];
+        if (last && last.role === role) {
+          if (typeof last.content === 'string' && typeof m.content === 'string') {
+            last.content += '\n\n' + m.content;
+          } else {
+            const lastBlocks = typeof last.content === 'string'
+              ? [{ type: 'text' as const, text: last.content }] : last.content;
+            const newBlocks = typeof m.content === 'string'
+              ? [{ type: 'text' as const, text: m.content }] : m.content;
+            last.content = [...lastBlocks, ...newBlocks];
+          }
+        } else {
+          convo.push({ role, content: m.content });
+        }
+      }
+      while (convo.length > 0 && convo[0].role === 'assistant') convo.shift();
+
+      const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+      const body: Record<string, any> = { model: config.model, messages: convo };
+      if (systemMessage) body.system = systemMessage.content;
+
+      const response = await fetch(`${baseUrl}/v1/messages/count_tokens`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) return undefined;
+      const parsed = (await response.json()) as { input_tokens?: number };
+      return typeof parsed.input_tokens === 'number' ? parsed.input_tokens : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 /** Model ids (+ capability hints when the gateway exposes them) via Anthropic's GET /v1/models endpoint. */

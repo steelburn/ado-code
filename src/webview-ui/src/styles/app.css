@@ -81,6 +81,72 @@ code {
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
+/* Header row: card title + optional badge + Skip/Configure action */
+.welcome-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.welcome-card-header h2 {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.welcome-card-badge {
+  font-size: 0.68em;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.welcome-skip {
+  background: transparent;
+  border: none;
+  color: var(--vscode-textLink-foreground);
+  font-size: 0.75em;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+.welcome-skip:hover {
+  text-decoration: underline;
+}
+
+/* Collapsed ADO card — "skipped" notice strip */
+.welcome-ado-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px dashed var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 12px;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
+}
+.welcome-ado-skipped .btn {
+  align-self: flex-start;
+}
+
+/* Wizard save-time reminder when saving without ADO */
+.welcome-save-hint {
+  margin-top: 8px;
+  max-width: 400px;
+  font-size: 0.8em;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--vscode-inputValidation-warningForeground, #cca700);
+}
+
 .form-group {
   margin-bottom: 12px;
 }
@@ -549,6 +615,43 @@ code {
   opacity: 1;
 }
 
+/* ── ADO not configured reminder (chat header) ────────────────── */
+.ado-not-configured-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 4px 12px 0;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
+  border-radius: 4px;
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+  color: var(--vscode-inputValidation-warningForeground, #cca700);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.ado-not-configured-text {
+  flex: 1;
+}
+.ado-not-configured-banner .btn {
+  padding: 2px 10px;
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+.ado-not-configured-dismiss {
+  background: none;
+  border: none;
+  color: var(--vscode-inputValidation-warningForeground, #cca700);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.ado-not-configured-dismiss:hover {
+  opacity: 1;
+}
+
 /* ── Input Bar (Cline-style) ─────────────────────────────────── */
 .input-bar__stop-btn {
   background: var(--vscode-errorForeground) !important;
@@ -903,6 +1006,136 @@ code {
   font-size: 0.88em;
   color: var(--vscode-foreground);
   font-weight: 500;
+}
+
+/* ── Live tool call status ─────────────────────────────────────── */
+.tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-size: 0.75em;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.tool-status-running {
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool-status-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--vscode-widget-border);
+  border-top-color: var(--vscode-focusBorder);
+  border-radius: 50%;
+  animation: activitySpin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Running tool cards get a subtle attention border so the user notices
+   progress without clicking. */
+.tool-block:has(.tool-status-running) {
+  border-color: var(--vscode-inputValidation-infoBorder, #3794ff);
+  border-left: 3px solid var(--vscode-inputValidation-infoBorder, #3794ff);
+}
+
+/* ── Hidden tool-call disclosure (chat.showToolCalls=false) ────────
+   Click the pulsing "Working…" row to peek at which tools the agent is
+   running. Names + status only — arguments/results never reach the webview
+   in this mode, and nothing is persisted to chat history. */
+.tool-hidden-group.expanded .tool-hidden-toggle {
+  border-radius: 6px 6px 0 0;
+  border-bottom-color: transparent;
+}
+
+.tool-hidden-toggle {
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--vscode-font-family);
+  font-size: inherit;
+  color: var(--vscode-foreground);
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+.tool-hidden-toggle:hover {
+  border-color: var(--vscode-focusBorder);
+}
+.tool-hidden-toggle:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.tool-hidden-chevron {
+  font-size: 0.7em;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+.tool-hidden-count {
+  margin-left: auto;
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.tool-hidden-list {
+  border: 1px solid var(--vscode-widget-border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background);
+}
+
+.tool-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 0.85em;
+}
+.tool-hidden-row + .tool-hidden-row {
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.tool-hidden-row-icon {
+  flex-shrink: 0;
+}
+
+.tool-hidden-row-name {
+  font-family: var(--vscode-editor-font-family);
+  flex: 1;
+  font-weight: 500;
+}
+
+.tool-hidden-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75em;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.tool-hidden-row-running {
+  color: var(--vscode-descriptionForeground);
+}
+.tool-hidden-row-done {
+  color: var(--vscode-charts-green, #89d185);
+}
+.tool-hidden-row-error {
+  color: var(--vscode-errorForeground);
+}
+
+.tool-hidden-note {
+  padding: 6px 12px;
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+  border-top: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
 }
 
 /* ── Scrollbar Styling ─────────────────────────────────────────── */
@@ -1762,10 +1995,106 @@ code {
   background: var(--vscode-button-background);
 }
 
-.config-body {
+.config-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.config-nav {
+  width: 190px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 8px 6px;
+  border-right: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.config-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-sideBar-foreground);
+  font-size: 0.8em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.config-nav-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.config-nav-item-active {
+  background: var(--vscode-list-activeSelectionBackground) !important;
+  color: var(--vscode-list-activeSelectionForeground) !important;
+}
+
+.config-nav-icon {
+  font-size: 1em;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.config-nav-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.config-nav-badge {
+  font-size: 0.7em;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 14px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.config-nav-footer {
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.config-nav-divider {
+  border-top: 1px solid var(--vscode-panel-border);
+  margin: 6px 0 10px;
+}
+
+.config-content {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 12px 16px;
+}
+
+.config-category-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.config-category-icon {
+  font-size: 1.2em;
+}
+
+.config-category-title {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
 }
 
 .config-section {
@@ -2188,13 +2517,14 @@ code {
 /* ── Advanced Configuration toggle ─────────────────────────────── */
 .config-advanced-toggle {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  margin: 0 12px 16px;
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-  border: 1px solid var(--vscode-widget-border);
-  border-radius: 6px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.config-advanced-toggle:hover {
+  background: var(--vscode-list-hoverBackground);
 }
 .config-advanced-toggle-text {
   display: flex;

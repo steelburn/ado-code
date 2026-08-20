@@ -35,6 +35,14 @@ export interface LlmProvider {
     text: string;
     toolCalls: ToolCall[];
   }>;
+  /**
+   * Best-effort native token count for a full conversation (system + user +
+   * assistant + tool messages as passed to the API). Returns `undefined` when
+   * the provider/endpoint has no native counting available — callers then fall
+   * back to the local heuristic. Not all providers expose a free endpoint
+   * (Anthropic does; OpenAI-compatible gateways vary).
+   */
+  countTokens?(messages: LlmMessage[], config: LlmConfig): Promise<number | undefined>;
   /** Model ids (+ capability hints when the gateway exposes them) — wizard model picker. */
   listModels?(config: LlmConfig): Promise<ModelInfo[]>;
 }

@@ -1,0 +1,68 @@
+# Chat Token & Tool-Call Optimization Plan
+
+Goal: reduce token consumption (and often cost/latency) of the agentic chat loop
+without changing user-facing behavior.
+
+## Problem statement
+
+The agentic loop (`src/llm/agentic.ts`) re-sends the **entire** conversation on
+**every** iteration: system prompt (~8KB) + all 20+ tool schemas + every prior
+message + every accumulated tool **result**. `maxIterations=8` /
+`actToolBudget=50` mean a multi-tool turn resends the full history many times.
+
+Two compounding drivers:
+1. **Tool results are large and persistent.** `read_file` returns whole files
+   (unbounded), `run_terminal_command` up to 8k chars, `get_work_item` the full
+   comment thread. `ContextManager` deliberately keeps tool results at the
+   HIGHEST priority (`getPriority`), so they survive truncation.
+2. **The token budget ignores the system prompt and tool schemas.**
+   `trimConversation` / status bar / condense threshold count only
+   `this.conversation`, which are re-sent with every request anyway.
+
+## Status
+
+- [x] **1. Choke-point result capper + bounded `read_file`** — `capToolResult` (head+tail, ~4k-token budget) applied to `read_file` (defaults to first ~200 lines), `run_terminal_command`, `get_work_item` (capped description/AC/thread), `list_workspace`.
+- [x] **2. Compact prior tool results** — `agentic.ts` stubs tool results older than the most recent iteration (kept messages preserve C1 id-referencing), so the model still gets the latest output full while older ones stop re-sending.
+- [x] **3. Mode-based tool filtering + description trim** — plan mode now offers only read-only tools; trimmed the most prose-heavy descriptions.
+- [x] **4. Overhead in the budget** — `ContextManager.setOverheadTokens()` includes system prompt + tool schemas in truncation/remaining/status-bar accounting.
+- [x] **5. Diagnostics** — per-turn cost debug log (iterations, tool calls, conversation + overhead tokens).
+- [x] **6. Provider-native token counting** — `LlmProvider.countTokens()` (Anthropic `/v1/messages/count_tokens`, always free; OpenAI-compatible via `usage.prompt_tokens` from a throttled minimal request), wired into the token status bar with heuristic fallback. Toggle `adoCode.llm.useNativeTokenCounting` (default on). Gemini/openai-compatible gateways that report usage benefit automatically.
+
+## Work items (ordered, each independently shippable)
+
+### 1. Choke-point result capper + bounded `read_file`  (`src/llm/tools.ts`)
+- `read_file` defaults to a bounded line window (first ~200 lines) and still
+  honors explicit `startLine/endLine`, with a `[truncated]` note.
+- Add a token-aware `capToolResult(content)` helper (head+tail trimming with a
+  truncation marker; ~4–6k token budget default) applied to the high-volume
+  tool returns: `read_file`, `run_terminal_command`, `get_work_item`,
+  `list_workspace`.
+- Keeps the model's view of the file for the whole turn small without losing
+  tool-calling correctness.
+
+### 2. Compact prior tool results in the loop  (`src/llm/agentic.ts`)
+- After a few iterations, stub out older `role:'tool'` results to
+  `[result truncated: <tool>]` while keeping the newest 1–2 in full.
+- Messages are KEPT (not removed) so C1 tool-id referencing still holds for
+  OpenAI (`tool_call_id`) and Anthropic (`tool_use_id`); only the payload
+  shrinks. Removes the biggest sustained driver on long turns.
+
+### 3. Mode-based tool filtering + description trim  (`src/llm/tools.ts`)
+- **Plan mode sends only read-only tools** (the model can't legally call the
+  mutating ones anyway — filtering them saves tokens and reduces wrong calls).
+- Lightly trim the most prose-heavy tool descriptions (commit_worktree,
+  create_pull_request, delegate_to_agent) preserving core semantics.
+
+### 4. Account for system prompt + tools in the budget  (`src/llm/context/`)
+- Add a fixed-overhead token budget to `ContextManager` (system prompt + tool
+  definitions) so `shouldTruncate`/`getRemainingTokens`/status bar reflect the
+  real per-request size, not just `this.conversation`.
+
+### 5. Diagnostics
+- Per-turn token cost debug log (`system + tools + history + results`) so
+  before/after can be measured.
+
+## Out of scope (future)
+- Native provider token-counting endpoints.
+- Smarter recency window tuning.
+- Adaptive iteration budgets.

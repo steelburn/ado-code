@@ -140,3 +140,67 @@ suite('AnthropicProvider', () => {
     assert.strictEqual(body.messages[0].content, 'a\n\nb');
   });
 });
+
+suite('provider native token counting', () => {
+  test('Anthropic uses /v1/messages/count_tokens (system + messages)', async () => {
+    let capturedUrl = '';
+    let capturedBody: any = null;
+    const fetchStub = async (url: any, init: any) => {
+      capturedUrl = url;
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ input_tokens: 1234 }) };
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const provider = new AnthropicProvider();
+    const messages: LlmMessage[] = [
+      { role: 'system', content: 'you are a helper' },
+      { role: 'user', content: 'hello' },
+    ];
+    const tokens = await provider.countTokens!(messages, { ...config, provider: 'anthropic', apiUrl: 'https://api.anthropic.com' });
+    assert.strictEqual(tokens, 1234);
+    assert.ok(capturedUrl.endsWith('/v1/messages/count_tokens'), `URL is count_tokens: ${capturedUrl}`);
+    assert.strictEqual(capturedBody.system, 'you are a helper');
+    assert.ok(Array.isArray(capturedBody.messages));
+    assert.strictEqual(capturedBody.messages[0].role, 'user');
+  });
+
+  test('Anthropic count_tokens failure degrades to undefined', async () => {
+    const fetchStub = async () => ({ ok: false });
+    (globalThis as any).fetch = fetchStub;
+    const provider = new AnthropicProvider();
+    const tokens = await provider.countTokens!([{ role: 'user', content: 'hi' }], { ...config, provider: 'anthropic', apiUrl: 'https://api.anthropic.com' });
+    assert.strictEqual(tokens, undefined);
+  });
+
+  test('OpenAI reads usage.prompt_tokens from a minimal completion', async () => {
+    let capturedBody: any = null;
+    const fetchStub = async (_url: any, init: any) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ usage: { prompt_tokens: 987 } }) };
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const provider = new OpenAiProvider();
+    const messages: LlmMessage[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read_file', arguments: '{"path":"a.ts"}' }] },
+      { role: 'tool', content: '{ "ok": true }', toolCallId: 'c1' },
+    ];
+    const tokens = await provider.countTokens!(messages, config);
+    assert.strictEqual(tokens, 987);
+    assert.ok(Array.isArray(capturedBody.messages));
+    // Tool messages/assistant tool_calls are passed in native shape so the
+    // provider's tokenizer counts them too.
+    assert.ok(capturedBody.messages.some((m: any) => m.role === 'tool' && m.tool_call_id === 'c1'));
+  });
+
+  test('OpenAI count degrades to undefined on missing usage', async () => {
+    const fetchStub = async () => ({ ok: true, json: async () => ({ choices: [] }) });
+    (globalThis as any).fetch = fetchStub;
+    const provider = new OpenAiProvider();
+    const tokens = await provider.countTokens!([{ role: 'user', content: 'hi' }], config);
+    assert.strictEqual(tokens, undefined);
+  });
+});

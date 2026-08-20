@@ -31,6 +31,21 @@ export class LlmClient {
   }
 
   /**
+   * Best-effort native token count for a conversation. Returns `undefined`
+   * when the provider has no native counting (caller falls back to the local
+   * heuristic). Failures degrade gracefully to `undefined`.
+   */
+  async countTokens(messages: LlmMessage[]): Promise<number | undefined> {
+    if (!this.provider.countTokens) return undefined;
+    try {
+      const n = await this.provider.countTokens(messages, this.config);
+      return typeof n === 'number' && n >= 0 ? n : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Model ids (+ capability hints when the gateway exposes them) available at
    * the configured endpoint (setup-wizard model picker). Delegates to the
    * provider's listModels.

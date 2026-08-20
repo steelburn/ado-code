@@ -35,6 +35,13 @@ export interface UsageStats {
   percentage: number;
 }
 
+/**
+ * Rough token cost of the dynamic system prompt that rides along with every
+ * agentic request but is NOT part of `this.conversation`. Used by the host to
+ * size the context-overhead so truncation/status reflect true per-request cost
+ * (see ContextManager.setOverheadTokens).
+ */
+export const SYSTEM_PROMPT_OVERHEAD_TOKENS = 2000;
 // ---------------------------------------------------------------------------
 // Helper — shared by ContextManager and ConversationCondenser
 // ---------------------------------------------------------------------------
@@ -74,6 +81,9 @@ export function getRecentPairIndices(
 export class ContextManager {
   private maxTokens: number;
   private currentTokens: number = 0;
+  /** Tokens NOT in the tracked messages but sent with every request (system
+   *  prompt + tool schemas). Added to usage so budgets reflect true cost. */
+  private overheadTokens: number = 0;
 
   constructor(maxTokens: number) {
     this.maxTokens = maxTokens;
@@ -86,6 +96,15 @@ export class ContextManager {
   /** Update the max token budget (e.g. when live model data is available). */
   setMaxTokens(maxTokens: number): void {
     this.maxTokens = maxTokens;
+  }
+
+  /**
+   * Account for tokens sent with every request outside the message array
+   * (system prompt, tool schemas). Truncation/remaining-token checks then
+   * reflect the true per-request size instead of only the conversation.
+   */
+  setOverheadTokens(tokens: number): void {
+    this.overheadTokens = Math.max(0, tokens);
   }
 
   // -----------------------------------------------------------------------
@@ -106,23 +125,24 @@ export class ContextManager {
   // Queries
   // -----------------------------------------------------------------------
 
-  /** Tokens still available in the context window. */
+  /** Tokens still available in the context window (accounting for overhead). */
   getRemainingTokens(): number {
-    return Math.max(0, this.maxTokens - this.currentTokens);
+    return Math.max(0, this.maxTokens - this.currentTokens - this.overheadTokens);
   }
 
   /**
    * Whether the context is close enough to the limit that new content
-   * risks an overflow.  Returns `true` when usage ≥ 80 % of maxTokens.
+   * risks an overflow.  Returns `true` when usage ≥ 80 % of maxTokens
+   * (overhead included).
    */
   shouldTruncate(): boolean {
-    return this.currentTokens / this.maxTokens > TRUNCATION_THRESHOLD;
+    return (this.currentTokens + this.overheadTokens) / this.maxTokens > TRUNCATION_THRESHOLD;
   }
 
   /** Convenience snapshot of current token budget. */
   getUsageStats(): UsageStats {
-    const used = this.currentTokens;
-    const remaining = this.getRemainingTokens();
+    const used = this.currentTokens + this.overheadTokens;
+    const remaining = Math.max(0, this.maxTokens - used);
     const percentage =
       this.maxTokens > 0 ? (used / this.maxTokens) * 100 : 0;
     return { used, remaining, percentage };

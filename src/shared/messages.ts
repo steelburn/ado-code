@@ -91,8 +91,11 @@ export type ExtensionToWebviewMessage =
   | { type: 'changelogUpdated'; filePath: string }
   | { type: 'modeChanged'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
   // H9: tool-call cards for the webview (agentic loop streaming)
-  | { type: 'toolCall'; call: { id: string; name: string; arguments: Record<string, any> } }
+  | { type: 'toolCall'; call: { id: string; name: string; arguments: Record<string, any>; showDetails?: boolean } }
   | { type: 'toolResult'; callId: string; content: string }
+  // Bare completion tick for hidden tool calls (chat.showToolCalls=false): no
+  // payload — just flips the disclosure row from "running" to "completed".
+  | { type: 'toolCallDone'; callId: string }
   | { type: 'planReady'; plan: string } // plan mode: "Begin implementation" button
   | { type: 'config'; config: ExtensionConfig }
   | { type: 'error'; message: string }

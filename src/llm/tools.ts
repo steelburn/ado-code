@@ -3,6 +3,43 @@ import { LlmTool } from './types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
 import { isCommandSessionApproved } from './tool-approval-ui';
+import { matchesToolPattern, matchesCommandPattern } from './consent';
+import { countTokens } from './context/tokenCounter';
+
+// ── Tool-result size guard ────────────────────────────────────────────────
+// Token optimization: a tool result is stored in the conversation and
+// re-sent with EVERY agentic iteration (agentic.ts). Big results — whole
+// file reads, long command output, full work-item threads — are the single
+// biggest token driver on long turns. `capToolResult` trims the PAYLOAD to
+// a token budget with a head+tail strategy and a truncation marker, so the
+// model still sees the start, the end, and that output was cut. Kept O(1)
+// budget across all iterations.
+
+/** Default token budget for a single tool result fed back to the model. */
+const TOOL_RESULT_TOKEN_BUDGET = 4000;
+/** When truncating, how much of the budget goes to the HEAD (rest = tail). */
+const TOOL_RESULT_HEAD_RATIO = 0.6;
+
+/**
+ * Cap a tool result string to roughly `budgetWidth` (default
+ * TOOL_RESULT_TOKEN_BUDGET) tokens. Returns the text unchanged when it fits;
+ * otherwise returns head + '\n…[truncated; omitted N chars]…\n' + tail.
+ */
+export function capToolResult(content: string, budgetWidth: number = TOOL_RESULT_TOKEN_BUDGET): string {
+  if (!content) return content;
+  const tokens = countTokens(content);
+  if (tokens <= budgetWidth) return content;
+  const headToks = Math.floor(budgetWidth * TOOL_RESULT_HEAD_RATIO);
+  const tailToks = budgetWidth - headToks;
+  // Convert token budget back to an approximate char budget (chars/token ≈ 4).
+  const headChars = headToks * 4;
+  const tailChars = tailToks * 4;
+  const head = content.slice(0, headChars);
+  const tail = content.length - tailChars > headChars ? content.slice(-tailChars) : '';
+  const omitted = content.length - head.length - tail.length;
+  return `${head}\n\n…[result truncated: ${omitted.toLocaleString()} chars / ~${(tokens - budgetWidth).toLocaleString()} tokens omitted; use a narrower range or targeted query for the rest]…${tail ? '\n\n' + tail : ''}`;
+}
+
 
 export interface ToolExecutor {
   tools: LlmTool[];
@@ -42,7 +79,7 @@ export function createToolExecutor(
   // tool still prompts: terminal commands by exact command string, other
   // mutating tools by tool name.
   const state = { mode: 'inline' as 'inline' | 'plan' | 'act' | 'yolo', deniedKeys: new Set<string>() };
-  const tools: LlmTool[] = [
+  const allTools: LlmTool[] = [
     {
       name: 'get_work_items',
       description: 'List open work items assigned to the current user in Azure DevOps',
@@ -97,7 +134,7 @@ export function createToolExecutor(
     },
     {
       name: 'delegate_to_agent',
-      description: 'Hand a coding task to an installed external agent CLI (Claude Code, Codex, OpenCode, Hermes, Pi, OpenClaw, Aider, Gemini, Cursor). Returns the agent output.',
+      description: 'Hand a coding task to an installed external agent CLI; returns the agent output',
       parameters: {
         type: 'object',
         properties: {
@@ -110,7 +147,7 @@ export function createToolExecutor(
     // ── Merge flow: commit / push / PR for a finished agent run's worktree ──
     {
       name: 'commit_worktree',
-      description: 'Commit ALL changes in a finished agent run\'s worktree (the isolated branch for a delegated run). Use after the agent finished so its work is preserved. Never touches main. Refuses runs that FAILED verification unless allowFailed is set (a failed run may still contain useful partial work — override deliberately).',
+      description: "Commit ALL changes in a finished agent run's worktree. After the agent finishes, so its work is preserved. Never touches main. Set allowFailed to commit a failed-verification run deliberately.",
       parameters: {
         type: 'object',
         properties: {
@@ -134,7 +171,7 @@ export function createToolExecutor(
     },
     {
       name: 'create_pull_request',
-      description: 'Create an Azure DevOps pull request from an agent run\'s branch into the base branch. Call AFTER push_worktree. Refuses to target protected branches (see adoCode.git.protectedBranches).',
+      description: 'Create an ADO pull request from an agent run branch into the base branch. Call AFTER push_worktree. Refuses protected branches.',
       parameters: {
         type: 'object',
         properties: {
@@ -147,7 +184,7 @@ export function createToolExecutor(
     },
     {
       name: 'resolve_pr_conflicts',
-      description: 'When a pull request reports conflicts (mergeStatus conflicts), list the conflicted files with the base/our/their contents so you can resolve them. READ-ONLY. Edit the resolution via edit_file/apply_diff on the given worktreePath, then commit_worktree + push_worktree again to re-trigger the merge.',
+      description: 'List conflicted files (base/our/their) for a run whose PR reports conflicts. READ-ONLY; resolve via edit_file/apply_diff on the worktreePath, then commit_worktree + push_worktree again.',
       parameters: {
         type: 'object',
         properties: {
@@ -288,8 +325,19 @@ export function createToolExecutor(
   // execute() so an org switch (Q1) takes effect without recreating the executor.
   const activeProject = () => getActiveOrg(context, settings).project;
 
+  /**
+   * Return the tool schemas relevant to the current mode. Plan mode is
+   * read-only, so sending ONLY read-only tools saves per-request tokens and
+   * reduces the chance of the model attempting a blocked tool. Other modes
+   * send the full set.
+   */
+  const filteredTools = (): LlmTool[] =>
+    state.mode === 'plan'
+      ? allTools.filter(t => READ_ONLY_TOOLS.has(t.name))
+      : allTools;
+
   return {
-    tools,
+    get tools() { return filteredTools(); },
     // M-6 fix: mode lives on a mutable `state` object — the closure var would
     // leave the exported property stale after setMode. Reads/writes go through
     // `state.mode`.
@@ -312,9 +360,14 @@ export function createToolExecutor(
         // YOLO mode: skip ALL consent — auto-approve every tool including
         // terminal commands. No allowlist, no prompt. User chose full autonomy.
         if (state.mode !== 'yolo') {
+          // Wildcard permission: tools matching adoCode.consent.autoApproveTools
+          // patterns (e.g. "read_*", "get_*") skip ALL consent — no prompt,
+          // no terminal allowlist. Read fresh so edits apply without a restart.
+          const autoApproveTools = vscode.workspace.getConfiguration('adoCode').get<string[]>('consent.autoApproveTools', []);
+          const toolAutoApproved = matchesToolPattern(name, autoApproveTools);
           // C3 fix: inline mode REQUIRES an approval hook. If none is wired,
           // DENY — never silently execute a mutating tool.
-          if (state.mode === 'inline') {
+          if (state.mode === 'inline' && !toolAutoApproved) {
             if (!hooks?.onApprove) {
               return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
             }
@@ -336,11 +389,12 @@ export function createToolExecutor(
           // C3 fix: act mode still enforces the terminal allowlist on
           // run_terminal_command (tokenized, operator-free — see helper below).
           // Commands not in the allowlist are routed through the approval hook
-          // so the user can allow once, per-session, or permanently.
-          if (name === 'run_terminal_command' && state.mode === 'act') {
+          // so the user can allow once, per-session, or permanently. Allowlist
+          // entries support wildcards: "git *" permits any git subcommand.
+          if (name === 'run_terminal_command' && state.mode === 'act' && !toolAutoApproved) {
             const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
             const command = String(args.command ?? '');
-            if (!isAllowlistedCommand(command, allowlist)) {
+            if (!matchesCommandPattern(command, allowlist)) {
               // Check session cache first (user chose "Allow for Session" earlier)
               if (!isCommandSessionApproved(command)) {
                 // Not in allowlist and not session-approved — ask user
@@ -378,14 +432,19 @@ export function createToolExecutor(
         }
         case 'get_work_item': {
           const { detail, comments } = await services.ado.getWorkItemWithDiscussion(project, args.id);
+          // Cap potentially-large free-text fields so the result stays within
+          // the token budget when fed back to the model (see capToolResult).
+          const thread = (comments ?? [])
+            .slice(0, 20)
+            .map(c => ({ author: c.createdBy?.displayName ?? '?', text: capToolResult(String(c.text ?? ''), 400) }));
           return JSON.stringify({
             id: detail.id,
             title: detail.fields['System.Title'],
             state: detail.fields['System.State'],
-            description: detail.fields['System.Description'],
-            acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'],
+            description: capToolResult(String(detail.fields['System.Description'] ?? ''), 1500),
+            acceptanceCriteria: capToolResult(String(detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ?? ''), 800),
             tags: detail.fields['System.Tags'],
-            thread: comments.map(c => ({ author: c.createdBy.displayName, text: c.text })),
+            thread,
           });
         }
         case 'update_work_item_state':
@@ -457,9 +516,20 @@ export function createToolExecutor(
           const doc = await vscode.workspace.fs.readFile(uri);
           const text = Buffer.from(doc).toString('utf8');
           const lines = text.split('\n');
-          const start = (args.startLine ?? 1) - 1;
-          const end = args.endLine ?? lines.length;
-          return lines.slice(start, end).join('\n');
+          // Token optimization: reading a WHOLE file unbounded returns
+          // thousands of tokens that persist across every loop iteration.
+          // Default to a bounded window (still honoring explicit ranges) and
+          // cap the returned payload to the tool-result token budget.
+          const hasStart = args.startLine != null;
+          const hasEnd = args.endLine != null;
+          const start = hasStart ? Math.max(0, (args.startLine - 1)) : 0;
+          let end = hasEnd ? args.endLine : lines.length;
+          let note = '';
+          if (!hasStart && !hasEnd && lines.length > 200) {
+            end = 200;
+            note = `\n\n…[read_file truncated: showing first ${end} of ${lines.length} lines; pass startLine/endLine to read a specific range]`;
+          }
+          return capToolResult(lines.slice(start, end).join('\n') + note);
         }
         case 'get_selection': {
           const editor = vscode.window.activeTextEditor;
@@ -468,7 +538,7 @@ export function createToolExecutor(
         case 'list_workspace': {
           // C4/M18: exclude .git, node_modules, dist, and common secret dirs
           const files = await vscode.workspace.findFiles(args.glob ?? '**/*', '**/{node_modules,.git,dist,.vscode}/**', 500);
-          return JSON.stringify(files.map(f => vscode.workspace.asRelativePath(f)));
+          return capToolResult(JSON.stringify(files.map(f => vscode.workspace.asRelativePath(f))), 2000);
         }
         case 'write_to_file': {
           const uri = resolveWorkspacePath(args.path); // C4: path confinement
@@ -521,7 +591,7 @@ export function createToolExecutor(
               resolve(stdout || stderr || (err?.message ?? ''));
             });
           });
-          return result.slice(0, 8000);
+          return capToolResult(result.slice(0, 8000));
         }
         case 'set_memory': {
           services.memory.set(args.key, args.category, args.content);
@@ -558,16 +628,14 @@ export function createToolExecutor(
   };
 }
 
-/** C3: allowlist check — command must tokenize to EXACTLY one allowlisted argv, no shell operators. */
+/** C3: allowlist check — command must be operator-free and match an entry.
+ *  Entries may be EXACT commands ("npm test") or wildcard patterns ("git *",
+ *  "npm run *") — see matchesCommandPattern in consent.ts. */
 function isAllowlistedCommand(command: string, allowlist: string[]): boolean {
   // C-2 fix: `\s` NOT in the operator class (multi-word commands are legal);
   // newlines rejected so multi-line smuggling can't bypass the argv match.
   if (!command || !/^[^&|;`$<>()\r\n]*$/.test(command)) return false;
-  const argv = command.match(/"[^"]*"|\S+/g) ?? [];
-  return allowlist.some(entry => {
-    const expected = entry.match(/"[^"]*"|\S+/g) ?? [];
-    return argv.length === expected.length && argv.every((a, i) => a === expected[i]);
-  });
+  return matchesCommandPattern(command, allowlist);
 }
 
 /** C4: resolve a workspace-relative path and refuse anything escaping the root. */

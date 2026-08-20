@@ -291,6 +291,90 @@ export function isHarmlessCommand(command: string): boolean {
 // End of tool-level approval support
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Wildcard permission matching
+//
+// Tools and terminal commands can be auto-approved by glob patterns so users
+// can grant broader permission "to a certain extent":
+//   - `adoCode.consent.autoApproveTools`  e.g. ["read_*", "get_*"]
+//   - `adoCode.act.terminalAllowlist`     e.g. ["git *", "npm run *"]
+// Patterns support `*` (any run of characters) and `?` (any single char). A
+// trailing bare `*` in a COMMAND pattern swallows any remaining tokens, so
+// `git *` permits every git subcommand while `git push *` only permits pushes.
+// ---------------------------------------------------------------------------
+
+/** Convert a `*`/`?` glob into a whole-string RegExp (regex chars escaped). */
+function globToRegExp(pattern: string): RegExp {
+  let re = '';
+  for (const ch of pattern) {
+    if (ch === '*') re += '.*';
+    else if (ch === '?') re += '.';
+    else re += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp('^' + re + '$');
+}
+
+/** Split a shell-ish line into tokens, keeping "quoted chunks" together. */
+function tokenize(line: string): string[] {
+  return line.match(/"[^"]*"|\S+/g) ?? [];
+}
+
+function tokenMatches(patternToken: string, token: string): boolean {
+  if (!patternToken.includes('*') && !patternToken.includes('?')) {
+    return patternToken === token;
+  }
+  return globToRegExp(patternToken).test(token);
+}
+
+/**
+ * True when a tool name matches any of the given glob patterns (or equals a
+ * literal entry). Patterns match the WHOLE tool name: "read_*" matches
+ * read_file and read_workspace_memory; "get_*" matches get_work_items.
+ */
+export function matchesToolPattern(toolName: string, patterns: string[]): boolean {
+  for (const raw of patterns ?? []) {
+    const p = raw.trim();
+    if (!p) continue;
+    if (!p.includes('*') && !p.includes('?')) {
+      if (p === toolName) return true;
+      continue;
+    }
+    if (globToRegExp(p).test(toolName)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when a terminal command matches any of the given command patterns.
+ * Each pattern token is matched against the command token at the same
+ * position (per-token glob); a trailing bare `*` swallows any remaining
+ * command tokens, so `git *` matches git status AND git push origin main.
+ */
+export function matchesCommandPattern(command: string, patterns: string[]): boolean {
+  const cTokens = tokenize(command.trim());
+  if (cTokens.length === 0) return false;
+  for (const raw of patterns ?? []) {
+    const pTokens = tokenize(raw.trim());
+    if (pTokens.length === 0) continue;
+    const trailingWild = pTokens[pTokens.length - 1] === '*';
+    // With a trailing bare `*`, the required prefix is everything before it;
+    // without one, the command must have the SAME token count.
+    const required = trailingWild ? pTokens.slice(0, -1) : pTokens;
+    if (cTokens.length < required.length) continue;
+    if (!trailingWild && cTokens.length !== pTokens.length) continue;
+    let ok = true;
+    for (let i = 0; i < required.length; i++) {
+      if (!tokenMatches(required[i]!, cTokens[i]!)) { ok = false; break; }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// End of wildcard permission matching
+// ---------------------------------------------------------------------------
+
 export function createConsentBroker(timeoutMs = 120000): ConsentBroker {
   let pendingRequest: ConsentRequest | null = null;
   let pendingResolve: ((approved: boolean) => void) | null = null;
