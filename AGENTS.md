@@ -49,8 +49,8 @@ context/ — token counting, windowing, condensation
 modelCapabilities.ts — three-layer capability inference (override > live gateway > name heuristic)
 
 ### ADO Integration
-client.ts — REST API (all api-version=7.1)
-WorkItemsTreeProvider.ts — tree view
+client.ts — REST API (all api-version=7.1); expandHierarchy() walks UP missing parents (Task → Story → Feature → Epic) and DOWN children via `[System.Parent] IN (...)` so the tree nests even when parents aren't in the base query (falls back to per-parent `= N` queries if IN is rejected); parentIdOf() tolerates `{id}` and bare-number System.Parent shapes
+WorkItemsTreeProvider.ts — ONE merged tree view with a mode header row (My / All / Unassigned; mode shared via src/shared/workItemsMode.ts); context menus gate per item (assignedTo empty ⇒ unassignedWorkItemNode); items pulled in by expansion are tagged isContext
 WorkItemStatesCache.ts — cached states
 
 ### Agent System
