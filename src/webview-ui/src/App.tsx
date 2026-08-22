@@ -793,10 +793,10 @@ function App() {
             // (panel remount / reload) instead of reappearing.
             vscode.postMessage({ type: 'dismissAgentRun', runId });
           }}
-          onReopen={(runId) => {
-            // Re-open the summary output in the editor panel (the user may
-            // have closed it after completion).
-            vscode.postMessage({ type: 'reopenAgentOutput', runId });
+          onOpenInEditor={(runId) => {
+            // Open the run's LIVE progress panel in the editor area — works
+            // for running runs (streaming view) and finished runs (summary).
+            vscode.postMessage({ type: 'openAgentProgress', runId });
           }}
         />
       ))}

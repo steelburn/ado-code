@@ -57,6 +57,7 @@ export type WebviewToExtensionMessage =
   | { type: 'agentCancel'; runId: string }
   | { type: 'dismissAgentRun'; runId: string }
   | { type: 'reopenAgentOutput'; runId: string }
+  | { type: 'openAgentProgress'; runId: string }
   | { type: 'listAgents' }
   | { type: 'listAgentRuns' }
   | { type: 'clearConversation' }

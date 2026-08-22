@@ -115,6 +115,33 @@ suite('AgentRunner', () => {
     );
   });
 
+  test('getRunOutput accumulates streamed status chunks per run', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    const run: AgentRun = {
+      id: 'run-acc-7', workItemId: 7, agent: 'claude', workdir: '/tmp',
+      status: 'running', startedAt: new Date().toISOString(),
+    };
+    (runner as any).emitStatus(run, 'chunk one\n');
+    (runner as any).emitStatus(run, 'chunk two\n');
+    assert.strictEqual(runner.getRunOutput(run.id), 'chunk one\nchunk two\n');
+    // Unknown run ids return '' without throwing.
+    assert.strictEqual(runner.getRunOutput('nope'), '');
+  });
+
+  test('getRunOutput keeps a bounded tail (256KB) for long runs', () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    const run: AgentRun = {
+      id: 'run-acc-8', workItemId: 8, agent: 'claude', workdir: '/tmp',
+      status: 'running', startedAt: new Date().toISOString(),
+    };
+    const big = 'x'.repeat(300 * 1024);
+    (runner as any).emitStatus(run, big);
+    const out = runner.getRunOutput(run.id);
+    assert.ok(out.length <= 256 * 1024, `log bounded, got ${out.length}`);
+    // Tail is preserved, not the head.
+    assert.ok(out.startsWith('x'));
+  });
+
   test('persisted running runs become interrupted on reload', () => {
     const persisted: AgentRun[] = [{
       id: 'run-999-1',

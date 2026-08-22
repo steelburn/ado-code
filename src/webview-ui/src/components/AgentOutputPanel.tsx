@@ -17,12 +17,38 @@ interface Props {
   output: string;
   loading: boolean;
   onDismiss?: (runId: string) => void;
-  onReopen?: (runId: string) => void;
+  // Open the run's progress in the editor area (live for running runs,
+  // summary view for finished ones).
+  onOpenInEditor?: (runId: string) => void;
 }
 
-export function AgentOutputPanel({ run, output, loading, onDismiss, onReopen }: Props) {
+/** mm:ss (or h:mm:ss past an hour) from a millisecond duration. */
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m % 60)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+export function AgentOutputPanel({ run, output, loading, onDismiss, onOpenInEditor }: Props) {
   const [expanded, setExpanded] = useState(true);
   const outputRef = useRef<HTMLDivElement>(null);
+
+  // Live elapsed timer while the run is in progress (improved progress
+  // display — see AgentProgressPanel for the full editor-side view).
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!run || run.status !== 'running') {
+      setElapsed(0);
+      return;
+    }
+    const start = new Date(run.startedAt).getTime();
+    const tick = () => setElapsed(Math.max(0, Date.now() - start));
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [run, run?.status, run?.startedAt]);
 
   // Auto-scroll output
   useEffect(() => {
@@ -65,6 +91,15 @@ export function AgentOutputPanel({ run, output, loading, onDismiss, onReopen }: 
             <span className="agent-output-spinner">●</span>
           ) : null}
           {statusLabels[run.status] || run.status}
+          {run.status === 'running' && (
+            <span
+              className="agent-output-elapsed"
+              style={{ color: 'var(--vscode-descriptionForeground)' }}
+              title="Elapsed time"
+            >
+              {' '}· {formatElapsed(elapsed)}
+            </span>
+          )}
         </span>
         {run.workItemId && (
           <span className="agent-output-wi">ADO-{run.workItemId}</span>
@@ -85,14 +120,14 @@ export function AgentOutputPanel({ run, output, loading, onDismiss, onReopen }: 
             {run.branch}
           </span>
         )}
-        {isFinished && onReopen && (
+        {onOpenInEditor && (
           <button
             className="agent-output-close"
             onClick={(e) => {
               e.stopPropagation();
-              onReopen(run.id);
+              onOpenInEditor(run.id);
             }}
-            title="Reopen output in editor panel"
+            title={isFinished ? 'Reopen output in editor panel' : 'Open live progress in editor panel'}
             style={{
               marginLeft: 'auto',
               background: 'none',
@@ -152,11 +187,11 @@ export function AgentOutputPanel({ run, output, loading, onDismiss, onReopen }: 
               }}
             >
               <span>Output captured in the editor panel.</span>
-              {onReopen && (
+              {onOpenInEditor && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onReopen(run.id);
+                    onOpenInEditor(run.id);
                   }}
                   title="Reopen the summary output in the editor panel"
                   style={{

@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
+import { AgentProgressPanel } from '../../../webview/AgentProgressPanel';
 import {
   isSessionAutoApproved,
   addSessionToolApproval,
@@ -431,5 +432,32 @@ suite('ChatViewProvider refreshWorkItems', () => {
     assert.strictEqual(treeItems.length, 2, 'assigned + unassigned both visible in all mode');
     const task = treeItems.find((t: any) => t.id === 2);
     assert.strictEqual(task.isContext, false, 'base items are not context in all mode');
+  });
+
+  test('openAgentProgress opens the live progress panel for a run', async () => {
+    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const fakeRunner: any = {
+      listRuns: () => [{
+        id: 'run-1-42', workItemId: 42, agent: 'claude', workdir: '/tmp',
+        status: 'running', startedAt: new Date().toISOString(),
+      }],
+      getRunOutput: (id: string) => (id === 'run-1-42' ? 'streamed output' : ''),
+    };
+    (provider as any).agentRunner = fakeRunner;
+
+    const shown: Array<{ run: any; output: any }> = [];
+    const originalShow = (AgentProgressPanel as any).show;
+    (AgentProgressPanel as any).show = (_ctx: any, run: any, output: any) => { shown.push({ run, output }); };
+    try {
+      await provider.handleAgentMessage({ type: 'openAgentProgress', runId: 'run-1-42' } as any);
+      assert.strictEqual(shown.length, 1, 'panel opened once');
+      assert.strictEqual(shown[0].run.id, 'run-1-42');
+      assert.strictEqual(shown[0].output, 'streamed output', 'backfilled with accumulated output');
+
+      await provider.handleAgentMessage({ type: 'openAgentProgress', runId: 'missing' } as any);
+      assert.strictEqual(shown.length, 1, 'missing run opens nothing');
+    } finally {
+      (AgentProgressPanel as any).show = originalShow;
+    }
   });
 });

@@ -30,6 +30,9 @@ export type WebviewToExtensionMessage =
   | { type: 'agentCancel'; runId: string }
   | { type: 'dismissAgentRun'; runId: string }
   | { type: 'reopenAgentOutput'; runId: string }
+  // Open the LIVE progress panel for a run in the editor area (running OR
+  // finished — finished runs show the summary inside the same panel).
+  | { type: 'openAgentProgress'; runId: string }
   | { type: 'listAgents' }
   | { type: 'clearConversation' }
   | { type: 'stopGeneration' }

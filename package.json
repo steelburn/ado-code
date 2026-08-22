@@ -22,6 +22,7 @@
     "onCommand:adoCode.reviewTaskDetail",
     "onCommand:adoCode.requestClarification",
     "onCommand:adoCode.checkTaskReplies",
+    "onCommand:adoCode.openAgentProgress",
     "onCommand:adoCode.changeWorkItemState",
     "onCommand:adoCode.takeOwnership",
     "onCommand:adoCode.reassignWorkItem",
@@ -145,6 +146,12 @@
         "command": "adoCode.openAgentInTerminal",
         "title": "Open in Terminal",
         "icon": "$(terminal)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.openAgentProgress",
+        "title": "Open Agent Progress…",
+        "icon": "$(debug-continue)",
         "category": "ADO Code"
       },
       {
@@ -890,6 +897,19 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically review agent changes via LLM when a run completes"
+        },
+        "adoCode.agents.progressView": {
+          "type": "string",
+          "default": "chat",
+          "enum": [
+            "chat",
+            "editor"
+          ],
+          "enumDescriptions": [
+            "Stream agent progress in the chat panel; open a static summary panel in the editor area when the run completes",
+            "Auto-open a LIVE progress panel in the editor area as soon as a run starts — real-time output, elapsed time, and a progress bar; the same panel shows the final summary on completion"
+          ],
+          "description": "Where agent delegation progress is displayed. 'editor' opens a live, nicely formatted progress panel in the editor window; you can also move any run there on demand via the ↗ button in the chat panel or the 'Open Agent Progress' command."
         },
         "adoCode.mcp.servers": {
           "type": "array",

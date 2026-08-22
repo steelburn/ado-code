@@ -8,6 +8,7 @@ import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
 import { AgentSummaryPanel } from './webview/AgentSummaryPanel';
+import { AgentProgressPanel, agentDisplayName } from './webview/AgentProgressPanel';
 import { AgentDetailPanel } from './webview/AgentDetailPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
@@ -953,6 +954,9 @@ Generate ONLY the commit message, nothing else.`;
   // transitions (running → spin, terminal → stop) without reacting to every
   // streamed chunk.
   const agentRunStatus = new Map<string, string>();
+  // Runs whose live progress panel was auto-opened (progressView = 'editor') —
+  // open ONCE per run so a user-closed panel does not keep popping back.
+  const autoOpenedProgress = new Set<string>();
   const agentRunner = new AgentRunner(
     services.agents,
     services.git,
@@ -973,6 +977,20 @@ Generate ONLY the commit message, nothing else.`;
         // Worktrees view: reload only when the run status actually changes
         // (start / cancel / complete) — cheap guard per streamed chunk.
         worktreesProvider.refreshIfChanged(run);
+        // Live editor progress panel: stream every chunk into the open panel
+        // (cheap no-op when closed). With adoCode.agents.progressView='editor'
+        // auto-open the panel once per run so progress is visible outside the
+        // chat sidebar; a user-closed panel does not pop back (autoOpened set).
+        try {
+          AgentProgressPanel.update(run, delta);
+          const progressView = vscode.workspace.getConfiguration('adoCode').get<string>('agents.progressView', 'chat');
+          if (progressView === 'editor' && run.status === 'running' && !autoOpenedProgress.has(run.id)) {
+            autoOpenedProgress.add(run.id);
+            AgentProgressPanel.show(context, run, agentRunner.getRunOutput(run.id));
+          }
+        } catch {
+          // Panel failures must never break the run stream.
+        }
       },
       onComplete: (run, summary) => {
         chatProvider.postMessage({ type: 'agentResult', run, summary });
@@ -980,9 +998,23 @@ Generate ONLY the commit message, nothing else.`;
         if (run.workItemId) {
           treeProvider.updateAgentStatus(run.workItemId, run.agent, 'completed');
         }
-        // Open the agent's summary in the editor area so the result is
-        // visible outside the chat panel (markdown tab, preview mode).
-        void openSummaryInEditor(context, run, summary);
+        // Editor-area result display: when a LIVE progress panel is open for
+        // this run (auto-opened in 'editor' mode or opened manually from the
+        // chat panel / command), the summary renders inside that panel. In
+        // 'chat' mode (or when the live panel was never opened) show the
+        // static summary panel as before.
+        try {
+          if (AgentProgressPanel.has(run.id)) {
+            AgentProgressPanel.complete(run, summary);
+          } else {
+            const progressView = vscode.workspace.getConfiguration('adoCode').get<string>('agents.progressView', 'chat');
+            if (progressView !== 'editor') {
+              void openSummaryInEditor(context, run, summary);
+            }
+          }
+        } catch {
+          // Panel failures must never break the completion flow.
+        }
         // Terminal status → stop the working indicator (covers cancel paths
         // where no onStatus transition was observed).
         const prevStatus = agentRunStatus.get(run.id);
@@ -1247,6 +1279,40 @@ Generate ONLY the commit message, nothing else.`;
         return;
       }
       AgentSummaryPanel.show(context, run, run.summary);
+    }),
+    // Open the LIVE progress panel in the editor area — from the palette
+    // (QuickPick of active + recent runs) or with an explicit run id / item
+    // (context menus). Works for running runs (streaming view) and finished
+    // runs (summary inside the same panel).
+    vscode.commands.registerCommand('adoCode.openAgentProgress', async (item?: any) => {
+      let runId = typeof item === 'string' ? item : item?.meta?.runId ?? item?.runId;
+      if (!runId) {
+        const runs = agentRunner.listRuns().sort((a, b) => {
+          if (a.status === 'running' && b.status !== 'running') return -1;
+          if (b.status === 'running' && a.status !== 'running') return 1;
+          return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+        });
+        if (runs.length === 0) {
+          vscode.window.showInformationMessage('ADO Code: no agent runs yet — delegate a work item first.');
+          return;
+        }
+        const pick = await vscode.window.showQuickPick(
+          runs.map(r => ({
+            label: `🤖 ${agentDisplayName(r.agent)} — ADO-${r.workItemId ?? '?'} (${r.status})`,
+            description: r.branch ?? '',
+            detail: r.id,
+          })),
+          { placeHolder: 'Select an agent run to open its live progress panel' }
+        );
+        if (!pick) return;
+        runId = pick.detail;
+      }
+      const run = agentRunner.listRuns().find(r => r.id === runId);
+      if (!run) {
+        vscode.window.showInformationMessage('ADO Code: agent run not found.');
+        return;
+      }
+      AgentProgressPanel.show(context, run, agentRunner.getRunOutput(run.id));
     })
   );
 

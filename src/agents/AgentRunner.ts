@@ -36,6 +36,10 @@ export interface AgentRunnerStore {
 export class AgentRunner {
   private runs = new Map<string, AgentRun>();
   private aborts = new Map<string, AbortController>();
+  // In-memory accumulated output per run id (bounded tail). Fed by
+  // emitStatus() so the live editor progress panel (and the open-command)
+  // can backfill everything streamed so far, even when opened mid-run.
+  private runLogs = new Map<string, string>();
   // Runs the user dismissed from the chat panel — persisted so re-hydration
   // (panel remount, extension reload) does not bring them back.
   private dismissed = new Set<string>();
@@ -66,6 +70,24 @@ export class AgentRunner {
 
   private persist(): void {
     this.store?.save([...this.runs.values()]);
+  }
+
+  /**
+   * Forward a status chunk to the registered callback AND accumulate it into
+   * the per-run log (bounded tail) so late-openers (editor panel, reopen
+   * command) see everything streamed so far. All onStatus call sites route
+   * through here.
+   */
+  private emitStatus(run: AgentRun, delta: string): void {
+    const MAX_LOG = 256 * 1024; // keep the tail — logs are a convenience, not archival
+    const next = (this.runLogs.get(run.id) ?? '') + delta;
+    this.runLogs.set(run.id, next.length > MAX_LOG ? next.slice(-MAX_LOG) : next);
+    this.callbacks.onStatus(run, delta);
+  }
+
+  /** Accumulated output for a run ('' when nothing streamed / unknown id). */
+  getRunOutput(runId: string): string {
+    return this.runLogs.get(runId) ?? '';
   }
 
   async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string): Promise<AgentRun> {
@@ -120,7 +142,7 @@ export class AgentRunner {
           const upToDate = await this.git.isBranchUpToDate(branchName);
           if (!upToDate) {
             const warn = `warning: branch '${branchName}' already exists and is behind the base branch — this run will continue from outdated code`;
-            this.callbacks.onStatus(run, warn);
+            this.emitStatus(run, warn);
           }
         }
       } catch {
@@ -130,15 +152,15 @@ export class AgentRunner {
       const worktreePath = await this.git.createWorktree(run.id, branchName);
       run.worktreePath = worktreePath;
       run.workdir = worktreePath; // Agent runs in its own worktree
-      this.callbacks.onStatus(run, `worktree created: ${branchName}`);
+      this.emitStatus(run, `worktree created: ${branchName}`);
     } catch (err) {
       // Fall back to main repo if worktree creation fails
-      this.callbacks.onStatus(run, `worktree failed, using main repo: ${err instanceof Error ? err.message : err}`);
+      this.emitStatus(run, `worktree failed, using main repo: ${err instanceof Error ? err.message : err}`);
     }
 
     this.runs.set(run.id, run);
     this.persist();
-    this.callbacks.onStatus(run, `delegating to ${chosen.displayName}...`);
+    this.emitStatus(run, `delegating to ${chosen.displayName}...`);
 
     // Memory-driven PRE-agent hook: workspace memory key `agent.before` runs
     // in the agent's working directory before the adapter starts. Output
@@ -153,7 +175,7 @@ export class AgentRunner {
     void (async () => {
       try {
         const { exitCode, output } = await adapter.runTask(run, prompt, abort.signal, (chunk) => {
-          this.callbacks.onStatus(run, chunk);
+          this.emitStatus(run, chunk);
         });
         // H7 fix: if cancelled mid-run, do NOT overwrite the status or run verifyWork.
         if (run.status === 'cancelled') return;
@@ -214,7 +236,7 @@ export class AgentRunner {
         let result: { exitCode: number | null; output: string };
         if (adapter.resumeTask && run.sessionId) {
           result = await adapter.resumeTask(run, followUpPrompt, abort.signal, (chunk) => {
-            this.callbacks.onStatus(run, chunk);
+            this.emitStatus(run, chunk);
           });
         } else {
           // H13 fix: synthesized follow-up for agents without session resume
@@ -222,7 +244,7 @@ export class AgentRunner {
           // the previous summary + the follow-up prompt as context.
           const context = `[Previous run summary]\n${run.summary ?? '(no summary)'}\n\n[Follow-up request]\n${followUpPrompt}`;
           result = await adapter.runTask(run, context, abort.signal, (chunk) => {
-            this.callbacks.onStatus(run, chunk);
+            this.emitStatus(run, chunk);
           });
         }
         if (run.status === 'cancelled') return;
@@ -254,7 +276,7 @@ export class AgentRunner {
       // Notify listeners of the transition (webview panel status + working
       // indicator) — the async IIFE bails early on cancelled and never fires
       // onComplete, so this is the only status signal for a cancelled run.
-      this.callbacks.onStatus(run, 'cancelled by user');
+      this.emitStatus(run, 'cancelled by user');
     }
   }
 
@@ -292,7 +314,7 @@ export class AgentRunner {
     const cwd = run.worktreePath ?? run.workdir;
     const { stdout, stderr } = await execAsync(hook, cwd);
     const hookOut = (stdout || stderr).trim();
-    this.callbacks.onStatus(run, hookOut
+    this.emitStatus(run, hookOut
       ? `pre-agent hook (\`${hook}\`):\n${hookOut}`
       : `pre-agent hook ran: ${hook}`);
   }

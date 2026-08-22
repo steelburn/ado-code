@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { AgentRun } from '../agents/types';
+import { escapeHtml, renderMarkdown } from './markdown';
+import { agentDisplayName } from './AgentProgressPanel';
 
 /**
  * Webview panel that shows agent run summaries in the editor area.
@@ -42,7 +44,7 @@ export class AgentSummaryPanel {
   }
 
   private static formatTitle(run: AgentRun): string {
-    const agentLabel = AgentSummaryPanel.agentDisplayName(run.agent);
+    const agentLabel = agentDisplayName(run.agent);
     const wiLabel = run.workItemId ? ` — ADO-${run.workItemId}` : '';
     const statusIcon = run.status === 'succeeded' ? '✓' :
                        run.status === 'failed' ? '✗' :
@@ -50,23 +52,8 @@ export class AgentSummaryPanel {
     return `${statusIcon} ${agentLabel}${wiLabel}`;
   }
 
-  private static agentDisplayName(agent: string): string {
-    const names: Record<string, string> = {
-      'claude': 'Claude Code',
-      'codex': 'Codex',
-      'opencode': 'OpenCode',
-      'hermes': 'Hermes',
-      'pi': 'Pi',
-      'openclaw': 'OpenClaw',
-      'aider': 'Aider',
-      'gemini': 'Gemini',
-      'cursor-agent': 'Cursor',
-    };
-    return names[agent] ?? agent;
-  }
-
   private static renderHtml(run: AgentRun, summary: string): string {
-    const agentLabel = AgentSummaryPanel.agentDisplayName(run.agent);
+    const agentLabel = agentDisplayName(run.agent);
     const statusColor = run.status === 'succeeded' ? '#4caf50' :
                         run.status === 'failed' ? '#f44336' :
                         run.status === 'cancelled' ? '#9e9e9e' : '#ff9800';
@@ -75,14 +62,14 @@ export class AgentSummaryPanel {
     const duration = AgentSummaryPanel.formatDuration(run.startedAt, run.finishedAt);
 
     // Convert markdown-ish summary to HTML
-    const summaryHtml = AgentSummaryPanel.renderMarkdown(summary);
+    const summaryHtml = renderMarkdown(summary);
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${AgentSummaryPanel.escapeHtml(AgentSummaryPanel.formatTitle(run))}</title>
+  <title>${escapeHtml(AgentSummaryPanel.formatTitle(run))}</title>
   <style>
     body {
       font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
@@ -158,9 +145,9 @@ export class AgentSummaryPanel {
 </head>
 <body>
   <div class="header">
-    <span class="agent-name">🤖 ${AgentSummaryPanel.escapeHtml(agentLabel)}</span>
+    <span class="agent-name">🤖 ${escapeHtml(agentLabel)}</span>
     ${run.workItemId ? `<span class="work-item-id">ADO-${run.workItemId}</span>` : ''}
-    <span class="status-badge">${AgentSummaryPanel.escapeHtml(statusLabel)}</span>
+    <span class="status-badge">${escapeHtml(statusLabel)}</span>
   </div>
 
   <div class="meta">
@@ -168,7 +155,7 @@ export class AgentSummaryPanel {
     <span>${AgentSummaryPanel.formatDate(run.startedAt)}</span>
     ${run.finishedAt ? `<span class="meta-label">Finished</span><span>${AgentSummaryPanel.formatDate(run.finishedAt)}</span>` : ''}
     ${duration ? `<span class="meta-label">Duration</span><span>${duration}</span>` : ''}
-    ${run.sessionId ? `<span class="meta-label">Session</span><span><code>${AgentSummaryPanel.escapeHtml(run.sessionId)}</code></span>` : ''}
+    ${run.sessionId ? `<span class="meta-label">Session</span><span><code>${escapeHtml(run.sessionId)}</code></span>` : ''}
   </div>
 
   <hr class="section-divider">
@@ -179,54 +166,6 @@ export class AgentSummaryPanel {
   </div>
 </body>
 </html>`;
-  }
-
-  /** Render markdown-ish text to HTML (simple conversion). */
-  private static renderMarkdown(text: string): string {
-    if (!text) return '<em>No summary</em>';
-
-    let html = text;
-
-    // Escape HTML entities first (except what we'll generate)
-    html = html
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
-    // Code blocks (``` ... ```)
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
-      return `<pre><code>${code.trim()}</code></pre>`;
-    });
-
-    // Inline code
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-    // Headers
-    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-    // Bold and italic
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-    // Unordered lists
-    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => `<ul>${match}</ul>`);
-
-    // Links
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-
-    // Line breaks → paragraphs (double newline)
-    html = html.replace(/\n\n+/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-
-    // Wrap in paragraph if not already wrapped
-    if (!html.startsWith('<')) {
-      html = `<p>${html}</p>`;
-    }
-
-    return html;
   }
 
   private static formatDuration(start?: string, end?: string): string {
@@ -254,13 +193,5 @@ export class AgentSummaryPanel {
     } catch {
       return dateStr;
     }
-  }
-
-  private static escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 }

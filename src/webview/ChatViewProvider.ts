@@ -27,6 +27,7 @@ import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
 import { parseChoicePrompt, detectChoicePrompt } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
+import { AgentProgressPanel } from './AgentProgressPanel';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
 import { ConversationCondenser } from '../llm/context/condenser';
@@ -1069,6 +1070,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'openAgentProgress': {
+        // Open the LIVE progress panel in the editor area — works for running
+        // runs (streaming view) AND finished runs (summary inside the panel).
+        const run = this.agentRunner?.listRuns().find(r => r.id === message.runId);
+        if (run) {
+          AgentProgressPanel.show(this._context, run, this.agentRunner?.getRunOutput(run.id));
+        }
+        break;
+      }
       case 'listAgents': {
         const agents = await this.services.agents.detect();
         this.postMessage({ type: 'agentList', agents });
@@ -1286,6 +1296,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'agentCancel':
           case 'dismissAgentRun':
           case 'reopenAgentOutput':
+          case 'openAgentProgress':
           case 'listAgents':
           case 'listAgentRuns':
             await this.handleAgentMessage(message);
