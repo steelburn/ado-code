@@ -195,6 +195,11 @@ The extension infers the active model's capabilities from its id:
 
 ## Release Notes
 
+### 0.6.2
+
+- **Tolerant `System.Parent` parsing**: some ADO orgs return the parent link as a bare number instead of `{ id }` — both shapes are now parsed, so the trees nest regardless of your org's serialization
+- **Tree diagnostics**: Output → ADO Code now logs the expansion counts, a raw `System.Parent` sample (once), and per-refresh tree shape (`N items (K with parentId, R roots)`) — a flat tree is instantly diagnosable
+
 ### 0.6.1
 
 - **Proper tree structure for My Work Items & Unassigned Work Items**: Both sidebar trees now render the real ADO hierarchy instead of flat roots. The extension walks up the parent chain (Task → User Story → Feature → Epic) and down the children, so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Hierarchy-context items are tagged "· context" (with an explanatory tooltip) so it's clear they aren't part of the base query; if the child query is rejected by your ADO org it falls back to per-parent queries, and if expansion still fails the trees fall back gracefully with a visible warning (details in Output → ADO Code)

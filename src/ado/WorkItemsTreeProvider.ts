@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { WorkItemSummary } from '../shared/messages';
+import { logger } from '../services/logger';
 
 // H-6 fix: the tree consumes WorkItemSummary (what refreshWorkItems posts),
 // NOT raw AdoWorkItem — matches the onItemsFetched callback type.
@@ -57,6 +58,11 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   refresh(items: WorkItemSummary[]): void {
     this.workItems = items;
     this.buildTree();
+    // Diagnostic: how many summaries actually carry a parent id and how many
+    // root nodes the tree produced — a flat tree with many parented items
+    // points at rendering; zero parented items points at the ADO mapping.
+    const withParent = items.filter(i => i.parentId !== undefined).length;
+    logger.info(`Work items tree: ${items.length} items (${withParent} with parentId, ${this.roots.length} roots)`);
     this._onDidChangeTreeData.fire(undefined);
   }
 

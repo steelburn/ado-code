@@ -359,4 +359,35 @@ suite('ChatViewProvider refreshWorkItems', () => {
     assert.strictEqual(treeItems[0].id, 3);
     assert.strictEqual(treeItems[0].isContext, false);
   });
+
+  test('maps bare-number System.Parent into parentId', async () => {
+    // Some ADO orgs serialize System.Parent as a plain integer — the summary
+    // mapping must still produce a parentId so the tree can nest.
+    const baseTask = {
+      id: 3,
+      fields: {
+        'System.Id': 3,
+        'System.Title': 'My task',
+        'System.State': 'Active',
+        'System.AssignedTo': { displayName: 'Me', uniqueName: 'me@org.com' },
+        'System.WorkItemType': 'Task',
+        'System.Parent': 2,
+      },
+      _links: {},
+    };
+    const services: any = {
+      ado: {
+        getWorkItemsAssignedTo: async () => [baseTask],
+        getUnassignedWorkItems: async () => [],
+        expandHierarchy: async (_p: string, base: any[]) => base,
+      },
+    };
+    const { provider, treeItems } = makeRefreshProvider(services);
+
+    await withAdoSettings(async () => {
+      await (provider as any).refreshWorkItems();
+    });
+
+    assert.strictEqual(treeItems[0].parentId, 2, 'bare-number parent becomes parentId');
+  });
 });

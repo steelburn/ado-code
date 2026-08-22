@@ -2,6 +2,14 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.6.2] - 2026-08-22
+
+### Fixed
+- **Tolerant `System.Parent` parsing**: Some ADO orgs serialize the parent link as a bare integer instead of `{ id }` — parent ids are now parsed from either shape (object, number, or string), so the work item trees nest even when the org returns the flat form
+
+### Changed
+- **Tree diagnostics in Output → ADO Code**: The refresh now logs `Work item hierarchy: N items (M base, K context)`, a one-time `System.Parent raw sample: …` line (shows which serialization shape your org uses), and a per-refresh `Work items tree: N items (K with parentId, R roots)` line — a flat tree is now instantly diagnosable
+
 ## [0.6.1] - 2026-08-22
 
 ### Improvements

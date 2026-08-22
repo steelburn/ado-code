@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
-import { AdoClient } from '../ado/client';
+import { AdoClient, parentIdOf } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
@@ -1973,7 +1973,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         state: i.fields['System.State'] ?? '',
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
-        parentId: i.fields['System.Parent']?.id,
+        parentId: parentIdOf(i.fields as Record<string, unknown>),
         // Hierarchy-expanded items (parents/children of my work) are context.
         isContext: !baseIds.has(i.id),
       }));
@@ -1993,7 +1993,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         state: i.fields['System.State'] ?? '',
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
-        parentId: i.fields['System.Parent']?.id,
+        parentId: parentIdOf(i.fields as Record<string, unknown>),
         isContext: !baseIds.has(i.id),
       }));
       this.onUnassignedFetched?.(unassignedSummaries);
@@ -2021,6 +2021,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Log the expansion so a flat tree can be diagnosed from the Output
       // channel — e.g. "42 items (5 base, 37 context)" means expansion ran.
       logger.info(`Work item hierarchy: ${items.length} items (${base.length} base, ${items.length - base.length} context)`);
+      if (!this._parentSampleLogged) {
+        this._parentSampleLogged = true;
+        // Raw System.Parent value of the first base item — tells us which
+        // serialization shape this ADO org uses ({id} vs bare number).
+        logger.info(`System.Parent raw sample: ${JSON.stringify(base[0]?.fields?.['System.Parent'])}`);
+      }
       return { items, baseIds };
     } catch (err) {
       logger.warn('Work item hierarchy expansion failed — showing the base list', err);
@@ -2037,6 +2043,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private activeWorkItem?: WorkItemContext;
   // One-time warning when hierarchy expansion falls back to the base list.
   private _hierarchyFallbackWarned = false;
+  // One-time raw System.Parent sample (diagnoses serialization shape).
+  private _parentSampleLogged = false;
 
   // ── Workspace project binding ──────────────────────────────────────
   /** Reads .ado-code/config.json (workspace-level ADO project binding). */

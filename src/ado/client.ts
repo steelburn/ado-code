@@ -7,6 +7,25 @@ const PREVIEW_VERSION = '7.1-preview.4';
 /** Max walk rounds per direction for hierarchy expansion (ADO hierarchies are shallow). */
 const MAX_HIERARCHY_ROUNDS = 8;
 
+/**
+ * Read the parent work item id from a fetched work item, tolerating both
+ * shapes ADO is known to serialize `System.Parent` in: `{ id: number }`
+ * (cloud) and a bare integer/string (some orgs/servers flatten link fields).
+ * Returns undefined when there is no readable parent.
+ */
+export function parentIdOf(fields: Record<string, unknown>): number | undefined {
+  const p = fields['System.Parent'];
+  if (p == null) return undefined;
+  let id: number | undefined;
+  if (typeof p === 'object') {
+    const raw = (p as { id?: unknown }).id;
+    id = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : undefined;
+  } else {
+    id = Number(p);
+  }
+  return id !== undefined && Number.isFinite(id) && id > 0 ? id : undefined;
+}
+
 export class AdoClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -163,7 +182,7 @@ export class AdoClient {
     for (let round = 0; round < MAX_HIERARCHY_ROUNDS; round++) {
       const missing = new Set<number>();
       for (const wi of byId.values()) {
-        const pid = wi.fields['System.Parent']?.id;
+        const pid = parentIdOf(wi.fields as Record<string, unknown>);
         if (pid !== undefined && !byId.has(pid)) missing.add(pid);
       }
       if (missing.size === 0) break;

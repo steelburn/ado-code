@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { AdoClient } from '../../../ado/client';
+import { AdoClient, parentIdOf } from '../../../ado/client';
 
 suite('AdoClient', () => {
   test('constructs with organization and PAT', () => {
@@ -136,6 +136,40 @@ function mockHierarchyFetch(db: Map<number, any>, calls?: string[]): void {
 }
 
 suite('AdoClient.expandHierarchy', () => {
+  test('parentIdOf tolerates {id}, bare number, and string shapes', () => {
+    assert.strictEqual(parentIdOf({ 'System.Parent': { id: 7 } }), 7);
+    assert.strictEqual(parentIdOf({ 'System.Parent': 7 }), 7);
+    assert.strictEqual(parentIdOf({ 'System.Parent': '7' }), 7);
+    assert.strictEqual(parentIdOf({ 'System.Parent': null }), undefined);
+    assert.strictEqual(parentIdOf({ 'System.Parent': 0 }), undefined);
+    assert.strictEqual(parentIdOf({}), undefined);
+  });
+
+  test('walks up parents when System.Parent is a bare number', async () => {
+    const numItem = (id: number, parentId?: number, type = 'Task'): any => ({
+      id,
+      fields: {
+        'System.Id': id,
+        'System.Title': `Item ${id}`,
+        'System.State': 'Active',
+        'System.AssignedTo': { displayName: 'dev', uniqueName: 'dev@org.com' },
+        'System.WorkItemType': type,
+        ...(parentId !== undefined ? { 'System.Parent': parentId } : {}),
+      },
+      _links: {},
+    });
+    const db = new Map<number, any>([
+      [3, numItem(3, 2)],
+      [2, numItem(2, 1, 'User Story')],
+      [1, numItem(1, undefined, 'Feature')],
+    ]);
+    mockHierarchyFetch(db);
+    const client = new AdoClient('org', 'pat');
+    const expanded = await client.expandHierarchy('Proj', [db.get(3)]);
+    const ids = expanded.map(w => w.id).sort((a, b) => a - b);
+    assert.deepStrictEqual(ids, [1, 2, 3], 'ancestors found despite bare-number System.Parent');
+  });
+
   test('walks up missing parents so items nest under their real ancestors', async () => {
     const db = new Map<number, any>([
       [3, makeItem(3, 2, 'Task')],
