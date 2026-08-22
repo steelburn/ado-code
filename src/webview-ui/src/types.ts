@@ -163,6 +163,10 @@ export interface WorkItemSummary {
   state: string;
   assignedTo: string;
   workItemType: string;
+  parentId?: number;
+  // True when the item is NOT part of the base query (assigned/unassigned)
+  // but was pulled in by hierarchy expansion (parent/child of a base item).
+  isContext?: boolean;
 }
 
 export interface WorkItemDetail extends WorkItemSummary {

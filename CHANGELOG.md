@@ -2,6 +2,11 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [Unreleased]
+
+### Improvements
+- **Proper tree structure for My Work Items & Unassigned Work Items**: Both sidebar trees now render the real ADO hierarchy instead of flat roots. After fetching the base list (assigned to you / unassigned), the extension walks UP the parent chain (Task → User Story → Feature → Epic) and DOWN the children via `[System.Parent] IN (...)` WIQL — so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Items pulled in purely for hierarchy context are tagged "· context" (with an explanatory tooltip) so it's clear they aren't part of the base query. The walk is round-capped and deduped; if the expansion fails (network blip), the trees fall back to the plain base list — the refresh never breaks
+
 ## [0.6.0] - 2026-08-22
 
 ### Improvements

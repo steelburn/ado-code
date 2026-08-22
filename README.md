@@ -195,6 +195,10 @@ The extension infers the active model's capabilities from its id:
 
 ## Release Notes
 
+### Unreleased
+
+- **Proper tree structure for My Work Items & Unassigned Work Items**: Both sidebar trees now render the real ADO hierarchy instead of flat roots. The extension walks up the parent chain (Task → User Story → Feature → Epic) and down the children, so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Hierarchy-context items are tagged "· context" (with an explanatory tooltip) so it's clear they aren't part of the base query; if the expansion fails the trees fall back gracefully
+
 ### 0.6.0
 
 - **Parallel tool execution**: Independent tool calls in one turn now run concurrently and results are re-ordered back to call order — several `read_file`/`search_files` calls finish as fast as one. Batches containing a consent card run sequentially so prompts never stack. Same-file edits are serialized by a per-file mutation queue so parallel batches can't race

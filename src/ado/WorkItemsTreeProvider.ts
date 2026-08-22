@@ -264,7 +264,7 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     const agentRun = this.activeAgentRuns.get(wi.id);
     const hasChildren = this.childrenOf.has(wi.id);
     const isSelected = wi.id === this.selectedWorkItemId;
-    return new WorkItemNode(wi, agentRun, this.nodeContextValue, hasChildren, isSelected);
+    return new WorkItemNode(wi, agentRun, this.nodeContextValue, hasChildren, isSelected, wi.isContext);
   }
 }
 
@@ -276,7 +276,10 @@ export class WorkItemNode extends vscode.TreeItem {
     agentRun?: { agent: string; status: string },
     contextValue = 'workItemNode',
     hasChildren = false,
-    isSelected = false
+    isSelected = false,
+    // Hierarchy-context node: not part of the base query (assigned/unassigned)
+    // but pulled in because it is a parent/child of a base item.
+    isContext = false
   ) {
     super(
       workItem.title,
@@ -288,16 +291,18 @@ export class WorkItemNode extends vscode.TreeItem {
     if (agentRun) {
       // Show agent status in description
       this.description = `#${workItem.id} 🤖 ${agentRun.agent}`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}\\nAgent: ${agentRun.agent} (${agentRun.status})`;
+      this.tooltip = `${workItem.workItemType} - ${workItem.state}\nAgent: ${agentRun.agent} (${agentRun.status})`;
       this.iconPath = new vscode.ThemeIcon('loading~spin');
     } else if (isSelected) {
       // Selected item: highlighted icon + badge
       this.description = `#${workItem.id} ◀ active`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}\\nSelected for chat context`;
+      this.tooltip = `${workItem.workItemType} - ${workItem.state}\nSelected for chat context`;
       this.iconPath = new vscode.ThemeIcon('check-all', new vscode.ThemeColor('charts.green'));
     } else {
-      this.description = `#${workItem.id}`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}`;
+      // Context nodes (parents/children pulled in for hierarchy) get a
+      // subtle marker so it's clear they aren't part of the base list.
+      this.description = `#${workItem.id}${isContext ? ' · context' : ''}`;
+      this.tooltip = `${workItem.workItemType} - ${workItem.state}${isContext ? '\nContext item — not in the base list; pulled in for hierarchy' : ''}`;
       this.iconPath = new vscode.ThemeIcon(iconForType(workItem.workItemType));
     }
 

@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
 import { AdoClient } from '../ado/client';
+import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
 import { LlmClient } from '../llm/client';
@@ -1954,21 +1955,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.postMessage({ type: 'loading', loading: true });
     // Both trees are fed from one refresh cycle — fetch assigned + unassigned
-    // in parallel; a failure in one branch doesn't sink the other.
+    // in parallel; a failure in one branch doesn't sink the other. Each branch
+    // is then hierarchy-expanded (parents + children fetched) so the sidebar
+    // trees render real nesting (Feature → User Story → Task) instead of flat
+    // roots for items whose parents aren't assigned to the same person.
     const [assignedResult, unassignedResult] = await Promise.allSettled([
-      this.services.ado.getWorkItemsAssignedTo(active.project),
-      this.services.ado.getUnassignedWorkItems(active.project),
+      this.fetchHierarchy(active.project, this.services.ado.getWorkItemsAssignedTo(active.project)),
+      this.fetchHierarchy(active.project, this.services.ado.getUnassignedWorkItems(active.project)),
     ]);
 
     if (assignedResult.status === 'fulfilled') {
+      const { items, baseIds } = assignedResult.value;
       // M5 fix: map AdoWorkItem → WorkItemSummary (protocol shape) before posting.
-      const summaries: WorkItemSummary[] = assignedResult.value.map(i => ({
+      const summaries: WorkItemSummary[] = items.map(i => ({
         id: i.id,
         title: i.fields['System.Title'] ?? '',
         state: i.fields['System.State'] ?? '',
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
         parentId: i.fields['System.Parent']?.id,
+        // Hierarchy-expanded items (parents/children of my work) are context.
+        isContext: !baseIds.has(i.id),
       }));
       // To webview (chat / task list)
       this.postMessage({ type: 'workItems', items: summaries });
@@ -1979,13 +1986,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (unassignedResult.status === 'fulfilled') {
-      const unassignedSummaries: WorkItemSummary[] = unassignedResult.value.map(i => ({
+      const { items, baseIds } = unassignedResult.value;
+      const unassignedSummaries: WorkItemSummary[] = items.map(i => ({
         id: i.id,
         title: i.fields['System.Title'] ?? '',
         state: i.fields['System.State'] ?? '',
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
         parentId: i.fields['System.Parent']?.id,
+        isContext: !baseIds.has(i.id),
       }));
       this.onUnassignedFetched?.(unassignedSummaries);
     } else {
@@ -1993,6 +2002,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.postMessage({ type: 'loading', loading: false });
+  }
+
+  /**
+   * Fetch a base work item set and hierarchy-expand it for the sidebar trees.
+   * Expansion is best-effort: if it fails (network blip etc.) the base set is
+   * returned unchanged so the trees still populate.
+   */
+  private async fetchHierarchy(
+    project: string,
+    basePromise: Promise<AdoWorkItem[]>
+  ): Promise<{ items: AdoWorkItem[]; baseIds: Set<number> }> {
+    const base = await basePromise;
+    const baseIds = new Set(base.map(i => i.id));
+    if (base.length === 0) return { items: [], baseIds };
+    try {
+      return { items: await this.services.ado.expandHierarchy(project, base), baseIds };
+    } catch {
+      return { items: base, baseIds };
+    }
   }
 
   // C-4 fix: declared HERE (Task 10), once — Tasks 11/13 refine it but must

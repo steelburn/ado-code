@@ -270,3 +270,93 @@ suite('ChatViewProvider', () => {
     assert.ok(String(res).includes('pullRequestId'), 'PR created for a normal base');
   });
 });
+
+// ── refreshWorkItems hierarchy expansion ────────────────────────────
+function workItem(id: number, parentId?: number, type = 'Task', assignedTo = 'Me'): any {
+  const fields: Record<string, any> = {
+    'System.Id': id,
+    'System.Title': `Item ${id}`,
+    'System.State': 'Active',
+    'System.AssignedTo': { displayName: assignedTo, uniqueName: `${assignedTo.replace(/\s+/g, '')}@org.com` },
+    'System.WorkItemType': type,
+  };
+  if (parentId !== undefined) fields['System.Parent'] = { id: parentId };
+  return { id, fields, _links: {} };
+}
+
+function makeRefreshProvider(services: any) {
+  const treeItems: any[] = [];
+  const unassignedItems: any[] = [];
+  const posts: any[] = [];
+  const provider = new ChatViewProvider(
+    {} as any,
+    services,
+    { workspaceState: { get: () => undefined, update: async () => {} } } as any,
+    (items: any[]) => treeItems.push(...items),
+    (items: any[]) => unassignedItems.push(...items)
+  );
+  (provider as any).postMessage = (m: any) => posts.push(m);
+  (provider as any)._view = {};
+  return { provider, treeItems, unassignedItems, posts };
+}
+
+async function withAdoSettings<T>(fn: () => Promise<T>): Promise<T> {
+  const cfg = vscode.workspace.getConfiguration('adoCode');
+  await cfg.update('adoOrganization', 'testorg', vscode.ConfigurationTarget.Global);
+  await cfg.update('adoProject', 'Proj', vscode.ConfigurationTarget.Global);
+  await cfg.update('adoPat', 'pat', vscode.ConfigurationTarget.Global);
+  try {
+    return await fn();
+  } finally {
+    await cfg.update('adoOrganization', undefined, vscode.ConfigurationTarget.Global);
+    await cfg.update('adoProject', undefined, vscode.ConfigurationTarget.Global);
+    await cfg.update('adoPat', undefined, vscode.ConfigurationTarget.Global);
+  }
+}
+
+suite('ChatViewProvider refreshWorkItems', () => {
+  test('expands hierarchy for the trees and marks non-base items as context', async () => {
+    const baseTask = workItem(3, 2, 'Task');
+    const parentStory = workItem(2, undefined, 'User Story', 'Other');
+    const services: any = {
+      ado: {
+        getWorkItemsAssignedTo: async () => [baseTask],
+        getUnassignedWorkItems: async () => [],
+        expandHierarchy: async (_p: string, base: any[]) => [...base, parentStory],
+      },
+    };
+    const { provider, treeItems, unassignedItems } = makeRefreshProvider(services);
+
+    await withAdoSettings(async () => {
+      await (provider as any).refreshWorkItems();
+    });
+
+    assert.strictEqual(treeItems.length, 2, 'tree receives base + expanded items');
+    const task = treeItems.find((t: any) => t.id === 3);
+    const story = treeItems.find((t: any) => t.id === 2);
+    assert.strictEqual(task.isContext, false, 'base item is not context');
+    assert.strictEqual(story.isContext, true, 'expanded parent is marked context');
+    assert.strictEqual(task.parentId, 2, 'parentId preserved for nesting');
+    assert.strictEqual(unassignedItems.length, 0);
+  });
+
+  test('falls back to the base set when hierarchy expansion fails', async () => {
+    const baseTask = workItem(3, 2, 'Task');
+    const services: any = {
+      ado: {
+        getWorkItemsAssignedTo: async () => [baseTask],
+        getUnassignedWorkItems: async () => [],
+        expandHierarchy: async () => { throw new Error('boom'); },
+      },
+    };
+    const { provider, treeItems } = makeRefreshProvider(services);
+
+    await withAdoSettings(async () => {
+      await (provider as any).refreshWorkItems();
+    });
+
+    assert.strictEqual(treeItems.length, 1, 'base items still reach the tree');
+    assert.strictEqual(treeItems[0].id, 3);
+    assert.strictEqual(treeItems[0].isContext, false);
+  });
+});

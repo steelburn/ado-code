@@ -4,6 +4,9 @@ import { markdownToHtml } from './markdownToHtml';
 const GA_VERSION = '7.1';
 const PREVIEW_VERSION = '7.1-preview.4';
 
+/** Max walk rounds per direction for hierarchy expansion (ADO hierarchies are shallow). */
+const MAX_HIERARCHY_ROUNDS = 8;
+
 export class AdoClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -137,6 +140,73 @@ export class AdoClient {
     }
 
     return this.fetchWorkItemsByIds(wiqlResponse.workItems.map(wi => wi.id));
+  }
+
+  /**
+   * Expand a flat work item set into a hierarchy closure so tree views can
+   * render proper nesting:
+   *   UP   — fetch missing parents (Task → User Story → Feature → Epic), so
+   *          items become children of their real parents even when those
+   *          parents weren't in the base set (e.g. assigned to someone else).
+   *   DOWN — fetch children of every item in the growing set via
+   *          `[System.Parent] IN (...)` (the WIQL-recommended parent filter),
+   *          so a Feature shows its User Stories and a Story its Tasks.
+   * Each direction is bounded by MAX_HIERARCHY_ROUNDS and terminates early
+   * when no new items appear. Base items are always included unchanged.
+   */
+  async expandHierarchy(project: string, baseItems: AdoWorkItem[]): Promise<AdoWorkItem[]> {
+    const byId = new Map<number, AdoWorkItem>();
+    for (const wi of baseItems) byId.set(wi.id, wi);
+    const projectLiteral = project.replace(/'/g, "''");
+
+    // ── UP: ancestors ──
+    for (let round = 0; round < MAX_HIERARCHY_ROUNDS; round++) {
+      const missing = new Set<number>();
+      for (const wi of byId.values()) {
+        const pid = wi.fields['System.Parent']?.id;
+        if (pid !== undefined && !byId.has(pid)) missing.add(pid);
+      }
+      if (missing.size === 0) break;
+      const fetched = await this.fetchWorkItemsByIds([...missing]);
+      let added = 0;
+      for (const wi of fetched) {
+        if (!byId.has(wi.id)) {
+          byId.set(wi.id, wi);
+          added++;
+        }
+      }
+      if (added === 0) break; // parents vanished / unreadable — stop walking
+    }
+
+    // ── DOWN: descendants (children, grandchildren, …) ──
+    const queriedForChildren = new Set<number>();
+    for (let round = 0; round < MAX_HIERARCHY_ROUNDS; round++) {
+      const parents = [...byId.values()]
+        .map(wi => wi.id)
+        .filter(id => !queriedForChildren.has(id));
+      if (parents.length === 0) break;
+      for (const p of parents) queriedForChildren.add(p);
+
+      // Chunk the IN list so the WIQL body stays modest on huge sets.
+      const newIds = new Set<number>();
+      for (let i = 0; i < parents.length; i += 300) {
+        const chunk = parents.slice(i, i + 300).join(',');
+        const wiqlResponse = await this.post<WiqlResult>(
+          `/${project}/_apis/wit/wiql?api-version=7.1`,
+          { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.Parent] IN (${chunk}) ORDER BY [System.Id] ASC` }
+        );
+        for (const ref of wiqlResponse.workItems || []) {
+          if (!byId.has(ref.id)) newIds.add(ref.id);
+        }
+      }
+      if (newIds.size === 0) continue; // nothing new at this depth — next round has no work either
+      const fetched = await this.fetchWorkItemsByIds([...newIds]);
+      for (const wi of fetched) {
+        if (!byId.has(wi.id)) byId.set(wi.id, wi);
+      }
+    }
+
+    return [...byId.values()];
   }
 
   /**
