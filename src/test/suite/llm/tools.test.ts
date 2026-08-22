@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { createToolExecutor, ToolExecutor, capToolResult } from '../../../llm/tools';
+import { createToolExecutor, ToolExecutor, capToolResult, applyOrderedEdits, truncateMatchLine, grepLines, GREP_MAX_LINE_LENGTH } from '../../../llm/tools';
 
 function stubServices(): any {
   return {
@@ -11,6 +11,9 @@ function stubServices(): any {
     },
     git: {},
     changelog: {},
+    skills: {
+      executeSkill: async (req: any) => ({ success: true, output: `skill-output:${req.skillId}:${req.input}` }),
+    },
   };
 }
 
@@ -233,6 +236,145 @@ suite('ToolExecutor security', () => {
     const parsed = JSON.parse(res);
     assert.strictEqual(parsed[0].path, 'f.txt');
     assert.strictEqual(parsed[0].ours, 'o');
+  });
+});
+
+suite('ToolExecutor batched edits (pi parity)', () => {
+  test('applyOrderedEdits applies multiple disjoint edits in order', () => {
+    const src = 'line one\nline two\nline three\n';
+    const out = applyOrderedEdits(src, [
+      { oldText: 'one', newText: '1' },
+      { oldText: 'three', newText: '3' },
+    ]);
+    assert.strictEqual(out, 'line 1\nline two\nline 3\n');
+  });
+
+  test('applyOrderedEdits applies later edits against progressively updated text', () => {
+    const src = 'foo bar foo';
+    const out = applyOrderedEdits(src, [
+      { oldText: 'foo', newText: 'X' },         // first occurrence replaced → 'X bar foo'
+      { oldText: 'X bar foo', newText: 'done' }, // matches the updated text
+    ]);
+    assert.strictEqual(out, 'done');
+  });
+
+  test('applyOrderedEdits fails loudly on the first miss (no partial application)', () => {
+    const src = 'aaa bbb ccc';
+    assert.throws(
+      () => applyOrderedEdits(src, [
+        { oldText: 'aaa', newText: 'AAA' },
+        { oldText: 'zzz', newText: 'ZZZ' }, // missing — must throw here
+        { oldText: 'ccc', newText: 'CCC' },
+      ]),
+      /oldText not found/
+    );
+  });
+});
+
+suite('ToolExecutor canAutoExecute (parallel/sequential batch decision)', () => {
+  test('read-only tools are parallel-safe in every mode', () => {
+    assert.strictEqual(makeExecutor('inline').canAutoExecute('read_file', { path: 'a.ts' }), true);
+    assert.strictEqual(makeExecutor('plan').canAutoExecute('get_work_items', {}), true);
+    assert.strictEqual(makeExecutor('act').canAutoExecute('get_selection', {}), true);
+  });
+
+  test('mutating tool in inline mode needs consent → sequential', () => {
+    const ex = makeExecutor('inline');
+    assert.strictEqual(ex.canAutoExecute('edit_file', { path: 'a.ts', oldText: 'x', newText: 'y' }), false);
+  });
+
+  test('mutating tool already denied this turn is block-without-consent → parallel-safe', async () => {
+    // Dedicated denial stub (makeExecutor's onApprove approves).
+    const ex = createToolExecutor(
+      stubServices(),
+      {} as any,
+      { onApprove: async () => false }
+    );
+    ex.setMode('inline');
+    const r = await ex.execute('add_comment', { id: 1, text: 'a' }); // denial
+    assert.ok(String(r).includes('rejected by user'));
+    // After the denial the gate returns 'block' (no prompt) — the batch may
+    // parallelize; the tool errors out instantly either way.
+    assert.strictEqual(ex.canAutoExecute('add_comment', { id: 2, text: 'b' }), true);
+  });
+
+  test('yolo mode is parallel-safe for mutating tools', () => {
+    assert.strictEqual(makeExecutor('yolo').canAutoExecute('edit_file', { path: 'a.ts', oldText: 'x', newText: 'y' }), true);
+  });
+
+  test('act mode: allowlisted terminal command is parallel-safe; non-allowlisted needs consent', () => {
+    const ex = makeExecutor('act');
+    assert.strictEqual(ex.canAutoExecute('run_terminal_command', { command: 'npm test' }), true);
+    assert.strictEqual(ex.canAutoExecute('run_terminal_command', { command: 'unique-non-allowlisted-echo-test' }), false);
+  });
+});
+
+suite('ToolExecutor grep / line truncation (pi parity)', () => {
+  test('truncateMatchLine keeps short lines intact', () => {
+    const s = 'hello world';
+    assert.strictEqual(truncateMatchLine(s), s);
+    assert.strictEqual(truncateMatchLine('', 20), '');
+  });
+
+  test('truncateMatchLine caps long lines with an explicit marker', () => {
+    const long = 'x'.repeat(2000);
+    const out = truncateMatchLine(long, 500);
+    assert.strictEqual(out.length, 500 + '... [truncated]'.length);
+    assert.ok(out.startsWith('x'.repeat(500)));
+    assert.ok(out.endsWith('[truncated]'));
+  });
+
+  test('grepLines finds matching lines with 1-indexed line numbers', () => {
+    const src = 'const a = 1;\nfunction foo() {}\nconst b = 2;\n';
+    const hits = grepLines(src, /foo/);
+    assert.strictEqual(hits.length, 1);
+    assert.strictEqual(hits[0].line, 2);
+    assert.strictEqual(hits[0].text, 'function foo() {}');
+  });
+
+  test('grepLines is safe for global regexes (no skipped lines)', () => {
+    const src = 'aaa\nbbb\naaa\n';
+    const hits = grepLines(src, /aaa/g);
+    assert.deepStrictEqual(hits.map((h) => h.line), [1, 3]);
+  });
+
+  test('grepLines truncates long match lines per line', () => {
+    const long = 'needle ' + 'x'.repeat(2000);
+    const hits = grepLines(long, /needle/, 100);
+    assert.ok(hits[0].text.length < long.length);
+    assert.ok(hits[0].text.includes('needle'));
+    assert.ok(hits[0].text.endsWith('[truncated]'));
+  });
+
+  test('search_files is read-only: allowed in plan mode (canAutoExecute)', () => {
+    const ex = makeExecutor('plan');
+    assert.strictEqual(ex.canAutoExecute('search_files', { regex: 'foo' }), true);
+    assert.ok(ex.tools.map((t) => t.name).includes('search_files'));
+  });
+
+  test('search_files rejects an invalid regex with a crisp error', async () => {
+    const ex = makeExecutor('act');
+    const res = await ex.execute('search_files', { regex: '(' });
+    assert.ok(String(res).includes('invalid regex'));
+  });
+
+  test('excluded dead tool names are gone from the model-facing list', () => {
+    const ex = makeExecutor('inline');
+    const names = ex.tools.map((t) => t.name);
+    assert.ok(!names.includes('list_files'));
+    assert.ok(!names.includes('ask_followup_question'));
+    assert.ok(!names.includes('attempt_completion'));
+  });
+
+  test('execute_skill is read-only and returns the combined skill content', async () => {
+    const ex = makeExecutor('plan'); // read-only → allowed even in plan
+    assert.strictEqual(ex.canAutoExecute('execute_skill', { skillId: 'test', input: 'go' }), true);
+    const res = await ex.execute('execute_skill', { skillId: 'test-skill', input: 'my-input' });
+    assert.strictEqual(res, 'skill-output:test-skill:my-input');
+  });
+
+  test('grep line cap constant exported for consumers', () => {
+    assert.strictEqual(GREP_MAX_LINE_LENGTH, 500);
   });
 });
 

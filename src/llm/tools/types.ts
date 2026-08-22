@@ -27,11 +27,8 @@ export type ToolName =
   | 'read_file'
   | 'search_files'
   | 'edit_file'
-  | 'list_files'
   | 'execute_command'
   | 'write_to_file'
-  | 'ask_followup_question'
-  | 'attempt_completion'
   | 'get_work_items'
   | 'get_work_item'
   | 'get_selection'
@@ -53,13 +50,10 @@ export type ToolName =
  */
 export interface NativeToolArgs {
   read_file: { path: string; offset?: number; limit?: number }
-  search_files: { path: string; regex: string; file_pattern?: string | null }
+  search_files: { path?: string; regex: string; file_pattern?: string | null; limit?: number }
   edit_file: { path: string; oldText: string; newText: string }
-  list_files: { glob: string; recursive?: boolean }
   execute_command: { command: string; cwd?: string; timeout?: number }
   write_to_file: { path: string; content: string }
-  ask_followup_question: { question: string; follow_up?: Array<{ text: string; mode?: string }> }
-  attempt_completion: { result: string }
   get_work_items: Record<string, never>
   get_work_item: { id: number }
   get_selection: Record<string, never>
@@ -96,7 +90,7 @@ export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado' | 'memory'
 
 /** Maps each ToolGroup to its member ToolNames. */
 export interface ToolGroupMap {
-  read: ('read_file' | 'search_files' | 'list_files' | 'get_selection' | 'list_workspace')[]
+  read: ('read_file' | 'search_files' | 'get_selection' | 'list_workspace' | 'execute_skill')[]
   write: ('edit_file' | 'write_to_file' | 'apply_diff')[]
   execute: ('execute_command' | 'delegate_to_agent')[]
   mcp: never[]
@@ -106,7 +100,7 @@ export interface ToolGroupMap {
 
 /** Default group-to-tools mapping. */
 export const TOOL_GROUP_MAP: ToolGroupMap = {
-  read: ['read_file', 'search_files', 'list_files', 'get_selection', 'list_workspace'],
+  read: ['read_file', 'search_files', 'get_selection', 'list_workspace', 'execute_skill'],
   write: ['edit_file', 'write_to_file', 'apply_diff'],
   execute: ['execute_command', 'delegate_to_agent'],
   mcp: [],
@@ -119,11 +113,8 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   read_file: 'Read file',
   search_files: 'Search files',
   edit_file: 'Edit file',
-  list_files: 'List files',
   execute_command: 'Run command',
   write_to_file: 'Write file',
-  ask_followup_question: 'Ask question',
-  attempt_completion: 'Complete task',
   get_work_items: 'List work items',
   get_work_item: 'Get work item',
   get_selection: 'Get selection',
@@ -146,9 +137,15 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 
 export const TOOL_PARAM_NAMES = [
   'command', 'path', 'content', 'regex', 'file_pattern', 'recursive',
-  'action', 'url', 'text', 'question', 'result', 'diff',
+  'diff', 'skillId', 'input',
   'startLine', 'endLine', 'offset', 'limit', 'glob',
   'id', 'state', 'prompt', 'agent', 'oldText', 'newText',
 ] as const
 
 export type ToolParamName = (typeof TOOL_PARAM_NAMES)[number]
+
+// Note: TOOL_GROUP_MAP drives the prompt DISPLAY via modes.ts/getToolsForMode.
+// The LIVE executor's allowed/blocked sets live in src/llm/tools.ts
+// (READ_ONLY_TOOLS / MUTATING_TOOLS) and are the authoritative gate.
+// Legacy BaseTool/ToolRegistry/definitions/ implementations were removed —
+// all tool execution now lives in the single createToolExecutor() switch.

@@ -26,9 +26,10 @@ const tools: LlmTool[] = [
 function stubExecutor() {
   return {
     tools,
-    mode: 'act' as 'inline' | 'plan' | 'act',
-    setMode(_m: 'inline' | 'plan' | 'act') {},
+    mode: 'act' as 'inline' | 'plan' | 'act' | 'yolo',
+    setMode(_m: 'inline' | 'plan' | 'act' | 'yolo') {},
     beginTurn() {},
+    canAutoExecute(_name: string, _args: Record<string, any>): boolean { return true; },
     async execute(name: string, args: Record<string, any>): Promise<string> {
       if (name === 'echo') return `echoed: ${args.value}`;
       throw new Error(`unknown tool ${name}`);
@@ -194,6 +195,144 @@ suite('AnthropicProvider chatWithTools', () => {
 
     assert.ok(updates.includes('text:thinking...'), 'thinking text reported');
     assert.ok(updates.includes('tool:echo'), 'tool execution reported');
+  });
+});
+
+suite('agentic loop parallel tool execution (pi parity)', () => {
+  test('independent tool calls execute concurrently; results stay in call order', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        // One response, TWO independent tool calls (OpenAI parallel_tool_calls).
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                { id: 'call_a', type: 'function', function: { name: 'echo', arguments: '{"value":"a"}' } },
+                { id: 'call_b', type: 'function', function: { name: 'echo', arguments: '{"value":"b"}' } },
+              ],
+            },
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    let active = 0;
+    let maxActive = 0;
+    const started: string[] = [];
+    const exec = stubExecutor();
+    exec.canAutoExecute = () => true;
+    exec.execute = async (_name: string, args: Record<string, any>) => {
+      started.push(String(args.value));
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 25));
+      active -= 1;
+      return `echoed: ${args.value}`;
+    };
+
+    const client = new LlmClient(config);
+    await runAgenticChat(client, exec, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'go' },
+    ]);
+
+    // Both calls were in flight at the same time → genuinely concurrent.
+    assert.ok(maxActive >= 2, `expected concurrent execution, maxActive=${maxActive}`);
+
+    // The next request carries the tool results in the ORIGINAL call order,
+    // so tool_call_id references stay valid and conversation is deterministic.
+    const second = bodies[1];
+    const toolMsgs = second.messages.filter((m: any) => m.role === 'tool');
+    assert.deepStrictEqual(toolMsgs.map((m: any) => m.tool_call_id), ['call_a', 'call_b']);
+    assert.ok(String(toolMsgs[0].content).includes('echoed: a'));
+    assert.ok(String(toolMsgs[1].content).includes('echoed: b'));
+  });
+
+  test('batch containing a consent-requiring call runs sequentially', async () => {
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      if (!body.messages.some((m: any) => m.role === 'tool')) {
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                { id: 'call_1', type: 'function', function: { name: 'echo', arguments: '{"value":"x"}' } },
+                { id: 'call_2', type: 'function', function: { name: 'echo', arguments: '{"value":"y"}' } },
+              ],
+            },
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    let active = 0;
+    let maxActive = 0;
+    const exec = stubExecutor();
+    exec.canAutoExecute = () => false; // e.g. inline mode + mutating tools
+    exec.execute = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 15));
+      active -= 1;
+      return 'ok';
+    };
+
+    const client = new LlmClient(config);
+    await runAgenticChat(client, exec, [{ role: 'user', content: 'go' }]);
+
+    assert.strictEqual(maxActive, 1, 'consent-requiring batch must run sequentially');
+  });
+
+  test('response hitting the output token limit fails all tool calls (no execution)', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        // finish_reason 'length' — the model ran out of output tokens; the
+        // tool-call arguments (intentionally truncated JSON) are unreliable.
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'echo', arguments: '{"value":"x"' } }],
+            },
+            finish_reason: 'length',
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'retried ok' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    let executed = 0;
+    const exec = stubExecutor();
+    exec.execute = async () => { executed += 1; return 'SHOULD NOT RUN'; };
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(client, exec, [{ role: 'user', content: 'go' }]);
+
+    assert.strictEqual(executed, 0, 'no tool may execute on a truncated response');
+    assert.strictEqual(result.text, 'retried ok');
+
+    // The tool result fed back carries a "NOT executed" error so the model
+    // knows to re-issue the call with complete arguments.
+    const second = bodies[1];
+    const toolMsgs = second.messages.filter((m: any) => m.role === 'tool');
+    assert.strictEqual(toolMsgs.length, 1);
+    assert.ok(String(toolMsgs[0].content).includes('NOT executed'));
   });
 });
 

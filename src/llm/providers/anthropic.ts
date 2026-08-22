@@ -119,7 +119,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   /** C1: tool-calling round-trip (non-streaming). C-7: merge consecutive tool_result messages. */
-  async chatWithTools(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{ text: string; toolCalls: ToolCall[] }> {
+  async chatWithTools(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{ text: string; toolCalls: ToolCall[]; stopReason?: string }> {
     const systemMessage = messages.find(m => m.role === 'system');
     const nonSystemMessages = messages.filter(m => m.role !== 'system');
 
@@ -213,7 +213,9 @@ export class AnthropicProvider implements LlmProvider {
       if (block.type === 'text') text += block.text ?? '';
       if (block.type === 'tool_use') toolCalls.push({ id: block.id, name: block.name, arguments: block.input });
     }
-    return { text, toolCalls };
+    // stop_reason 'max_tokens' = output hit the limit; the agentic loop fails
+    // every tool call instead of executing possibly truncated args (pi parity).
+    return { text, toolCalls, stopReason: parsed.stop_reason ?? undefined };
   }
 
   async listModels(config: LlmConfig): Promise<ModelInfo[]> {

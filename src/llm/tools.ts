@@ -40,6 +40,93 @@ export function capToolResult(content: string, budgetWidth: number = TOOL_RESULT
   return `${head}\n\n…[result truncated: ${omitted.toLocaleString()} chars / ~${(tokens - budgetWidth).toLocaleString()} tokens omitted; use a narrower range or targeted query for the rest]…${tail ? '\n\n' + tail : ''}`;
 }
 
+// ── Grep line truncation (pi parity) ───────────────────────────────────────
+// Each search_files match line is capped at GREP_MAX_LINE_LENGTH chars with an
+// explicit marker — mirrors pi's truncateLine(). Long minified/compiled lines
+// are the main context blow-up on searches; capping per line keeps a hit useful
+// without flooding the conversation.
+
+/** Max chars returned for a single search_files match line. */
+export const GREP_MAX_LINE_LENGTH = 500;
+/** Default max matches for search_files. */
+export const DEFAULT_SEARCH_RESULTS = 100;
+/** Absolute ceiling for search_files matches. */
+export const MAX_SEARCH_RESULTS = 200;
+/** Max files scanned by one search_files call (bounds read cost). */
+export const MAX_SEARCH_FILES = 400;
+/** Default exclusion glob for search_files (mirrors list_workspace). */
+export const SEARCH_EXCLUDE_GLOB = '**/{node_modules,.git,dist,.vscode,out}/**';
+
+/**
+ * Truncate a single match line to fit within `maxChars`, adding an explicit
+ * marker so the model knows the line was cut (pi: truncateLine).
+ */
+export function truncateMatchLine(line: string, maxChars: number = GREP_MAX_LINE_LENGTH): string {
+  if (line.length <= maxChars) return line;
+  return `${line.slice(0, maxChars)}... [truncated]`;
+}
+
+/** A single grep hit: relative path + 1-indexed line number + (truncated) text. */
+export interface GrepLineHit {
+  path: string;
+  line: number;
+  text: string;
+}
+
+/**
+ * Scan UTF-8 text line-by-line for regex hits (pure — unit-testable).
+ * Safe for global/sticky regexes: resets lastIndex per line so `g`-flagged
+ * patterns can't skip lines.
+ */
+export function grepLines(
+  text: string,
+  re: RegExp,
+  truncate: number = GREP_MAX_LINE_LENGTH,
+): Array<{ line: number; text: string }> {
+  const hits: Array<{ line: number; text: string }> = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    re.lastIndex = 0;
+    if (re.test(lines[i]!)) {
+      hits.push({ line: i + 1, text: truncateMatchLine(lines[i]!, truncate) });
+    }
+  }
+  return hits;
+}
+
+/**
+ * Grep over workspace files as URIs: reads each file, sniffs binary, scans
+ * with grepLines, stops once `limit` hits are collected. Failures on
+ * individual files (deleted mid-scan, permission) are skipped, never fatal.
+ */
+async function collectGrepMatches(
+  uris: readonly vscode.Uri[],
+  re: RegExp,
+  limit: number,
+  toRel: (uri: vscode.Uri) => string,
+): Promise<GrepLineHit[]> {
+  const out: GrepLineHit[] = [];
+  for (const uri of uris) {
+    if (out.length >= limit) break;
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(await vscode.workspace.fs.readFile(uri));
+    } catch {
+      continue; // disappeared / unreadable — skip, don't kill the search
+    }
+    // Null byte in the sample ⇒ binary ⇒ skip (regex on binary is garbage).
+    const sample = buffer.subarray(0, Math.min(buffer.length, 512));
+    if (sample.includes(0)) continue;
+    const hits = grepLines(buffer.toString('utf8'), re);
+    const rel = toRel(uri);
+    for (const h of hits) {
+      if (out.length >= limit) break;
+      out.push({ path: rel, line: h.line, text: h.text });
+    }
+  }
+  return out;
+}
+
 
 export interface ToolExecutor {
   tools: LlmTool[];
@@ -49,13 +136,138 @@ export interface ToolExecutor {
   /** Reset per-turn state (e.g. consent-denied flag) at the start of a turn. */
   beginTurn(): void;
   execute(name: string, args: Record<string, any>): Promise<string>;
+  /**
+   * Predict whether execute(name, args) would run WITHOUT prompting the user
+   * (read-only, yolo/auto-approved, allowlisted, or blocked-without-consent).
+   * The agentic loop uses this to choose parallel batch execution vs
+   * sequential: a batch containing a consent-requiring call runs sequentially
+   * so approval cards appear one at a time (pi parity).
+   */
+  canAutoExecute(name: string, args: Record<string, any>): boolean;
 }
 
 // Q8: read-only tools are always allowed (inline/plan/act).
-const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'resolve_pr_conflicts']);
+// search_files = pure grep (no mutation); execute_skill loads skill
+// instructions for the model to follow (no side effects of its own).
+const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
 const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
+
+// ── Consent gate (pi parity: split gating from execution) ──────────────────
+// The mode/consent decision is shared between execute() (which prompts on
+// 'prompt') and canAutoExecute() (which only tests). Keeping it in ONE place
+// guarantees the parallel/sequential decision can never disagree with an
+// actual execution.
+
+/** Result of the mode/consent gate for a single tool call. */
+type GateAction =
+  | { action: 'run' }                       // executes now, no user interaction
+  | { action: 'prompt' }                    // needs the approval hook
+  | { action: 'block'; error: string };     // rejected without prompting
+
+/**
+ * Mode + consent gating WITHOUT executing. Side-effect-free apart from
+ * reading settings and session-approval cache.
+ */
+function gateTool(
+  name: string,
+  args: Record<string, any>,
+  state: { mode: 'inline' | 'plan' | 'act' | 'yolo'; deniedKeys: Set<string> },
+  hooks: { onApprove?: (name: string, args: Record<string, any>) => Promise<boolean> },
+): GateAction {
+  // ── Q8 mode gating ────────────────────────────────────────────────
+  if (state.mode === 'plan' && !READ_ONLY_TOOLS.has(name)) {
+    return { action: 'block', error: `tool '${name}' is not read-only and not allowed in plan mode` };
+  }
+  if (!MUTATING_TOOLS.has(name)) {
+    return { action: 'run' };
+  }
+  if (state.mode === 'plan') {
+    return { action: 'block', error: `tool '${name}' is mutating and not allowed in plan mode` };
+  }
+  // YOLO mode: skip ALL consent — auto-approve every tool including
+  // terminal commands. No allowlist, no prompt. User chose full autonomy.
+  if (state.mode === 'yolo') {
+    return { action: 'run' };
+  }
+  // Wildcard permission: tools matching adoCode.consent.autoApproveTools
+  // patterns (e.g. "read_*", "get_*") skip ALL consent — no prompt,
+  // no terminal allowlist. Read fresh so edits apply without a restart.
+  const autoApproveTools = vscode.workspace.getConfiguration('adoCode').get<string[]>('consent.autoApproveTools', []);
+  const toolAutoApproved = matchesToolPattern(name, autoApproveTools);
+  // C3 fix: inline mode REQUIRES an approval hook. If none is wired, DENY —
+  // never silently execute a mutating tool.
+  if (state.mode === 'inline' && !toolAutoApproved) {
+    if (!hooks?.onApprove) {
+      return { action: 'block', error: `tool '${name}' requires approval, but no approval hook is wired` };
+    }
+    // After one denial, re-prompting the SAME command/tool is pointless —
+    // deny it silently for the rest of the turn. A NEW command or tool still
+    // pops a consent card (the user may allow it).
+    const denyKey = name === 'run_terminal_command'
+      ? `run_terminal_command:${String(args.command ?? '')}`
+      : name;
+    if (state.deniedKeys.has(denyKey)) {
+      return { action: 'block', error: `tool '${name}' rejected by user (denied earlier this turn)` };
+    }
+    return { action: 'prompt' };
+  }
+  // C3 fix: act mode still enforces the terminal allowlist on
+  // run_terminal_command (tokenized, operator-free — see helper below).
+  // Commands not in the allowlist are routed through the approval hook so
+  // the user can allow once, per-session, or permanently. Allowlist entries
+  // support wildcards: "git *" permits any git subcommand.
+  if (name === 'run_terminal_command' && state.mode === 'act' && !toolAutoApproved) {
+    const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
+    const command = String(args.command ?? '');
+    if (!matchesCommandPattern(command, allowlist)) {
+      // Check session cache first (user chose "Allow for Session" earlier)
+      if (!isCommandSessionApproved(command)) {
+        // Not in allowlist and not session-approved — ask user
+        if (!hooks?.onApprove) {
+          return { action: 'block', error: `command not allowed in act mode (allowlist + no shell operators): ${command}` };
+        }
+        if (state.deniedKeys.has(`run_terminal_command:${command}`)) {
+          return { action: 'block', error: `command rejected by user: ${command} (denied earlier this turn)` };
+        }
+        return { action: 'prompt' };
+      }
+    }
+  }
+  return { action: 'run' };
+}
+
+// ── Per-file mutation serialization (pi parity) ────────────────────────────
+// Parallel agentic batches may contain several mutations to the SAME file.
+// Read-modify-write on one file must never interleave; mutations to
+// DIFFERENT files still run concurrently.
+const fileMutationQueues = new Map<string, Promise<unknown>>();
+function withFileMutationQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = fileMutationQueues.get(key) ?? Promise.resolve();
+  const run = prev.then(() => fn());
+  // Store a never-rejecting tail so a failed op doesn't poison the chain.
+  fileMutationQueues.set(key, run.catch(() => undefined));
+  return run;
+}
+
+/**
+ * Apply ordered edits to file text (pi parity: one `edit_file` call for
+ * several disjoint changes). Each entry's oldText must be present at the
+ * time it is applied — later edits match against progressively updated
+ * text. Throws loudly on the first miss so a partial application never
+ * silently succeeds (C5).
+ */
+export function applyOrderedEdits(text: string, edits: Array<{ oldText?: string; newText?: string }>): string {
+  let updated = text;
+  for (const e of edits) {
+    if (!e.oldText || !updated.includes(e.oldText)) {
+      throw new Error(`oldText not found: ${String(e.oldText ?? '').slice(0, 120)}`);
+    }
+    updated = updated.replace(e.oldText, e.newText ?? '');
+  }
+  return updated;
+}
 
 export function createToolExecutor(
   services: Services,
@@ -208,6 +420,20 @@ export function createToolExecutor(
       },
     },
     {
+      name: 'search_files',
+      description: 'Grep a workspace file/directory for a regex; returns up to `limit` matches as path:line text (per-line truncated to 500 chars). READ-ONLY. Prefer this over reading whole files when locating code.',
+      parameters: {
+        type: 'object',
+        properties: {
+          regex: { type: 'string', description: 'Regular expression to search for (engine: VS Code/JS regex)' },
+          path: { type: 'string', description: 'Workspace-relative file or directory to restrict the search to (optional; default: whole workspace)' },
+          file_pattern: { type: 'string', description: 'Glob to restrict files, e.g. "src/**/*.ts", "*.test.ts" (takes precedence over path)' },
+          limit: { type: 'number', description: 'Max matches to return (default 100, max 200)' },
+        },
+        required: ['regex'],
+      },
+    },
+    {
       name: 'get_selection',
       description: 'Return the text currently selected in the active editor',
       parameters: { type: 'object', properties: {} },
@@ -234,15 +460,27 @@ export function createToolExecutor(
     },
     {
       name: 'edit_file',
-      description: 'Replace text in a workspace file (mutating)',
+      description: 'Replace text in a workspace file (mutating). For several disjoint changes to the SAME file, pass them as one call with the edits array instead of separate calls.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string' },
-          oldText: { type: 'string' },
-          newText: { type: 'string' },
+          oldText: { type: 'string', description: 'Exact text to replace (required when edits is omitted)' },
+          newText: { type: 'string', description: 'Replacement text (required when edits is omitted)' },
+          edits: {
+            type: 'array',
+            description: 'Batch of independent replacements in one call; applied in order. Use this for multiple disjoint edits to the same file.',
+            items: {
+              type: 'object',
+              properties: {
+                oldText: { type: 'string', description: 'Exact text to find' },
+                newText: { type: 'string', description: 'Replacement text' },
+              },
+              required: ['oldText', 'newText'],
+            },
+          },
         },
-        required: ['path', 'oldText', 'newText'],
+        required: ['path'],
       },
     },
     {
@@ -289,6 +527,18 @@ export function createToolExecutor(
           content: { type: 'string', description: 'The memory content to store' },
         },
         required: ['key', 'category', 'content'],
+      },
+    },
+    {
+      name: 'execute_skill',
+      description: 'Load a skill\'s instructions (prompt/knowledge) plus your input so you can carry them out. READ-ONLY — returns the skill content for you to follow, it does not run anything itself.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skillId: { type: 'string', description: 'Skill ID (see Available Skills in the system prompt)' },
+          input: { type: 'string', description: 'Task input/context to combine with the skill instructions' },
+        },
+        required: ['skillId', 'input'],
       },
     },
     // ── Workspace memory tools ──────────────────────────────────────
@@ -346,72 +596,36 @@ export function createToolExecutor(
     // New turn → the user can be asked again (a previous turn's denials must
     // not lock this turn out of consent prompts).
     beginTurn() { state.deniedKeys.clear(); },
+    canAutoExecute(name, args) {
+      // Read-only, yolo/auto-approved, allowlisted, or block-without-consent
+      // calls run without user interaction → safe to parallelize. Calls that
+      // would pop a consent card must stay sequential (one card at a time).
+      return gateTool(name, args, state, { onApprove: hooks?.onApprove }).action !== 'prompt';
+    },
     async execute(name, args) {
-      // ── Q8 mode gating ─────────────────────────────────────────────
+      // ── Q8 mode + consent gate ─────────────────────────────────────
       // Runs FIRST — before any project/ADO resolution — so blocked tools are
       // rejected even without a workspace (and security checks can't crash).
-      if (state.mode === 'plan' && !READ_ONLY_TOOLS.has(name)) {
-        return JSON.stringify({ error: `tool '${name}' is not read-only and not allowed in plan mode` });
+      // Gating logic lives in gateTool() and is shared with canAutoExecute()
+      // so the parallel/sequential decision can never disagree with execution.
+      const gate = gateTool(name, args, state, { onApprove: hooks?.onApprove });
+      if (gate.action === 'block') {
+        return JSON.stringify({ error: gate.error });
       }
-      if (MUTATING_TOOLS.has(name)) {
-        if (state.mode === 'plan') {
-          return JSON.stringify({ error: `tool '${name}' is mutating and not allowed in plan mode` });
+      if (gate.action === 'prompt') {
+        // Gate guarantees onApprove exists for 'prompt', but re-check so a
+        // vanished hook degrades to a crisp error instead of a crash (C3).
+        const approve = hooks?.onApprove;
+        if (!approve) {
+          return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
         }
-        // YOLO mode: skip ALL consent — auto-approve every tool including
-        // terminal commands. No allowlist, no prompt. User chose full autonomy.
-        if (state.mode !== 'yolo') {
-          // Wildcard permission: tools matching adoCode.consent.autoApproveTools
-          // patterns (e.g. "read_*", "get_*") skip ALL consent — no prompt,
-          // no terminal allowlist. Read fresh so edits apply without a restart.
-          const autoApproveTools = vscode.workspace.getConfiguration('adoCode').get<string[]>('consent.autoApproveTools', []);
-          const toolAutoApproved = matchesToolPattern(name, autoApproveTools);
-          // C3 fix: inline mode REQUIRES an approval hook. If none is wired,
-          // DENY — never silently execute a mutating tool.
-          if (state.mode === 'inline' && !toolAutoApproved) {
-            if (!hooks?.onApprove) {
-              return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
-            }
-            // After one denial, re-prompting the SAME command/tool is pointless
-            // — deny it silently for the rest of the turn. A NEW command or
-            // tool still pops a consent card (the user may allow it).
-            const denyKey = name === 'run_terminal_command'
-              ? `run_terminal_command:${String(args.command ?? '')}`
-              : name;
-            if (state.deniedKeys.has(denyKey)) {
-              return JSON.stringify({ error: `tool '${name}' rejected by user (denied earlier this turn)` });
-            }
-            const ok = await hooks.onApprove(name, args);
-            if (!ok) {
-              state.deniedKeys.add(denyKey);
-              return JSON.stringify({ error: `tool '${name}' rejected by user` });
-            }
-          }
-          // C3 fix: act mode still enforces the terminal allowlist on
-          // run_terminal_command (tokenized, operator-free — see helper below).
-          // Commands not in the allowlist are routed through the approval hook
-          // so the user can allow once, per-session, or permanently. Allowlist
-          // entries support wildcards: "git *" permits any git subcommand.
-          if (name === 'run_terminal_command' && state.mode === 'act' && !toolAutoApproved) {
-            const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
-            const command = String(args.command ?? '');
-            if (!matchesCommandPattern(command, allowlist)) {
-              // Check session cache first (user chose "Allow for Session" earlier)
-              if (!isCommandSessionApproved(command)) {
-                // Not in allowlist and not session-approved — ask user
-                if (!hooks?.onApprove) {
-                  return JSON.stringify({ error: `command not allowed in act mode (allowlist + no shell operators): ${command}` });
-                }
-                if (state.deniedKeys.has(`run_terminal_command:${command}`)) {
-                  return JSON.stringify({ error: `command rejected by user: ${command} (denied earlier this turn)` });
-                }
-                const ok = await hooks.onApprove(name, args);
-                if (!ok) {
-                  state.deniedKeys.add(`run_terminal_command:${command}`);
-                  return JSON.stringify({ error: `command rejected by user: ${command}` });
-                }
-              }
-            }
-          }
+        const denyKey = name === 'run_terminal_command'
+          ? `run_terminal_command:${String(args.command ?? '')}`
+          : name;
+        const ok = await approve(name, args);
+        if (!ok) {
+          state.deniedKeys.add(denyKey);
+          return JSON.stringify({ error: `tool '${name}' rejected by user` });
         }
       }
       // M4 fix: resolve the ACTIVE project lazily — only ADO-bound tools need
@@ -531,6 +745,60 @@ export function createToolExecutor(
           }
           return capToolResult(lines.slice(start, end).join('\n') + note);
         }
+        case 'search_files': {
+          // pi-parity grep with per-line truncation: locate code by regex
+          // without dumping whole files into context.
+          const query = String(args.regex ?? '');
+          if (!query) {
+            return JSON.stringify({ error: 'search_files: missing required parameter: regex' });
+          }
+          let re: RegExp;
+          try {
+            re = new RegExp(query);
+          } catch (err) {
+            return JSON.stringify({ error: `search_files: invalid regex: ${err instanceof Error ? err.message : String(err)}` });
+          }
+          const limit = typeof args.limit === 'number'
+            ? Math.min(Math.max(Math.floor(args.limit), 1), MAX_SEARCH_RESULTS)
+            : DEFAULT_SEARCH_RESULTS;
+          // One include glob: file_pattern wins; else path (confinement-checked)
+          // is narrowed to a file or directory glob; else the whole workspace.
+          const filePattern = args.file_pattern ? String(args.file_pattern) : undefined;
+          const searchPath = args.path ? String(args.path) : undefined;
+          let include: string;
+          if (filePattern) {
+            // '*.ts' in findFiles globs means root-only; treat bare patterns as
+            // recursive (pi/ripgrep semantics) unless they already carry a path.
+            include = filePattern.includes('/') || filePattern.includes('**')
+              ? filePattern
+              : `**/${filePattern}`;
+          } else if (searchPath) {
+            const uri = resolveWorkspacePath(searchPath); // C4: path confinement
+            include = vscode.workspace.asRelativePath(uri).replace(/\\/g, '/');
+            const lastSegment = include.split('/').pop() ?? '';
+            // No extension in the last segment → treat as a directory prefix.
+            if (!lastSegment.includes('.')) include += '/**';
+          } else {
+            include = '**/*';
+          }
+
+          const uris = await vscode.workspace.findFiles(include, SEARCH_EXCLUDE_GLOB, MAX_SEARCH_FILES);
+          const matches = await collectGrepMatches(
+            uris,
+            re,
+            limit,
+            (uri) => vscode.workspace.asRelativePath(uri),
+          );
+
+          if (matches.length === 0) {
+            return 'No matches found';
+          }
+          const body = matches
+            .map((m) => `${m.path}:${m.line}  ${m.text}`)
+            .join('\n');
+          const header = `${matches.length} match(es) for /${query}/`;
+          return capToolResult(`${header}\n${body}`);
+        }
         case 'get_selection': {
           const editor = vscode.window.activeTextEditor;
           return editor ? editor.document.getText(editor.selection) : '';
@@ -549,20 +817,31 @@ export function createToolExecutor(
         case 'apply_diff':
         case 'edit_file': {
           const uri = resolveWorkspacePath(args.path); // C4: path confinement
-          const doc = await vscode.workspace.fs.readFile(uri);
-          const text = Buffer.from(doc).toString('utf8');
-          let updated: string;
-          if (name === 'edit_file') {
-            // C5: verify the replacement actually matched — no silent no-op.
-            if (!args.oldText || !text.includes(args.oldText)) {
-              return JSON.stringify({ error: `edit_file: oldText not found in ${args.path}` });
+          // pi-parity: mutations to the SAME file must serialize while
+          // mutations to DIFFERENT files still run in parallel (batches).
+          return withFileMutationQueue(uri.fsPath, async () => {
+            const doc = await vscode.workspace.fs.readFile(uri);
+            const text = Buffer.from(doc).toString('utf8');
+            let updated: string;
+            if (name === 'edit_file') {
+              // pi-parity: `edits` batches several disjoint changes into ONE
+              // call (fewer round-trips + fewer tokens). C5: each replacement
+              // must actually match — no silent no-op, fail loudly on the
+              // first miss so a partial application never succeeds.
+              const edits = Array.isArray(args.edits) && args.edits.length > 0
+                ? (args.edits as Array<{ oldText?: string; newText?: string }>)
+                : [{ oldText: args.oldText, newText: args.newText }];
+              try {
+                updated = applyOrderedEdits(text, edits);
+              } catch (err) {
+                return JSON.stringify({ error: `edit_file: ${err instanceof Error ? err.message : String(err)} (in ${args.path})` });
+              }
+            } else {
+              updated = applyUnifiedDiff(text, args.diff);
             }
-            updated = text.replace(args.oldText, args.newText);
-          } else {
-            updated = applyUnifiedDiff(text, args.diff);
-          }
-          await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
-          return JSON.stringify({ ok: true, path: args.path });
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
+            return JSON.stringify({ ok: true, path: args.path });
+          });
         }
         case 'restore_checkpoint': {
           const restored = services.checkpoints.restore(args.checkpointId, args.taskId);
@@ -596,6 +875,17 @@ export function createToolExecutor(
         case 'set_memory': {
           services.memory.set(args.key, args.category, args.content);
           return JSON.stringify({ ok: true, key: args.key, category: args.category });
+        }
+        case 'execute_skill': {
+          // Pure loader: returns the skill's prompt/knowledge combined with the
+          // model's input so the model can follow it (see SkillManager.executeSkill).
+          const result = await services.skills.executeSkill({
+            skillId: String(args.skillId ?? ''),
+            input: String(args.input ?? ''),
+          });
+          return result.success
+            ? result.output
+            : JSON.stringify({ error: result.error ?? 'skill execution failed' });
         }
         case 'read_workspace_memory': {
           const val = services.workspaceMemory.read(args.key);

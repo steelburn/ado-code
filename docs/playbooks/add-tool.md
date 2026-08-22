@@ -4,237 +4,146 @@ How to add a new native tool to ADO Code's tool system.
 
 ## Overview
 
-Tools are OpenAI function-calling compatible definitions paired with
-`BaseTool` implementations. There are two layers:
+All tool execution lives in ONE place: the `createToolExecutor()` factory in
+`src/llm/tools.ts`. Every tool is an OpenAI-compatible `LlmTool` (name +
+description + JSON Schema) entry in the `allTools` array, a classification in
+`READ_ONLY_TOOLS` / `MUTATING_TOOLS`, and a `case` in the executor's `switch`.
+There is no separate definition/implementation split — the legacy
+`BaseTool`/`ToolRegistry`/`definitions/` layer was removed in 0.6.0.
 
-1. **Tool definition** (`src/llm/tools/definitions/`) — the JSON Schema
-   that gets sent to the LLM API
-2. **Tool implementation** (`src/llm/tools/`) — the `BaseTool` subclass
-   that actually runs the tool
+The agentic loop (`src/llm/agentic.ts`) executes tools through the executor's
+`execute(name, args)` — which also serves `canAutoExecute(name, args)` so the
+loop can batch independent calls in parallel (see "Execution model" below).
 
 ## Steps
 
-### 1. Create the tool definition
+### 1. Add the tool to `allTools` in `src/llm/tools.ts`
 
-Create a new file in `src/llm/tools/definitions/`:
+Add an `LlmTool` entry describing the tool, what it does, and every parameter:
 
 ```typescript
-// src/llm/tools/definitions/my_tool.ts
-import type { ToolDefinition } from './types'
-
-const MY_TOOL_DESCRIPTION = `Description of what the tool does.
-Include parameter docs and usage examples here.
-
-Parameters:
-- param1: (required) What param1 does
-- param2: (optional) What param2 does`
-
-const my_tool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'my_tool',
-    description: MY_TOOL_DESCRIPTION,
-    parameters: {
-      type: 'object',
-      properties: {
-        param1: {
-          type: 'string',
-          description: 'What param1 does',
-        },
-        param2: {
-          type: 'number',
-          description: 'What param2 does',
-        },
-      },
-      required: ['param1'],
-      additionalProperties: false,
+{
+  name: 'my_tool',
+  description: 'Short description of what the tool does — include when to use it',
+  parameters: {
+    type: 'object',
+    properties: {
+      param1: { type: 'string', description: 'What param1 does' },
+      param2: { type: 'number', description: 'What param2 does (optional)' },
     },
+    required: ['param1'],
   },
-}
-
-export default my_tool
+},
 ```
 
-### 2. Register in the definitions index
+### 2. Classify it (mode gating)
 
-Add the import and export in `src/llm/tools/definitions/index.ts`:
+In `src/llm/tools.ts` add the tool name to exactly one set:
 
-```typescript
-import my_tool from './my_tool'
+- **`READ_ONLY_TOOLS`** — non-mutating tools (reads, searches, pure loaders).
+  Allowed in every mode including plan.
+- **`MUTATING_TOOLS`** — tools that change state. Auto-approved in act/yolo,
+  consents in inline, BLOCKED in plan.
 
-export { default as my_tool } from './my_tool'
+If it's a file-mutating tool (`edit_file`/`write_to_file`/`apply_diff` pattern),
+wrap the write inside `withFileMutationQueue(uri.fsPath, fn)` (defined in
+`src/llm/tools.ts`) — parallel batches may target the same file and
+read-modify-write must not interleave.
 
-export const ALL_NATIVE_TOOLS = [
-  // ... existing tools ...
-  my_tool,
-]
-```
+### 3. Implement the `case` in the `switch (name)`
 
-### 3. Add to the ToolName union
-
-In `src/llm/tools/types.ts`, add the tool name:
-
-```typescript
-export type ToolName =
-  | 'read_file'
-  // ... existing names ...
-  | 'my_tool'
-```
-
-Add the typed params:
+Add a case that returns a `string` (JSON or text) fed back to the model:
 
 ```typescript
-export interface NativeToolArgs {
-  // ... existing entries ...
-  my_tool: { param1: string; param2?: number }
-}
-```
-
-Add the display name:
-
-```typescript
-export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
-  // ... existing entries ...
-  my_tool: 'My tool',
-}
-```
-
-Add to the appropriate tool group:
-
-```typescript
-export const TOOL_GROUP_MAP: ToolGroupMap = {
-  read: [/* ... */],
-  write: [/* ... */],
-  // Add to the right group, e.g.:
-  mcp: ['my_tool'],
-}
-```
-
-### 4. Create the BaseTool implementation
-
-Create `src/llm/tools/MyToolTool.ts`:
-
-```typescript
-import { BaseTool, type TaskLike, type ToolCallbacks } from "./BaseTool"
-import type { NativeToolArgs } from "./types"
-
-type MyToolParams = NativeToolArgs["my_tool"]
-
-export class MyToolTool extends BaseTool {
-  readonly name = "my_tool" as const
-
-  async execute(
-    params: Record<string, unknown>,
-    task: TaskLike,
-    callbacks: ToolCallbacks,
-  ): Promise<void> {
-    const { pushToolResult, toolCallId } = callbacks
-    try {
-      const typedParams = params as unknown as MyToolParams
-
-      // Validate required params
-      if (!typedParams.param1) {
-        pushToolResult(toolCallId, "Error: missing required parameter 'param1'")
-        return
-      }
-
-      // Do the work
-      const result = `Executed my_tool with param1=${typedParams.param1}`
-      pushToolResult(toolCallId, result)
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      pushToolResult(toolCallId, `Error: ${msg}`)
-    } finally {
-      this.resetPartialState()
-    }
+case 'my_tool': {
+  // Validate required params up front, return { error } JSON on failure —
+  // NEVER throw (a throw kills the agentic loop).
+  const param1 = String(args.param1 ?? '');
+  if (!param1) {
+    return JSON.stringify({ error: 'my_tool: missing required parameter: param1' });
   }
-
-  // Optional: override handlePartial() for streaming UI updates
-  override async handlePartial(
-    task: TaskLike,
-    block: { id: string; name: string; params: Record<string, unknown>; partial: boolean },
-  ): Promise<void> {
-    // Show streaming status to user
-  }
+  const result = await doTheWork(param1, Number(args.param2 ?? 0));
+  // Cap large outputs: capToolResult(text) trims head+tail to a token budget.
+  return capToolResult(JSON.stringify(result));
 }
-
-export const myToolTool = new MyToolTool()
 ```
 
-### 5. Register in ToolRegistry
+Notes:
+- **Path handling**: workspace-relative paths must go through
+  `resolveWorkspacePath(path)` — it enforces C4 confinement (`../` escapes) and
+  throws on escape. Errors become `JSON.stringify({ error })`, not throws.
+- **Async**: the case body may `await` VS Code APIs or services
+  (`services.ado`, `services.skills`, `services.memory`, `services.mcp`, …).
+- **Output size**: prefer `capToolResult(...)` for anything that can be large
+  (file contents, lists, threads).
 
-In `src/llm/tools/ToolRegistry.ts`, the `registerBuiltInTools()` method
-should register your new tool instance:
+### 4. Add the type, display name, and group in `src/llm/tools/types.ts`
+
+- `ToolName` union — add `'my_tool'`
+- `NativeToolArgs` — add `my_tool: { param1: string; param2?: number }`
+- `TOOL_DISPLAY_NAMES` — add `my_tool: 'My tool'`
+- `TOOL_GROUP_MAP` — add to the logical group (`read`, `write`, `execute`,
+  `ado`, `memory`). This drives the system-prompt tool listing (via
+  `modes.ts`/`getToolsForMode`) and the consent category. Keep it in sync with
+  the `READ_ONLY_TOOLS`/`MUTATING_TOOLS` classification.
+
+### 5. Write tests
+
+`src/test/suite/llm/tools.test.ts` is the executor test home — the suite runs
+in VS Code electron WITHOUT a workspace folder, so file/workspace APIs can't be
+exercised end-to-end. Test what's pure:
 
 ```typescript
-import { myToolTool } from './MyToolTool'
+suite('my_tool', () => {
+  test('is read-only / exposed to the model', () => {
+    const ex = makeExecutor('plan');
+    assert.strictEqual(ex.canAutoExecute('my_tool', { param1: 'x' }), true);
+    assert.ok(ex.tools.map(t => t.name).includes('my_tool'));
+  });
 
-// In registerBuiltInTools():
-this.register(myToolTool)
+  test('fails loudly on missing required params', async () => {
+    const ex = makeExecutor('act');
+    const res = await ex.execute('my_tool', {});
+    assert.ok(String(res).includes('missing required parameter'));
+  });
+});
 ```
 
-### 6. Add to the ToolExecutor switch (if needed)
+Extract any non-trivial logic into a pure exported function (like
+`grepLines`, `applyOrderedEdits`, `truncateMatchLine`) so it's unit-testable
+without the VS Code host, and test that directly.
 
-For tools used in the agentic loop via `createToolExecutor` in
-`src/llm/tools.ts`:
+## Execution model (why `canAutoExecute` matters)
 
-1. Add the tool to the `tools` array with its `LlmTool` definition
-2. Classify it as read-only or mutating:
-   - Add to `READ_ONLY_TOOLS` for non-mutating tools
-   - Add to `MUTATING_TOOLS` for tools that change state
-3. Add a `case` in the `switch (name)` block to handle execution
-
-### 7. Write tests
-
-Create `src/test/suite/llm/myTool.test.ts`:
-
-```typescript
-import * as assert from 'assert'
-import { MyToolTool } from '../../../llm/tools/MyToolTool'
-
-suite('MyToolTool', () => {
-  const tool = new MyToolTool()
-
-  test('has correct name', () => {
-    assert.strictEqual(tool.name, 'my_tool')
-  })
-
-  test('execute returns result', async () => {
-    // Mock task and callbacks
-    const result = await tool.execute(
-      { param1: 'hello' },
-      { cwd: '/tmp', api: null, say: async () => {} },
-      {
-        toolCallId: 'test-1',
-        pushToolResult: (id, content) => { /* capture */ },
-        handleError: async () => {},
-        taskApproval: async () => true,
-      },
-    )
-    // Assert result
-  })
-})
-```
+The agentic loop runs all tool calls in a batch **in parallel** when none of
+them needs user interaction, and **sequentially** when any would prompt (so
+consent cards appear one at a time). `canAutoExecute(name, args)` must be a
+pure prediction of `execute()` — the shared `gateTool()` implements both, so
+they can never disagree. If your tool is read-only, mutating-when-allowlisted,
+or otherwise prompt-free, the batch parallelizes automatically.
 
 ## Pitfalls
 
-- **Tool name uniqueness**: `ToolRegistry.register()` throws if a tool with
-  the same name is already registered. Check `ToolName` union for conflicts.
-- **Path confinement**: File tools must use `resolveWorkspacePath()` to
-  prevent `../` escapes (C4 security fix).
-- **Mode gating**: Mutating tools are blocked in plan mode. Always
-  classify your tool correctly in `READ_ONLY_TOOLS` or `MUTATING_TOOLS`.
-- **Binary data**: Use `callbacks.pushToolResult()` with `string` for
-  tool output, never throw (agentic-loop safety — throws kill the loop).
+- **Never throw** — the loop treats a rejected promise as a fatal error. Return
+  `JSON.stringify({ error })`.
+- **Consent correctness**: mutating tools in inline mode REQUIRE the approval
+  hook (`hooks.onApprove`); if none is wired the executor denies rather than
+  silently executing. `gateTool()` handles this — don't bypass it.
+- **Path confinement**: always `resolveWorkspacePath()` for workspace paths —
+  never trust a model-supplied path directly.
+- **Same-file races**: file mutators must use `withFileMutationQueue`.
+- **Output budgets**: unbounded results re-send with EVERY loop iteration —
+  default bounded windows (like `read_file`'s 200-line default) and cap big
+  outputs.
+- **Truncated responses**: if the model response reports
+  `stopReason: 'length'/'max_tokens'`, the loop fails the whole batch — your
+  tool must tolerate error results arriving for calls it never ran.
 
 ## File Checklist
 
 | File | Action |
 |------|--------|
-| `src/llm/tools/definitions/my_tool.ts` | Create |
-| `src/llm/tools/definitions/index.ts` | Edit (import + register) |
-| `src/llm/tools/types.ts` | Edit (ToolName, NativeToolArgs, display name, group) |
-| `src/llm/tools/MyToolTool.ts` | Create |
-| `src/llm/tools/ToolRegistry.ts` | Edit (register in built-ins) |
-| `src/llm/tools.ts` | Edit (if using createToolExecutor path) |
-| `src/test/suite/llm/myTool.test.ts` | Create |
+| `src/llm/tools.ts` | Edit — `allTools` entry, `READ_ONLY_TOOLS`/`MUTATING_TOOLS`, `switch` case (+ `withFileMutationQueue` for file mutators) |
+| `src/llm/tools/types.ts` | Edit — `ToolName`, `NativeToolArgs`, `TOOL_DISPLAY_NAMES`, `TOOL_GROUP_MAP` |
+| `src/test/suite/llm/tools.test.ts` | Edit — classification + error-path + pure-logic tests |
+| `src/llm/prompts/system.ts` | Optional — add usage guidance so the model knows when to call it |

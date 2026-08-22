@@ -22,8 +22,8 @@ src/changelog/ CHANGELOG.md auto-update
 src/config/ VS Code settings, ContextProxy
 src/git/GitService.ts Git operations, gitError.ts error messages, mergeCleanup.ts post-merge cleanup, mergeConflicts.ts conflict surfacing
 src/llm/ LLM client, agentic loop, tools, providers, modes, prompts, context, consent
-src/llm/tools/ BaseTool, ToolRegistry, 5 tool implementations + definitions
-src/llm/providers/ BaseProvider, openai-v2, anthropic-v2
+src/llm/tools/ types.ts only (tool names/params/groups); ALL tool implementations live in src/llm/tools.ts createToolExecutor()
+src/llm/providers/ BaseProvider, openai, anthropic (the -v2/BaseProvider migration and handler.ts were removed — client.ts + LlmProvider interface is the live path)
 src/llm/context/ tokenCounter, contextManager, condenser
 src/memory/ UserMemory, WorkspaceMemory
 src/services/ checkpoints/, mcp/, ignoreFiles/ (keeps `.ado-code` out of .gitignore/.dockerignore)
@@ -39,10 +39,10 @@ Composition: src/services.ts createServices() builds: ado, git, changelog, agent
 
 ### LLM Layer
 client.ts — streaming chat, tool-calling
-agentic.ts — multi-iteration tool loop
-tools.ts — mode-gated dispatch (inline/plan/act/yolo)
-tools/ — BaseTool, ToolRegistry, definitions
-providers/ — BaseProvider, openai-v2, anthropic-v2
+agentic.ts — multi-iteration tool loop (parallel batch execution + consent-aware batching)
+tools.ts — mode-gated dispatch (inline/plan/act/yolo); single home for all tool implementations
+tools/ — types.ts only (tool names/params/groups)
+providers/ — BaseProvider, openai, anthropic
 modes.ts — inline/plan/act/yolo mode configs
 prompts/system.ts — dynamic system prompt
 context/ — token counting, windowing, condensation
@@ -78,13 +78,19 @@ shared/messages.ts — typed message protocol
 ## Key Patterns
 
 ### Tool System
-Tools defined as OpenAI-compatible JSON Schema.
-BaseTool abstract class provides lifecycle.
-ToolRegistry manages instances, dispatches by name.
-ToolExecutor gates by mode: plan=read-only, inline=consent, act=auto-approve, yolo=auto-approve everything (no consent, no allowlist).
+Tools defined as OpenAI-compatible JSON Schema and implemented in the single
+createToolExecutor() switch (src/llm/tools.ts). The legacy BaseTool/ToolRegistry/
+definitions/ path was removed.
+ToolExecutor gates by mode: plan=read-only, inline=consent, act=auto-approve,
+yolo=auto-approve everything (no consent, no allowlist). gateTool() is the shared
+gate used by execute() and canAutoExecute(); the agentic loop runs batches in
+PARALLEL unless a call would prompt (then sequential, one consent card at a time),
+with a per-file mutation queue for same-file edits and a truncated-response guard
+(stopReason length/max_tokens ⇒ fail the batch, never execute partial args).
 Tool names: get_work_items, get_work_item, read_file, edit_file, write_to_file,
-search_files, list_files, apply_diff, run_terminal_command, delegate_to_agent,
-restore_checkpoint, set_memory, read/write/list_workspace_memory,
+search_files (grep with per-line 500-char truncation), apply_diff,
+run_terminal_command, delegate_to_agent, restore_checkpoint, set_memory,
+execute_skill (loads skill instructions, read-only), read/write/list_workspace_memory,
 commit_worktree, push_worktree, create_pull_request, resolve_pr_conflicts,
 mcp__<server>__<tool>
 

@@ -6,7 +6,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 
 - Fetch work items assigned to you from Azure DevOps (My Work Items + Unassigned trees, hierarchical Epic → Feature → User Story → Task)
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
-- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes)
+- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes) — independent tool calls run in parallel, batched `edit_file` edits, and a `search_files` grep tool with per-line truncation
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, Pi, and more)
 - **Git worktree isolation**: Concurrent agents run in isolated worktrees — no branch conflicts
@@ -194,6 +194,15 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### 0.6.0
+
+- **Parallel tool execution**: Independent tool calls in one turn now run concurrently and results are re-ordered back to call order — several `read_file`/`search_files` calls finish as fast as one. Batches containing a consent card run sequentially so prompts never stack. Same-file edits are serialized by a per-file mutation queue so parallel batches can't race
+- **Batched edits**: `edit_file` accepts an `edits[]` array — several disjoint changes to a file in a single call (each verified; applied in order)
+- **`search_files` grep tool**: Now actually implemented — regex search across the workspace with `path:line` hits, 500-char per-line truncation, workspace confinement, sensible exclusions, and result caps
+- **`execute_skill` fixed**: The AI can now really call `execute_skill` to load skill instructions mid-conversation (previously it errored as an unknown tool)
+- **Truncated-response guard**: If a response hits the output token limit, tool calls are failed with "re-issue" instead of executing possibly-truncated arguments
+- **Architecture cleanup**: Removed the legacy `BaseTool`/`ToolRegistry`/definitions layer and the abandoned BaseProvider (`-v2`) migration — tool execution now lives in one switch; −2,500+ lines
 
 ### 0.5.9
 

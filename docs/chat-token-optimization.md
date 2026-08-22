@@ -27,6 +27,10 @@ Two compounding drivers:
 - [x] **4. Overhead in the budget** — `ContextManager.setOverheadTokens()` includes system prompt + tool schemas in truncation/remaining/status-bar accounting.
 - [x] **5. Diagnostics** — per-turn cost debug log (iterations, tool calls, conversation + overhead tokens).
 - [x] **6. Provider-native token counting** — `LlmProvider.countTokens()` (Anthropic `/v1/messages/count_tokens`, always free; OpenAI-compatible via `usage.prompt_tokens` from a throttled minimal request), wired into the token status bar with heuristic fallback. Toggle `adoCode.llm.useNativeTokenCounting` (default on). Gemini/openai-compatible gateways that report usage benefit automatically.
+- [x] **7. Parallel tool execution (0.6.0)** — independent tool calls in a batch run concurrently (`Promise.all`), results re-ordered to call order; a batch containing a consent-requiring call runs sequentially (no stacked cards). Cuts wall-clock latency per turn, which also caps how much context accumulates under a fixed iteration budget.
+- [x] **8. Truncated-response guard (0.6.0)** — `stopReason` `length`/`max_tokens` ⇒ the whole batch is failed with "re-issue with complete arguments" instead of executing salvage-parsed, possibly truncated tool args (a wasted execute + poisoned history).
+- [x] **9. Batched edits (0.6.0)** — `edit_file` accepts `edits[]` for multiple disjoint changes in one call; per-file mutation queue serializes same-file mutations so parallel batches can't race.
+- [x] **10. Grep with per-line truncation (0.6.0)** — new live `search_files` tool caps each match line at 500 chars (`truncateMatchLine`, pi-style `truncateLine`), bounded result count (100–200), and excludes `node_modules/.git/dist/.vscode/out` — searching no longer risks dumping huge lines or binaries into context.
 
 ## Work items (ordered, each independently shippable)
 
@@ -63,6 +67,6 @@ Two compounding drivers:
   before/after can be measured.
 
 ## Out of scope (future)
-- Native provider token-counting endpoints.
-- Smarter recency window tuning.
-- Adaptive iteration budgets.
+- Smarter recency window tuning (e.g. per-item staleness instead of whole-iteration stubbing).
+- Adaptive iteration budgets (raise `actToolBudget` when a turn is going well).
+- Semantic result dedup/caching across turns (same file read twice = one fetch).

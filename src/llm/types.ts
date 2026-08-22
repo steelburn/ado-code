@@ -34,6 +34,8 @@ export interface LlmProvider {
   chatWithTools?(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{
     text: string;
     toolCalls: ToolCall[];
+    /** Native stop reason ('length'/'max_tokens' means the model hit its output limit — tool-call args may be truncated). */
+    stopReason?: string;
   }>;
   /**
    * Best-effort native token count for a full conversation (system + user +
@@ -53,6 +55,8 @@ export interface LlmToolParameter {
   enum?: string[];
   properties?: Record<string, LlmToolParameter>;
   required?: string[];
+  /** JSON-schema items for array-typed parameters (e.g. edit_file.edits). */
+  items?: LlmToolParameter;
 }
 
 export interface LlmTool {

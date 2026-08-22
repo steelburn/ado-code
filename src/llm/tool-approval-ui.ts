@@ -19,16 +19,10 @@ import * as vscode from 'vscode'
 import { matchesToolPattern, matchesCommandPattern } from './consent'
 
 // Re-export pure utilities for convenience
+// (the legacy approval-decision family — shouldAutoApprove, formatApprovalPrompt,
+// ToolApprovalRequest & friends — was removed: the live consent flow uses the
+// ConsentBroker + gateTool, see src/llm/tools.ts).
 export {
-  shouldAutoApprove,
-  formatApprovalPrompt,
-  resolveToolApprovalSettings,
-  type ToolApprovalRequest,
-  type ToolApprovalSettings,
-  type ToolApprovalCategory,
-  type AutoApprovalDecision,
-  getToolApprovalCategory,
-  formatToolParams,
   isHarmlessCommand,
   matchesToolPattern,
   matchesCommandPattern,

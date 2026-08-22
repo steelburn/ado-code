@@ -2,6 +2,21 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.6.0] - 2026-08-22
+
+### Improvements
+- **Parallel tool execution (pi parity)**: Independent tool calls in a single model turn now run concurrently instead of one-after-another — several `read_file`/`search_files` calls or ADO reads finish in the time one used to take. Results are re-ordered back to call order so tool-id referencing stays valid. If a batch contains any call that needs a consent card, the whole batch runs sequentially so prompts never stack
+- **Per-file mutation queue**: Parallel batches that edit the SAME file are serialized (read-modify-write can't interleave), while edits to different files still run in parallel
+- **Truncated-response guard**: When the model hits its output token limit (`length`/`max_tokens`), tool calls are NOT executed — arguments may be truncated mid-JSON — instead each is failed with an explicit "re-issue with complete arguments" so the model retries correctly
+- **Batched edits**: `edit_file` now accepts an `edits[]` array for several disjoint changes to the same file in one call (applied in order, each still verified — no silent no-ops). Fewer round-trips, fewer tokens
+- **`search_files` grep tool is now real**: Previously advertised in the prompt but unimplemented, it now greps the workspace with a JS regex — `path:line` hits, per-line truncation to 500 chars with an explicit marker (pi-style), workspace path confinement, `node_modules/.git/dist/.vscode/out` excluded, binary files skipped, result caps (default 100 / max 200), and `file_pattern` (e.g. `src/**/*.ts`) or a `path` directory/file scope
+- **`execute_skill` tool works again**: The system prompt told the model to call `execute_skill`, but the executor couldn't run it — every attempt errored as "unknown tool". It's now wired to the skill manager (read-only: loads the skill's instructions for the model to follow), so skills are usable from chat as advertised
+- **Smarter prompt guidance**: The system prompt now tells the model to issue independent tool calls in the same request (so the parallel loop is actually used) and to batch disjoint edits into one `edit_file` call
+
+### Changed
+- **Single tool implementation path**: Removed the legacy Roo-Code-style layer (`BaseTool`, `ToolRegistry`, the `definitions/` schemas, and the five per-tool classes) — all tool execution lives in the one `createToolExecutor()` switch in `src/llm/tools.ts`, which was already the path the agentic loop used. Also removed the abandoned BaseProvider migration (`handler.ts`, `openai-v2.ts`, `anthropic-v2.ts`) and the unused approval-decision helpers in `consent.ts`. Dead tool names (`list_files`, `ask_followup_question`, `attempt_completion`) were dropped from the type/display map — net −2,500+ lines
+- **Docs updated**: `docs/playbooks/add-tool.md` rewritten for the single-path architecture, `docs/chat-token-optimization.md` refreshed with the new optimizations, AGENTS.md reflects the current tool system
+
 ## [0.5.9] - 2026-08-21
 
 ### Improvements

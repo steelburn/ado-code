@@ -73,7 +73,7 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   /** C1: tool-calling round-trip (non-streaming — simplest correct shape). */
-  async chatWithTools(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{ text: string; toolCalls: ToolCall[] }> {
+  async chatWithTools(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{ text: string; toolCalls: ToolCall[]; stopReason?: string }> {
     // Translate generic messages → OpenAI native shapes:
     // - role:'tool' + toolCallId → { role:'tool', tool_call_id, content }
     // - role:'assistant' + toolCalls → tool_calls array (arguments as JSON string)
@@ -125,7 +125,10 @@ export class OpenAiProvider implements LlmProvider {
       // unparseable.
       arguments: parseToolArguments(tc.function?.arguments),
     }));
-    return { text, toolCalls };
+    // finish_reason 'length' = the response hit the output token limit; the
+    // agentic loop fails every tool call instead of executing possibly
+    // truncated arguments (pi parity).
+    return { text, toolCalls, stopReason: parsed.choices?.[0]?.finish_reason ?? undefined };
   }
 
   async listModels(config: LlmConfig): Promise<ModelInfo[]> {

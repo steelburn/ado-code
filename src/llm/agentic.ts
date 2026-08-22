@@ -70,7 +70,7 @@ export async function runAgenticChat(
     const stubbed = compactOldToolResults(messages, protectFrom);
     if (stubbed > 0) logger.debug(`agentic: compacted ${stubbed} older tool result(s) to save context`);
 
-    const { text, toolCalls } = await client.chatWithTools(messages, executor.tools, signal);
+    const { text, toolCalls, stopReason } = await client.chatWithTools(messages, executor.tools, signal);
     // Surface the iteration's reasoning/thinking text (if any) — the loop
     // otherwise stays silent until the final result. `final` marks the
     // terminal answer (no further tools), which the host renders as the
@@ -93,30 +93,77 @@ export async function runAgenticChat(
       toolCalls: toolCalls.map((c: ToolCall) => ({ id: c.id, name: c.name, arguments: JSON.stringify(c.arguments) })),
     });
 
+    // Truncated-response guard (pi parity): 'length'/'max_tokens' means the
+    // model hit its output token limit, so streamed/salvaged tool-call
+    // arguments may be silently incomplete. NONE of them are safe to execute
+    // — fail the whole batch; the model re-issues with complete arguments.
+    if (stopReason === 'length' || stopReason === 'max_tokens') {
+      for (const call of toolCalls) {
+        logger.warn(`agentic: response hit output limit (stopReason=${stopReason}); NOT executing tool ${call.name}`);
+        const content = JSON.stringify({
+          error: `tool call "${call.name}" was NOT executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`,
+        });
+        onProgress?.({ toolResult: { id: call.id, name: call.name, content } });
+        messages.push({ role: 'tool', content, toolCallId: call.id });
+      }
+      // Set protectFrom for the NEXT iteration = start of THIS iteration's
+      // new messages (assistant tool_calls + failed tool results).
+      protectFrom = messages.length - (toolCalls.length + 1);
+      continue;
+    }
+
     // C1 fix: ONE tool message per result, each carrying its own toolCallId
     // (OpenAI requires one role:'tool' message per tool_call_id).
-    for (const call of toolCalls) {
-      // Log every tool call with name, args, and iteration number.
+    //
+    // pi-parity parallel execution: if every call in the batch runs WITHOUT
+    // user interaction (read-only / yolo / auto-approved / allowlisted), run
+    // them concurrently and re-order results back to call order. If any call
+    // needs a consent card, the whole batch runs sequentially so approval
+    // prompts appear one at a time — never stacked modals.
+    const batchIsSequential = toolCalls.some(call => !executor.canAutoExecute(call.name, call.arguments));
+    const logResult = (call: ToolCall, content: string) => {
+      const resultPreview = content.length > 200 ? content.slice(0, 200) + '…' : content;
+      logger.info(`Tool result [${call.name}]: ${resultPreview}`);
+    };
+
+    const executeOne = async (call: ToolCall): Promise<string> => {
       const argsSummary = Object.keys(call.arguments).length > 0
         ? JSON.stringify(call.arguments)
         : '(no args)';
       logger.info(`Tool call [${i + 1}/${maxIterations}]: ${call.name} ${argsSummary}`);
-
       // Live "running" tool card in the chat (plus status-bar detail).
       onProgress?.({ tool: { id: call.id, name: call.name, args: call.arguments } });
-      let content: string;
       try {
-        content = await executor.execute(call.name, call.arguments);
-        // Log the result (truncated to keep output readable).
-        const resultPreview = content.length > 200 ? content.slice(0, 200) + '…' : content;
-        logger.info(`Tool result [${call.name}]: ${resultPreview}`);
+        const content = await executor.execute(call.name, call.arguments);
+        logResult(call, content);
+        return content;
       } catch (err) {
-        content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+        const content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
         logger.error(`Tool error [${call.name}]: ${content}`);
+        return content;
       }
+    };
+
+    let results: string[];
+    if (batchIsSequential) {
+      results = [];
+      for (const call of toolCalls) {
+        results.push(await executeOne(call));
+        if (signal?.aborted) break;
+      }
+    } else {
+      // Concurrent: all calls start together; results re-ordered below to
+      // match the original call order (keeps tool_call_id references valid
+      // and conversation ordering deterministic). Each execute() is wrapped
+      // in its own try/catch so one failure can't kill the batch.
+      results = await Promise.all(toolCalls.map(call => executeOne(call)));
+    }
+
+    for (let k = 0; k < toolCalls.length && k < results.length; k++) {
+      const call = toolCalls[k];
       // Flip the card to "completed" with the result.
-      onProgress?.({ toolResult: { id: call.id, name: call.name, content } });
-      messages.push({ role: 'tool', content, toolCallId: call.id });
+      onProgress?.({ toolResult: { id: call.id, name: call.name, content: results[k] } });
+      messages.push({ role: 'tool', content: results[k], toolCallId: call.id });
     }
 
     // Set protectFrom for the NEXT iteration = start of THIS iteration's new

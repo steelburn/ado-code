@@ -81,6 +81,16 @@ function buildToolsSection(
 function buildToolGuidelines(mode: ModeConfig): string {
   const lines = ['## Tool Use Guidelines', ''];
 
+  // Mode-independent guidance (pi parity): the model must know it can batch
+  // independent calls and that disjoint edits to one file collapse into a
+  // single call — otherwise providers+loops that accept parallel tool calls
+  // never get used, and every edit costs a round-trip.
+  lines.push(
+    '- If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the SAME request so they execute in parallel (e.g. several `read_file` calls, or get_work_items + get_selection). Otherwise wait for previous calls to finish first to determine the dependent values.',
+    '- When making several disjoint changes to the SAME file, batch them into ONE `edit_file` call using the `edits` array instead of separate calls.',
+    '',
+  );
+
   const guidelines: Partial<Record<string, string[]>> = {
     read: [
       'Use read tools to understand the codebase before making changes.',
