@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ChatViewProvider, WORK_ITEMS_MODES } from './webview/ChatViewProvider';
+import { ChatViewProvider } from './webview/ChatViewProvider';
+import { WORK_ITEMS_MODES } from './shared/workItemsMode';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
@@ -185,7 +186,11 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       if (!pick) return; // cancelled
       const mode = WORK_ITEMS_MODES.find(m => m.label === pick.label);
-      if (mode) await chatProvider.setWorkItemsMode(mode.value);
+      if (mode) {
+        // Update the header row immediately, then refetch the dataset.
+        treeProvider.setMode(mode.value);
+        await chatProvider.setWorkItemsMode(mode.value);
+      }
     })
   );
 

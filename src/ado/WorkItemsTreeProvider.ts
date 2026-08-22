@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { WorkItemSummary } from '../shared/messages';
+import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
 import { logger } from '../services/logger';
 
 // H-6 fix: the tree consumes WorkItemSummary (what refreshWorkItems posts),
@@ -33,7 +34,7 @@ export interface WorkItemFilterState {
   text: string;
 }
 
-export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNode> {
+export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNode | WorkItemsModeHeader> {
   private _onDidChangeTreeData = new vscode.EventEmitter<WorkItemNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -51,9 +52,24 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   private filterType: Set<string> = new Set();   // empty = show all types
   private filterText: string = '';
 
+  // Which dataset the view shows (drives the header row label).
+  private viewMode: WorkItemsMode = 'mine';
+
   // Data is pushed in via refresh() (called from ChatViewProvider.refreshWorkItems,
   // Task 8 Step 4). The provider itself never talks to ADO.
   constructor() {}
+
+  /** Current view mode (My / All / Unassigned) — shown in the header row. */
+  getMode(): WorkItemsMode {
+    return this.viewMode;
+  }
+
+  /** Update the view mode (kept in sync by the toggle command) and re-render. */
+  setMode(mode: WorkItemsMode): void {
+    if (mode === this.viewMode) return;
+    this.viewMode = mode;
+    this._onDidChangeTreeData.fire(undefined);
+  }
 
   refresh(items: WorkItemSummary[]): void {
     this.workItems = items;
@@ -256,12 +272,13 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     return element;
   }
 
-  getChildren(element?: WorkItemNode): WorkItemNode[] {
+  getChildren(element?: WorkItemNode | WorkItemsModeHeader): (WorkItemNode | WorkItemsModeHeader)[] {
     if (!element) {
-      // Root level: items with no parent (or parent not in fetched set)
-      return this.roots.map(wi => this.toNode(wi));
+      // Header row (visible mode toggle) + root items.
+      return [new WorkItemsModeHeader(this.viewMode), ...this.roots.map(wi => this.toNode(wi))];
     }
-    // Children of this node
+    // Children of this node (only work item nodes have children)
+    if (element instanceof WorkItemsModeHeader) return [];
     const children = this.childrenOf.get(element.workItemId) ?? [];
     return children.map(wi => this.toNode(wi));
   }
@@ -336,4 +353,22 @@ export class WorkItemNode extends vscode.TreeItem {
   public readonly workItemTitle: string;
   public readonly workItemType: string;
   public readonly state: string;
+}
+
+/**
+ * First row of the Work Items tree: a visible mode indicator ("View: My Work
+ * Items") that opens the mode QuickPick when clicked — the tree equivalent of
+ * the Chat|Plan|Act|Yolo toggle. It is not a work item: no work item commands
+ * match its contextValue and it never appears as a child of anything.
+ */
+export class WorkItemsModeHeader extends vscode.TreeItem {
+  constructor(mode: WorkItemsMode) {
+    super(`View: ${workItemsModeLabel(mode)}`, vscode.TreeItemCollapsibleState.None);
+    this.id = 'workItemsModeHeader';
+    this.contextValue = 'workItemsModeHeader';
+    this.iconPath = new vscode.ThemeIcon('list-selection');
+    this.description = 'click to switch ▾';
+    this.tooltip = 'Work Items view mode — click to switch between My / All / Unassigned';
+    this.command = { command: 'adoCode.workItemsToggleMode', title: 'Switch Work Items View' };
+  }
 }

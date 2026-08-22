@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
+import { WorkItemsMode, WORK_ITEMS_MODES, workItemsModeLabel } from '../shared/workItemsMode';
 import { AdoClient, parentIdOf } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
@@ -40,16 +41,6 @@ export interface ProposedTask {
   assignedTo: string;
   tags: string;
 }
-
-/** Dataset shown by the merged Work Items tree. */
-export type WorkItemsMode = 'mine' | 'all' | 'unassigned';
-
-/** Human labels for the mode QuickPick, in display order. */
-export const WORK_ITEMS_MODES: ReadonlyArray<{ label: string; value: WorkItemsMode; description: string }> = [
-  { label: 'My Work Items', value: 'mine', description: 'Assigned to you' },
-  { label: 'All Work Items', value: 'all', description: 'Everything open in the project' },
-  { label: 'Unassigned Work Items', value: 'unassigned', description: 'No assignee yet' },
-];
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -2009,8 +2000,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // To the sidebar tree view (built in Task 9) — via injected callback (C7)
       this.onItemsFetched?.(summaries);
     } catch (err) {
-      const modeLabel = WORK_ITEMS_MODES.find(m => m.value === this.workItemsMode)?.label ?? 'Work items';
-      this.postMessage({ type: 'error', message: `Failed to fetch ${modeLabel}: ${err instanceof Error ? err.message : err}` });
+      this.postMessage({ type: 'error', message: `Failed to fetch ${workItemsModeLabel(this.workItemsMode)}: ${err instanceof Error ? err.message : err}` });
     }
 
     this.postMessage({ type: 'loading', loading: false });
