@@ -221,4 +221,37 @@ suite('AdoClient.expandHierarchy', () => {
     const ids = expanded.map(w => w.id).sort((a, b) => a - b);
     assert.deepStrictEqual(ids, [1, 2, 3]);
   });
+
+  test('falls back to per-parent queries when IN is rejected by the org', async () => {
+    const db = new Map<number, any>([
+      [1, makeItem(1, undefined, 'Feature')],
+      [2, makeItem(2, 1, 'User Story')],
+      [3, makeItem(3, 2, 'Task')],
+    ]);
+    (globalThis as any).fetch = async (url: string, init?: any) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/_apis/wit/wiql')) {
+        const body = JSON.parse(init?.body ?? '{}') as { query?: string };
+        if ((body.query ?? '').includes('IN (')) {
+          throw new Error('IN not supported');
+        }
+        const m = (body.query ?? '').match(/\[System\.Parent\] = (\d+)/);
+        const pid = m ? parseInt(m[1], 10) : -1;
+        const children = [...db.values()].filter(
+          w => w.fields['System.Parent'] && w.fields['System.Parent'].id === pid
+        );
+        return { ok: true, json: async () => ({ workItems: children.map(c => ({ id: c.id, url: '' })) }) };
+      }
+      if (urlStr.includes('/_apis/wit/workitems')) {
+        const idsMatch = urlStr.match(/ids=([^&]+)/);
+        const ids = idsMatch ? idsMatch[1].split(',').map(s => parseInt(s, 10)) : [];
+        return { ok: true, json: async () => ({ value: ids.map(id => db.get(id)).filter(Boolean) }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${urlStr}`);
+    };
+    const client = new AdoClient('org', 'pat');
+    const expanded = await client.expandHierarchy('Proj', [db.get(1)]);
+    const ids = expanded.map(w => w.id).sort((a, b) => a - b);
+    assert.deepStrictEqual(ids, [1, 2, 3], 'children found via per-parent fallback when IN is rejected');
+  });
 });

@@ -189,14 +189,32 @@ export class AdoClient {
 
       // Chunk the IN list so the WIQL body stays modest on huge sets.
       const newIds = new Set<number>();
-      for (let i = 0; i < parents.length; i += 300) {
-        const chunk = parents.slice(i, i + 300).join(',');
-        const wiqlResponse = await this.post<WiqlResult>(
-          `/${project}/_apis/wit/wiql?api-version=7.1`,
-          { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.Parent] IN (${chunk}) ORDER BY [System.Id] ASC` }
-        );
-        for (const ref of wiqlResponse.workItems || []) {
-          if (!byId.has(ref.id)) newIds.add(ref.id);
+      try {
+        for (let i = 0; i < parents.length; i += 300) {
+          const chunk = parents.slice(i, i + 300).join(',');
+          const wiqlResponse = await this.post<WiqlResult>(
+            `/${project}/_apis/wit/wiql?api-version=7.1`,
+            { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.Parent] IN (${chunk}) ORDER BY [System.Id] ASC` }
+          );
+          for (const ref of wiqlResponse.workItems || []) {
+            if (!byId.has(ref.id)) newIds.add(ref.id);
+          }
+        }
+      } catch {
+        // Some ADO orgs reject IN on System.Parent — fall back to the
+        // live-proven per-parent equality query ([System.Parent] = N).
+        for (const pid of parents) {
+          try {
+            const wiqlResponse = await this.post<WiqlResult>(
+              `/${project}/_apis/wit/wiql?api-version=7.1`,
+              { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.Parent] = ${pid} ORDER BY [System.Id] ASC` }
+            );
+            for (const ref of wiqlResponse.workItems || []) {
+              if (!byId.has(ref.id)) newIds.add(ref.id);
+            }
+          } catch {
+            // A single parent failing shouldn't abort the whole walk.
+          }
         }
       }
       if (newIds.size === 0) continue; // nothing new at this depth — next round has no work either

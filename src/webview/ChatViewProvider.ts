@@ -2017,8 +2017,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const baseIds = new Set(base.map(i => i.id));
     if (base.length === 0) return { items: [], baseIds };
     try {
-      return { items: await this.services.ado.expandHierarchy(project, base), baseIds };
-    } catch {
+      const items = await this.services.ado.expandHierarchy(project, base);
+      // Log the expansion so a flat tree can be diagnosed from the Output
+      // channel — e.g. "42 items (5 base, 37 context)" means expansion ran.
+      logger.info(`Work item hierarchy: ${items.length} items (${base.length} base, ${items.length - base.length} context)`);
+      return { items, baseIds };
+    } catch (err) {
+      logger.warn('Work item hierarchy expansion failed — showing the base list', err);
+      if (!this._hierarchyFallbackWarned) {
+        this._hierarchyFallbackWarned = true;
+        vscode.window.showWarningMessage('ADO Code: could not expand the work item hierarchy (see Output → ADO Code). Showing the base list.');
+      }
       return { items: base, baseIds };
     }
   }
@@ -2026,6 +2035,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // C-4 fix: declared HERE (Task 10), once — Tasks 11/13 refine it but must
   // NOT re-declare (TS2300 duplicate member).
   private activeWorkItem?: WorkItemContext;
+  // One-time warning when hierarchy expansion falls back to the base list.
+  private _hierarchyFallbackWarned = false;
 
   // ── Workspace project binding ──────────────────────────────────────
   /** Reads .ado-code/config.json (workspace-level ADO project binding). */
