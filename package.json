@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.6.2",
+  "version": "0.6.0",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -23,7 +23,6 @@
     "onCommand:adoCode.requestClarification",
     "onCommand:adoCode.checkTaskReplies",
     "onCommand:adoCode.changeWorkItemState",
-    "onView:adoCode.unassignedWorkItems",
     "onCommand:adoCode.takeOwnership",
     "onCommand:adoCode.reassignWorkItem",
     "onCommand:adoCode.generateCommitMessage",
@@ -320,6 +319,11 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "adoCode.workItemsToggleMode",
+        "title": "Switch Work Items View (My / All / Unassigned)",
+        "icon": "$(list-selection)"
+      },
+      {
         "command": "adoCode.generateTasks",
         "title": "Generate Tasks",
         "icon": "$(list-tree)"
@@ -377,6 +381,11 @@
       ],
       "view/title": [
         {
+          "command": "adoCode.workItemsToggleMode",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
           "command": "adoCode.workItemsFilter",
           "when": "view == adoCode.workItems",
           "group": "navigation"
@@ -389,21 +398,6 @@
         {
           "command": "adoCode.workItemsClearFilters",
           "when": "view == adoCode.workItems",
-          "group": "navigation"
-        },
-        {
-          "command": "adoCode.workItemsFilter",
-          "when": "view == adoCode.unassignedWorkItems",
-          "group": "navigation"
-        },
-        {
-          "command": "adoCode.workItemsSearch",
-          "when": "view == adoCode.unassignedWorkItems",
-          "group": "navigation"
-        },
-        {
-          "command": "adoCode.workItemsClearFilters",
-          "when": "view == adoCode.unassignedWorkItems",
           "group": "navigation"
         }
       ],
@@ -644,12 +638,7 @@
         },
         {
           "id": "adoCode.workItems",
-          "name": "My Work Items",
-          "type": "tree"
-        },
-        {
-          "id": "adoCode.unassignedWorkItems",
-          "name": "Unassigned Work Items",
+          "name": "Work Items",
           "type": "tree"
         },
         {

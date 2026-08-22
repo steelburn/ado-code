@@ -4,7 +4,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 
 ## Features
 
-- Fetch work items assigned to you from Azure DevOps (My Work Items + Unassigned trees, hierarchical Epic → Feature → User Story → Task)
+- Fetch work items from Azure DevOps in one tree view with a mode toggle — My Work Items / All Work Items / Unassigned — rendered as a real hierarchy (Epic → Feature → User Story → Task)
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
 - Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes) — independent tool calls run in parallel, batched `edit_file` edits, and a `search_files` grep tool with per-line truncation
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
@@ -195,17 +195,12 @@ The extension infers the active model's capabilities from its id:
 
 ## Release Notes
 
-### 0.6.2
-
-- **Tolerant `System.Parent` parsing**: some ADO orgs return the parent link as a bare number instead of `{ id }` — both shapes are now parsed, so the trees nest regardless of your org's serialization
-- **Tree diagnostics**: Output → ADO Code now logs the expansion counts, a raw `System.Parent` sample (once), and per-refresh tree shape (`N items (K with parentId, R roots)`) — a flat tree is instantly diagnosable
-
-### 0.6.1
-
-- **Proper tree structure for My Work Items & Unassigned Work Items**: Both sidebar trees now render the real ADO hierarchy instead of flat roots. The extension walks up the parent chain (Task → User Story → Feature → Epic) and down the children, so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Hierarchy-context items are tagged "· context" (with an explanatory tooltip) so it's clear they aren't part of the base query; if the child query is rejected by your ADO org it falls back to per-parent queries, and if expansion still fails the trees fall back gracefully with a visible warning (details in Output → ADO Code)
-
 ### 0.6.0
 
+- **Proper tree structure for the Work Items tree**: The tree now renders the real ADO hierarchy instead of flat roots. The extension walks up the parent chain (Task → User Story → Feature → Epic) and down the children, so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Hierarchy-context items are tagged "· context" (with an explanatory tooltip); if the child query is rejected by your ADO org it falls back to per-parent queries, and if expansion still fails the tree falls back gracefully with a visible warning
+- **Merged Work Items view with mode toggle**: My Work Items, All Work Items, and Unassigned Work Items are now ONE tree view ("Work Items") — the toolbar toggle switches datasets (All fetches every open item in the project) and remembers your choice per workspace. Context menus are gated per item, so Take Ownership / Reassign appear on unassigned items in every mode
+- **Tolerant `System.Parent` parsing**: some ADO orgs return the parent link as a bare number instead of `{ id }` — both shapes are parsed, so the tree nests regardless of your org's serialization
+- **Tree diagnostics**: Output → ADO Code now logs the expansion counts, a raw `System.Parent` sample (once), and per-refresh tree shape (`N items (K with parentId, R roots)`) — a flat tree is instantly diagnosable
 - **Parallel tool execution**: Independent tool calls in one turn now run concurrently and results are re-ordered back to call order — several `read_file`/`search_files` calls finish as fast as one. Batches containing a consent card run sequentially so prompts never stack. Same-file edits are serialized by a per-file mutation queue so parallel batches can't race
 - **Batched edits**: `edit_file` accepts an `edits[]` array — several disjoint changes to a file in a single call (each verified; applied in order)
 - **`search_files` grep tool**: Now actually implemented — regex search across the workspace with `path:line` hits, 500-char per-line truncation, workspace confinement, sensible exclusions, and result caps

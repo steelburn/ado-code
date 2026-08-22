@@ -289,3 +289,30 @@ suite('AdoClient.expandHierarchy', () => {
     assert.deepStrictEqual(ids, [1, 2, 3], 'children found via per-parent fallback when IN is rejected');
   });
 });
+
+suite('AdoClient.getAllWorkItems', () => {
+  test('queries all open items without an AssignedTo filter', async () => {
+    let capturedQuery = '';
+    (globalThis as any).fetch = async (url: string, init?: any) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/_apis/wit/wiql')) {
+        const body = JSON.parse(init?.body ?? '{}') as { query?: string };
+        capturedQuery = body.query ?? '';
+        return { ok: true, json: async () => ({ workItems: [{ id: 5, url: '' }, { id: 6, url: '' }] }) };
+      }
+      if (urlStr.includes('/_apis/wit/workitems')) {
+        return { ok: true, json: async () => ({ value: [makeItem(5), makeItem(6)] }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${urlStr}`);
+    };
+    const client = new AdoClient('org', 'pat');
+    const items = await client.getAllWorkItems('Proj');
+    assert.strictEqual(items.length, 2);
+    assert.ok(capturedQuery.includes('[System.TeamProject]'), 'project scoped');
+    // The WHERE clause must not filter by assignee (All mode); the SELECT
+    // list legitimately includes AssignedTo for the summary/context menus.
+    const whereClause = capturedQuery.split('WHERE')[1] ?? '';
+    assert.ok(!whereClause.includes('AssignedTo'), 'no assignee filter for All mode');
+    assert.ok(capturedQuery.includes("[System.State] <> 'Closed'"), 'closed items excluded');
+  });
+});

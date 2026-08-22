@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ChatViewProvider } from './webview/ChatViewProvider';
+import { ChatViewProvider, WORK_ITEMS_MODES } from './webview/ChatViewProvider';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
@@ -21,7 +21,6 @@ import { logger } from './services/logger';
 
 let chatProvider: ChatViewProvider;
 let treeProvider: WorkItemsTreeProvider;
-let unassignedTreeProvider: WorkItemsTreeProvider;
 
 // H-10 fix: activate is async — the Q7 resume QuickPick (Task 24) awaits it,
 // and VS Code supports returning a Promise from activate().
@@ -41,8 +40,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.extensionUri,
     services,
     context,
-    (items) => treeProvider?.refresh(items),
-    (items) => unassignedTreeProvider?.refresh(items)
+    (items) => treeProvider?.refresh(items)
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -171,11 +169,24 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider('adoCode.workItems', treeProvider)
   );
 
-  // Unassigned Work Items: same provider class, distinct node contextValue so
-  // its context menu (Take Ownership, Reassign…) is gated to this view.
-  unassignedTreeProvider = new WorkItemsTreeProvider('unassignedWorkItemNode');
+  // The merged Work Items view shows ONE dataset at a time; the toolbar
+  // toggle (adoCode.workItemsToggleMode) switches between My / All /
+  // Unassigned. Context menus gate per ITEM (assigned vs unassigned), so
+  // Take Ownership etc. work in every mode.
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('adoCode.unassignedWorkItems', unassignedTreeProvider)
+    vscode.commands.registerCommand('adoCode.workItemsToggleMode', async () => {
+      const current = chatProvider.getWorkItemsMode();
+      const pick = await vscode.window.showQuickPick(
+        WORK_ITEMS_MODES.map(m => ({
+          label: m.label,
+          description: m.value === current ? '● current' : m.description,
+        })),
+        { placeHolder: 'Work Items view' }
+      );
+      if (!pick) return; // cancelled
+      const mode = WORK_ITEMS_MODES.find(m => m.label === pick.label);
+      if (mode) await chatProvider.setWorkItemsMode(mode.value);
+    })
   );
 
   // Register command to refresh work items
@@ -307,9 +318,8 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.selectWorkItem', (node: WorkItemNode) => {
       chatProvider.selectWorkItem(node.workItemId);
-      // Highlight the selected item in both trees
+      // Highlight the selected item in the tree
       treeProvider.setSelected(node.workItemId);
-      unassignedTreeProvider.setSelected(node.workItemId);
       // Show the title-bar + context-menu "Deselect Work Item" affordances
       // only while a selection exists (keeps the cramped view title bar clean).
       void vscode.commands.executeCommand('setContext', 'adoCode.workItemSelected', true);
@@ -317,7 +327,6 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('adoCode.unselectWorkItem', () => {
       chatProvider.clearActiveWorkItem();
       treeProvider.setSelected(undefined);
-      unassignedTreeProvider.setSelected(undefined);
       void vscode.commands.executeCommand('setContext', 'adoCode.workItemSelected', false);
       vscode.window.showInformationMessage('ADO Code: work item deselected.');
     }),
@@ -329,7 +338,6 @@ export async function activate(context: vscode.ExtensionContext) {
       // generate-tasks prompt into the chat.
       chatProvider.selectWorkItem(node.workItemId);
       treeProvider.setSelected(node.workItemId);
-      unassignedTreeProvider.setSelected(node.workItemId);
       void vscode.commands.executeCommand('setContext', 'adoCode.workItemSelected', true);
       const msg = `Generate child tasks for the active user story: #${node.workItemId} — "${node.workItemTitle}". Read the user story details (description, acceptance criteria) using get_work_item. Break it down into actionable child work items (Tasks, Bugs, etc.).
 
@@ -860,9 +868,9 @@ Generate ONLY the commit message, nothing else.`;
     })
   );
 
-  // Take Ownership (Unassigned Work Items): assign the item to the
-  // authenticated user, then refresh both trees (it moves from Unassigned to
-  // My Work Items).
+  // Take Ownership (Unassigned items, any mode): assign the item to the
+  // authenticated user, then refresh the tree (in Unassigned mode it moves
+  // out of the pool; in All mode it just gains an assignee).
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.takeOwnership', async (node?: WorkItemNode) => {
       if (!node) return;
@@ -884,7 +892,7 @@ Generate ONLY the commit message, nothing else.`;
     })
   );
 
-  // Reassign To… (both trees): pick a project member, reassign, refresh.
+  // Reassign To… (any mode): pick a project member, reassign, refresh.
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.reassignWorkItem', async (node?: WorkItemNode) => {
       if (!node) return;

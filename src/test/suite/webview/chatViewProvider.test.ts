@@ -286,18 +286,16 @@ function workItem(id: number, parentId?: number, type = 'Task', assignedTo = 'Me
 
 function makeRefreshProvider(services: any) {
   const treeItems: any[] = [];
-  const unassignedItems: any[] = [];
   const posts: any[] = [];
   const provider = new ChatViewProvider(
     {} as any,
     services,
     { workspaceState: { get: () => undefined, update: async () => {} } } as any,
-    (items: any[]) => treeItems.push(...items),
-    (items: any[]) => unassignedItems.push(...items)
+    (items: any[]) => treeItems.push(...items)
   );
   (provider as any).postMessage = (m: any) => posts.push(m);
   (provider as any)._view = {};
-  return { provider, treeItems, unassignedItems, posts };
+  return { provider, treeItems, posts };
 }
 
 async function withAdoSettings<T>(fn: () => Promise<T>): Promise<T> {
@@ -325,7 +323,7 @@ suite('ChatViewProvider refreshWorkItems', () => {
         expandHierarchy: async (_p: string, base: any[]) => [...base, parentStory],
       },
     };
-    const { provider, treeItems, unassignedItems } = makeRefreshProvider(services);
+    const { provider, treeItems } = makeRefreshProvider(services);
 
     await withAdoSettings(async () => {
       await (provider as any).refreshWorkItems();
@@ -337,7 +335,6 @@ suite('ChatViewProvider refreshWorkItems', () => {
     assert.strictEqual(task.isContext, false, 'base item is not context');
     assert.strictEqual(story.isContext, true, 'expanded parent is marked context');
     assert.strictEqual(task.parentId, 2, 'parentId preserved for nesting');
-    assert.strictEqual(unassignedItems.length, 0);
   });
 
   test('falls back to the base set when hierarchy expansion fails', async () => {
@@ -389,5 +386,50 @@ suite('ChatViewProvider refreshWorkItems', () => {
     });
 
     assert.strictEqual(treeItems[0].parentId, 2, 'bare-number parent becomes parentId');
+  });
+
+  test('setWorkItemsMode switches which dataset the tree fetches', async () => {
+    const called: string[] = [];
+    const services: any = {
+      ado: {
+        getWorkItemsAssignedTo: async () => { called.push('mine'); return []; },
+        getUnassignedWorkItems: async () => { called.push('unassigned'); return []; },
+        getAllWorkItems: async () => { called.push('all'); return []; },
+        expandHierarchy: async (_p: string, base: any[]) => base,
+      },
+    };
+    const { provider } = makeRefreshProvider(services);
+
+    await withAdoSettings(async () => {
+      // Default mode is 'mine'
+      await (provider as any).refreshWorkItems();
+      await (provider as any).setWorkItemsMode('unassigned');
+      await (provider as any).setWorkItemsMode('all');
+      // Same mode again — must not re-fetch
+      await (provider as any).setWorkItemsMode('all');
+    });
+
+    assert.strictEqual(provider.getWorkItemsMode(), 'all', 'mode persisted');
+    assert.deepStrictEqual(called, ['mine', 'unassigned', 'all'], 'one fetch per distinct mode');
+  });
+
+  test('refreshWorkItems in all mode fetches every open item', async () => {
+    const assigned = workItem(1, undefined, 'Feature', 'Me');
+    const unassignedTask = workItem(2, 1, 'Task', '');
+    const services: any = {
+      ado: {
+        getAllWorkItems: async () => [assigned, unassignedTask],
+        expandHierarchy: async (_p: string, base: any[]) => base,
+      },
+    };
+    const { provider, treeItems } = makeRefreshProvider(services);
+
+    await withAdoSettings(async () => {
+      await (provider as any).setWorkItemsMode('all');
+    });
+
+    assert.strictEqual(treeItems.length, 2, 'assigned + unassigned both visible in all mode');
+    const task = treeItems.find((t: any) => t.id === 2);
+    assert.strictEqual(task.isContext, false, 'base items are not context in all mode');
   });
 });

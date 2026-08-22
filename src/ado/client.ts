@@ -139,6 +139,29 @@ export class AdoClient {
   }
 
   /**
+   * ALL open work items in the project (any assignee, plus unassigned) —
+   * the "All Work Items" tree mode. Same WIQL-shape discipline as the other
+   * two queries: literal project name, no AssignedTo filter, Closed/Done out.
+   */
+  async getAllWorkItems(project: string): Promise<AdoWorkItem[]> {
+    const projectLiteral = project.replace(/'/g, "''");
+    const wiqlQuery = {
+      query: `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo], [System.Parent] FROM WorkItems WHERE [System.TeamProject] = '${projectLiteral}' AND [System.State] <> 'Closed' AND [System.State] <> 'Done' ORDER BY [System.ChangedDate] DESC`
+    };
+
+    const wiqlResponse = await this.post<WiqlResult>(
+      `/${project}/_apis/wit/wiql?api-version=7.1`,
+      wiqlQuery
+    );
+
+    if (!wiqlResponse.workItems || wiqlResponse.workItems.length === 0) {
+      return [];
+    }
+
+    return this.fetchWorkItemsByIds(wiqlResponse.workItems.map(wi => wi.id));
+  }
+
+  /**
    * Fetch child work items (tasks under a parent) via WIQL.
    * Returns work items whose System.Parent matches the given parentId.
    * Used by delegate_to_agent to include child tasks in the agent context.

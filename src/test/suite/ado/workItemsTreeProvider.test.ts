@@ -62,4 +62,17 @@ suite('WorkItemsTreeProvider', () => {
       'Feature before Story before Task regardless of title'
     );
   });
+
+  test('gates context menus per item: unassigned items get the unassigned menu anywhere', () => {
+    const provider = new WorkItemsTreeProvider();
+    provider.refresh([
+      { id: 1, title: 'My feature', state: 'Active', assignedTo: 'me', workItemType: 'Feature', isContext: false },
+      { id: 2, title: 'Orphan task', state: 'Active', assignedTo: '', workItemType: 'Task', parentId: 1, isContext: false },
+    ]);
+    const roots = provider.getChildren();
+    const feature = roots.find(r => r.workItemId === 1)!;
+    assert.strictEqual(feature.contextValue, 'workItemNode', 'assigned item uses the work item menu');
+    const orphan = provider.getChildren(feature).find(c => c.workItemId === 2)!;
+    assert.strictEqual(orphan.contextValue, 'unassignedWorkItemNode', 'unassigned child gets Take Ownership menu');
+  });
 });

@@ -2,22 +2,11 @@
 
 All notable changes to ADO Code will be documented in this file.
 
-## [0.6.2] - 2026-08-22
-
-### Fixed
-- **Tolerant `System.Parent` parsing**: Some ADO orgs serialize the parent link as a bare integer instead of `{ id }` — parent ids are now parsed from either shape (object, number, or string), so the work item trees nest even when the org returns the flat form
-
-### Changed
-- **Tree diagnostics in Output → ADO Code**: The refresh now logs `Work item hierarchy: N items (M base, K context)`, a one-time `System.Parent raw sample: …` line (shows which serialization shape your org uses), and a per-refresh `Work items tree: N items (K with parentId, R roots)` line — a flat tree is now instantly diagnosable
-
-## [0.6.1] - 2026-08-22
-
-### Improvements
-- **Proper tree structure for My Work Items & Unassigned Work Items**: Both sidebar trees now render the real ADO hierarchy instead of flat roots. After fetching the base list (assigned to you / unassigned), the extension walks UP the parent chain (Task → User Story → Feature → Epic) and DOWN the children via `[System.Parent] IN (...)` WIQL — so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Items pulled in purely for hierarchy context are tagged "· context" (with an explanatory tooltip) so it's clear they aren't part of the base query. The walk is round-capped and deduped; if the IN query is rejected by an ADO org it falls back to per-parent `[System.Parent] = N` queries, and if the expansion still fails the trees fall back to the plain base list with a visible warning (details in Output → ADO Code)
-
 ## [0.6.0] - 2026-08-22
 
 ### Improvements
+- **Proper tree structure for the Work Items tree**: The tree now renders the real ADO hierarchy instead of flat roots. After fetching the base list (assigned to you / unassigned / all open), the extension walks UP the parent chain (Task → User Story → Feature → Epic) and DOWN the children via `[System.Parent] IN (...)` WIQL — so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Items pulled in purely for hierarchy context are tagged "· context" (with an explanatory tooltip) so it's clear they aren't part of the base query. The walk is round-capped and deduped; if the IN query is rejected by an ADO org it falls back to per-parent `[System.Parent] = N` queries, and if the expansion still fails the tree falls back to the plain base list with a visible warning
+- **Merged Work Items view with mode toggle**: My Work Items, All Work Items, and Unassigned Work Items are now ONE tree view ("Work Items"). The toolbar toggle (list icon) switches datasets — All fetches every open item in the project — and remembers your choice per workspace. Context menus are gated per ITEM, so Take Ownership / Reassign appear on unassigned items in every mode
 - **Parallel tool execution (pi parity)**: Independent tool calls in a single model turn now run concurrently instead of one-after-another — several `read_file`/`search_files` calls or ADO reads finish in the time one used to take. Results are re-ordered back to call order so tool-id referencing stays valid. If a batch contains any call that needs a consent card, the whole batch runs sequentially so prompts never stack
 - **Per-file mutation queue**: Parallel batches that edit the SAME file are serialized (read-modify-write can't interleave), while edits to different files still run in parallel
 - **Truncated-response guard**: When the model hits its output token limit (`length`/`max_tokens`), tool calls are NOT executed — arguments may be truncated mid-JSON — instead each is failed with an explicit "re-issue with complete arguments" so the model retries correctly
@@ -26,7 +15,11 @@ All notable changes to ADO Code will be documented in this file.
 - **`execute_skill` tool works again**: The system prompt told the model to call `execute_skill`, but the executor couldn't run it — every attempt errored as "unknown tool". It's now wired to the skill manager (read-only: loads the skill's instructions for the model to follow), so skills are usable from chat as advertised
 - **Smarter prompt guidance**: The system prompt now tells the model to issue independent tool calls in the same request (so the parallel loop is actually used) and to batch disjoint edits into one `edit_file` call
 
+### Fixed
+- **Tolerant `System.Parent` parsing**: Some ADO orgs serialize the parent link as a bare integer instead of `{ id }` — parent ids are now parsed from either shape (object, number, or string), so the Work Items tree nests even when the org returns the flat form
+
 ### Changed
+- **Tree diagnostics in Output → ADO Code**: The refresh now logs `Work item hierarchy: N items (M base, K context)`, a one-time `System.Parent raw sample: …` line (shows which serialization shape your org uses), and a per-refresh `Work items tree: N items (K with parentId, R roots)` line — a flat tree is now instantly diagnosable
 - **Single tool implementation path**: Removed the legacy Roo-Code-style layer (`BaseTool`, `ToolRegistry`, the `definitions/` schemas, and the five per-tool classes) — all tool execution lives in the one `createToolExecutor()` switch in `src/llm/tools.ts`, which was already the path the agentic loop used. Also removed the abandoned BaseProvider migration (`handler.ts`, `openai-v2.ts`, `anthropic-v2.ts`) and the unused approval-decision helpers in `consent.ts`. Dead tool names (`list_files`, `ask_followup_question`, `attempt_completion`) were dropped from the type/display map — net −2,500+ lines
 - **Docs updated**: `docs/playbooks/add-tool.md` rewritten for the single-path architecture, `docs/chat-token-optimization.md` refreshed with the new optimizations, AGENTS.md reflects the current tool system
 

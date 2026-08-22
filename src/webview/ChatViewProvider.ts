@@ -41,6 +41,16 @@ export interface ProposedTask {
   tags: string;
 }
 
+/** Dataset shown by the merged Work Items tree. */
+export type WorkItemsMode = 'mine' | 'all' | 'unassigned';
+
+/** Human labels for the mode QuickPick, in display order. */
+export const WORK_ITEMS_MODES: ReadonlyArray<{ label: string; value: WorkItemsMode; description: string }> = [
+  { label: 'My Work Items', value: 'mine', description: 'Assigned to you' },
+  { label: 'All Work Items', value: 'all', description: 'Everything open in the project' },
+  { label: 'Unassigned Work Items', value: 'unassigned', description: 'No assignee yet' },
+];
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
@@ -157,10 +167,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // H11: the provider needs ExtensionContext for workspaceState (Q4 history,
     // org switching) and for the tree-refresh callback (C7).
     private readonly _context: vscode.ExtensionContext,
-    private readonly onItemsFetched?: (items: any[]) => void,
-    // Unassigned Work Items tree: fed by the same refresh cycle.
-    private readonly onUnassignedFetched?: (items: any[]) => void
-  ) {}
+    private readonly onItemsFetched?: (items: any[]) => void
+  ) {
+    // Restore the last-used tree mode (My / All / Unassigned), if any.
+    const stored = this._context.workspaceState?.get<string>('adoCode.workItemsMode');
+    if (stored === 'mine' || stored === 'all' || stored === 'unassigned') {
+      this.workItemsMode = stored;
+    }
+  }
+
+  /** Which dataset the merged work items tree shows. */
+  public getWorkItemsMode(): WorkItemsMode {
+    return this.workItemsMode;
+  }
+
+  /** Switch the tree's dataset and refresh it. */
+  public async setWorkItemsMode(mode: WorkItemsMode): Promise<void> {
+    if (mode === this.workItemsMode) return;
+    this.workItemsMode = mode;
+    void this._context.workspaceState?.update('adoCode.workItemsMode', mode);
+    await this.refreshWorkItems();
+  }
 
   /** C10: swap the services bundle after org switch / config change. */
   public setServices(services: Services): void {
@@ -1954,18 +1981,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.postMessage({ type: 'loading', loading: true });
-    // Both trees are fed from one refresh cycle — fetch assigned + unassigned
-    // in parallel; a failure in one branch doesn't sink the other. Each branch
-    // is then hierarchy-expanded (parents + children fetched) so the sidebar
-    // trees render real nesting (Feature → User Story → Task) instead of flat
-    // roots for items whose parents aren't assigned to the same person.
-    const [assignedResult, unassignedResult] = await Promise.allSettled([
-      this.fetchHierarchy(active.project, this.services.ado.getWorkItemsAssignedTo(active.project)),
-      this.fetchHierarchy(active.project, this.services.ado.getUnassignedWorkItems(active.project)),
-    ]);
-
-    if (assignedResult.status === 'fulfilled') {
-      const { items, baseIds } = assignedResult.value;
+    // The merged tree shows ONE dataset at a time (mode: mine / all /
+    // unassigned) — fetch that mode's base list, then hierarchy-expand it
+    // (parents + children fetched) so the tree renders real nesting
+    // (Feature → User Story → Task) instead of flat roots for items whose
+    // parents aren't in the same assignment group.
+    try {
+      const basePromise = this.workItemsMode === 'mine'
+        ? this.services.ado.getWorkItemsAssignedTo(active.project)
+        : this.workItemsMode === 'unassigned'
+          ? this.services.ado.getUnassignedWorkItems(active.project)
+          : this.services.ado.getAllWorkItems(active.project);
+      const { items, baseIds } = await this.fetchHierarchy(active.project, basePromise);
       // M5 fix: map AdoWorkItem → WorkItemSummary (protocol shape) before posting.
       const summaries: WorkItemSummary[] = items.map(i => ({
         id: i.id,
@@ -1974,31 +2001,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
         workItemType: i.fields['System.WorkItemType'] ?? '',
         parentId: parentIdOf(i.fields as Record<string, unknown>),
-        // Hierarchy-expanded items (parents/children of my work) are context.
+        // Hierarchy-expanded items (parents/children of the base set) are context.
         isContext: !baseIds.has(i.id),
       }));
       // To webview (chat / task list)
       this.postMessage({ type: 'workItems', items: summaries });
       // To the sidebar tree view (built in Task 9) — via injected callback (C7)
       this.onItemsFetched?.(summaries);
-    } else {
-      this.postMessage({ type: 'error', message: `Failed to fetch assigned work items: ${assignedResult.reason instanceof Error ? assignedResult.reason.message : assignedResult.reason}` });
-    }
-
-    if (unassignedResult.status === 'fulfilled') {
-      const { items, baseIds } = unassignedResult.value;
-      const unassignedSummaries: WorkItemSummary[] = items.map(i => ({
-        id: i.id,
-        title: i.fields['System.Title'] ?? '',
-        state: i.fields['System.State'] ?? '',
-        assignedTo: i.fields['System.AssignedTo']?.displayName ?? '',
-        workItemType: i.fields['System.WorkItemType'] ?? '',
-        parentId: parentIdOf(i.fields as Record<string, unknown>),
-        isContext: !baseIds.has(i.id),
-      }));
-      this.onUnassignedFetched?.(unassignedSummaries);
-    } else {
-      this.postMessage({ type: 'error', message: `Failed to fetch unassigned work items: ${unassignedResult.reason instanceof Error ? unassignedResult.reason.message : unassignedResult.reason}` });
+    } catch (err) {
+      const modeLabel = WORK_ITEMS_MODES.find(m => m.value === this.workItemsMode)?.label ?? 'Work items';
+      this.postMessage({ type: 'error', message: `Failed to fetch ${modeLabel}: ${err instanceof Error ? err.message : err}` });
     }
 
     this.postMessage({ type: 'loading', loading: false });
@@ -2041,6 +2053,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // C-4 fix: declared HERE (Task 10), once — Tasks 11/13 refine it but must
   // NOT re-declare (TS2300 duplicate member).
   private activeWorkItem?: WorkItemContext;
+  // Which dataset the merged Work Items tree shows (persisted per workspace).
+  private workItemsMode: WorkItemsMode = 'mine';
   // One-time warning when hierarchy expansion falls back to the base list.
   private _hierarchyFallbackWarned = false;
   // One-time raw System.Parent sample (diagnoses serialization shape).

@@ -53,7 +53,7 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
 
   // Data is pushed in via refresh() (called from ChatViewProvider.refreshWorkItems,
   // Task 8 Step 4). The provider itself never talks to ADO.
-  constructor(private readonly nodeContextValue = 'workItemNode') {}
+  constructor() {}
 
   refresh(items: WorkItemSummary[]): void {
     this.workItems = items;
@@ -270,7 +270,11 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     const agentRun = this.activeAgentRuns.get(wi.id);
     const hasChildren = this.childrenOf.has(wi.id);
     const isSelected = wi.id === this.selectedWorkItemId;
-    return new WorkItemNode(wi, agentRun, this.nodeContextValue, hasChildren, isSelected, wi.isContext);
+    // Context menus are gated per ITEM, not per view: unassigned items get
+    // the unassigned menu (Take Ownership, Reassign…) wherever they appear
+    // (Unassigned mode, All mode, or as a child in My mode).
+    const contextValue = wi.assignedTo ? 'workItemNode' : 'unassignedWorkItemNode';
+    return new WorkItemNode(wi, agentRun, contextValue, hasChildren, isSelected, wi.isContext);
   }
 }
 
@@ -316,8 +320,8 @@ export class WorkItemNode extends vscode.TreeItem {
     // passed via the context menu; tree-item commands are invoked with the
     // TreeItem as the FIRST argument (not an `arguments` array — that only
     // applies to clicking). We therefore register commands that take the node.
-    // The contextValue differs per tree (workItemNode vs unassignedWorkItemNode)
-    // so context menus can be gated per view.
+    // The contextValue differs per ITEM (workItemNode vs unassignedWorkItemNode)
+    // so context menus can be gated per item regardless of the active view mode.
     this.contextValue = contextValue;
     this.workItemId = workItem.id;
     this.workItemTitle = workItem.title;
