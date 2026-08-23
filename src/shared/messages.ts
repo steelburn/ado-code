@@ -81,7 +81,10 @@ export type WebviewToExtensionMessage =
   | { type: 'executeSkill'; request: SkillExecutionRequest }
   | { type: 'getSkillDetail'; skillId: string }
   // Skill import from local .json file
-  | { type: 'importSkillFromDisk' };
+  | { type: 'importSkillFromDisk' }
+  // Skill registry (remote TSV registries)
+  | { type: 'getRegistrySkills' }
+  | { type: 'installRegistrySkill'; entry: { slug: string; url: string; description: string } };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -148,6 +151,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'skillExecutionResult'; result: SkillExecutionResult }
   // Skill import result
   | { type: 'skillImportResult'; success: boolean; skill?: Skill; error?: string }
+  // Skill registry
+  | { type: 'registrySkills'; skills: Skill[] }
+  | { type: 'registryInstallResult'; success: boolean; skill?: Skill; error?: string }
   // Right-click context menu: insert text into chat draft
   | { type: 'insertText'; text: string };
 

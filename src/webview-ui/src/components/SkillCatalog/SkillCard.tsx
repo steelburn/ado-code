@@ -21,6 +21,22 @@ const CATEGORY_ICONS: Record<string, string> = {
   'deployment': '🚀',
   'database': '🗄️',
   'custom': '🧩',
+  'motion': '🎬',
+  'systems': '🧱',
+  'visual': '🎨',
+  'interaction': '👆',
+  'craft': '✨',
+  'taste': '🎯',
+  'typography': '🔤',
+  'color': '🌈',
+  '3d': '🧊',
+  'frontend': '🌐',
+  'architecture': '🏗️',
+  'debugging': '🐛',
+  'code-quality': '✅',
+  'tooling': '🔧',
+  'video': '🎬',
+  'frameworks': '📦',
 };
 
 export function SkillCard({ skill, onSelect, onInstall, onToggle }: Props) {

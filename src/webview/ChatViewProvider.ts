@@ -1916,6 +1916,79 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             break;
           }
+          // Skill registry — fetch remote skills
+          case 'getRegistrySkills': {
+            try {
+              const results =
+                await this.services.skillRegistry.fetchAllRegistries();
+              const registrySkills =
+                await this.services.skillRegistry.entriesToSkills(results);
+              // Mark already-installed ones
+              const installedIds = new Set(
+                this.services.skills.getAllSkills().map((s) => s.id),
+              );
+              const skills = registrySkills.map((s) => ({
+                ...s,
+                installed: installedIds.has(s.id),
+                enabled: installedIds.has(s.id),
+              }));
+              this.postMessage({ type: 'registrySkills', skills });
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.warn(`ChatViewProvider: getRegistrySkills failed: ${msg}`);
+              this.postMessage({ type: 'registrySkills', skills: [] });
+            }
+            break;
+          }
+          // Skill registry — install a skill from registry
+          case 'installRegistrySkill': {
+            try {
+              const entry = message.entry;
+              const sources = this.services.skillRegistry.getRegistryUrls();
+              const sourceLabel = sources[0]?.label || 'Registry';
+              const skill = await this.services.skillRegistry.downloadSkill(
+                entry,
+                sourceLabel,
+              );
+              if (!skill) {
+                this.postMessage({
+                  type: 'registryInstallResult',
+                  success: false,
+                  error: 'Failed to download skill from registry',
+                });
+                break;
+              }
+              skill.installed = true;
+              skill.enabled = true;
+              const ok = this.services.skills.installSkill(skill);
+              if (ok) {
+                this.postMessage({
+                  type: 'registryInstallResult',
+                  success: true,
+                  skill,
+                });
+                // Refresh the catalog
+                this.postMessage({
+                  type: 'skillCatalog',
+                  skills: this.services.skills.getAllSkills(),
+                });
+              } else {
+                this.postMessage({
+                  type: 'registryInstallResult',
+                  success: false,
+                  error: `Skill "${skill.id}" already exists`,
+                });
+              }
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.postMessage({
+                type: 'registryInstallResult',
+                success: false,
+                error: msg,
+              });
+            }
+            break;
+          }
           // Project creation wizard
           case 'projectWizardCreate': {
             logger.info('ChatViewProvider: projectWizardCreate received');

@@ -974,6 +974,12 @@
           "type": "boolean",
           "default": false,
           "description": "Use the provider's own tokenizer for the token status bar (Anthropic /v1/messages/count_tokens; OpenAI-compatible endpoints via usage.prompt_tokens from a minimal request). Anthropic counting is always on (free). For OpenAI-compatible gateways this issues a tiny model request per count, so it is opt-in here — off = always use the instant local estimate."
+        },
+        "adoCode.skillRegistryUrls": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional skill registry URLs to fetch skills from (TSV format: slug<TAB>url<TAB>description). The built-in UI Skills registry is always included."
         }
       }
     }

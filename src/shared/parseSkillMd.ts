@@ -155,9 +155,15 @@ function toArray(val: unknown): string[] {
 /** Validate category against known SkillCategory values. */
 function validateCategory(val: unknown): SkillCategory {
   const valid: SkillCategory[] = [
+    // Builtin ADO Code categories
     'code-review', 'documentation', 'testing', 'refactoring',
-    'deployment', 'database', 'security', 'performance',
-    'accessibility', 'custom',
+    'deployment', 'database', 'security', 'performance', 'accessibility',
+    // UI Skills registry categories
+    'motion', 'systems', 'visual', 'interaction', 'craft', 'taste',
+    'typography', 'color', '3d', 'frontend', 'architecture', 'debugging',
+    'code-quality', 'tooling', 'video', 'frameworks',
+    // Fallback
+    'custom',
   ];
   const s = String(val || 'custom').toLowerCase();
   return valid.includes(s as SkillCategory) ? (s as SkillCategory) : 'custom';
