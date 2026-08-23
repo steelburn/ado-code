@@ -30,6 +30,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, filtering, and enable/disable toggle (`/skills`)
 - **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — "Execute in Chat" button injects the skill prompt and triggers the LLM
 - **Skill import**: Import custom skills from local .json files, SKILL.md files (YAML frontmatter + markdown), or .tar.gz/.zip archives — imported skills persist across VS Code restarts
+- **External skill registries**: Browse and install community skills from remote TSV registries (`slug<TAB>url<TAB>description`) — the built-in UI Skills registry is always included, and you can add more via `adoCode.skillRegistryUrls`. Registry skills carry a "registry" badge in the Skill Catalog and are downloaded + imported (SKILL.md) when you install them
 - **Send Selection to Chat**: Right-click selected text in the editor → "ADO Code: Send Selection to Chat" inserts it as a fenced code block in the chat draft
 - **Send File to Chat**: Right-click a file in the Explorer → "ADO Code: Send File to Chat" attaches it as a chip above the input bar with full content ready to send
 - **Delete All Sessions**: `/clear-sessions` slash command + "🗑️ Delete All Sessions" in session history and kebab menu — wipes all sessions after in-chat confirmation
@@ -129,6 +130,7 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.agents.autoReview` | Auto-review agent changes via LLM when a run completes (default `true`) |
 | `adoCode.agents.autoCompleteChildren` | After a delegated parent run succeeds, auto-complete its children in ADO: children marked DONE in the agent's Delivery Report transition to their terminal state (Task/Bug → Closed, Story/Feature/Epic → Resolved), and the parent closes when all open children are done (default `false`; off = report + comment only) |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
+| `adoCode.skillRegistryUrls` | Extra skill registry URLs to browse in the Skill Catalog (TSV format: `slug<TAB>url<TAB>description`); the built-in UI Skills registry is always included |
 
 ## Slash Commands
 
@@ -218,6 +220,8 @@ The extension infers the active model's capabilities from its id:
 - **Conversation summaries fixed**: condensation summaries are now marker-prefixed user messages — previously mid-array system messages were silently dropped by the Anthropic providers
 - **Laravel scaffold fixed**: generated `artisan`/`routes/web.php` previously lost PHP namespace separators (`\C` escapes collapse in JS template literals) — they now emit valid PHP
 - **Lint-clean + dead code removed**: 0 ESLint errors; unused `ContextProxy` module, two unused webview components, and a dead helper deleted; `tsconfig` now enforces `noUnusedLocals`/`noUnusedParameters`
+- **External skill registries**: browse and install community skills from remote TSV registries (built-in UI Skills registry + custom `adoCode.skillRegistryUrls`); registry skills get a "registry" badge in the Skill Catalog and are imported on install
+- **Security: dompurify bumped to 3.4.14** in the webview bundle
 
 ### 0.5.9
 
