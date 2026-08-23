@@ -200,7 +200,7 @@ The extension infers the active model's capabilities from its id:
 
 ## Release Notes
 
-### 0.6.0
+### 0.6.1
 
 - **Proper tree structure for the Work Items tree**: The tree now renders the real ADO hierarchy instead of flat roots. The extension walks up the parent chain (Task → User Story → Feature → Epic) and down the children, so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Hierarchy-context items are tagged "· context" (with an explanatory tooltip); if the child query is rejected by your ADO org it falls back to per-parent queries, and if expansion still fails the tree falls back gracefully with a visible warning
 - **Merged Work Items view with mode toggle**: My Work Items, All Work Items, and Unassigned Work Items are now ONE tree view ("Work Items") — a **visible header row** at the top of the tree ("View: My Work Items — click to switch ▾") shows the current mode and opens the picker, just like the Chat|Plan|Act|Yolo toggle. All mode fetches every open item in the project; the choice is remembered per workspace, and context menus are gated per item so Take Ownership / Reassign appear on unassigned items in every mode
@@ -222,6 +222,7 @@ The extension infers the active model's capabilities from its id:
 - **Lint-clean + dead code removed**: 0 ESLint errors; unused `ContextProxy` module, two unused webview components, and a dead helper deleted; `tsconfig` now enforces `noUnusedLocals`/`noUnusedParameters`
 - **External skill registries**: browse and install community skills from remote TSV registries (built-in UI Skills registry + custom `adoCode.skillRegistryUrls`); registry skills get a "registry" badge in the Skill Catalog and are imported on install
 - **Security: dompurify bumped to 3.4.14** in the webview bundle
+- **dsh delegation for existing users**: a stale `adoCode.agents.enabled` (the pre-dsh default) no longer hides DeepSeek Harness — the registry migrates it automatically, so dsh is delegatable again; custom pruned lists are respected
 
 ### 0.5.9
 

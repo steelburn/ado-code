@@ -2,7 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 
-## [0.6.0] - 2026-08-23
+## [0.6.1] - 2026-08-23
 
 ### Improvements
 - **Cached repository + work-item understanding**: ADO Code now keeps a durable, fingerprinted understanding of the active repository and the selected ADO work item in `.ado-code/understanding/` — deterministic repo facts (branch/HEAD, top-level structure, AGENTS.md, package.json scripts, README head, workspace-memory keys), the selected work item's full context, and prior-session knowledge distilled from conversation condensations. The cached block is injected into **every chat session** (new sessions start from prior understanding instead of a cold start) **and every delegated-agent prompt** — including chat-driven delegation, which previously carried no repo context at all. Invalidation is fingerprint-based (git HEAD/branch or a changed AGENTS.md/package.json/README regenerates facts automatically); the LLM repo summary (one model call per repo change, toggle via `adoCode.understanding.autoSummarize`) regenerates async so chat turns are never blocked. Refresh manually anytime via **ADO Code: Refresh Repository Understanding**; toggle the whole cache via `adoCode.understanding.enabled`
@@ -31,6 +31,7 @@ All notable changes to ADO Code will be documented in this file.
 - **Conversation summaries silently dropped on Anthropic**: Condensation summaries were prepended as mid-array **system** messages — the Anthropic providers hoist only the FIRST system message, so the summary vanished and the model lost the condensed context. Summaries are now marker-prefixed **user** messages, surviving every provider's message shape (matching the truncation summary)
 - **Laravel scaffold generated broken PHP**: The `artisan` and `routes/web.php` templates used `\C`/`\$` escapes that JavaScript template literals silently collapse — the generated files lost every PHP namespace separator (`Illuminate\Contracts\Console\Kernel` became `IlluminateContractsConsoleKernel`). The templates now emit valid PHP namespaces and variables
 - **Security: dompurify bumped to 3.4.14** in the webview bundle (fixes the flagged moderate vulnerability)
+- **dsh delegation for existing users**: Users whose stored `adoCode.agents.enabled` predates DeepSeek Harness (the previous default list) silently lost dsh — the allowlist never probed it. The registry now migrates that exact stale default in-memory so dsh is available again; custom pruned lists are respected and never overridden
 
 ### Changed
 - **Tree diagnostics in Output → ADO Code**: The refresh now logs `Work item hierarchy: N items (M base, K context)`, a one-time `System.Parent raw sample: …` line (shows which serialization shape your org uses), and a per-refresh `Work items tree: N items (K with parentId, R roots)` line — a flat tree is now instantly diagnosable

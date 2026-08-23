@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -977,7 +977,9 @@
         },
         "adoCode.skillRegistryUrls": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Additional skill registry URLs to fetch skills from (TSV format: slug<TAB>url<TAB>description). The built-in UI Skills registry is always included."
         }
