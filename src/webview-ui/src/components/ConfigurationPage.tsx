@@ -82,7 +82,7 @@ const CATEGORIES: ConfigCategory[] = [
         title: 'Act Mode',
         icon: '🚀',
         settings: [
-          { key: 'act.toolBudget', label: 'Tool budget', type: 'number', description: 'Max tool calls per act-mode turn', hint: 'Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
+          { key: 'act.toolBudget', label: 'Iteration budget', type: 'number', description: 'Max agentic loop iterations per chat turn', hint: 'Each iteration is one model round-trip that may run several tool calls in parallel. Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
           { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed commands in act mode (supports wildcards, e.g. "git *", "npm run *")', hint: 'Entries are matched token-by-token, so they are safe from shell operators. A trailing * matches any remaining tokens: "git *" allows every git subcommand, "git push *" only pushes. Commands not matching any entry ask for approval.' },
         ],
       },
@@ -159,6 +159,14 @@ const CATEGORIES: ConfigCategory[] = [
           { key: 'ignore.dotAdoCode', label: 'Keep .ado-code out of version control', type: 'boolean', description: 'Auto-add .ado-code to .gitignore / .dockerignore (prompts once per workspace; "Skip" is remembered)' },
         ],
       },
+      {
+        title: 'Understanding',
+        icon: '🧠',
+        settings: [
+          { key: 'understanding.enabled', label: 'Cache repository understanding', type: 'boolean', description: 'Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat sessions and delegated-agent prompts (so new sessions and agents start from prior knowledge)' },
+          { key: 'understanding.autoSummarize', label: 'Auto-generate LLM repo summary', type: 'boolean', description: 'Generate an LLM repository summary automatically when the repo changes (new branch/commit, edited AGENTS.md/package.json/README). Uses one model call per change. Refresh manually anytime via "ADO Code: Refresh Repository Understanding".' },
+        ],
+      },
     ],
   },
   {
@@ -172,7 +180,7 @@ const CATEGORIES: ConfigCategory[] = [
         settings: [
           { key: 'agents.enabled', label: 'Enabled agents', type: 'array', description: 'Which agents may be delegated to' },
           { key: 'agents.verifyCommand', label: 'Verify command', type: 'string', description: 'Shell command to run after agent finishes (e.g. npm test)', placeholder: 'npm test' },
-          { key: 'agents.autoSelect', label: 'Default agent', type: 'enum', description: 'Default agent when none specified', options: ['', 'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent'] },
+          { key: 'agents.autoSelect', label: 'Default agent', type: 'enum', description: 'Default agent when none specified', options: ['', 'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent', 'dsh'] },
           { key: 'agents.autoReview', label: 'Auto-review agent changes', type: 'boolean', description: 'Automatically review agent changes via LLM when a run completes' },
         ],
       },

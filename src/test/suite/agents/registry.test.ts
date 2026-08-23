@@ -10,7 +10,7 @@ suite('AgentRegistry', () => {
     // At least the binary running this test process (node) isn't in the list,
     // but every entry has the required shape.
     for (const c of caps) {
-      assert.ok(['claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent'].includes(c.name));
+      assert.ok(['claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent', 'dsh'].includes(c.name));
       assert.strictEqual(typeof c.installed, 'boolean');
     }
   });

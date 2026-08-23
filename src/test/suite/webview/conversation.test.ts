@@ -136,4 +136,35 @@ suite('Session history persistence', () => {
     assert.strictEqual(active.messages.length, 2);
     assert.strictEqual(active.messages[0].content, 'test message');
   });
+
+  test('persistConversation keeps complete pairs + the leading summary marker', async () => {
+    const saved: Record<string, any> = {};
+    const provider = makeProvider(saved);
+    const sent: any[] = [];
+    (provider as any).postMessage = (m: any) => sent.push(m);
+
+    await provider.createNewSession();
+    const activeId = (provider as any).getActiveSessionId();
+
+    // Marker + 60 user/assistant pairs — far more than the 25-pair cap.
+    const convo: any[] = [{ role: 'user', content: '[Conversation Summary]\nEarlier context was condensed here.' }];
+    for (let i = 0; i < 60; i++) {
+      convo.push({ role: 'user', content: `q${i}` }, { role: 'assistant', content: `a${i}` });
+    }
+    (provider as any).conversation = convo;
+    await (provider as any).persistConversation();
+
+    const sessions = (provider as any).getSessions();
+    const active = sessions.find((s: any) => s.id === activeId);
+    assert.ok(active);
+    // Marker + last 25 complete pairs (50 messages) = 51 messages.
+    assert.strictEqual(active.messages.length, 51);
+    // The leading summary marker survives the pair slice.
+    assert.strictEqual(active.messages[0].content, '[Conversation Summary]\nEarlier context was condensed here.');
+    // First kept pair is intact and the tail ends on an assistant message
+    // (never a mid-pair cut that would start a restored turn on assistant).
+    assert.strictEqual(active.messages[1].content, 'q35');
+    assert.strictEqual(active.messages[2].role, 'assistant');
+    assert.strictEqual(active.messages[active.messages.length - 1].role, 'assistant');
+  });
 });

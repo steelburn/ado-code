@@ -9,7 +9,10 @@
  *  1. Keep the system prompt always.
  *  2. Keep the last 5 user+assistant message pairs intact.
  *  3. Summarize everything else into 2-3 sentences.
- *  4. Prepend the summary as a system message.
+ *  4. Prepend the summary as a marker-prefixed USER message (a mid-array
+ *     system message is silently dropped by the Anthropic providers, which
+ *     hoist only the FIRST system message — as a user message the summary
+ *     survives both providers, matching the truncation summary's shape).
  *  5. Preserve key file changes in the summary.
  */
 
@@ -67,8 +70,8 @@ export class ConversationCondenser {
    *  - Always keep the system prompt (first message if role='system').
    *  - Keep the last `PRESERVE_RECENT_PAIRS` user+assistant pairs.
    *  - Feed the remaining older messages to `summarizeFn`.
-   *  - Prepend the summary as a system message so the model knows what
-   *    was condensed.
+   *  - Prepend the summary as a marker-prefixed user message so the model
+   *    knows what was condensed (and it survives Anthropic's message shape).
    */
   async condense(
     messages: LlmMessage[],
@@ -124,9 +127,14 @@ export class ConversationCondenser {
       result.push(systemPrompt);
     }
 
-    // Summary as a system message.
+    // B2: summary as a USER message (marker-prefixed). A mid-array system
+    // message is silently dropped by the Anthropic providers (they hoist only
+    // the FIRST system message), so the summary would be lost on Anthropic.
+    // As a user message it survives both providers, and the prefix keeps it
+    // clearly marked as condensed context — same shape as the truncation
+    // summary inserted by ContextManager.
     result.push({
-      role: "system",
+      role: "user",
       content: `${SUMMARY_PREFIX}${summary.trim()}`,
     });
 

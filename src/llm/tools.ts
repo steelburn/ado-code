@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import { execFile } from 'child_process';
 import { LlmTool } from './types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
@@ -351,7 +353,7 @@ export function createToolExecutor(
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'Full task instructions for the agent' },
-          agent: { type: 'string', description: 'Agent name (claude, codex, opencode, hermes, pi, openclaw, aider, gemini, cursor-agent); omit for auto-pick' },
+          agent: { type: 'string', description: 'Agent name (claude, codex, opencode, hermes, pi, openclaw, aider, gemini, cursor-agent, dsh); omit for auto-pick' },
         },
         required: ['prompt'],
       },
@@ -860,7 +862,6 @@ export function createToolExecutor(
           if (!/^[^&|;`$<>()\r\n]*$/.test(cmd)) {
             return JSON.stringify({ error: `run_terminal_command: shell operators not allowed: ${args.command}` });
           }
-          const { execFile } = require('child_process') as typeof import('child_process');
           const argv = cmd.match(/"[^"]*"|\S+/g) ?? [];
           if (!argv[0]) {
             return JSON.stringify({ error: 'run_terminal_command: no command to run' });
@@ -918,26 +919,15 @@ export function createToolExecutor(
   };
 }
 
-/** C3: allowlist check — command must be operator-free and match an entry.
- *  Entries may be EXACT commands ("npm test") or wildcard patterns ("git *",
- *  "npm run *") — see matchesCommandPattern in consent.ts. */
-function isAllowlistedCommand(command: string, allowlist: string[]): boolean {
-  // C-2 fix: `\s` NOT in the operator class (multi-word commands are legal);
-  // newlines rejected so multi-line smuggling can't bypass the argv match.
-  if (!command || !/^[^&|;`$<>()\r\n]*$/.test(command)) return false;
-  return matchesCommandPattern(command, allowlist);
-}
-
 /** C4: resolve a workspace-relative path and refuse anything escaping the root. */
 function resolveWorkspacePath(relativePath: string): vscode.Uri {
   const root = vscode.workspace.workspaceFolders?.[0];
   if (!root) throw new Error('no workspace folder open');
   // M-8 fix: Uri.joinPath NORMALIZES `../` segments instead of leaving them
   // for the check — resolve the fsPath explicitly so escapes are detectable.
-  const pathMod = require('path') as typeof import('path');
-  const rootFs = pathMod.resolve(root.uri.fsPath);
-  const targetFs = pathMod.resolve(pathMod.join(rootFs, relativePath));
-  const sep = pathMod.sep;
+  const rootFs = path.resolve(root.uri.fsPath);
+  const targetFs = path.resolve(path.join(rootFs, relativePath));
+  const sep = path.sep;
   if (!(targetFs === rootFs || targetFs.startsWith(rootFs + sep))) {
     throw new Error(`path escapes workspace: ${relativePath}`);
   }
@@ -952,7 +942,7 @@ function applyUnifiedDiff(source: string, diff: string): string {
   const lines = source.split('\n');
   const hunks = diff.split(/(?=^@@)/m).filter(h => h.startsWith('@@'));
   if (hunks.length === 0) throw new Error('apply_diff: no hunks in diff');
-  let result = [...lines];
+  const result = [...lines];
   let offset = 0; // H-7: cumulative line shift from previously applied hunks
   for (const hunk of hunks) {
     const header = hunk.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);

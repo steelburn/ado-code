@@ -216,7 +216,8 @@ export interface ExtensionConfig {
   llmModel: string;
   mode: 'inline' | 'plan' | 'act' | 'yolo';
   agentsEnabled: string[];
-  actToolBudget: number;
+  /** Max agentic loop iterations per chat turn (config key 'act.toolBudget' — legacy name kept). */
+  actMaxIterations: number;
   actTerminalAllowlist: string[];
   gitRequireGitRepo: boolean;
   gitCreateBranchOnTaskStart: boolean;

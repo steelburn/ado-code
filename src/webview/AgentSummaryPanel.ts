@@ -18,7 +18,7 @@ export class AgentSummaryPanel {
    * already exists, reveal it (and refresh its content) instead of creating
    * a duplicate.
    */
-  public static show(context: vscode.ExtensionContext, run: AgentRun, summary: string): void {
+  public static show(_context: vscode.ExtensionContext, run: AgentRun, summary: string): void {
     if (!summary) return;
 
     const panelId = `adoCode.agentSummary.${run.id}`;

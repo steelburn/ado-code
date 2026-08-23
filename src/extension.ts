@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ChatViewProvider } from './webview/ChatViewProvider';
@@ -12,7 +11,8 @@ import { AgentProgressPanel, agentDisplayName } from './webview/AgentProgressPan
 import { AgentDetailPanel } from './webview/AgentDetailPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
-import { selectActiveOrganization, getSettings, getActiveOrg } from './config/settings';
+import { selectActiveOrganization, getSettings, getActiveOrg, llmConfigFromSettings } from './config/settings';
+import { LlmClient } from './llm/client';
 import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { GitService } from './git/GitService';
 import { cleanupMergedRun, hasMergedPullRequest } from './git/mergeCleanup';
@@ -26,9 +26,35 @@ let treeProvider: WorkItemsTreeProvider;
 
 // H-10 fix: activate is async — the Q7 resume QuickPick (Task 24) awaits it,
 // and VS Code supports returning a Promise from activate().
+
+/**
+ * Wire the LLM summarizer into the repository-understanding cache (fresh
+ * client from current settings — same pattern as ChatViewProvider.llmClient)
+ * and kick a background refresh so cached repo facts are ready for the first
+ * chat turn. The LLM summary itself runs async inside ensureFresh, so a
+ * summarizer call never blocks activation.
+ */
+function wireUnderstanding(services: Services): void {
+  services.understanding.setSummarizer(async (text) => {
+    const client = new LlmClient(llmConfigFromSettings());
+    let result = '';
+    for await (const chunk of client.streamChat([
+      { role: 'user', content: text },
+    ])) {
+      result += chunk.content;
+    }
+    return result;
+  });
+  void services.understanding.ensureFresh().catch((err) => {
+    logger.debug('Understanding: initial refresh failed', err);
+  });
+}
 export async function activate(context: vscode.ExtensionContext) {
   logger.activate(context);
   let services = createServices(context);
+  // Repository understanding: wire the LLM summarizer + kick the initial
+  // background refresh (fingerprint-checked; facts ready for turn one).
+  wireUnderstanding(services);
   // Connect MCP servers on startup (fire-and-forget; errors are logged)
   services.mcp.connectAll().catch(err => {
     logger.error('MCP: failed to connect servers', err);
@@ -64,6 +90,13 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.refreshStatus', () => {
       statusProvider.refresh();
+    }),
+    vscode.commands.registerCommand('adoCode.refreshUnderstanding', async () => {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'ADO Code: refreshing repository understanding…' },
+        async () => { await services.understanding.refreshNow(); }
+      );
+      vscode.window.showInformationMessage('ADO Code: repository understanding refreshed.');
     })
   );
 
@@ -373,6 +406,9 @@ First analyze the user story and explain your breakdown reasoning, then output t
     vscode.commands.registerCommand('adoCode.switchOrganization', async () => {
       await selectActiveOrganization(context);
       services = createServices(context);
+      // Re-wire the understanding summarizer — the new services bundle has a
+      // fresh (empty) cache.
+      wireUnderstanding(services);
       chatProvider.setServices(services);
       statesCache.clearAll();
       await chatProvider.refreshWorkItems();
@@ -795,7 +831,7 @@ Generate ONLY the commit message, nothing else.`;
       // QuickPick of installed agents, then hand off
       const installed = await services.agents.getInstalled();
       if (installed.length === 0) {
-        vscode.window.showWarningMessage('ADO Code: no external agent CLIs installed (claude, codex, opencode, hermes, pi, openclaw, aider, gemini, cursor-agent).');
+        vscode.window.showWarningMessage('ADO Code: no external agent CLIs installed (claude, codex, opencode, hermes, pi, openclaw, aider, gemini, cursor-agent, dsh).');
         return;
       }
       const pick = await vscode.window.showQuickPick(
@@ -1027,6 +1063,9 @@ Generate ONLY the commit message, nothing else.`;
         if (run.status === 'succeeded') {
           void chatProvider.reviewAgentRun(run);
         }
+        // Parent delegation: sync child completion (post-run ADO transitions).
+        // Fire-and-forget — a sync failure must never break the completion flow.
+        void chatProvider.syncDelegatedChildren(run).catch(() => {});
       },
     },
     {
@@ -1502,6 +1541,8 @@ Generate ONLY the commit message, nothing else.`;
         const needsRebuild = rebuildKeys.some(k => e.affectsConfiguration(k));
         if (needsRebuild) {
           services = createServices(context);
+          // Re-wire the understanding summarizer for the new services bundle.
+          wireUnderstanding(services);
           chatProvider.setServices(services);
           // Re-subscribe memory events to the new service instances
           wireMemoryEvents(services);

@@ -277,7 +277,7 @@ export class AnthropicProvider implements LlmProvider {
 }
 
 /** Model ids (+ capability hints when the gateway exposes them) via Anthropic's GET /v1/models endpoint. */
-export async function listModelsAnthropic(config: LlmConfig): Promise<ModelInfo[]> {
+async function listModelsAnthropic(config: LlmConfig): Promise<ModelInfo[]> {
   const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
   const response = await fetch(`${baseUrl}/v1/models`, {
     method: 'GET',

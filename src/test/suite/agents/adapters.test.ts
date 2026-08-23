@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { ClaudeAdapter } from '../../../agents/adapters/ClaudeAdapter';
+import { DshAdapter } from '../../../agents/adapters/DshAdapter';
 import { GeminiAdapter } from '../../../agents/adapters/GeminiAdapter';
 import { GenericAdapter } from '../../../agents/adapters/GenericAdapter';
 import { HermesAdapter } from '../../../agents/adapters/HermesAdapter';
@@ -92,6 +93,34 @@ suite('AgentAdapters', () => {
     const adapter = new GenericAdapter('pi', spawnFn);
     await adapter.runTask(makeRun('pi'), 'hi');
     assert.deepStrictEqual(captured.args, ['-p', 'hi']);
+  });
+
+  test('dsh adapter builds headless profile args and streams via onChunk', async () => {
+    const { spawnFn, captured } = fakeSpawn('final answer', 0);
+    const adapter = new DshAdapter(spawnFn);
+    const chunks: string[] = [];
+    const result = await adapter.runTask(makeRun('dsh'), 'implement the feature', undefined, (c) => chunks.push(c));
+    assert.strictEqual(captured.bin, 'dsh');
+    // `--` guard: prompts starting with `-` must not be parsed as flags.
+    assert.deepStrictEqual(captured.args, ['--profile', 'headless', '--', 'implement the feature']);
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(result.output, 'final answer');
+    assert.ok(chunks.join('').includes('final answer'), 'onChunk should stream output');
+  });
+
+  test('dsh adapter surfaces stderr and non-zero exit as failed output', async () => {
+    const { spawnFn, captured } = fakeSpawn('', 1);
+    const adapter = new DshAdapter(spawnFn);
+    const result = await adapter.runTask(makeRun('dsh'), 'task');
+    assert.strictEqual(captured.bin, 'dsh');
+    assert.strictEqual(result.exitCode, 1);
+  });
+
+  test('dsh adapter spawn failure resolves exitCode 1 with message', async () => {
+    const adapter = new DshAdapter(fakeSpawnError('ENOENT'));
+    const result = await adapter.runTask(makeRun('dsh'), 'x');
+    assert.strictEqual(result.exitCode, 1);
+    assert.ok(result.output.includes('ENOENT'));
   });
 
   test('spawn failure resolves exitCode 1 with message', async () => {

@@ -7,6 +7,7 @@ import { AgentRegistry } from './registry';
 import { createAdapter } from './adapters';
 import { AgentAdapter } from './adapters/types';
 import { GitService } from '../git/GitService';
+import { extractDeliveryReport } from '../llm/prompts';
 
 // M7 fix: the verify command is USER-configured (trusted input), so shell exec
 // is intentional — it respects quotes/globs (e.g. `npm test -- --grep "foo bar"`).
@@ -90,7 +91,7 @@ export class AgentRunner {
     return this.runLogs.get(runId) ?? '';
   }
 
-  async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string): Promise<AgentRun> {
+  async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string, childIds?: number[]): Promise<AgentRun> {
     const installed = await this.registry.getInstalled();
     // M2 fix: honor adoCode.agents.autoSelect when no agent is specified.
     let chosen: AgentCapability | undefined;
@@ -116,6 +117,28 @@ export class AgentRunner {
       );
     }
 
+    // Parent/child coordination guard: when delegating a parent WITH its
+    // children, refuse if any descendant already has its own active run (both
+    // would touch the same work and stomp each other) — and refuse delegating
+    // an item that an active parent run already covers.
+    const childIdsSet = new Set(childIds ?? []);
+    const childCovered = [...this.runs.values()].find(
+      r => r.status === 'running' && r.workItemId !== undefined && childIdsSet.has(r.workItemId)
+    );
+    if (childCovered) {
+      throw new Error(
+        `work item #${childCovered.workItemId} (a child of #${workItemId}) already has an active agent run (${childCovered.agent}, ${childCovered.id}) — finish or cancel it before delegating the parent`
+      );
+    }
+    const insideParent = [...this.runs.values()].find(
+      r => r.status === 'running' && (r.childIds ?? []).includes(workItemId)
+    );
+    if (insideParent) {
+      throw new Error(
+        `work item #${workItemId} is covered by the active parent run (${insideParent.agent}, ${insideParent.id}) — finish or cancel it before delegating the child separately`
+      );
+    }
+
     const workdir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const run: AgentRun = {
       id: `run-${Date.now()}-${workItemId}`,
@@ -125,6 +148,7 @@ export class AgentRunner {
       workdir,
       status: 'running',
       startedAt: new Date().toISOString(),
+      childIds: childIds && childIds.length > 0 ? childIds : undefined,
     };
 
     // Create isolated worktree for this agent run. The branch is slugged from
@@ -184,6 +208,11 @@ export class AgentRunner {
         // H7 fix: a null exit code on abort means the process was killed — mark cancelled, not succeeded.
         run.status = exitCode === null ? 'cancelled' : (exitCode === 0 ? 'succeeded' : 'failed');
         if (run.status === 'cancelled') { this.persist(); return; }
+        // Parent delegation: capture the agent's Delivery Report so the
+        // post-run child-completion sync can transition ADO states per child.
+        if (run.status === 'succeeded') {
+          run.deliveryReport = extractDeliveryReport(output);
+        }
         // H8 fix: persist the output tail so interrupted runs have something to show.
         // Fire-and-forget: output file is a convenience, not required — don't block
         // the completion path on vscode.workspace.fs (which can hang in test env).
@@ -240,7 +269,7 @@ export class AgentRunner {
           });
         } else {
           // H13 fix: synthesized follow-up for agents without session resume
-          // (codex, aider, pi, openclaw, cursor-agent): re-run one-shot with
+          // (codex, aider, pi, openclaw, cursor-agent, dsh): re-run one-shot with
           // the previous summary + the follow-up prompt as context.
           const context = `[Previous run summary]\n${run.summary ?? '(no summary)'}\n\n[Follow-up request]\n${followUpPrompt}`;
           result = await adapter.runTask(run, context, abort.signal, (chunk) => {

@@ -7,7 +7,7 @@
  */
 
 import type { ModeConfig } from '../modes';
-import { TOOL_GROUPS, getToolsForMode } from '../modes';
+import { getToolsForMode } from '../modes';
 import { TOOL_DISPLAY_NAMES, type ToolName } from '../tools/types';
 import type { Skill } from '../../shared/skillTypes';
 
@@ -31,6 +31,8 @@ export interface SystemPromptOptions {
   memoryPrompt?: string;
   /** Optional workspace memory prompt string (from WorkspaceMemory.toPromptString()). */
   workspaceMemoryPrompt?: string;
+  /** Optional cached repository + work-item understanding block (from UnderstandingService.toPromptString()). */
+  understanding?: string;
   /** Optional enabled skills for the execute_skill tool. */
   enabledSkills?: Skill[];
 }
@@ -137,6 +139,11 @@ function buildEnvironmentSection(
     `- **Workspace:** ${workspacePath}`,
     '',
     'All file paths are relative to the workspace root unless stated otherwise.',
+    '',
+    // Project-level instruction file (parity with the /delegate handoff,
+    // which already says "Read and follow AGENTS.md…"). On-demand read keeps
+    // its token cost out of every request/iteration when the file is absent.
+    'If an `AGENTS.md` file exists at the workspace root, read it and honor it — it contains the project structure, build commands, conventions, and constraints you must respect.',
   ].join('\n');
 }
 
@@ -150,6 +157,13 @@ function buildOutputFormatSection(): string {
     '- Be concise and technical — skip pleasantries.',
     '- When presenting a change, briefly explain *what* changed and *why*.',
     '- When finishing a task, summarize the result clearly.',
+    '- If your response ends by offering the user a choice of next actions (e.g. "Want me to …?", "Should I … or …?"), append a fenced choice block at the very end — 2 to 6 short imperative options, no numbering or bullets:',
+    '',
+    '```choice',
+    '{"question": "<the question>", "options": ["<option 1>", "<option 2>", "…"]}',
+    '```',
+    '',
+    '  Keep the question readable in your text; do not repeat the options in prose.',
   ].join('\n');
 }
 
@@ -181,6 +195,17 @@ function buildWorkspaceMemorySection(workspaceMemoryPrompt?: string): string {
     return '';
   }
   return workspaceMemoryPrompt.trim();
+}
+
+/**
+ * Cached repository + work-item understanding (UnderstandingService). The
+ * block carries its own header + staleness note, so it is embedded verbatim.
+ */
+function buildUnderstandingSection(understanding?: string): string {
+  if (!understanding || understanding.trim().length === 0) {
+    return '';
+  }
+  return understanding.trim();
 }
 
 /** Available skills — list enabled skills and the execute_skill tool. */
@@ -239,7 +264,7 @@ function formatOsName(osId: string): string {
  * and extend without touching a single monolithic template string.
  */
 export function generateSystemPrompt(options: SystemPromptOptions): string {
-  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, enabledSkills } =
+  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, understanding, enabledSkills } =
     options;
 
   const sections: string[] = [
@@ -249,6 +274,7 @@ export function generateSystemPrompt(options: SystemPromptOptions): string {
     buildSkillsSection(enabledSkills),
     buildMemorySection(memoryPrompt),
     buildWorkspaceMemorySection(workspaceMemoryPrompt),
+    buildUnderstandingSection(understanding),
     buildEnvironmentSection(workspacePath, os),
     buildOutputFormatSection(),
     buildCustomInstructionsSection(customInstructions),

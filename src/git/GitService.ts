@@ -1,7 +1,6 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { promisify } from 'util';
 
 const execFile = promisify(cp.execFile);
@@ -106,6 +105,19 @@ export class GitService {
   async getShortCommitHash(): Promise<string | null> {
     try {
       const { stdout } = await execFile('git', ['rev-parse', '--short', 'HEAD'], {
+        cwd: this.workspaceRoot,
+      });
+      return stdout.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Origin remote URL (repo understanding facts). Null when absent/unset. */
+  async getRemoteOriginUrl(): Promise<string | null> {
+    if (!this.workspaceRoot) return null;
+    try {
+      const { stdout } = await execFile('git', ['config', '--get', 'remote.origin.url'], {
         cwd: this.workspaceRoot,
       });
       return stdout.trim() || null;

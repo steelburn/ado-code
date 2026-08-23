@@ -1,6 +1,4 @@
 import * as assert from 'assert';
-import { OpenAiProvider } from '../../../llm/providers/openai';
-import { AnthropicProvider } from '../../../llm/providers/anthropic';
 import { LlmClient } from '../../../llm/client';
 import { LlmConfig, LlmMessage, LlmTool } from '../../../llm/types';
 import { runAgenticChat } from '../../../llm/agentic';
@@ -48,7 +46,6 @@ suite('OpenAiProvider chatWithTools', () => {
     };
     (globalThis as any).fetch = fetchStub;
 
-    const provider = new OpenAiProvider();
     const client = new LlmClient(config);
     const messages: LlmMessage[] = [
       { role: 'system', content: 'sys' },
@@ -169,7 +166,7 @@ suite('AnthropicProvider chatWithTools', () => {
 
   test('runAgenticChat reports progress for thinking text and tool execution', async () => {
     let callCount = 0;
-    const fetchStub = async (_url: any, init: any) => {
+    const fetchStub = async (_url: any, _init: any) => {
       callCount += 1;
       if (callCount === 1) {
         return jsonResponse({

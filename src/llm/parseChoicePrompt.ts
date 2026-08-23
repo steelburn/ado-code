@@ -3,7 +3,10 @@
  * by numbered or bulleted options. Returns the extracted options, or null
  * if the response doesn't look like a choice prompt.
  *
- * Two paths:
+ * Three paths, cheapest first:
+ * - `parseChoiceFence` — the MAIN model appends a ```choice fenced JSON block
+ *   when its answer offers the user a choice (see the output-format
+ *   instruction in prompts/system.ts). Zero extra cost.
  * - `parseChoicePrompt` — fast regex (no extra LLM cost). Misses responses
  *   that ask a question WITHOUT numbered/bulleted options (e.g. "Want me to
  *   run X and/or update Y?").
@@ -47,7 +50,7 @@ export function parseChoicePrompt(text: string): ChoicePrompt | null {
 
   // Extract numbered or bulleted options
   const optionPatterns = [
-    /^\s*(?:\d+[\.\)]\s*[-–—]?\s*|[-–—•*]\s+)(.+)$/gm,
+    /^\s*(?:\d+[.)]\s*[-–—]?\s*|[-–—•*]\s+)(.+)$/gm,
   ];
 
   const options: Array<{ label: string; value: string }> = [];
@@ -65,12 +68,45 @@ export function parseChoicePrompt(text: string): ChoicePrompt | null {
   if (options.length < 2 || options.length > 10) return null;
 
   // Extract the question (everything before the first option)
-  const firstOptionIdx = text.search(/^\s*(?:\d+[\.\)]\s*[-–—]?\s*|[-–—•*]\s+)/m);
+  const firstOptionIdx = text.search(/^\s*(?:\d+[.)]\s*[-–—]?\s*|[-–—•*]\s+)/m);
   const question = firstOptionIdx > 0
     ? text.substring(0, firstOptionIdx).trim()
     : text.trim();
 
   return { question, options };
+}
+
+// ---------------------------------------------------------------------------
+// Main-model fence (primary path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a choice prompt from a ```choice fenced block that the MAIN model
+ * appends when its response ends with a choice offer (see the output-format
+ * instruction in prompts/system.ts). Returns null when no valid fence is
+ * present — the caller then falls back to the regex path and, optionally,
+ * the LLM detector.
+ */
+export function parseChoiceFence(text: string): ChoicePrompt | null {
+  if (!text) return null;
+  // Tolerates a missing closing fence (models occasionally forget it) and
+  // any prose inside the fence (parseChoiceDetectorJson skips to the first {).
+  const fence = text.match(/```choice\s*\n([\s\S]*?)(?:```|$)/);
+  if (!fence) return null;
+  return parseChoiceDetectorJson(fence[1] ?? '');
+}
+
+/**
+ * Remove ```choice fenced blocks from assistant text so the JSON never
+ * renders in the chat bubble, leaks into the persisted conversation, or is
+ * re-sent on later turns. Collapses the blank lines a removed fence leaves
+ * behind; text without a fence is returned untouched.
+ */
+export function stripChoiceFence(text: string): string {
+  if (!text) return text;
+  const stripped = text.replace(/```choice[\s\S]*?(?:```|$)/g, '');
+  if (stripped === text) return text;
+  return stripped.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ---------------------------------------------------------------------------

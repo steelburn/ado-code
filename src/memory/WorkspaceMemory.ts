@@ -11,14 +11,12 @@ import { logger } from '../services/logger';
  * across conversations (e.g. conventions, decisions, temporary notes).
  */
 export class WorkspaceMemory {
-  private workspaceRoot: string;
   private memoryDir: string;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   /** Fires after any mutation (write, delete). */
   readonly onDidChange = this._onDidChange.event;
 
   constructor(workspaceRoot: string) {
-    this.workspaceRoot = workspaceRoot;
     this.memoryDir = path.join(workspaceRoot, '.ado-code', 'memory');
   }
 

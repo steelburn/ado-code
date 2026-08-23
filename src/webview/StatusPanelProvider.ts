@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Services } from '../services';
 import { getSettings } from '../config/settings';
-import { AgentCapability, AgentRun } from '../agents/types';
+import { AgentCapability } from '../agents/types';
 import { AgentRunner } from '../agents/AgentRunner';
 
 function relativeTime(dateStr: string): string {

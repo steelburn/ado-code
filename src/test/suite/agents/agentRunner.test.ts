@@ -93,6 +93,33 @@ suite('AgentRunner', () => {
     assert.ok(run.id);
   });
 
+  test('parent delegation refuses when a child already has an active run', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    (runner as any).runs.set('run-1-101', {
+      id: 'run-1-101', workItemId: 101, agent: 'claude', workdir: '/tmp', status: 'running',
+      startedAt: new Date().toISOString(),
+    });
+    await assert.rejects(
+      runner.delegate(50, 'do the whole story', 'claude', 'Parent story', [101, 102]),
+      /a child of #50.*already has an active agent run/
+    );
+  });
+
+  test('delegating a child is refused while its parent run is active', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    (runner as any).runs.set('run-1-50', {
+      id: 'run-1-50', workItemId: 50, agent: 'claude', workdir: '/tmp', status: 'running',
+      startedAt: new Date().toISOString(), childIds: [101, 102],
+    });
+    await assert.rejects(
+      runner.delegate(101, 'do the child separately', 'claude'),
+      /covered by the active parent run/
+    );
+    // A sibling NOT covered by the parent run is fine.
+    const run = await runner.delegate(103, 'do a different child', 'claude');
+    assert.ok(run.id);
+  });
+
   test('delegate warns when the existing branch is behind the base (stale-base guard)', async () => {
     const git = {
       ...fakeGit(),

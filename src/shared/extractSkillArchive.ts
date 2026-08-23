@@ -59,7 +59,7 @@ export async function extractSkillArchive(archivePath: string): Promise<ExtractR
     }
   } catch (err: any) {
     // Clean up on failure
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
     throw new Error(`Failed to extract ${format} archive: ${err.message || String(err)}`);
   }
 

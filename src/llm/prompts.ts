@@ -24,11 +24,108 @@ export function wrapMemoryContext(memoryContext: string): string {
   return `## ADO Code Memory (instructions you MUST honor)\n\n${memoryContext}`;
 }
 
+// ── Parent delegation: child delivery checklist ────────────────────────────
+
+/** One entry of a delegated parent's child checklist. */
+export interface ChildChecklistItem {
+  id: number;
+  type: string;
+  state: string;
+  title: string;
+}
+
+/**
+ * The delivery-checklist block appended to a delegated parent's prompt.
+ * Unlike the old free-form "implement ALL of them" prose, it fixes the
+ * contract: the agent must end with a '## Delivery Report' section marking
+ * each child DONE / BLOCKED / INCOMPLETE so the extension can sync ADO states
+ * after the run (see syncDelegatedChildren in ChatViewProvider).
+ */
+export function buildChildChecklist(children: ChildChecklistItem[]): string {
+  const lines = [
+    '## Child Tasks (delivery checklist)',
+    '',
+    `This work item has ${children.length} child item(s) that are part of this work item. Implement ALL of them.`,
+    '',
+    ...children.map((c, i) => `${i + 1}. #${c.id} [${c.type}] [${c.state}] — ${c.title}`),
+    '',
+    'When you finish, end your output with a Delivery Report section — exactly one line per child, using ONLY these statuses:',
+    '',
+    '## Delivery Report',
+    ...children.map(c => `- #${c.id}: DONE`),
+    '',
+    'DONE = fully implemented and verified. BLOCKED = cannot proceed (missing info, external dependency). INCOMPLETE = not finished. Items marked DONE will be closed in ADO automatically; BLOCKED/INCOMPLETE items stay open.',
+  ];
+  return lines.join('\n');
+}
+
+type ChildStatus = 'DONE' | 'BLOCKED' | 'INCOMPLETE';
+
+/**
+ * Tolerant parser for the agent's '## Delivery Report' section. Every listed
+ * child id resolves to a status; ids the agent never mentioned default to
+ * INCOMPLETE — never assume done from silence.
+ */
+export function parseDeliveryReport(report: string, childIds: number[]): Record<number, ChildStatus> {
+  const out: Record<number, ChildStatus> = {};
+  for (const id of childIds) out[id] = 'INCOMPLETE';
+  for (const raw of report.split('\n')) {
+    const line = raw.trim();
+    const m = line.match(/#(\d+)/);
+    if (!m) continue;
+    const id = Number(m[1]);
+    if (!(id in out)) continue;
+    const up = line.toUpperCase();
+    if (/\b(BLOCKED|BLOCKER|STUCK)\b/.test(up)) out[id] = 'BLOCKED';
+    else if (/\[ \]|INCOMPLETE|NOT DONE|UNFINISHED|PARTIAL/.test(up)) out[id] = 'INCOMPLETE';
+    else if (/\[X\]|✅|✔|DONE|COMPLETE|COMPLETED|FINISHED|CLOSED/.test(up)) out[id] = 'DONE';
+  }
+  return out;
+}
+
+/**
+ * Pull the '## Delivery Report' section out of an agent's full output so the
+ * post-run child-completion sync can parse per-item statuses. Returns ''
+ * when the agent never emitted one.
+ */
+export function extractDeliveryReport(output: string): string {
+  const idx = output.search(/^##\s*Delivery Report\s*$/im);
+  if (idx === -1) return '';
+  const rest = output.slice(idx);
+  const next = rest.search(/\n##\s/m); // the next heading ends the section
+  const section = next === -1 ? rest : rest.slice(0, next);
+  return section.trim();
+}
+
+/**
+ * Canonical markdown rendering of a work item's context. Shared by the
+ * UnderstandingService cache (workitem-<id>.md) so chat, agents, and the
+ * cache all describe the item identically. Comments are kept in the order
+ * given — ADO returns them NEWEST-FIRST and callers must NOT reverse.
+ */
+export function formatWorkItemContext(workItem: WorkItemContext): string {
+  const lines = [
+    `Current work item: #${workItem.id} - ${workItem.title}`,
+    `State: ${workItem.state || 'N/A'}`,
+    `Description: ${workItem.description || 'N/A'}`,
+    `Acceptance Criteria: ${workItem.acceptanceCriteria || 'N/A'}`,
+    `Tags: ${workItem.tags || 'N/A'}`,
+  ];
+  if (workItem.comments && workItem.comments.length > 0) {
+    lines.push('', 'Discussion thread (latest first):');
+    for (const c of workItem.comments) {
+      lines.push(`- ${c.author}: ${c.text}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 export function buildAgentPrompt(
   workItem: WorkItemContext & { state?: string },
   branch: string,
   projectContext?: string,
-  memoryContext?: string
+  memoryContext?: string,
+  understanding?: string
 ): string {
   const lines = [
     `Read and follow AGENTS.md in the current directory — it contains the project structure, build commands, conventions, and constraints you must respect.`,
@@ -71,10 +168,16 @@ export function buildAgentPrompt(
     lines.push('', wrapMemoryContext(memoryContext.trim()));
   }
 
+  // Cached repository + work-item understanding — the same block the chat
+  // system prompt receives, so delegated agents start from the same picture.
+  if (understanding && understanding.trim().length > 0) {
+    lines.push('', understanding.trim());
+  }
+
   return lines.join('\n');
 }
 
-export function buildSystemPrompt(activeWorkItem?: WorkItemContext, memoryPrompt?: string, workspaceMemoryPrompt?: string): string {
+export function buildSystemPrompt(activeWorkItem?: WorkItemContext, memoryPrompt?: string, workspaceMemoryPrompt?: string, understanding?: string): string {
   let prompt = `You are ADO Code, an AI coding assistant integrated into VS Code.
 You help developers write, understand, and debug code.
 You have access to the developer's Azure DevOps work items.
@@ -82,20 +185,7 @@ When the user references a task, use its description, acceptance criteria, AND t
 Be concise, helpful, and focused on code.`;
 
   if (activeWorkItem) {
-    prompt += `\n\nCurrent work item: #${activeWorkItem.id} - ${activeWorkItem.title}
-Description: ${activeWorkItem.description || 'N/A'}
-Acceptance Criteria: ${activeWorkItem.acceptanceCriteria || 'N/A'}
-Tags: ${activeWorkItem.tags || 'N/A'}`;
-
-    if (activeWorkItem.comments && activeWorkItem.comments.length > 0) {
-      // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST (verified live:
-      // id 21076637 precedes 21076636). Do NOT reverse — the thread is
-      // already in the order the header claims.
-      prompt += `\n\nDiscussion thread (latest first):`;
-      for (const c of activeWorkItem.comments) {
-        prompt += `\n- ${c.author}: ${c.text}`;
-      }
-    }
+    prompt += `\n\n${formatWorkItemContext(activeWorkItem)}`;
   }
 
   if (memoryPrompt && memoryPrompt.trim().length > 0) {
@@ -104,6 +194,10 @@ Tags: ${activeWorkItem.tags || 'N/A'}`;
 
   if (workspaceMemoryPrompt && workspaceMemoryPrompt.trim().length > 0) {
     prompt += `\n\n${workspaceMemoryPrompt.trim()}`;
+  }
+
+  if (understanding && understanding.trim().length > 0) {
+    prompt += `\n\n${understanding.trim()}`;
   }
 
   prompt += `\n\n${MERGE_FLOW_INSTRUCTIONS}`;

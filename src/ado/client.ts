@@ -1,4 +1,4 @@
-import { AdoWorkItem, AdoWorkItemReference, WiqlResult, AdoComment } from './types';
+import { AdoWorkItem, WiqlResult, AdoComment } from './types';
 import { markdownToHtml } from './markdownToHtml';
 
 const GA_VERSION = '7.1';
@@ -24,6 +24,25 @@ export function parentIdOf(fields: Record<string, unknown>): number | undefined 
     id = Number(p);
   }
   return id !== undefined && Number.isFinite(id) && id > 0 ? id : undefined;
+}
+
+/**
+ * ADO states that mean "no more work to do" on an item — used to filter a
+ * delegated parent's delivery checklist and to skip already-finished children
+ * during post-run auto-completion.
+ */
+const TERMINAL_STATES: ReadonlySet<string> = new Set(['Closed', 'Done', 'Resolved', 'Removed']);
+
+export function isTerminalState(state?: string): boolean {
+  return !!state && TERMINAL_STATES.has(state);
+}
+
+/**
+ * The ADO state a completed item should move to, by work item type:
+ * Task/Bug/Impediment → Closed; Story/Feature/Epic/PBI → Resolved.
+ */
+export function terminalStateForType(workItemType: string): string {
+  return /task|bug|impediment/i.test(workItemType) ? 'Closed' : 'Resolved';
 }
 
 export class AdoClient {
@@ -270,6 +289,41 @@ export class AdoClient {
   }
 
   /**
+   * All descendant work items (children, grandchildren, …) of a parent, as a
+   * flat list ordered by id. Reuses expandHierarchy's DOWN walk, then keeps
+   * only items whose parent chain actually reaches parentId (ancestors and
+   * the parent itself are excluded). Used when delegating a parent work item
+   * so the agent's delivery checklist covers the whole subtree.
+   */
+  async getDescendantWorkItems(project: string, parentId: number): Promise<AdoWorkItem[]> {
+    const parent = (await this.fetchWorkItemsByIds([parentId]))[0];
+    if (!parent) return [];
+    const closure = await this.expandHierarchy(project, [parent]);
+    const byId = new Map(closure.map(wi => [wi.id, wi] as const));
+    const descendants: AdoWorkItem[] = [];
+    for (const wi of closure) {
+      if (wi.id === parentId) continue;
+      // Walk the parent chain up to see whether this item hangs under parentId.
+      let found = false;
+      let cur: AdoWorkItem | undefined = wi;
+      for (let depth = 0; depth < 32; depth++) {
+        const pid = parentIdOf(cur.fields as Record<string, unknown>);
+        if (pid === undefined) break;
+        if (pid === parentId) { found = true; break; }
+        cur = byId.get(pid);
+        if (!cur) break; // parent outside the closure — can't confirm ancestry
+      }
+      if (found) descendants.push(wi);
+    }
+    return descendants.sort((a, b) => a.id - b.id);
+  }
+
+  /** Fetch work items by id (public wrapper around the private by-ids fetch). */
+  async getWorkItemsByIds(ids: number[]): Promise<AdoWorkItem[]> {
+    return this.fetchWorkItemsByIds(ids);
+  }
+
+  /**
    * People in the project (all project teams' members, deduped) for the
    * reassign picker. Org-level teams endpoint carries projectName; members
    * carry identity.uniqueName (email) which the AssignedTo PATCH accepts.
@@ -345,7 +399,7 @@ export class AdoClient {
   }
 
   async getWorkItemDetail(
-    project: string,
+    _project: string,
     workItemId: number
   ): Promise<AdoWorkItem> {
     return this.get<AdoWorkItem>(

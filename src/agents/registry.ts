@@ -1,4 +1,5 @@
 import * as cp from 'child_process';
+import * as vscode from 'vscode';
 import { promisify } from 'util';
 import { AgentCapability, AgentName } from './types';
 
@@ -80,6 +81,13 @@ export const AGENT_SPECS: Record<AgentName, AgentSpec> = {
     session: () => [],
     supportsSession: false,
   },
+  dsh: {
+    name: 'dsh', displayName: 'DeepSeek Harness',
+    bin: 'dsh', versionFlag: ['--version'],
+    oneShot: () => ['--profile', 'headless', '--'], // dsh --profile headless -- "<prompt>"
+    session: () => [],
+    supportsSession: false, // headless profile is one-shot only (H13 synthesized follow-up)
+  },
 };
 
 export class AgentRegistry {
@@ -90,7 +98,6 @@ export class AgentRegistry {
     // M3/M17: honor adoCode.agents.enabled — disabled agents are never probed.
     let enabled: string[] = [];
     try {
-      const vscode = require('vscode') as typeof import('vscode');
       enabled = vscode.workspace.getConfiguration('adoCode').get<string[]>('agents.enabled', []);
     } catch {
       // not running inside VS Code (tests) — probe everything

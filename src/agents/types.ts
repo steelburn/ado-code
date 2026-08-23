@@ -1,4 +1,4 @@
-export type AgentName = 'claude' | 'codex' | 'opencode' | 'hermes' | 'pi' | 'openclaw' | 'aider' | 'gemini' | 'cursor-agent';
+export type AgentName = 'claude' | 'codex' | 'opencode' | 'hermes' | 'pi' | 'openclaw' | 'aider' | 'gemini' | 'cursor-agent' | 'dsh';
 
 export interface AgentCapability {
   name: AgentName;
@@ -23,4 +23,6 @@ export interface AgentRun {
   finishedAt?: string;
   outputFile?: string;      // captured stdout/stderr
   summary?: string;         // final result text
+  childIds?: number[];      // descendant work item ids delegated with this parent run (delivery checklist)
+  deliveryReport?: string;  // '## Delivery Report' section extracted from the agent's output
 }

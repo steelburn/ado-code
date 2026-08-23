@@ -51,7 +51,7 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 - **Worktree diff viewer**: Show Changes opens VS Code diff editor for worktree files
 - **Generate tasks from user stories**: `/generate-tasks` slash command + context menu action trigger the AI to analyze a user story and create child tasks via the `create_work_item` LLM tool — **with duplicate prevention** (checks for existing child items before creating)
 - **Task draft editor**: When the AI calls `create_work_item`, an editable markdown tab opens for you to review and modify all fields before the work item is created in ADO — **markdown content is automatically converted to HTML** for proper rendering in ADO
-- **Child task delegation**: When delegating a work item to an agent, the system checks for child work items in ADO and warns the user — include them in the agent's context or skip them
+- **Parent delegation completes child items**: Delegating a parent work item (Story/Feature/Epic) covers its entire descendant subtree — the agent gets a numbered **delivery checklist** of every open child and must end with a `## Delivery Report` marking each `DONE` / `BLOCKED` / `INCOMPLETE`. With `adoCode.agents.autoCompleteChildren` enabled, the extension then comments + transitions each done child to its terminal state and closes the parent once all children are done (partial success leaves it open with a comment). Without the setting, the run reports and comments only. You're warned before delegating and can skip the children; a parent/child concurrency guard prevents overlapping runs
 - **Agent progress in chat**: Agent delegation shows start/completion messages in the chat thread alongside the streaming output panel — with a live elapsed-time readout while a run is in flight
 - **Live agent progress in the editor**: Move any agent run's progress to the editor area — real-time streaming output with timestamps and event styling, live elapsed clock, progress bar, and the final summary in the same panel. Auto-open per run via `adoCode.agents.progressView = editor`, or on demand via the ↗ button on the chat output panel (running or finished) or the **ADO Code: Open Agent Progress…** command
 - **Changelog notification on update**: After a version change, a one-time notification offers to show the new version's changelog in a styled webview panel
@@ -106,7 +106,7 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.llm.modeReasoningEffort` | Per-mode reasoning effort for reasoning models: `{ "inline": "low", "act": "high" }` — values: `low`, `medium`, `high` |
 | `adoCode.llm.useNativeTokenCounting` | Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible usage.prompt_tokens) for status-bar accuracy (default `true`) |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, `act`, or `yolo` |
-| `adoCode.act.toolBudget` | Max tool calls per act-mode turn |
+| `adoCode.act.toolBudget` | Max agentic loop iterations per chat turn (each iteration = one model round-trip that may run several tool calls in parallel; applies to all modes) |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
 | `adoCode.consent.harmlessAutoApprove` | Auto-approve harmless (read-only) terminal commands after a timer (default `false`) |
 | `adoCode.consent.harmlessAutoApproveSeconds` | Seconds before a harmless command auto-approves (default `20`, range 1–30) |
@@ -127,6 +127,7 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.agents.verifyCommand` | Shell command run after an agent finishes |
 | `adoCode.agents.autoSelect` | Default agent when none is specified |
 | `adoCode.agents.autoReview` | Auto-review agent changes via LLM when a run completes (default `true`) |
+| `adoCode.agents.autoCompleteChildren` | After a delegated parent run succeeds, auto-complete its children in ADO: children marked DONE in the agent's Delivery Report transition to their terminal state (Task/Bug → Closed, Story/Feature/Epic → Resolved), and the parent closes when all open children are done (default `false`; off = report + comment only) |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 
 ## Slash Commands
@@ -144,7 +145,7 @@ Type `/` in the chat input to see available commands:
 | `/mode [mode]` | Switch tool mode: inline (ask), plan (read-only), act (auto-approve), or yolo (full autonomy) — omit mode to pick from list |
 | `/undo` | Revert the last state change made to the active work item |
 | `/help` | List all available slash commands with usage examples |
-| `/delegate [agent] <prompt>` | Hand off the active task to an external agent (claude, codex, opencode, hermes, pi, gemini) |
+| `/delegate [agent] <prompt>` | Hand off the active task to an external agent (claude, codex, opencode, hermes, pi, gemini, dsh) |
 | `/generate-tasks` | Generate child tasks for the active user story (review in editor before saving) |
 | `/new-project` | Open the project creation wizard to create a new project |
 | `/skills` | Open the skill catalog to browse and manage AI skills |
@@ -184,7 +185,8 @@ Each delegated agent run gets an isolated git worktree under `.ado-code/worktree
 - Right-click actions: **Open in Terminal**, **Open in Explorer**, **Commit & Push**, **Remove**, **Show Agent Output**
 - Branches are named from the ADO work item subject, e.g. `feature/ADO-42-fix-login-bug`
 - **Merge flow**: after a run finishes, commit its changes (`Commit & Push` or the AI's `commit_worktree`/`push_worktree` tools), then open a PR (`create_pull_request`) — the AI is instructed to execute this flow and will stop and report if a step fails
-- **Guardrails**: two agents can never run on the same work item concurrently; reusing a stale branch warns; **Remove** refuses silently discarding dirty work (offers *Commit & Push, then Remove*) and deletes the local branch afterwards only when it is fully merged — commits are never lost
+- **Parent runs**: delegating a parent work item runs the whole subtree in ONE worktree/branch/PR — children are a delivery checklist inside the prompt, and the post-run sync (see the settings table) updates ADO states when it finishes
+- **Guardrails**: two agents can never run on the same work item concurrently — including overlapping parent/child runs (a parent run covers its descendants); reusing a stale branch warns; **Remove** refuses silently discarding dirty work (offers *Commit & Push, then Remove*) and deletes the local branch afterwards only when it is fully merged — commits are never lost
 
 ## Model Capabilities
 
@@ -208,6 +210,14 @@ The extension infers the active model's capabilities from its id:
 - **`execute_skill` fixed**: The AI can now really call `execute_skill` to load skill instructions mid-conversation (previously it errored as an unknown tool)
 - **Truncated-response guard**: If a response hits the output token limit, tool calls are failed with "re-issue" instead of executing possibly-truncated arguments
 - **Architecture cleanup**: Removed the legacy `BaseTool`/`ToolRegistry`/definitions layer and the abandoned BaseProvider (`-v2`) migration — tool execution now lives in one switch; −2,500+ lines
+- **Parent delegation completes child items**: Delegating a parent work item now covers its **whole descendant subtree** (children, grandchildren, …). The agent prompt carries a numbered delivery checklist of every open descendant, and the agent must end with a `## Delivery Report` marking each `DONE` / `BLOCKED` / `INCOMPLETE`. With the new opt-in **`adoCode.agents.autoCompleteChildren`** setting, the extension then comments + transitions each done child to its terminal state (Task/Bug → *Closed*, Story/Feature/Epic → *Resolved*) and closes the parent once **all** open children are done — partial success leaves it open with a comment, and failed runs never auto-close anything. A **parent/child concurrency guard** prevents overlapping runs on the same subtree
+- **Main-model choice offers**: When the model ends its answer by offering you a choice, it appends a fenced ` ```choice ` block that the host parses as the primary path (no regex misses, no extra LLM call) and the chat renders as a clickable option card — regex and cheaper-model detection remain as fallbacks
+- **Active editor context auto-injected**: The file you're editing is included in each chat turn's context automatically (deduped by file + version; oversized selections capped)
+- **Slimmer session persistence**: sessions persist only the last 25 message pairs plus the condensation marker
+- **AGENTS.md honored in chat**: the chat model reads and honors `AGENTS.md` when present (on-demand, no cost when absent)
+- **Conversation summaries fixed**: condensation summaries are now marker-prefixed user messages — previously mid-array system messages were silently dropped by the Anthropic providers
+- **Laravel scaffold fixed**: generated `artisan`/`routes/web.php` previously lost PHP namespace separators (`\C` escapes collapse in JS template literals) — they now emit valid PHP
+- **Lint-clean + dead code removed**: 0 ESLint errors; unused `ContextProxy` module, two unused webview components, and a dead helper deleted; `tsconfig` now enforces `noUnusedLocals`/`noUnusedParameters`
 
 ### 0.5.9
 

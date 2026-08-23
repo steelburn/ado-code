@@ -8,7 +8,8 @@ export type SpawnFn = (bin: string, args: string[], opts: any) => any;
 /**
  * Generic one-shot adapter for openclaw, aider, cursor-agent.
  * These agents' CLI contracts vary; best-effort per the registry spec.
- * (pi has its own adapter — PiAdapter — for JSON-mode live progress.)
+ * (pi has its own adapter — PiAdapter — for JSON-mode live progress;
+ * dsh has its own adapter — DshAdapter — for the headless profile.)
  */
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;

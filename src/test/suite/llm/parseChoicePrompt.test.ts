@@ -5,6 +5,8 @@ import {
   looksLikeChoiceQuestion,
   parseChoiceDetectorJson,
   detectChoicePrompt,
+  parseChoiceFence,
+  stripChoiceFence,
 } from '../../../llm/parseChoicePrompt';
 
 // The exact shape that motivated the LLM fallback: ends with a question
@@ -91,6 +93,59 @@ suite('parseChoiceDetectorJson', () => {
     assert.strictEqual(parseChoiceDetectorJson('{"question": "only"}'), null);
     assert.strictEqual(parseChoiceDetectorJson('{"question": "Q?", "options": ["single"]}'), null);
     assert.strictEqual(parseChoiceDetectorJson('{"question": "Q?", "options": []}'), null);
+  });
+});
+
+suite('parseChoiceFence (main-model fence — primary path)', () => {
+  const FENCED = [
+    'The changes are staged.',
+    '',
+    'Want me to push them?',
+    '```choice',
+    '{"question": "Push the changes?", "options": ["Push now", "Create a PR first", "Hold off"]}',
+    '```',
+  ].join('\n');
+
+  test('extracts a valid choice fence appended by the main model', () => {
+    const p = parseChoiceFence(FENCED);
+    assert.ok(p);
+    assert.strictEqual(p.question, 'Push the changes?');
+    assert.strictEqual(p.options.length, 3);
+    assert.strictEqual(p.options[0].label, 'Push now');
+  });
+
+  test('returns null without a fence (falls through to regex/detector)', () => {
+    assert.strictEqual(parseChoiceFence(NATURAL_OFFER), null);
+    assert.strictEqual(parseChoiceFence(''), null);
+    assert.strictEqual(parseChoiceFence('```json\n{"question": "Q?", "options": ["A", "B"]}\n```'), null);
+  });
+
+  test('returns null for a malformed fence or {"none": true}', () => {
+    assert.strictEqual(parseChoiceFence('```choice\nnot json\n```'), null);
+    assert.strictEqual(parseChoiceFence('```choice\n{"none": true}\n```'), null);
+  });
+
+  test('tolerates a missing closing fence', () => {
+    const p = parseChoiceFence('Want me to continue?\n```choice\n{"question": "Continue?", "options": ["Yes", "No"]}');
+    assert.ok(p);
+    assert.strictEqual(p.question, 'Continue?');
+  });
+});
+
+suite('stripChoiceFence (display + persistence)', () => {
+  test('removes the fence and collapses the leftover blank line', () => {
+    const text = 'The changes are staged.\n\nWant me to push them?\n```choice\n{"question": "Q?", "options": ["A", "B"]}\n```';
+    assert.strictEqual(stripChoiceFence(text), 'The changes are staged.\n\nWant me to push them?');
+  });
+
+  test('leaves text without a fence untouched', () => {
+    const plain = 'All done. The build is green.\n\nHere is the final diff.';
+    assert.strictEqual(stripChoiceFence(plain), plain);
+  });
+
+  test('removes multiple fences', () => {
+    const text = 'A\n```choice\n{"question": "Q1?", "options": ["A", "B"]}\n```\nB\n```choice\n{"question": "Q2?", "options": ["C", "D"]}\n```';
+    assert.strictEqual(stripChoiceFence(text), 'A\n\nB');
   });
 });
 

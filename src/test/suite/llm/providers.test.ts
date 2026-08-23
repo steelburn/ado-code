@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { OpenAiProvider, listModelsOpenAi } from '../../../llm/providers/openai';
-import { AnthropicProvider, listModelsAnthropic } from '../../../llm/providers/anthropic';
+import { AnthropicProvider } from '../../../llm/providers/anthropic';
 import { LlmConfig, LlmMessage } from '../../../llm/types';
 
 function sseStream(chunks: string[]): ReadableStream<Uint8Array> {

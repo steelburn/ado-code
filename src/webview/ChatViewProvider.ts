@@ -3,14 +3,14 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
-import { WorkItemsMode, WORK_ITEMS_MODES, workItemsModeLabel } from '../shared/workItemsMode';
-import { AdoClient, parentIdOf } from '../ado/client';
+import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
+import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType } from '../llm/types';
-import { buildAgentPrompt, wrapMemoryContext } from '../llm/prompts';
+import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem } from '../llm/prompts';
 import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
@@ -22,12 +22,14 @@ import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmatio
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
+import type { AgentRun } from '../agents/types';
 import { getMergeConflicts } from '../git/mergeConflicts';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
-import { parseChoicePrompt, detectChoicePrompt } from '../llm/parseChoicePrompt';
+import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFence } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { AgentProgressPanel } from './AgentProgressPanel';
+import { buildAgentsMdContent } from './agentsMd';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
 import { ConversationCondenser } from '../llm/context/condenser';
@@ -41,6 +43,38 @@ export interface ProposedTask {
   acceptanceCriteria: string;
   assignedTo: string;
   tags: string;
+}
+
+/**
+ * B4: keep a conversation's leading context marker (condensation/truncation
+ * summary, if present) plus the last `maxPairs` COMPLETE user/assistant
+ * pairs. A raw tail slice can cut mid-pair — the restored conversation may
+ * then start on an assistant message (Anthropic's plain streaming rejects a
+ * leading assistant turn) and may slice away the summary entirely.
+ */
+function trimConversationToPairs(msgs: LlmMessage[], maxPairs: number): LlmMessage[] {
+  if (msgs.length === 0) return [];
+  let head = 0;
+  const first = msgs[0];
+  if (
+    typeof first.content === 'string'
+    && (first.content.startsWith('[Conversation Summary]') || first.content.startsWith('[Context truncated'))
+  ) {
+    head = 1; // leading context marker survives the pair slice
+  }
+  const tail: LlmMessage[] = [];
+  let pairs = 0;
+  for (let i = msgs.length - 1; i >= head && pairs < maxPairs; i--) {
+    const m = msgs[i]!;
+    if (m.role === 'assistant' && i > head && msgs[i - 1]?.role === 'user') {
+      tail.unshift(msgs[i - 1]!, m);
+      i--;
+    } else {
+      tail.unshift(m);
+    }
+    pairs++;
+  }
+  return head === 1 ? [msgs[0], ...tail] : tail;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -80,6 +114,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Provider-native token count cache (throttled — see updateTokenStatusBar).
   private nativeTokenCount: { at: number; tokens: number | null } = { at: 0, tokens: null };
   private static readonly NATIVE_COUNT_INTERVAL_MS = 10_000;
+  /** Per-turn system prompt snapshot — included in native counts so the
+   *  status bar reflects what the providers actually bill on every request. */
+  private lastSystemPrompt?: string;
+  /** A2: key of the last AUTO-injected editor context (dedupes unchanged
+   *  re-sends between turns). */
+  private lastAutoContextKey: string | undefined;
+  /** B4: max complete user/assistant pairs persisted per session (≈50 msgs). */
+  private static readonly MAX_PERSISTED_PAIRS = 25;
 
   // ── Proposed tasks (generate-tasks review flow) ───────────────────
   /** Active proposed-tasks editor tab, if any. */
@@ -927,32 +969,118 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return decision;
   }
 
+  /**
+   * Full descendant subtree of a work item (children, grandchildren, …) as a
+   * delivery checklist, excluding items already in a terminal state (Done /
+   * Closed / Resolved / Removed). A fetch failure returns [] — children must
+   * never block delegation.
+   */
+  private async fetchChildSubtree(project: string, parentId: number): Promise<ChildChecklistItem[]> {
+    try {
+      const items = await this.services.ado.getDescendantWorkItems(project, parentId);
+      return items
+        .filter(c => !isTerminalState(c.fields['System.State']))
+        .map(c => ({
+          id: c.id,
+          type: c.fields['System.WorkItemType'] ?? '',
+          state: c.fields['System.State'] ?? '',
+          title: c.fields['System.Title'] ?? '',
+        }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Post-run child completion sync for parent delegations. When a run that was
+   * delegated WITH child items finishes, parse the agent's Delivery Report and
+   * — if `adoCode.agents.autoCompleteChildren` is enabled — comment + transition
+   * each DONE child to its terminal state, then close the parent once every
+   * open child is done. With the setting off, the run only reports and comments.
+   * Never touches ADO when the user skipped the children (no childIds on run).
+   */
+  public async syncDelegatedChildren(run: AgentRun): Promise<void> {
+    if (!run.childIds?.length || !run.workItemId) return;
+    let project: string;
+    try {
+      project = this.activeProject();
+    } catch {
+      return; // no active org — nothing to sync against
+    }
+    const auto = vscode.workspace.getConfiguration('adoCode').get<boolean>('agents.autoCompleteChildren', false);
+    const runLine = `\`${run.id}\` (${run.agent})`;
+    try {
+      const children = await this.services.ado.getWorkItemsByIds(run.childIds);
+      if (children.length === 0) return;
+
+      const report = parseDeliveryReport(run.deliveryReport ?? '', run.childIds);
+      const done: AdoWorkItem[] = [];
+      const open: AdoWorkItem[] = [];
+      for (const c of children) {
+        if (isTerminalState(c.fields['System.State'])) continue; // already finished
+        (report[c.id] === 'DONE' ? done : open).push(c);
+      }
+
+      if (run.status !== 'succeeded') {
+        if (auto && (done.length > 0 || open.length > 0)) {
+          await this.services.ado.addComment(project, run.workItemId,
+            `ADO Code: delegated agent ${runLine} ended with status **${run.status}** — child items were NOT auto-completed.`);
+        }
+        this.refreshWorkItems();
+        return;
+      }
+
+      if (done.length === 0 && open.length === 0) {
+        this.refreshWorkItems();
+        return; // everything already terminal — nothing to sync
+      }
+
+      if (auto) {
+        for (const c of done) {
+          const final = terminalStateForType(c.fields['System.WorkItemType']);
+          await this.services.ado.addComment(project, c.id,
+            `ADO Code: completed by delegated agent ${runLine}. Auto-transitioning to **${final}**.`);
+          await this.services.ado.updateWorkItem(project, c.id, [
+            { op: 'add', path: '/fields/System.State', value: final },
+          ]);
+        }
+        if (open.length === 0 && done.length > 0) {
+          // All children done → close the parent (routes through
+          // updateWorkItemState so the changelog completion flow fires).
+          const parent = await this.services.ado.getWorkItemDetail(project, run.workItemId);
+          await this.updateWorkItemState(run.workItemId, terminalStateForType(parent.fields['System.WorkItemType']));
+        } else if (open.length > 0) {
+          const openList = open.map(c => `#${c.id}`).join(', ');
+          await this.services.ado.addComment(project, run.workItemId,
+            `ADO Code: delegated agent ${runLine} finished, but ${open.length} child item(s) are not done: ${openList}. Parent left open.`);
+        }
+      } else {
+        await this.services.ado.addComment(project, run.workItemId,
+          `ADO Code: delegated agent ${runLine} finished. Delivery report: ${done.length} child item(s) done, ${open.length} not done. ` +
+          `Auto-completion is off — enable \`adoCode.agents.autoCompleteChildren\` to close them automatically.`);
+      }
+      this.refreshWorkItems();
+    } catch (err) {
+      vscode.window.showErrorMessage(`ADO Code: child completion sync failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   /** Task 24 (M-4): delegate to an external agent; result streams async via webview. */
   async delegateToAgent(prompt: string, agent?: string): Promise<string> {
     if (!this.agentRunner) throw new Error('agent runner not wired');
     if (!this.activeWorkItem) throw new Error('select a work item first');
 
-    // Check for child work items before delegating — warn the user and
-    // include child task context in the agent prompt so it knows about them.
-    let childTasks: Array<{ id: number; title: string; state: string; type: string }> = [];
-    try {
-      const project = this.activeProject();
-      const rawChildren = await this.services.ado.getChildWorkItems(project, this.activeWorkItem.id);
-      childTasks = rawChildren.map(c => ({
-        id: c.id,
-        title: c.fields['System.Title'] ?? '',
-        state: c.fields['System.State'] ?? '',
-        type: c.fields['System.WorkItemType'] ?? '',
-      }));
-    } catch {
-      // Non-critical: child task fetch failure should not block delegation
-    }
+    // Fetch the FULL descendant subtree (children, grandchildren, …) before
+    // delegating — warn the user and include them as a delivery checklist in
+    // the agent prompt so a parent delegation completes its children too.
+    const project = this.activeProject();
+    const childTasks = await this.fetchChildSubtree(project, this.activeWorkItem.id);
 
     if (childTasks.length > 0) {
       const childList = childTasks.map(c => `  #${c.id} [${c.state}] (${c.type}): ${c.title}`).join('\n');
       const choice = await this.requestConfirmation(
         'Child Tasks Found',
-        `This work item has ${childTasks.length} child task(s):\n${childList}\n\nThese will be included in the agent's context.`,
+        `This work item has ${childTasks.length} child task(s):\n${childList}\n\nThese will be included in the agent's delivery checklist.`,
         [
           { label: 'Include Child Tasks & Continue', value: 'include' },
           { label: 'Continue Without Child Tasks', value: 'skip' },
@@ -964,7 +1092,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       // If user chose 'skip', clear the child tasks list
       if (choice === 'skip') {
-        childTasks = [];
+        childTasks.length = 0;
       }
     }
 
@@ -973,22 +1101,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const memory = this.buildAgentMemoryContext();
     let finalPrompt = memory ? `${prompt}\n\n${wrapMemoryContext(memory)}` : prompt;
 
-    // Append child task context if available and user chose to include them
-    if (childTasks.length > 0) {
-      const childContext = [
-        '',
-        '## Child Tasks',
-        '',
-        'This work item has the following child tasks. You should implement ALL of them:',
-        '',
-        ...childTasks.map(c => `- #${c.id} [${c.state}] (${c.type}): ${c.title}`),
-        '',
-        'Complete all child tasks as part of this work item.',
-      ].join('\n');
-      finalPrompt += childContext;
+    // Cached repository + work-item understanding — the same block the chat
+    // system prompt gets, so a chat-delegated agent starts from the same
+    // picture even when the model's own prompt is terse.
+    const understanding = this.services.understanding?.toPromptString() ?? '';
+    if (understanding) {
+      finalPrompt += `\n\n${understanding}`;
     }
 
-    const run = await this.agentRunner.delegate(this.activeWorkItem.id, finalPrompt, agent as any, this.activeWorkItem.title);
+    // Append the child delivery checklist if the user chose to include them.
+    if (childTasks.length > 0) {
+      finalPrompt += `\n\n${buildChildChecklist(childTasks)}`;
+    }
+
+    const run = await this.agentRunner.delegate(
+      this.activeWorkItem.id,
+      finalPrompt,
+      agent as any,
+      this.activeWorkItem.title,
+      childTasks.map(c => c.id)
+    );
     // Show delegation start in chat so the user has a conversation trail.
     const agentDisplayName = agent || 'default agent';
     const workItemId = this.activeWorkItem.id;
@@ -1312,6 +1444,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // cleared chat must not keep auto-approving tools.
             clearSessionAutoApprovals();
             this.conversation = [];
+            this.resetConversationCaches();
             await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
@@ -1675,7 +1808,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const raw = await vscode.workspace.fs.readFile(uris[0]);
                 const text = Buffer.from(raw).toString('utf-8');
                 const parsed = parseSkillMd(text);
-                const partial = skillFromParsedMd(parsed, filePath);
+                const partial = skillFromParsedMd(parsed);
                 importedSkill = {
                   ...partial,
                   installed: true,
@@ -1695,7 +1828,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(skillMdPath));
                   const text = Buffer.from(raw).toString('utf-8');
                   const parsed = parseSkillMd(text);
-                  const partial = skillFromParsedMd(parsed, skillMdPath);
+                  const partial = skillFromParsedMd(parsed);
                   extractedSkill = {
                     ...partial,
                     installed: true,
@@ -1931,6 +2064,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'consent.harmlessAutoApprove', 'consent.harmlessAutoApproveSeconds', 'consent.autoApproveTools',
       'chat.showThinking', 'chat.showToolCalls',
       'ignore.dotAdoCode',
+      'understanding.enabled', 'understanding.autoSummarize',
       'mcp.servers',
     ];
     const result: Record<string, any> = {};
@@ -2244,7 +2378,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ]
       );
       if (initGit === 'yes') {
-        const { execFile: exec } = require('child_process');
+        const exec = execFile;
         await new Promise<void>((resolve, reject) => {
           exec('git', ['init'], { cwd: projectDir }, (err: any) => err ? reject(err) : resolve());
         });
@@ -2331,10 +2465,10 @@ ${name} = "${modName}:main"
     const dirs = ['app/Http/Controllers', 'app/Models', 'routes', 'config', 'database/migrations', 'database/seeders', 'resources/views', 'resources/css', 'public', 'tests/Feature', 'tests/Unit'];
     for (const d of dirs) fs.mkdirSync(path.join(dir, d), { recursive: true });
 
-    fs.writeFileSync(path.join(dir, 'artisan'), `#!/usr/bin/env php\n<?php\n\nuse Symfony\Component\Console\Input\ArgvInput;\n\ndefine('LARAVEL_START', microtime(true));\n\nrequire __DIR__.'/vendor/autoload.php';\n\n\$app = require_once __DIR__.'/bootstrap/app.php';\n\n\$kernel = \$app->make(Illuminate\Contracts\Console\Kernel::class);\n\n\$status = \$kernel->handle(\$input = new ArgvInput, new Symfony\Component\Console\Output\ConsoleOutput);\n\n\$kernel->terminate(\$input, \$status);\n`);
+    fs.writeFileSync(path.join(dir, 'artisan'), `#!/usr/bin/env php\n<?php\n\nuse Symfony\\Component\\Console\\Input\\ArgvInput;\n\ndefine('LARAVEL_START', microtime(true));\n\nrequire __DIR__.'/vendor/autoload.php';\n\n$app = require_once __DIR__.'/bootstrap/app.php';\n\n$kernel = $app->make(Illuminate\\Contracts\\Console\\Kernel::class);\n\n$status = $kernel->handle($input = new ArgvInput, new Symfony\\Component\\Console\\Output\\ConsoleOutput);\n\n$kernel->terminate($input, $status);\n`);
     fs.chmodSync(path.join(dir, 'artisan'), 0o755);
 
-    fs.writeFileSync(path.join(dir, 'routes', 'web.php'), `<?php\n\nuse Illuminate\Support\Facades\Route;\n\nRoute::get('/', function () {\n    return view('welcome');\n});\n`);
+    fs.writeFileSync(path.join(dir, 'routes', 'web.php'), `<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/', function () {\n    return view('welcome');\n});\n`);
     fs.writeFileSync(path.join(dir, '.gitignore'), '/vendor/\n.env\n.env.backup\n.phpunit.result.cache\nHomestead.json\nHomestead.yaml\nauth.json\nnpm-debug.log\nyarn-error.log\n/.fleet\n/.idea\n/.vscode\n');
   }
 
@@ -2413,7 +2547,7 @@ app.Run();
     if (choice !== 'init') return;
 
     try {
-      const { execFile: exec } = require('child_process');
+      const exec = execFile;
       await new Promise<void>((resolve, reject) => {
         exec('git', ['init'], { cwd: this.services.git.workspaceRoot }, (err: any) => err ? reject(err) : resolve());
       });
@@ -2488,54 +2622,7 @@ app.Run();
 
   /** Generate a basic AGENTS.md template from the workspace structure. */
   private async generateAgentsMd(root: string): Promise<void> {
-    const pkgPath = path.join(root, 'package.json');
-    let pkgName = 'project';
-    let pkgDesc = '';
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-      pkgName = pkg.name || 'project';
-      pkgDesc = pkg.description || '';
-    } catch { /* no package.json */ }
-
-    const hasTs = fs.existsSync(path.join(root, 'tsconfig.json'));
-    const hasTests = fs.existsSync(path.join(root, 'src/test')) || fs.existsSync(path.join(root, '__tests__')) || fs.existsSync(path.join(root, 'test'));
-    const hasLint = fs.existsSync(path.join(root, '.eslintrc')) || fs.existsSync(path.join(root, '.eslintrc.js')) || fs.existsSync(path.join(root, '.eslintrc.json'));
-
-    const lines = [
-      `# AGENTS.md — ${pkgName}`,
-      '',
-      '## What This Is',
-      pkgDesc || 'Project workspace.',
-      '',
-      '## Build & Test',
-    ];
-
-    if (hasTs) lines.push('- `npm run compile` — TypeScript compilation');
-    if (hasTests) lines.push('- `npm test` — Run test suite');
-    if (hasLint) lines.push('- `npm run lint` — Linting');
-    lines.push('- `npm run build` — Full build');
-    lines.push('');
-    lines.push('## Project Structure');
-
-    try {
-      const dirEntries = fs.readdirSync(root, { withFileTypes: true });
-      const dirs = dirEntries.filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules');
-      for (const d of dirs) {
-        lines.push(`- \`${d.name}/\` — project directory`);
-      }
-    } catch { /* ignore */ }
-
-    lines.push('');
-    lines.push('## Conventions');
-    lines.push('- Follow existing code patterns in the project');
-    lines.push('- Run tests before committing');
-    lines.push('- Check lint passes');
-    lines.push('');
-    lines.push('## What NOT to Do');
-    lines.push('- Do not commit without running tests');
-    lines.push('- Do not add unnecessary dependencies');
-
-    fs.writeFileSync(path.join(root, 'AGENTS.md'), lines.join('\n'), 'utf8');
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), buildAgentsMdContent(root), 'utf8');
   }
   /** H3: git pre-flight shared by startTask (Task 10) and startTaskWithAgent (Task 25).
    *  Returns true if it's safe to proceed. */
@@ -2610,6 +2697,7 @@ app.Run();
       tags: detail.fields['System.Tags'] || '',
       comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
     };
+    this.cacheActiveWorkItem(detail.fields['System.ChangedDate']);
 
     // Git pre-flight (repo check, clean tree, branch creation)
     const ok = await this.ensureGitReady(workItemId);
@@ -2652,26 +2740,17 @@ app.Run();
       tags: detail.fields['System.Tags'] || '',
       comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
     };
+    this.cacheActiveWorkItem(detail.fields['System.ChangedDate']);
 
-    // 3) Check for child work items — warn and include in agent context
-    let childTasks: Array<{ id: number; title: string; state: string; type: string }> = [];
-    try {
-      const rawChildren = await this.services.ado.getChildWorkItems(project, workItemId);
-      childTasks = rawChildren.map(c => ({
-        id: c.id,
-        title: c.fields['System.Title'] ?? '',
-        state: c.fields['System.State'] ?? '',
-        type: c.fields['System.WorkItemType'] ?? '',
-      }));
-    } catch {
-      // Non-critical: child task fetch failure should not block delegation
-    }
+    // 3) Fetch the full descendant subtree (children, grandchildren, …) —
+    //    warn and include them as a delivery checklist in the agent prompt.
+    const childTasks = await this.fetchChildSubtree(project, workItemId);
 
     if (childTasks.length > 0) {
       const childList = childTasks.map(c => `  #${c.id} [${c.state}] (${c.type}): ${c.title}`).join('\n');
       const choice = await this.requestConfirmation(
         'Child Tasks Found',
-        `This work item has ${childTasks.length} child task(s):\n${childList}\n\nThese will be included in the agent's context.`,
+        `This work item has ${childTasks.length} child task(s):\n${childList}\n\nThese will be included in the agent's delivery checklist.`,
         [
           { label: 'Include Child Tasks & Continue', value: 'include' },
           { label: 'Continue Without Child Tasks', value: 'skip' },
@@ -2679,49 +2758,52 @@ app.Run();
         ]
       );
       if (choice === 'cancel' || !choice) return;
-      if (choice === 'skip') childTasks = [];
+      if (choice === 'skip') childTasks.length = 0;
     }
 
     // 4) Build the prompt — includes the thread, so the agent gets the
     //    clarified spec the developer collected via Task 28
     const branch = await this.services.git.getCurrentBranch();
-    // Inject AGENTS.md as project context so all agents (including Pi,
-    // which doesn't auto-read project files) understand the codebase.
+    // Inject the cached repository + work-item understanding so all agents
+    // (including Pi, which doesn't auto-read project files) understand the
+    // codebase. When understanding is available, it supersedes the raw
+    // AGENTS.md dump (the facts/summary sections already cover it).
+    const understanding = this.services.understanding?.toPromptString() ?? '';
     let projectContext: string | undefined;
-    try {
-      const agentsMd = path.join(this.services.git.workspaceRoot, 'AGENTS.md');
-      projectContext = fs.readFileSync(agentsMd, 'utf8');
-    } catch {
-      // No AGENTS.md — agents still get the work item context.
+    if (!understanding) {
+      try {
+        const agentsMd = path.join(this.services.git.workspaceRoot, 'AGENTS.md');
+        projectContext = fs.readFileSync(agentsMd, 'utf8');
+      } catch {
+        // No AGENTS.md — agents still get the work item context.
+      }
     }
     let prompt = buildAgentPrompt(
       this.activeWorkItem,
       branch ?? 'unknown',
       projectContext,
-      this.buildAgentMemoryContext()
+      this.buildAgentMemoryContext(),
+      understanding
     );
 
-    // Append child task context if available and user chose to include them
+    // Append the child delivery checklist if the user chose to include them.
     if (childTasks.length > 0) {
-      const childContext = [
-        '',
-        '## Child Tasks',
-        '',
-        'This work item has the following child tasks. You should implement ALL of them:',
-        '',
-        ...childTasks.map(c => `- #${c.id} [${c.state}] (${c.type}): ${c.title}`),
-        '',
-        'Complete all child tasks as part of this work item.',
-      ].join('\n');
-      prompt += childContext;
+      prompt += `\n\n${buildChildChecklist(childTasks)}`;
     }
 
     // 5) Delegate (Task 24) — status + result stream back to the webview.
     // H-3 fix: the runner is wired via setAgentRunner (Task 24), NOT on Services.
     // Pass the work item TITLE so the worktree branch is slugged from the ADO
     // subject (same as delegateToAgent), not from the prompt's first line.
+    // Pass childIds so the post-run completion sync knows which items to close.
     if (!this.agentRunner) throw new Error('agent runner not wired yet (Task 24)');
-    await this.agentRunner.delegate(workItemId, prompt, agent as any, this.activeWorkItem?.title);
+    await this.agentRunner.delegate(
+      workItemId,
+      prompt,
+      agent as any,
+      this.activeWorkItem?.title,
+      childTasks.map(c => c.id)
+    );
   }
 
   /** Task 13: real detail fetch + thread → activeWorkItem → system prompt. */
@@ -2737,6 +2819,7 @@ app.Run();
         tags: detail.fields['System.Tags'] || '',
         comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
       };
+      this.cacheActiveWorkItem(detail.fields['System.ChangedDate']);
       this.postMessage({ type: 'workItemDetail', item: {
         id: this.activeWorkItem.id,
         title: this.activeWorkItem.title,
@@ -2760,7 +2843,23 @@ app.Run();
   /** Clear the active work item selection. */
   clearActiveWorkItem(): void {
     this.activeWorkItem = undefined;
+    this.services.understanding?.clearWorkItem();
     this.postMessage({ type: 'workItemDetail', item: null });
+  }
+
+  /**
+   * Push the current active work item into the repository-understanding cache
+   * (keyed by System.ChangedDate, so unchanged re-selections are no-ops).
+   * Defensive: understanding is best-effort and must never break selection.
+   */
+  private cacheActiveWorkItem(changedDate?: string): void {
+    try {
+      if (this.activeWorkItem) {
+        this.services.understanding?.setWorkItem(this.activeWorkItem, changedDate);
+      }
+    } catch {
+      // Understanding cache failures are non-critical.
+    }
   }
 
   /** Task 28: full-detail review — fetch work item + discussion, post both to the webview. */
@@ -2777,6 +2876,7 @@ app.Run();
         tags: detail.fields['System.Tags'] || '',
         comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
       };
+      this.cacheActiveWorkItem(detail.fields['System.ChangedDate']);
       this.postMessage({
         type: 'workItemDetail',
         item: {
@@ -2854,6 +2954,10 @@ app.Run();
     // prompt picks up the clarification Q&A that just arrived.
     if (this.activeWorkItem?.id === workItemId) {
       this.activeWorkItem.comments = comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate }));
+      // The thread changed — refresh the cached work item context too. The
+      // newest comment's date serves as the fingerprint (ADO's ChangedDate
+      // moved with the reply, but we don't refetch the detail here).
+      this.cacheActiveWorkItem(comments[0]?.createdDate);
     }
   }
 
@@ -2896,7 +3000,8 @@ app.Run();
     const sessions = this.getSessions();
     const session = sessions.find(s => s.id === activeId);
     if (!session) return;
-    session.messages = this.conversation.slice(-50).map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)' }));
+    session.messages = trimConversationToPairs(this.conversation, ChatViewProvider.MAX_PERSISTED_PAIRS)
+      .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)' }));
     // Auto-name from first user message if still default
     if (session.name === 'New Session') {
       const firstUser = session.messages.find(m => m.role === 'user');
@@ -2924,13 +3029,15 @@ app.Run();
     const session = sessions.find(s => s.id === sessionId);
     if (!session) return;
     this.conversation = session.messages.map(m => ({ role: m.role as LlmMessage['role'], content: m.content }));
+    this.resetConversationCaches();
     await this.setActiveSessionId(sessionId);
     this.postMessage({ type: 'historyRestored', messages: this.conversation });
   }
 
   /** Backward-compatible wrapper for extension.ts / tests that pass raw history. */
   public restoreConversation(history: LlmMessage[]): void {
-    this.conversation = history.slice(-50);
+    this.conversation = trimConversationToPairs(history, ChatViewProvider.MAX_PERSISTED_PAIRS);
+    this.resetConversationCaches();
     this.postMessage({ type: 'historyRestored', messages: this.conversation });
   }
 
@@ -2947,6 +3054,7 @@ app.Run();
     await this.saveSessions(sessions);
     await this.setActiveSessionId(session.id);
     this.conversation = [];
+    this.resetConversationCaches();
     // A new session is a fresh chat — "Allow for Session" approvals from the
     // previous session must not leak into it.
     clearSessionAutoApprovals();
@@ -2998,6 +3106,12 @@ app.Run();
 
   /** Trim the conversation using ContextManager's priority-based truncation. */
   private trimConversation(): void {
+    // B1: keep the budget in sync with the ACTIVE model's window. setMaxTokens
+    // is otherwise only updated when the model picker's /models fetch returns
+    // live context data (which many gateways omit) — on a 64k model the
+    // hardcoded 128k default would let the conversation overflow the API.
+    const model = llmConfigFromSettings(this.executor?.mode).model;
+    this.contextManager.setMaxTokens(estimateContextWindow({ apiModelId: model }, this.lastModelInfos));
     // Track current usage (including per-request system prompt + tool schemas)
     this.syncContextOverhead();
     this.contextManager.trackMessages(this.conversation);
@@ -3015,6 +3129,68 @@ app.Run();
     this.updateTokenStatusBar();
   }
 
+  /**
+   * A3: summarize older messages via LLM when the conversation exceeds the
+   * condenser threshold (75% of the context window) — run BEFORE priority
+   * truncation so context is preserved (summarized) rather than silently
+   * dropped. Fails gracefully: on error the conversation is left uncondensed
+   * and trimConversation() (80% hard drop) remains the safety net.
+   */
+  private async maybeCondenseConversation(): Promise<void> {
+    if (!this.condenser.shouldCondense(this.conversation)) return;
+    logger.debug('Chat: context full — triggering conversation condensation');
+    try {
+      const client = this.llmClient();
+      let summaryText = '';
+      this.conversation = await this.condenser.condense(this.conversation, async (text) => {
+        let result = '';
+        for await (const chunk of client.streamChat([
+          { role: 'system', content: 'Summarize the following conversation concisely. Preserve: file paths changed, key decisions, errors encountered, and current task state. Output only the summary, no preamble.' },
+          { role: 'user', content: text },
+        ])) {
+          result += chunk.content;
+        }
+        summaryText = result;
+        return result;
+      });
+      logger.debug(`Chat: condensation complete — ${this.conversation.length} messages remaining`);
+      // Distill the condensation into the durable repository-understanding
+      // knowledge store, so the learning survives session close and reaches
+      // new chat sessions AND delegated agents.
+      if (summaryText.trim()) {
+        try {
+          this.services.understanding?.appendKnowledge(`[Conversation condensation]\n${summaryText.trim()}`);
+        } catch {
+          // Knowledge capture is best-effort.
+        }
+      }
+    } catch (err) {
+      logger.debug('Chat: condensation failed, continuing with uncondensed conversation', err);
+    }
+  }
+
+  /**
+   * B3: reconcile the conversation when a turn is stopped (Stop button or a
+   * newer message replacing it), so the conversation never keeps a dangling
+   * unanswered user message:
+   * - still the latest turn → append a marker so alternation stays clean
+   *   (consecutive user messages get merged on Anthropic and look stale);
+   * - superseded by a newer message → drop THIS turn's user message (the new
+   *   turn owns the conversation from here on). Object identity keeps the
+   *   splice correct even if condensation re-indexed the array.
+   */
+  private async reconcileStoppedTurn(abort: AbortController, pushedUser: LlmMessage): Promise<void> {
+    if (this.llmAbort === abort) {
+      const stopped = '(generation stopped)';
+      this.conversation.push({ role: 'assistant', content: stopped });
+      this.postMessage({ type: 'assistantMessage', content: stopped, done: true });
+    } else {
+      const idx = this.conversation.indexOf(pushedUser);
+      if (idx >= 0) this.conversation.splice(idx, 1);
+    }
+    await this.persistConversation();
+  }
+
   /** Update the token-usage status bar with accurate token counts. */
   private updateTokenStatusBar(): void {
     if (!this.tokenStatusBar) return;
@@ -3024,7 +3200,11 @@ app.Run();
       const heuristic = countMessageTokens(this.conversation) + SYSTEM_PROMPT_OVERHEAD_TOKENS + toolTokens;
       this.renderTokenStatus(heuristic);
       // Kick off a throttled provider-native count for accuracy (fire-and-forget).
-      if (getSettings().useNativeTokenCounting) {
+      // A1: Anthropic's /count_tokens endpoint is free — always on. OpenAI-
+      // compatible gateways bill a tiny request per count (the whole prompt),
+      // so native counting there is opt-in via adoCode.llm.useNativeTokenCounting.
+      const settings = getSettings();
+      if (settings.useNativeTokenCounting || settings.llmProvider === 'anthropic') {
         this.maybeNativeTokenCount(heuristic, toolTokens);
       }
     } catch {
@@ -3058,7 +3238,12 @@ app.Run();
     const now = Date.now();
     if (now - this.nativeTokenCount.at < ChatViewProvider.NATIVE_COUNT_INTERVAL_MS) return;
     this.nativeTokenCount.at = now; // coarse in-flight throttle
-    void this.llmClient().countTokens(this.conversation).then((native) => {
+    // Count the conversation WITH the per-turn system prompt — providers bill
+    // it on every request, so leaving it out undercounts the status bar.
+    const counted: LlmMessage[] = this.lastSystemPrompt
+      ? [{ role: 'system', content: this.lastSystemPrompt }, ...this.conversation]
+      : this.conversation;
+    void this.llmClient().countTokens(counted).then((native) => {
       if (typeof native !== 'number' || native < 0) return; // provider has no native counting
       this.nativeTokenCount.tokens = native;
       if (this.tokenStatusBar) this.renderTokenStatus(native + toolTokens);
@@ -3091,8 +3276,11 @@ app.Run();
       return; // do not send slash command to the LLM
     }
 
-    // Task 16: inject active file + selection context into the user message
-    const contextBlock = this.buildEditorContext();
+    // Task 16: inject active file + selection context into the user message.
+    // A2: only when the editor context CHANGED since the last turn — the
+    // model already saw the previous context in history, so re-sending it
+    // verbatim just burns tokens.
+    const contextBlock = this.buildEditorContextCached();
 
     // Build LLM content: string or ContentBlockParam[] if images present
     let llmContent: string | ContentBlockParam[];
@@ -3148,42 +3336,37 @@ app.Run();
       this.postMessage({ type: 'error', message: 'Tool executor not wired — run the extension from a fresh activation.' });
       return;
     }
-    const budget = getSettings().actToolBudget;
+    // Iteration budget: caps the agentic tool loop's model round-trips
+    // for this turn (one iteration may run a batch of parallel tool calls).
+    const maxIterations = getSettings().actMaxIterations;
     // Task 26: multi-turn — append this turn to the persisted conversation.
     // Session tracking: auto-create the session on the FIRST message so the
     // conversation is actually persisted (and the history list stops showing
     // "No sessions yet" for users who never clicked New Session).
     await this.ensureSession(content);
-    this.conversation.push({ role: 'user', content: llmContent });
+    const pushedUser: LlmMessage = { role: 'user', content: llmContent };
+    this.conversation.push(pushedUser);
+    // A3: condense FIRST (LLM summary preserves context), then hard-truncate
+    // only if still over budget. The old order dropped messages the summarizer
+    // would have kept, then spent a paid call summarizing what was left.
+    await this.maybeCondenseConversation();
     this.trimConversation();
-
-    // Condensation: when context is getting full, summarize older messages
-    // via LLM to free budget without losing important context.
-    if (this.condenser.shouldCondense(this.conversation)) {
-      logger.debug('Chat: context full — triggering conversation condensation');
-      try {
-        const client = this.llmClient();
-        this.conversation = await this.condenser.condense(this.conversation, async (text) => {
-          let result = '';
-          for await (const chunk of client.streamChat([
-            { role: 'system', content: 'Summarize the following conversation concisely. Preserve: file paths changed, key decisions, errors encountered, and current task state. Output only the summary, no preamble.' },
-            { role: 'user', content: text },
-          ])) {
-            result += chunk.content;
-          }
-          return result;
-        });
-        logger.debug(`Chat: condensation complete — ${this.conversation.length} messages remaining`);
-      } catch (err) {
-        logger.debug('Chat: condensation failed, continuing with uncondensed conversation', err);
-      }
-    }
 
     // Build system prompt — mode-aware with tool filtering, environment context,
     // and memory injection.
     const { getModeBySlug } = await import('../llm/modes');
     const currentMode = getModeBySlug(mode) ?? (await import('../llm/modes')).getDefaultMode();
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+
+    // Repository understanding: refresh cheap (fingerprint check) so a branch
+    // switch or AGENTS.md edit lands in the NEXT turn, then inject the cached
+    // block. The LLM summary (if configured) regenerates async — never blocks.
+    try {
+      await this.services.understanding?.ensureFresh();
+    } catch {
+      // Understanding refresh is best-effort — never block a chat turn.
+    }
+    const understandingPrompt = this.services.understanding?.toPromptString() ?? '';
 
     logger.debug(`Chat: building system prompt with ${this.services.memory.getAll().length} user memories, ${this.services.workspaceMemory.list().length} workspace memories`);
     const systemPromptContent = generateSystemPrompt({
@@ -3192,6 +3375,7 @@ app.Run();
       os: process.platform,
       memoryPrompt: this.services.memory.toPromptString(),
       workspaceMemoryPrompt: this.services.workspaceMemory.toPromptString(),
+      understanding: understandingPrompt,
       customInstructions: this.activeWorkItem
         ? [
             `Current work item: #${this.activeWorkItem.id} - ${this.activeWorkItem.title}`,
@@ -3204,6 +3388,7 @@ app.Run();
           ].join('\n')
         : undefined,
     });
+    this.lastSystemPrompt = systemPromptContent;
     const messages: LlmMessage[] = [
       { role: 'system', content: systemPromptContent },
       ...this.conversation,
@@ -3216,7 +3401,7 @@ app.Run();
       // Snapshot chat-display settings once: what reaches the webview (and
       // whether it carries tool details) is decided here, before the loop.
       const { chatShowThinking, chatShowToolCalls } = getSettings();
-      const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, budget, (update) => {
+      const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, maxIterations, (update) => {
         // Live progress → chat webview: surface the AI's reasoning AND each
         // tool call as it runs (running → completed when the result lands),
         // so the user sees activity instead of a silent "Thinking…" until
@@ -3272,15 +3457,21 @@ app.Run();
         `conversation: ${countMessageTokens(this.conversation).toLocaleString()} tokens, ` +
         `per-request overhead (system+tools): ${this.contextOverhead().toLocaleString()} tokens`
       );
-      this.postMessage({ type: 'assistantMessage', content: result.text, done: true });
-      this.conversation.push({ role: 'assistant', content: result.text });
+      // A4: the main model appends a ```choice fence when its answer offers
+      // the user a choice (system-prompt output-format instruction). Strip
+      // the fence from everything the user sees or the conversation persists,
+      // and use it as the choice prompt — no second model call needed.
+      const fencedChoice = parseChoiceFence(result.text);
+      const cleanText = stripChoiceFence(result.text);
+      this.postMessage({ type: 'assistantMessage', content: cleanText, done: true });
+      this.conversation.push({ role: 'assistant', content: cleanText });
       this.trimConversation();
       await this.persistConversation();
-      if (mode === 'plan') this.postMessage({ type: 'planReady', plan: result.text });
+      if (mode === 'plan') this.postMessage({ type: 'planReady', plan: cleanText });
 
       // Detect proposed tasks from generate-tasks flow — show analysis in chat,
       // open editor tab with checkboxes for user review before creating in ADO.
-      const proposedTasksResult = this.parseProposedTasks(result.text);
+      const proposedTasksResult = this.parseProposedTasks(cleanText);
       if (proposedTasksResult && this.activeWorkItem) {
         const { analysis, tasks } = proposedTasksResult;
         // Show the analysis portion in chat (strip the JSON block)
@@ -3293,16 +3484,17 @@ app.Run();
         return; // Skip choice prompt detection for generate-tasks
       }
 
-      // Detect AI choice prompts and show as inline options — regex fast
-      // path first (free); when it misses but the response still ends on a
-      // question, ask the (optionally cheaper) model to extract a structured
-      // prompt so natural-language offers surface as clickable options.
-      let choicePrompt = parseChoicePrompt(result.text);
+      // Detect AI choice prompts and show as inline options: 1) the main
+      // model's ```choice fence (free — see above), 2) regex fast path
+      // (free); when both miss but the response still ends on a question,
+      // ask the (optionally cheaper) model to extract a structured prompt so
+      // natural-language offers surface as clickable options.
+      let choicePrompt = fencedChoice ?? parseChoicePrompt(cleanText);
       if (!choicePrompt && getSettings().llmChoiceDetectionModel !== 'off') {
         try {
           const cfg = llmConfigFromSettings(this.executor?.mode);
           const model = getSettings().llmChoiceDetectionModel || cfg.model;
-          choicePrompt = await detectChoicePrompt(result.text, new LlmClient({ ...cfg, model }));
+          choicePrompt = await detectChoicePrompt(cleanText, new LlmClient({ ...cfg, model }));
         } catch (err) {
           logger.debug('Chat: choice detection failed', err);
         }
@@ -3317,7 +3509,10 @@ app.Run();
         });
       }
     } catch (err) {
-      if (abort.signal.aborted) return;
+      if (abort.signal.aborted) {
+        await this.reconcileStoppedTurn(abort, pushedUser);
+        return;
+      }
       // INLINE resilience: the endpoint may not support tool calling (some
       // OpenAI-compatible gateways 400 on `tools` for a non-tool model). Fall
       // back to plain streaming chat for this turn so inline mode keeps
@@ -3326,12 +3521,17 @@ app.Run();
         try {
           const text = await this.streamAssistantTurn(messages, abort);
           if (text) {
-            this.conversation.push({ role: 'assistant', content: text });
+            // Strip any ```choice fence the model appended — it must not be
+            // persisted or re-sent; the webview suppresses it at render time.
+            this.conversation.push({ role: 'assistant', content: stripChoiceFence(text) });
             this.trimConversation();
           }
           await this.persistConversation();
         } catch (streamErr) {
-          if (abort.signal.aborted) return;
+          if (abort.signal.aborted) {
+            await this.reconcileStoppedTurn(abort, pushedUser);
+            return;
+          }
           const message = streamErr instanceof Error ? streamErr.message : String(streamErr);
           this.postMessage({ type: 'error', message });
         }
@@ -3382,10 +3582,49 @@ app.Run();
     parts.push(`[Context: file: ${vscode.workspace.asRelativePath(doc.uri)}, language: ${doc.languageId}]`);
     if (!editor.selection.isEmpty) {
       parts.push(`[Selected code:]`);
-      parts.push(doc.getText(editor.selection));
+      let selected = doc.getText(editor.selection);
+      // A2: cap oversized selections so a huge highlight can't bloat every
+      // turn's request (matches the attach-files truncation policy).
+      const MAX_SELECTION_CHARS = 8000;
+      if (selected.length > MAX_SELECTION_CHARS) {
+        selected = selected.slice(0, MAX_SELECTION_CHARS) + `\n… [truncated: selection exceeds ${MAX_SELECTION_CHARS} chars]`;
+      }
+      parts.push(selected);
       parts.push(`[/Selected code]`);
     }
     return parts.join('\n');
+  }
+
+  /**
+   * A2: editor context for the AUTOMATIC per-turn injection, deduplicated
+   * against the last auto-injected context. Key = file URI + document version
+   * + selection anchors: an unchanged file/selection is NOT re-sent (the model
+   * still has the previous context in conversation history), so follow-up
+   * turns stop burning tokens on the same block. Returns null when unchanged
+   * or when no editor is active. The explicit "@ add context" toolbar path
+   * calls buildEditorContext() directly and always gets the current context.
+   */
+  private buildEditorContextCached(): string | null {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return null;
+    const doc = editor.document;
+    const sel = editor.selection;
+    const key = [
+      doc.uri.toString(),
+      doc.version,
+      `${sel.anchor.line}:${sel.anchor.character}`,
+      `${sel.active.line}:${sel.active.character}`,
+    ].join('|');
+    if (key === this.lastAutoContextKey) return null;
+    this.lastAutoContextKey = key;
+    return this.buildEditorContext();
+  }
+
+  /** Reset per-conversation caches (editor-context dedup key, system-prompt
+   *  snapshot for native counting) when the conversation is cleared/swapped. */
+  private resetConversationCaches(): void {
+    this.lastAutoContextKey = undefined;
+    this.lastSystemPrompt = undefined;
   }
 
   /**
@@ -3499,6 +3738,7 @@ app.Run();
         this.consentBroker.rejectAll();
         this.confirmBroker.rejectAll();
         this.conversation = [];
+        this.resetConversationCaches();
         await this.persistConversation();
         this.postMessage({ type: 'historyRestored', messages: [] });
         this.postMessage({ type: 'loading', loading: false });
@@ -3525,6 +3765,7 @@ app.Run();
         await this.saveSessions([]);
         await this.setActiveSessionId('');
         this.conversation = [];
+        this.resetConversationCaches();
         this.postMessage({ type: 'historyRestored', messages: [] });
         this.postMessage({ type: 'loading', loading: false });
         this.sendSessionList();

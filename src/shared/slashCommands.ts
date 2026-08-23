@@ -38,18 +38,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 ];
 
 /**
- * Return slash commands matching a partial query string.
- * Matches against the command name — case-insensitive prefix match.
- *
- * @param query - The text after the leading `/` (e.g. "st" matches "status")
- * @returns Array of matching SlashCommand objects, ordered by SLASH_COMMANDS
- */
-export function matchCommands(query: string): SlashCommand[] {
-  const lower = query.toLowerCase();
-  return SLASH_COMMANDS.filter(cmd => cmd.name.startsWith(lower));
-}
-
-/**
  * Parse a raw user message into a structured slash command invocation.
  *
  * @param text - The full user message (e.g. "/status Done" or "/clear")

@@ -1,7 +1,7 @@
 // Messages from Webview → Extension Host
 // Task 24: webview copy of AgentRun/AgentCapability (host imports from
 // src/agents/types; the webview project can't resolve that path).
-export type AgentName = 'claude' | 'codex' | 'opencode' | 'hermes' | 'pi' | 'openclaw' | 'aider' | 'gemini' | 'cursor-agent';
+export type AgentName = 'claude' | 'codex' | 'opencode' | 'hermes' | 'pi' | 'openclaw' | 'aider' | 'gemini' | 'cursor-agent' | 'dsh';
 
 export interface AgentCapability {
   name: AgentName;
@@ -215,7 +215,8 @@ export interface ExtensionConfig {
   llmModel: string;
   mode: 'inline' | 'plan' | 'act' | 'yolo';
   agentsEnabled: string[];
-  actToolBudget: number;
+  /** Max agentic loop iterations per chat turn (config key 'act.toolBudget' — legacy name kept). */
+  actMaxIterations: number;
   actTerminalAllowlist: string[];
   gitRequireGitRepo: boolean;
   gitCreateBranchOnTaskStart: boolean;

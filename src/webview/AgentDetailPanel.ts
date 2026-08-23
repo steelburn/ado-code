@@ -62,8 +62,6 @@ export class AgentDetailPanel {
         ? '✓ Yes'
         : '✗ No'
       : '—';
-    const sessionColor =
-      spec && spec.supportsSession ? '#4caf50' : '#f44336';
 
     const oneShotArgs = spec
       ? AgentDetailPanel.escapeHtml(spec.oneShot().join(' '))

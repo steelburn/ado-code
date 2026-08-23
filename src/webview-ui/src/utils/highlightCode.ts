@@ -59,27 +59,12 @@ const BASH_KEYWORDS = new Set([
   'dirs', 'pwd', 'export', 'env', 'true', 'false',
 ]);
 
-// JSON keywords
-const JSON_KEYWORDS = new Set(['true', 'false', 'null']);
-
 // CSS keywords
 const CSS_KEYWORDS = new Set([
   'important', 'inherit', 'initial', 'unset', 'revert', 'none', 'auto',
   'block', 'inline', 'flex', 'grid', 'absolute', 'relative', 'fixed',
   'sticky', 'static', 'center', 'left', 'right', 'top', 'bottom',
   'normal', 'bold', 'italic', 'transparent',
-]);
-
-// HTML tags (for highlighting)
-const HTML_TAGS = new Set([
-  'html', 'head', 'body', 'div', 'span', 'p', 'a', 'img', 'ul', 'ol', 'li',
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'tr', 'td', 'th', 'thead',
-  'tbody', 'tfoot', 'form', 'input', 'button', 'select', 'option', 'textarea',
-  'label', 'script', 'style', 'link', 'meta', 'title', 'base', 'br', 'hr',
-  'pre', 'code', 'blockquote', 'section', 'article', 'aside', 'nav', 'header',
-  'footer', 'main', 'figure', 'figcaption', 'details', 'summary', 'audio',
-  'video', 'source', 'canvas', 'svg', 'path', 'circle', 'rect', 'text',
-  'strong', 'em', 'small', 'sub', 'sup', 'del', 'ins', 'mark',
 ]);
 
 /**
@@ -296,7 +281,7 @@ function highlightBash(code: string): string {
   }
 
   // Variables: $var, ${var}, $((expr))
-  const variableRegex = /\$[({]?[a-zA-Z0-9_]+[})]?|\$\([^\)]*\)/g;
+  const variableRegex = /\$[({]?[a-zA-Z0-9_]+[})]?|\$\([^)]*\)/g;
   while ((match = variableRegex.exec(code)) !== null) {
     markOccupied(match.index, match.index + match[0].length, HLJS_NUMBER);
   }

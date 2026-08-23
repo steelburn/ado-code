@@ -14,6 +14,7 @@ export function agentDisplayName(agent: string): string {
     'aider': 'Aider',
     'gemini': 'Gemini',
     'cursor-agent': 'Cursor',
+    'dsh': 'DeepSeek Harness',
   };
   return names[agent] ?? agent;
 }
@@ -60,7 +61,7 @@ export class AgentProgressPanel {
    * Open (or reveal) the live progress panel for a run. `initialOutput` is the
    * accumulated output so far (backfill for panels opened mid-run).
    */
-  static show(context: vscode.ExtensionContext, run: AgentRun, initialOutput?: string): void {
+  static show(_context: vscode.ExtensionContext, run: AgentRun, initialOutput?: string): void {
     const panelId = AgentProgressPanel.key(run.id);
     const existing = AgentProgressPanel.panels.get(panelId);
     const summaryHtml = run.summary ? renderMarkdown(run.summary) : undefined;

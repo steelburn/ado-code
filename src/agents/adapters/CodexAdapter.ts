@@ -1,6 +1,6 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
-import { AgentName, AgentRun } from '../types';
+import { AgentRun } from '../types';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;

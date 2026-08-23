@@ -49,7 +49,7 @@ export interface AdoWorkItem {
   };
 }
 
-export interface AdoWorkItemReference {
+interface AdoWorkItemReference {
   id: number;
   url: string;
 }

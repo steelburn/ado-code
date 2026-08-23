@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { AdoClient, parentIdOf } from '../../../ado/client';
+import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../../../ado/client';
 
 suite('AdoClient', () => {
   test('constructs with organization and PAT', () => {
@@ -254,6 +254,55 @@ suite('AdoClient.expandHierarchy', () => {
     const expanded = await client.expandHierarchy('Proj', [db.get(2), db.get(3)]);
     const ids = expanded.map(w => w.id).sort((a, b) => a - b);
     assert.deepStrictEqual(ids, [1, 2, 3]);
+  });
+
+  suite('AdoClient.getDescendantWorkItems (parent delegation subtree)', () => {
+    test('returns the whole subtree below the parent, excluding the parent and unrelated items', async () => {
+      const db = new Map<number, any>([
+        [1, makeItem(1, undefined, 'Feature')],
+        [2, makeItem(2, 1, 'User Story')],
+        [3, makeItem(3, 1, 'User Story')],
+        [4, makeItem(4, 2, 'Task')],
+        [5, makeItem(5, 3, 'Task')],
+        [99, makeItem(99, undefined, 'Feature')], // unrelated — must be excluded
+      ]);
+      mockHierarchyFetch(db);
+      const client = new AdoClient('org', 'pat');
+      const descendants = await client.getDescendantWorkItems('Proj', 1);
+      const ids = descendants.map(w => w.id);
+      assert.deepStrictEqual(ids, [2, 3, 4, 5], 'recursive subtree, id-ordered, no parent, no unrelated');
+    });
+
+    test('returns [] when the parent does not exist', async () => {
+      const db = new Map<number, any>([[1, makeItem(1, undefined, 'Feature')]]);
+      mockHierarchyFetch(db);
+      const client = new AdoClient('org', 'pat');
+      const descendants = await client.getDescendantWorkItems('Proj', 404);
+      assert.deepStrictEqual(descendants, []);
+    });
+  });
+
+  suite('Work item terminal states (auto-complete helpers)', () => {
+    test('isTerminalState recognizes Done/Closed/Resolved/Removed', () => {
+      assert.strictEqual(isTerminalState('To Do'), false);
+      assert.strictEqual(isTerminalState('In Progress'), false);
+      assert.strictEqual(isTerminalState('Active'), false);
+      assert.strictEqual(isTerminalState('Closed'), true);
+      assert.strictEqual(isTerminalState('Done'), true);
+      assert.strictEqual(isTerminalState('Resolved'), true);
+      assert.strictEqual(isTerminalState('Removed'), true);
+      assert.strictEqual(isTerminalState(undefined), false);
+    });
+
+    test('terminalStateForType maps Task/Bug/Impediment to Closed, the rest to Resolved', () => {
+      assert.strictEqual(terminalStateForType('Task'), 'Closed');
+      assert.strictEqual(terminalStateForType('Bug'), 'Closed');
+      assert.strictEqual(terminalStateForType('Impediment'), 'Closed');
+      assert.strictEqual(terminalStateForType('User Story'), 'Resolved');
+      assert.strictEqual(terminalStateForType('Feature'), 'Resolved');
+      assert.strictEqual(terminalStateForType('Epic'), 'Resolved');
+      assert.strictEqual(terminalStateForType('Product Backlog Item'), 'Resolved');
+    });
   });
 
   test('falls back to per-parent queries when IN is rejected by the org', async () => {

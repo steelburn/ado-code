@@ -47,7 +47,7 @@ export function parseSkillMd(raw: string): ParsedSkillMd {
  * Convert a ParsedSkillMd into a Skill object suitable for SkillManager.
  * Fills in defaults for missing fields.
  */
-export function skillFromParsedMd(parsed: ParsedSkillMd, filePath?: string): Partial<Skill> {
+export function skillFromParsedMd(parsed: ParsedSkillMd): Partial<Skill> {
   const fm = parsed.frontmatter;
   return {
     id: slugify(String(fm.id || fm.name || 'imported-skill')),

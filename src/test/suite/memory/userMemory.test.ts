@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { UserMemory, MemoryCategory } from '../../../memory/UserMemory';
+import { UserMemory } from '../../../memory/UserMemory';
 
 /**
  * Mock VS Code globalState — in-memory Map that mimics get/update.
@@ -30,7 +30,7 @@ suite('UserMemory', () => {
   });
 
   test('set and getAll: creates entry', () => {
-    const { memory, store } = createMemory();
+    const { memory } = createMemory();
     memory.set('code_style', 'preference', 'Use 2-space indentation');
     const entries = memory.getAll();
     assert.strictEqual(entries.length, 1);

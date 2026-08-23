@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { DEFAULT_MAX_ITERATIONS } from '../shared/agenticLimits';
 
 export type LlmProvider = 'openai' | 'anthropic';
 
@@ -23,7 +24,8 @@ export interface AdoCodeSettings {
   /** Per-mode reasoning effort — keys: inline, plan, act, yolo; values: low, medium, high. */
   llmModeReasoningEffort: Record<string, string>;
   mode: 'inline' | 'plan' | 'act';
-  actToolBudget: number;
+  /** Max agentic loop iterations per chat turn (config key 'act.toolBudget' — legacy name kept). */
+  actMaxIterations: number;
   actTerminalAllowlist: string[];
   gitRequireGitRepo: boolean;
   gitCreateBranchOnTaskStart: boolean;
@@ -47,17 +49,22 @@ export interface AdoCodeSettings {
   chatShowToolCalls: boolean;
   /** Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) for status-bar accuracy. */
   useNativeTokenCounting: boolean;
+  /** Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat + agent handoffs. */
+  understandingEnabled: boolean;
+  /** Regenerate the LLM repository summary automatically when the repo fingerprint changes. */
+  understandingAutoSummarize: boolean;
 }
 
 export function getSettings(): AdoCodeSettings {
   const config = vscode.workspace.getConfiguration('adoCode');
+  const llmProvider = config.get<LlmProvider>('llmProvider', 'openai');
   return {
     organizations: config.get<Array<{ name: string; url: string; project: string }>>('organizations', []),
     adoOrganization: config.get<string>('adoOrganization', ''),
     adoProject: config.get<string>('adoProject', ''),
     adoServerUrl: config.get<string>('adoServerUrl', ''),
     adoPat: config.get<string>('adoPat', ''),
-    llmProvider: config.get<LlmProvider>('llmProvider', 'openai'),
+    llmProvider,
     llmApiUrl: config.get<string>('llmApiUrl', 'https://api.openai.com/v1'),
     llmApiKey: config.get<string>('llmApiKey', ''),
     llmModel: config.get<string>('llmModel', 'gpt-4o'),
@@ -67,7 +74,7 @@ export function getSettings(): AdoCodeSettings {
     llmModeConfigs: config.get<Record<string, { model: string }>>('llm.modeConfigs', {}),
     llmModeReasoningEffort: config.get<Record<string, string>>('llm.modeReasoningEffort', {}),
     mode: config.get<'inline' | 'plan' | 'act'>('mode', 'inline'),
-    actToolBudget: config.get<number>('act.toolBudget', 50),
+    actMaxIterations: config.get<number>('act.toolBudget', DEFAULT_MAX_ITERATIONS),
     actTerminalAllowlist: config.get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']),
     gitRequireGitRepo: config.get<boolean>('git.requireGitRepo', true),
     gitCreateBranchOnTaskStart: config.get<boolean>('git.createBranchOnTaskStart', true),
@@ -86,7 +93,13 @@ export function getSettings(): AdoCodeSettings {
     consentAutoApproveTools: config.get<string[]>('consent.autoApproveTools', []),
     chatShowThinking: config.get<boolean>('chat.showThinking', true),
     chatShowToolCalls: config.get<boolean>('chat.showToolCalls', true),
-    useNativeTokenCounting: config.get<boolean>('llm.useNativeTokenCounting', true),
+    // A1: the DECLARED default is false; the host additionally forces native
+    // counting ON for Anthropic (its /count_tokens endpoint is free), so this
+    // setting only matters as an explicit opt-in for OpenAI-compatible
+    // gateways that bill a tiny request per count.
+    useNativeTokenCounting: config.get<boolean>('llm.useNativeTokenCounting', false),
+    understandingEnabled: config.get<boolean>('understanding.enabled', true),
+    understandingAutoSummarize: config.get<boolean>('understanding.autoSummarize', true),
   };
 }
 

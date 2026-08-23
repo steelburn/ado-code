@@ -12,7 +12,7 @@ import { logger } from '../logger';
 export class McpManager {
   private clients = new Map<string, McpClient>();
 
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(_context: vscode.ExtensionContext) {}
 
   /** Load server configs from VS Code settings and connect to all enabled servers. */
   async connectAll(): Promise<void> {
@@ -81,7 +81,7 @@ export class McpManager {
   /** Get list of connected server names. */
   getConnectedServers(): string[] {
     return Array.from(this.clients.entries())
-      .filter(([_, c]) => c.isConnected)
+      .filter(([, c]) => c.isConnected)
       .map(([name]) => name);
   }
 

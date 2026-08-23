@@ -104,6 +104,17 @@ function isErrorResult(result: string): boolean {
   }
 }
 
+/**
+ * Remove ```choice fences (main-model choice offers — surfaced as the
+ * clickable option card, never as raw JSON in the bubble). The host strips
+ * the fence from agentic turns before posting; this covers the plain
+ * streaming path and any restored messages that still carry one.
+ */
+function stripChoiceFences(content: string): string {
+  const stripped = content.replace(/```choice[\s\S]*?(?:```|$)/g, '');
+  return stripped === content ? content : stripped.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 // ── Sub-components ───────────────────────────────────────────────
 
 const ToolCallBlock: React.FC<{ tc: ToolCallInfo }> = ({ tc }) => {
@@ -419,8 +430,12 @@ export function MessageList({ messages, loading, thinking, activity, liveToolCal
         const isUser = m.role === 'user';
         const isError = m.isError;
 
+        // Choice fences never render as raw JSON in the bubble (the host
+        // surfaces them as the clickable option card instead).
+        const displayContent = isAssistant ? stripChoiceFences(m.content) : m.content;
+
         // Parse tool calls from assistant messages
-        const { toolCalls, textParts } = isAssistant ? parseToolCalls(m.content) : { toolCalls: [], textParts: [m.content] };
+        const { toolCalls, textParts } = isAssistant ? parseToolCalls(displayContent) : { toolCalls: [], textParts: [displayContent] };
         const hasText = textParts.some((t) => t.trim().length > 0);
 
         // Timestamp display
@@ -473,7 +488,7 @@ export function MessageList({ messages, loading, thinking, activity, liveToolCal
 
                     {/* Fallback: if no text and no tool calls, render raw */}
                     {!hasText && toolCalls.length === 0 && (
-                      <MarkdownWithCodeCopy content={m.content} />
+                      <MarkdownWithCodeCopy content={displayContent} />
                     )}
                   </>
                 )}

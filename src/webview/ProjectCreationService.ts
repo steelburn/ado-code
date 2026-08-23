@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
 import { logger } from '../services/logger';
 import { ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
 
 export class ProjectCreationService {
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(_context: vscode.ExtensionContext) {}
 
   /**
    * Create a new project based on the wizard request.
@@ -798,7 +799,6 @@ export class ProjectCreationService {
   //  Git operations
   // ──────────────────────────────────────────────
   private async initGit(dir: string): Promise<void> {
-    const { execFile } = require('child_process');
     await new Promise<void>((resolve, reject) => {
       execFile('git', ['init'], { cwd: dir }, (err: any) =>
         err ? reject(err) : resolve()
@@ -807,8 +807,6 @@ export class ProjectCreationService {
   }
 
   private async createInitialCommit(dir: string, projectName: string): Promise<void> {
-    const { execFile } = require('child_process');
-
     const exec = (cmd: string, args: string[]): Promise<void> =>
       new Promise((resolve, reject) => {
         execFile(cmd, args, { cwd: dir }, (err: any) =>

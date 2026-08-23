@@ -1,9 +1,8 @@
 import { LlmClient } from './client';
-import { LlmMessage, LlmTool, ToolCall, LlmAgenticResult } from './types';
+import { LlmMessage, ToolCall, LlmAgenticResult } from './types';
 import { ToolExecutor } from './tools';
 import { logger } from '../services/logger';
-
-const DEFAULT_MAX_ITERATIONS = 8;
+import { DEFAULT_MAX_ITERATIONS } from '../shared/agenticLimits';
 
 /**
  * Compact OLD tool results to save re-send cost on later loop iterations.

@@ -207,6 +207,12 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.refreshUnderstanding",
+        "title": "Refresh Repository Understanding",
+        "icon": "$(lightbulb)",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.refreshWorktrees",
         "title": "Refresh Worktrees",
         "category": "ADO Code"
@@ -785,14 +791,14 @@
           "enumDescriptions": [
             "Streaming answer; tool calls shown inline, mutating tools require approval",
             "Read-only tools only; produces a plan; 'Begin implementation' switches to act",
-            "Autonomous agentic loop with auto-approval of mutating tools (tool budget + terminal allowlist)"
+            "Autonomous agentic loop with auto-approval of mutating tools (iteration budget + terminal allowlist)"
           ],
           "description": "LLM tool-use mode (Q8 resolution)"
         },
         "adoCode.act.toolBudget": {
           "type": "number",
           "default": 50,
-          "description": "Max tool calls per act-mode turn"
+          "description": "Max agentic loop iterations per chat turn (each iteration = one model round-trip that may run a batch of tool calls in parallel; applies to all modes)"
         },
         "adoCode.act.terminalAllowlist": {
           "type": "array",
@@ -855,7 +861,8 @@
               "openclaw",
               "aider",
               "gemini",
-              "cursor-agent"
+              "cursor-agent",
+              "dsh"
             ]
           },
           "default": [
@@ -867,9 +874,10 @@
             "openclaw",
             "aider",
             "gemini",
-            "cursor-agent"
+            "cursor-agent",
+            "dsh"
           ],
-          "description": "Which external agents ADO Code may delegate to (Q9: aider, gemini, cursor-agent added). M17: default includes all registered agents; users can prune."
+          "description": "Which external agents ADO Code may delegate to (Q9: aider, gemini, cursor-agent added; dsh: DeepSeek Harness). M17: default includes all registered agents; users can prune."
         },
         "adoCode.agents.verifyCommand": {
           "type": "string",
@@ -889,14 +897,20 @@
             "openclaw",
             "aider",
             "gemini",
-            "cursor-agent"
+            "cursor-agent",
+            "dsh"
           ],
-          "description": "Default agent for delegation when none is specified (M-9: includes all 9 registered agents)"
+          "description": "Default agent for delegation when none is specified (M-9: includes all registered agents)"
         },
         "adoCode.agents.autoReview": {
           "type": "boolean",
           "default": true,
           "description": "Automatically review agent changes via LLM when a run completes"
+        },
+        "adoCode.agents.autoCompleteChildren": {
+          "type": "boolean",
+          "default": false,
+          "description": "After a delegated agent run on a parent work item finishes successfully, auto-complete its child items in ADO: children the agent's Delivery Report marks DONE transition to their terminal state (Task/Bug → Closed, Story/Feature/Epic → Resolved) and, when ALL open children are done, the parent closes too. Requires the agent's Delivery Report. Disabled = the run only reports and comments."
         },
         "adoCode.agents.progressView": {
           "type": "string",
@@ -915,6 +929,16 @@
           "type": "array",
           "default": [],
           "description": "MCP servers to connect to: [{ \"name\": \"myserver\", \"command\": \"npx\", \"args\": [\"-y\", \"@myorg/mcp-server\"] }]"
+        },
+        "adoCode.understanding.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat sessions and delegated-agent prompts. Disabling stops regeneration; cached content stays on disk."
+        },
+        "adoCode.understanding.autoSummarize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically generate an LLM repository summary when the repo fingerprint changes (new branch/commit, edited AGENTS.md/package.json/README). Uses one model call per change; refresh manually anytime via 'ADO Code: Refresh Repository Understanding'."
         },
         "adoCode.consent.harmlessAutoApprove": {
           "type": "boolean",
@@ -948,8 +972,8 @@
         },
         "adoCode.llm.useNativeTokenCounting": {
           "type": "boolean",
-          "default": true,
-          "description": "Use the provider's own tokenizer for the token status bar (Anthropic /v1/messages/count_tokens; OpenAI-compatible endpoints via usage.prompt_tokens from a minimal request). More accurate than the local heuristic, but may issue a tiny model request for OpenAI-compatible gateways. Off = always use the instant local estimate."
+          "default": false,
+          "description": "Use the provider's own tokenizer for the token status bar (Anthropic /v1/messages/count_tokens; OpenAI-compatible endpoints via usage.prompt_tokens from a minimal request). Anthropic counting is always on (free). For OpenAI-compatible gateways this issues a tiny model request per count, so it is opt-in here — off = always use the instant local estimate."
         }
       }
     }
