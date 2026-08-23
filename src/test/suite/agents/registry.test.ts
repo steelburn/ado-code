@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { AgentRegistry, AGENT_SPECS } from '../../../agents/registry';
+import { AgentRegistry, AGENT_SPECS, migrateEnabledAgents, PRE_DSH_ENABLED_DEFAULT } from '../../../agents/registry';
 
 suite('AgentRegistry', () => {
   test('reports installed agents with version', async () => {
@@ -49,5 +49,17 @@ suite('AgentRegistry', () => {
         }
       }
     }
+  });
+
+  test('migrateEnabledAgents upgrades the stale pre-dsh default so dsh is probed', () => {
+    const migrated = migrateEnabledAgents([...PRE_DSH_ENABLED_DEFAULT]);
+    assert.ok(migrated.includes('dsh'), 'dsh added for users whose stored list predates it');
+    assert.strictEqual(migrated.length, Object.keys(AGENT_SPECS).length, 'full current default after migration');
+  });
+
+  test('migrateEnabledAgents respects custom pruned lists (never overrides explicit pruning)', () => {
+    assert.deepStrictEqual(migrateEnabledAgents(['claude']), ['claude']);
+    assert.deepStrictEqual(migrateEnabledAgents(['claude', 'dsh']), ['claude', 'dsh']);
+    assert.deepStrictEqual(migrateEnabledAgents([]), [], 'empty (unset) stays empty — default applies upstream');
   });
 });

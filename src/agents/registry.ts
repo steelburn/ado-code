@@ -90,6 +90,33 @@ export const AGENT_SPECS: Record<AgentName, AgentSpec> = {
   },
 };
 
+/**
+ * The previous default `agents.enabled` list (before DeepSeek Harness was
+ * registered). Users whose stored value is EXACTLY this list predate dsh —
+ * their allowlist silently disables it (dsh is never probed).
+ */
+export const PRE_DSH_ENABLED_DEFAULT: string[] = [
+  'claude', 'codex', 'opencode', 'hermes', 'pi', 'openclaw', 'aider', 'gemini', 'cursor-agent',
+];
+
+/**
+ * Migrate a stale `agents.enabled` value (0.6.0): when the stored list is
+ * exactly the pre-dsh default, treat it as unset so newly-registered agents
+ * (dsh) are probed too. Custom pruned lists are returned unchanged — explicit
+ * pruning is always respected. Pure + in-memory (no config writes).
+ */
+export function migrateEnabledAgents(enabled: string[]): string[] {
+  if (
+    enabled.length > 0
+    && !enabled.includes('dsh')
+    && enabled.length === PRE_DSH_ENABLED_DEFAULT.length
+    && PRE_DSH_ENABLED_DEFAULT.every(a => enabled.includes(a))
+  ) {
+    return Object.keys(AGENT_SPECS);
+  }
+  return enabled;
+}
+
 export class AgentRegistry {
   private cache?: AgentCapability[];
 
@@ -99,6 +126,7 @@ export class AgentRegistry {
     let enabled: string[] = [];
     try {
       enabled = vscode.workspace.getConfiguration('adoCode').get<string[]>('agents.enabled', []);
+      enabled = migrateEnabledAgents(enabled);
     } catch {
       // not running inside VS Code (tests) — probe everything
       enabled = Object.keys(AGENT_SPECS);
