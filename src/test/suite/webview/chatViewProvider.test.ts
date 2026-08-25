@@ -461,3 +461,88 @@ suite('ChatViewProvider refreshWorkItems', () => {
     }
   });
 });
+
+suite('ChatViewProvider proposed-tasks parsing', () => {
+  const JSON_TASK = {
+    workItemType: 'Task', title: 'T1', description: 'd',
+    acceptanceCriteria: 'a', assignedTo: '', tags: '',
+  };
+
+  test('parseProposedTasks extracts tasks from the exact JSON fence', () => {
+    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const text = 'Breakdown reasoning here.\n## PROPOSED_TASKS\n```json\n' +
+      JSON.stringify([JSON_TASK]) + '\n```';
+    const r = (provider as any).parseProposedTasks(text);
+    assert.ok(r, 'JSON fence must be parsed');
+    assert.strictEqual(r.tasks.length, 1);
+    assert.strictEqual(r.tasks[0].title, 'T1');
+    assert.ok(r.analysis.includes('Breakdown'));
+  });
+
+  test('parseProposedTasks falls back to a numbered list when the model skips JSON', () => {
+    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const text = '## PROPOSED_TASKS\n' +
+      '1. **Set up CI** — add pipeline\n' +
+      '2. Write tests\n' +
+      '3. Add docs';
+    const r = (provider as any).parseProposedTasks(text);
+    assert.ok(r, 'numbered list must be parsed');
+    assert.strictEqual(r.tasks.length, 3);
+    assert.strictEqual(r.tasks[0].title, 'Set up CI — add pipeline', 'bold markers stripped');
+    assert.strictEqual(r.tasks[0].workItemType, 'Task', 'defaults to Task type');
+    assert.strictEqual(r.tasks[2].title, 'Add docs');
+  });
+
+  test('parseProposedTasks tolerates fence casing, bare fences, and missing fences', () => {
+    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const json = JSON.stringify([JSON_TASK]);
+    for (const block of [
+      '```JSON\n' + json + '\n```',
+      '```\n' + json + '\n```',
+      json, // no fence at all
+    ]) {
+      const r = (provider as any).parseProposedTasks('## PROPOSED_TASKS\n' + block);
+      assert.ok(r, 'block must be parsed');
+      assert.strictEqual(r.tasks.length, 1);
+    }
+  });
+
+  test('parseProposedTasks returns null without a heading or with no tasks', () => {
+    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    assert.strictEqual((provider as any).parseProposedTasks('1. foo\n2. bar'), null);
+    assert.strictEqual((provider as any).parseProposedTasks('## PROPOSED_TASKS\n(nothing here)'), null);
+  });
+
+  test('parseCheckedTasks preserves multi-line fields with numbered items and skips unchecked', () => {
+    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const content = [
+      '# Proposed Tasks for #1: Story',
+      '',
+      '## [x] Task 1: Add login',
+      '- **Type:** Task',
+      '- **Description:** Implement the form.',
+      '  1. Add fields',
+      '  2. Add validation',
+      '- **Acceptance Criteria:** User can log in.',
+      '  - With a sub-bullet',
+      '',
+      '## [ ] Task 2: skipped',
+      '- **Type:** Task',
+      '- **Description:** nope',
+      '',
+      '## [x] Task 3: Last',
+      '- **Type:** Bug',
+      '- **Description:** tail field no newline',
+    ].join('\n');
+    const tasks = (provider as any).parseCheckedTasks(content);
+    assert.strictEqual(tasks.length, 2, 'unchecked sections are skipped');
+    assert.strictEqual(tasks[0].title, 'Add login');
+    assert.strictEqual(
+      tasks[0].description,
+      'Implement the form.\n  1. Add fields\n  2. Add validation',
+      'numbered sub-items survive the round-trip'
+    );
+    assert.strictEqual(tasks[0].acceptanceCriteria, 'User can log in.\n  - With a sub-bullet');
+    assert.strictEqual(tasks[1].workItemType, 'Bug');
+  });
+});

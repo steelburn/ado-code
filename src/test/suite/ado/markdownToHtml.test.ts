@@ -89,4 +89,38 @@ suite('markdownToHtml', () => {
     const result = markdownToHtml('Paragraph 1\n\nParagraph 2');
     assert.strictEqual(result.includes('</p><p>'), true, `Got: ${result}`);
   });
+
+  test('separates a numbered list that follows a bullet list', () => {
+    const result = markdownToHtml('- Setup\n- Configure\n\n1. Run install\n2. Verify');
+    assert.ok(result.includes('<ul><li>Setup</li><li>Configure</li></ul>'), `Got: ${result}`);
+    assert.ok(result.includes('<ol><li>Run install</li><li>Verify</li></ol>'), `Got: ${result}`);
+    // Every <li> must sit inside a list wrapper — a legal predecessor is
+    // only <ul>/<ol> (list start) or </li> (continuation).
+    const bare = [...result.matchAll(/<li>/g)].filter(m => {
+      const before = result.slice(0, m.index);
+      return !/<[ou]l>$/.test(before) && !/<\/li>$/.test(before);
+    });
+    assert.strictEqual(bare.length, 0, `no bare <li> outside a list wrapper: ${result}`);
+  });
+
+  test('separates a bullet list that follows a numbered list', () => {
+    const result = markdownToHtml('1. First\n2. Second\n- Extra\n- More');
+    assert.ok(result.includes('<ol><li>First</li><li>Second</li></ol>'), `Got: ${result}`);
+    assert.ok(result.includes('<ul><li>Extra</li><li>More</li></ul>'), `Got: ${result}`);
+  });
+
+  test('does not emit <br> after headings or inside code blocks', () => {
+    const result = markdownToHtml('# Title\n- item\n```js\nconst a = 1;\nconst b = 2;\n```');
+    assert.ok(!result.includes('<h1>Title</h1><br>'), `Got: ${result}`);
+    assert.ok(!result.includes('const a = 1;<br>'), `Got: ${result}`);
+    assert.ok(result.includes('<pre><code class="language-js">const a = 1;\nconst b = 2;</code></pre>'), `Got: ${result}`);
+  });
+
+  test('converts indented numbered continuation lines into an ordered list', () => {
+    // The proposed-tasks round-trip indents continuation lines; they must
+    // render as a real <ol> instead of bare text.
+    const result = markdownToHtml('Implement the form.\n  1. Add fields\n  2. Add validation');
+    assert.ok(result.includes('<ol><li>Add fields</li><li>Add validation</li></ol>'), `Got: ${result}`);
+    assert.ok(result.includes('<p>Implement the form.</p>'), `Got: ${result}`);
+  });
 });

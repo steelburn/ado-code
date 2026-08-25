@@ -200,6 +200,15 @@ The extension infers the active model's capabilities from its id:
 
 ## Release Notes
 
+### 0.6.2
+
+- **Images inside work items now display**: Rich-text fields (Description, Acceptance Criteria, Repro Steps, System Info) and discussion comments can contain `<img>` tags pointing at ADO's attachment endpoint — those URLs need authentication a webview can't attach, so they used to render as broken images. The extension now fetches each attachment with your PAT and inlines it as a `data:image/...` URL in the chat task panel and the standalone work-item panel (capped at 10 images / 2 MB each / 8 MB total per field)
+- **Work Items view shows assignment at a glance**: Every tree row now carries an assignment cue — **blue person** = assigned to you, **orange person** = assigned to someone else, **grey empty circle** = unassigned — with the work item type moved into the row description (`#123 · Task`) and the assignee in the hover tooltip
+- **Generated tasks post reliably**: The generate-tasks flow only understood a ` ```json ` fence — if the model answered with a numbered list ("1. … 2. …") or a ` ```JSON `/bare-fence/unfenced array, the whole batch was silently dropped. The parser now tolerates all of those (and falls back to a numbered markdown list), so every proposed task reaches the review editor
+- **Numbered sub-items inside task descriptions survive posting**: Task descriptions/acceptance criteria were truncated to their first line when the review file was parsed back; multi-line bodies with numbered/bulleted steps are now captured in full
+- **Changelog comments post cleanly formatted**: The completion-flow ADO comment is now block-structured (ADO collapses single newlines) with a clickable "Open in Azure DevOps" link and a backticked branch/commit bullet; work-item URLs are percent-encoded so project names with spaces no longer break the link
+- **Created work items render descriptions correctly**: `markdownToHtml` was rewritten as a line-based parser — mixed bullet/numbered lists now produce valid `<ul>`/`<ol>` HTML (the old greedy regex left bare `<li>`s ADO rendered as plain text)
+
 ### 0.6.1
 
 - **Proper tree structure for the Work Items tree**: The tree now renders the real ADO hierarchy instead of flat roots. The extension walks up the parent chain (Task → User Story → Feature → Epic) and down the children, so a Feature expands to show its User Stories, and Tasks nest under their parent Story/Task even when those parents are assigned to someone else. Hierarchy-context items are tagged "· context" (with an explanatory tooltip); if the child query is rejected by your ADO org it falls back to per-parent queries, and if expansion still fails the tree falls back gracefully with a visible warning

@@ -52,6 +52,20 @@ export class WorkItemDetailPanel {
       const reproSteps = f['Microsoft.VSTS.TCM.ReproSteps'] ?? '';
       const systemInfo = f['Microsoft.VSTS.TCM.SystemInfo'] ?? '';
 
+      // Inline ADO attachment images (<img src=...> to the attachment
+      // endpoint) as data: URLs — the raw URLs need auth the webview can't
+      // attach, so without this they render as broken images.
+      const [descResolved, acResolved, reproResolved, sysResolved] = await Promise.all([
+        ado.resolveImagesInHtml(description),
+        ado.resolveImagesInHtml(ac),
+        ado.resolveImagesInHtml(reproSteps),
+        ado.resolveImagesInHtml(systemInfo),
+      ]);
+      const commentsResolved = await Promise.all(comments.map(async c => ({
+        ...c,
+        text: await ado.resolveImagesInHtml(c.text),
+      })));
+
       // State color
       const stateColor = state === 'Done' || state === 'Closed'
         ? '#4caf50'
@@ -61,8 +75,8 @@ export class WorkItemDetailPanel {
 
       // Build comments HTML
       let commentsHtml = '';
-      if (comments.length > 0) {
-        const commentItems = comments.map(c => `
+      if (commentsResolved.length > 0) {
+        const commentItems = commentsResolved.map(c => `
           <div class="comment">
             <div class="comment-header">
               <span class="comment-author">${WorkItemDetailPanel.escapeHtml(c.createdBy.displayName)}</span>
@@ -85,8 +99,8 @@ export class WorkItemDetailPanel {
         bugFieldsHtml = `
           <div class="section">
             <h2>Bug Details</h2>
-            ${reproSteps ? `<h3>Repro Steps</h3><div class="field-content">${WorkItemDetailPanel.renderAdoHtml(reproSteps)}</div>` : ''}
-            ${systemInfo ? `<h3>System Info</h3><div class="field-content">${WorkItemDetailPanel.renderAdoHtml(systemInfo)}</div>` : ''}
+            ${reproSteps ? `<h3>Repro Steps</h3><div class="field-content">${WorkItemDetailPanel.renderAdoHtml(reproResolved)}</div>` : ''}
+            ${systemInfo ? `<h3>System Info</h3><div class="field-content">${WorkItemDetailPanel.renderAdoHtml(sysResolved)}</div>` : ''}
           </div>
         `;
       }
@@ -103,8 +117,8 @@ export class WorkItemDetailPanel {
         iterationPath,
         createdDate,
         changedDate,
-        description,
-        acceptanceCriteria: ac,
+        description: descResolved,
+        acceptanceCriteria: acResolved,
         tags,
         commentsHtml,
         bugFieldsHtml,
@@ -136,6 +150,9 @@ export class WorkItemDetailPanel {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Allow inline data: images (ADO attachment screenshots are inlined as
+       data URLs by resolveImagesInHtml) plus plain https fallbacks. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline';">
   <title>ADO-${d.workItemId}</title>
   <style>
     body {

@@ -6,26 +6,28 @@ import { logger } from '../services/logger';
 // H-6 fix: the tree consumes WorkItemSummary (what refreshWorkItems posts),
 // NOT raw AdoWorkItem — matches the onItemsFetched callback type.
 
-/** Map ADO work item types to VS Code theme icons. */
-const TYPE_ICONS: Record<string, string> = {
-  'Epic': 'layers',
-  'Feature': 'flag',
-  'User Story': 'account',
-  'Product Backlog Item': 'account',
-  'Task': 'checklist',
-  'Bug': 'bug',
-  'Issue': 'alert',
-  'Test Case': 'beaker',
-  'Test Suite': 'list-flat',
-  'Shared Step': 'references',
-  'Risk': 'warning',
-  'Impediment': 'circle-slash',
-  'Goal': 'target',
-  'Plan': 'project',
+/** Assignment state of a work item relative to the signed-in user. */
+export type AssignmentState = 'me' | 'other' | 'unassigned';
+
+/**
+ * Assignment-coded icons: a blue person = assigned to you, an orange person
+ * = assigned to someone else, a grey empty circle = unassigned. The work
+ * item TYPE moves into the description ("#123 · Task") and the tooltip keeps
+ * type/state/assignee, so the visual cue replaces the type icon without
+ * losing any information.
+ */
+const ASSIGNMENT_ICONS: Record<AssignmentState, { icon: string; color?: vscode.ThemeColor }> = {
+  'me': { icon: 'account', color: new vscode.ThemeColor('charts.blue') },
+  'other': { icon: 'account', color: new vscode.ThemeColor('charts.orange') },
+  'unassigned': { icon: 'circle-outline', color: new vscode.ThemeColor('charts.grey') },
 };
 
-function iconForType(workItemType: string): string {
-  return TYPE_ICONS[workItemType] ?? 'circle-outline';
+function assignmentLabel(assignment: AssignmentState, assignedTo: string): string {
+  switch (assignment) {
+    case 'me': return 'Assigned to you';
+    case 'other': return `Assigned to ${assignedTo || 'someone else'}`;
+    default: return 'Unassigned';
+  }
 }
 
 export interface WorkItemFilterState {
@@ -55,6 +57,10 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   // Which dataset the view shows (drives the header row label).
   private viewMode: WorkItemsMode = 'mine';
 
+  // Display name of the signed-in user (pushed in from ChatViewProvider via
+  // the refresh callback) — used to color-code assignment in the tree.
+  private currentUserDisplayName = '';
+
   // Data is pushed in via refresh() (called from ChatViewProvider.refreshWorkItems,
   // Task 8 Step 4). The provider itself never talks to ADO.
   constructor() {}
@@ -62,6 +68,13 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
   /** Current view mode (My / All / Unassigned) — shown in the header row. */
   getMode(): WorkItemsMode {
     return this.viewMode;
+  }
+
+  /** Remember who "me" is so assigned items can be color-coded. */
+  setCurrentUser(displayName: string): void {
+    if (displayName === this.currentUserDisplayName) return;
+    this.currentUserDisplayName = displayName;
+    this._onDidChangeTreeData.fire(undefined);
   }
 
   /** Update the view mode (kept in sync by the toggle command) and re-render. */
@@ -291,7 +304,15 @@ export class WorkItemsTreeProvider implements vscode.TreeDataProvider<WorkItemNo
     // the unassigned menu (Take Ownership, Reassign…) wherever they appear
     // (Unassigned mode, All mode, or as a child in My mode).
     const contextValue = wi.assignedTo ? 'workItemNode' : 'unassignedWorkItemNode';
-    return new WorkItemNode(wi, agentRun, contextValue, hasChildren, isSelected, wi.isContext);
+    return new WorkItemNode(wi, agentRun, contextValue, hasChildren, isSelected, wi.isContext, this.assignmentOf(wi));
+  }
+
+  /** Classify an item's assignment relative to the signed-in user. */
+  private assignmentOf(wi: WorkItemSummary): AssignmentState {
+    if (!wi.assignedTo) return 'unassigned';
+    return wi.assignedTo.trim() === this.currentUserDisplayName.trim()
+      ? 'me'
+      : 'other';
   }
 }
 
@@ -306,7 +327,9 @@ export class WorkItemNode extends vscode.TreeItem {
     isSelected = false,
     // Hierarchy-context node: not part of the base query (assigned/unassigned)
     // but pulled in because it is a parent/child of a base item.
-    isContext = false
+    isContext = false,
+    // Assignment relative to the signed-in user — drives the icon cue.
+    assignment: AssignmentState = 'unassigned'
   ) {
     super(
       workItem.title,
@@ -326,11 +349,13 @@ export class WorkItemNode extends vscode.TreeItem {
       this.tooltip = `${workItem.workItemType} - ${workItem.state}\nSelected for chat context`;
       this.iconPath = new vscode.ThemeIcon('check-all', new vscode.ThemeColor('charts.green'));
     } else {
-      // Context nodes (parents/children pulled in for hierarchy) get a
-      // subtle marker so it's clear they aren't part of the base list.
-      this.description = `#${workItem.id}${isContext ? ' · context' : ''}`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}${isContext ? '\nContext item — not in the base list; pulled in for hierarchy' : ''}`;
-      this.iconPath = new vscode.ThemeIcon(iconForType(workItem.workItemType));
+      // Assignment cue: blue person = yours, orange person = someone else's,
+      // grey empty circle = unassigned (hover the item for the assignee).
+      // The work item type moves into the description so it isn't lost.
+      const cue = ASSIGNMENT_ICONS[assignment];
+      this.description = `#${workItem.id} · ${workItem.workItemType}${isContext ? ' · context' : ''}`;
+      this.tooltip = `${workItem.workItemType} - ${workItem.state}\n${assignmentLabel(assignment, workItem.assignedTo)}${isContext ? '\nContext item — not in the base list; pulled in for hierarchy' : ''}`;
+      this.iconPath = new vscode.ThemeIcon(cue.icon, cue.color);
     }
 
     // NOTE: no `command` field here. Clicking a tree item fires the command

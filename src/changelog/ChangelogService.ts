@@ -67,14 +67,25 @@ All notable changes to this project will be documented in this file.
     return new RegExp(`\\[ADO-${workItemId}\\]\\(|ADO-${workItemId}(?!\\d)`).test(content);
   }
 
-  /** Format the changelog entry as a comment to post on the ADO work item. */
+  /**
+   * Format the changelog entry as a comment to post on the ADO work item.
+   * ADO's markdown engine collapses single newlines (a soft break needs two
+   * trailing spaces), so every block is separated by a blank line — paragraph
+   * breaks always survive. The work item URL is expected to be
+   * percent-encoded (see ChatViewProvider.updateWorkItemState) so project
+   * names with spaces render as a real link instead of spilling literal text.
+   */
   formatForAdo(entry: ChangelogEntry): string {
-    return [
+    const lines = [
       `**Changelog entry added (${entry.state}):**`,
-      ``,
-      `- [ADO-${entry.workItemId}](${entry.workItemUrl}): ${entry.title} (${entry.date})`,
-      ``,
-      `_Added automatically by ADO Code on task completion._`,
-    ].join('\n');
+      '',
+      `- **ADO-${entry.workItemId}** — ${entry.title} _(${entry.date})_`,
+      `- [Open in Azure DevOps](${entry.workItemUrl})`,
+    ];
+    if (entry.branch || entry.commitHash) {
+      lines.push(`- Branch: \`${[entry.branch, entry.commitHash].filter(Boolean).join(' @ ')}\``);
+    }
+    lines.push('', '_Added automatically by ADO Code on task completion._');
+    return lines.join('\n');
   }
 }

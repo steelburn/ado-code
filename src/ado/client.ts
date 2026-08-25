@@ -422,6 +422,106 @@ export class AdoClient {
     );
   }
 
+  // ── Rich-text images ────────────────────────────────────────────────
+
+  // Cap on inlined images per HTML blob: the resulting data URLs ride the
+  // webview postMessage, so keep them bounded.
+  private static readonly MAX_IMAGES_PER_HTML = 10;
+  private static readonly MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2 MB each
+  private static readonly MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB per call
+
+  /**
+   * Rewrite `<img>` tags whose src points at an ADO attachment endpoint into
+   * inline `data:` URLs so webview-rendered rich text can display them (the
+   * raw attachment URLs require authentication a webview cannot attach).
+   *
+   * - Only fetches images same-origin with the configured ADO host; other
+   *   URLs (external images, already-embedded data URLs) are left untouched.
+   * - Failed fetches leave the original src in place (image shows as broken,
+   *   but the rest of the field renders normally).
+   * - Capped (10 images / 2 MB each / 8 MB total); overflow images keep their
+   *   original src.
+   * - Verified live against zencomputersystems: the rich-text src
+   *   (`/.../_apis/wit/attachments/{id}?fileName=...`, project-ID based)
+   *   returns 200 with the bytes under Basic auth; content-type comes back
+   *   like `image/jpeg; api-version=7.1` (server appends the api-version
+   *   param — strip everything after `;`).
+   */
+  async resolveImagesInHtml(html: string): Promise<string> {
+    if (!html || !html.includes('<img')) return html;
+    let baseOrigin: string;
+    try {
+      baseOrigin = new URL(this.baseUrl).origin;
+    } catch {
+      return html;
+    }
+
+    // Collect (whole tag, src) pairs for every <img ...>.
+    const imgTagRe = /<img\b[^>]*>/gi;
+    const srcAttrRe = /\bsrc\s*=\s*["']([^"']+)["']/i;
+    const wanted: Array<{ tag: string; src: string }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = imgTagRe.exec(html)) !== null) {
+      const sm = m[0].match(srcAttrRe);
+      if (!sm) continue;
+      const src = sm[1];
+      if (src.startsWith('data:')) continue;
+      let url: URL;
+      try {
+        url = new URL(src, this.baseUrl);
+      } catch {
+        continue;
+      }
+      if (url.origin !== baseOrigin) continue;
+      wanted.push({ tag: m[0], src });
+      if (wanted.length >= AdoClient.MAX_IMAGES_PER_HTML) break;
+    }
+    if (wanted.length === 0) return html;
+
+    // Fetch each unique src (parallel), respecting the size caps.
+    const srcToDataUrl = new Map<string, string>();
+    let totalBytes = 0;
+    await Promise.all([...new Set(wanted.map(w => w.src))].map(async (src) => {
+      if (totalBytes >= AdoClient.MAX_TOTAL_IMAGE_BYTES) return;
+      const dataUrl = await this.fetchAttachmentAsDataUrl(src);
+      if (dataUrl) {
+        // Approximate data URL size: 4/3 of the base64 payload.
+        totalBytes += Math.floor((dataUrl.length - 22) * 0.75);
+        srcToDataUrl.set(src, dataUrl);
+      }
+    }));
+
+    if (srcToDataUrl.size === 0) return html;
+
+    let out = html;
+    for (const { tag, src } of wanted) {
+      const dataUrl = srcToDataUrl.get(src);
+      if (!dataUrl) continue;
+      const newTag = tag.replace(srcAttrRe, `src="${dataUrl}"`);
+      out = out.split(tag).join(newTag);
+    }
+    return out;
+  }
+
+  /** Fetch an ADO attachment (rich-text image) with auth as a data URL. */
+  private async fetchAttachmentAsDataUrl(url: string): Promise<string | null> {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { ...this.headers, Accept: 'application/octet-stream' },
+      });
+      if (!response.ok) return null;
+      const contentType = response.headers.get('content-type') || '';
+      const mime = contentType.split(';')[0].trim().toLowerCase();
+      if (!mime.startsWith('image/')) return null;
+      const buf = Buffer.from(await response.arrayBuffer());
+      if (buf.length > AdoClient.MAX_IMAGE_BYTES) return null;
+      return `data:${mime};base64,${buf.toString('base64')}`;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Create a new work item (Task, Bug, etc.) in Azure DevOps.
    * Uses JSON Patch (application/json-patch+json) with optional parent link.

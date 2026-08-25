@@ -73,5 +73,25 @@ suite('ChangelogService', () => {
     assert.ok(text.includes('Fix login bug'));
     assert.ok(text.includes('**Changelog entry added'));
     assert.ok(text.includes('ADO Code'));
+    // ADO collapses single newlines: blocks must be separated by blank lines
+    // so paragraphs survive, and the link must be its own bullet.
+    assert.ok(text.includes('\n\n'), 'blocks separated by blank lines');
+    assert.ok(text.includes('- [Open in Azure DevOps]('), 'clickable link bullet present');
+    assert.ok(!text.includes('- [ADO-42]('), 'id/title bullet no longer embeds the raw link');
+    assert.ok(!text.includes('Branch:'), 'no branch line when branch/commit are absent');
+  });
+
+  test('formatForAdo renders branch and commit as a backticked bullet', async () => {
+    const service = new ChangelogService(tmpDir);
+    const text = service.formatForAdo({
+      workItemId: 7,
+      title: 'Add feature',
+      state: 'Closed',
+      date: '2026-08-02',
+      workItemUrl: 'https://dev.azure.com/org/proj/_workitems/edit/7',
+      branch: 'feature/ado-7',
+      commitHash: 'abc1234',
+    });
+    assert.ok(text.includes('- Branch: `feature/ado-7 @ abc1234`'), 'branch + commit on one backticked bullet');
   });
 });

@@ -365,3 +365,88 @@ suite('AdoClient.getAllWorkItems', () => {
     assert.ok(capturedQuery.includes("[System.State] <> 'Closed'"), 'closed items excluded');
   });
 });
+
+suite('AdoClient.resolveImagesInHtml', () => {
+  /** Mock fetch returning a 1x1 PNG with the given content-type. */
+  function mockFetch(calls: Array<{ url: string; ok?: boolean; contentType?: string; bytes?: Uint8Array }>): { urls: string[] } {
+    const urls: string[] = [];
+    (globalThis as any).fetch = async (url: string) => {
+      urls.push(String(url));
+      const match = calls.find(c => String(url).includes(c.url)) ?? calls[0];
+      if (match && match.ok === false) return { ok: false, headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(0) };
+      return {
+        ok: true,
+        headers: { get: () => match?.contentType ?? 'image/png' },
+        arrayBuffer: async () => (match?.bytes ?? new Uint8Array([137, 80, 78, 71])).buffer,
+      };
+    };
+    return { urls };
+  }
+
+  const ADO_IMG = '<img src="https://dev.azure.com/org/proj-id/_apis/wit/attachments/abc?fileName=shot.jpg" alt="shot">';
+
+  test('rewrites same-origin ADO attachment images to data URLs', async () => {
+    const { urls } = mockFetch([{ url: 'attachments/abc', contentType: 'image/jpeg; api-version=7.1' }]);
+    const client = new AdoClient('org', 'pat');
+    const out = await client.resolveImagesInHtml(ADO_IMG);
+    assert.ok(out.startsWith('<img src="data:image/jpeg;base64,'), `Got: ${out}`);
+    assert.ok(out.endsWith('" alt="shot">'), `Got: ${out}`);
+    assert.strictEqual(urls.length, 1, 'exactly one attachment fetch');
+    assert.ok(urls[0].includes('attachments/abc'));
+  });
+
+  test('leaves external-host images and existing data URLs untouched', async () => {
+    const { urls } = mockFetch([]);
+    const client = new AdoClient('org', 'pat');
+    const html = '<img src="https://example.com/logo.png" alt="x"> <img src="data:image/png;base64,AAAA" alt="y"> ' + ADO_IMG;
+    const out = await client.resolveImagesInHtml(html);
+    assert.ok(out.includes('https://example.com/logo.png'), 'external src kept');
+    assert.ok(out.includes('data:image/png;base64,AAAA'), 'existing data URL kept');
+    assert.ok(out.includes('data:image/png;base64,'), 'ADO image resolved');
+    assert.strictEqual(urls.length, 1, 'only the ADO attachment fetched');
+  });
+
+  test('keeps the original src when the fetch fails', async () => {
+    const { urls } = mockFetch([{ url: 'attachments/abc', ok: false }]);
+    const client = new AdoClient('org', 'pat');
+    const out = await client.resolveImagesInHtml(ADO_IMG);
+    assert.strictEqual(out, ADO_IMG, 'unchanged when fetch fails');
+    assert.strictEqual(urls.length, 1);
+  });
+
+  test('skips non-image content types', async () => {
+    mockFetch([{ url: 'attachments/abc', contentType: 'text/html' }]);
+    const client = new AdoClient('org', 'pat');
+    const out = await client.resolveImagesInHtml(ADO_IMG);
+    assert.strictEqual(out, ADO_IMG, 'unchanged for non-image response');
+  });
+
+  test('returns html unchanged when it has no img tags or no same-origin images', async () => {
+    const { urls } = mockFetch([]);
+    const client = new AdoClient('org', 'pat');
+    assert.strictEqual(await client.resolveImagesInHtml('<p>plain text</p>'), '<p>plain text</p>');
+    assert.strictEqual(await client.resolveImagesInHtml(''), '');
+    assert.strictEqual(
+      await client.resolveImagesInHtml('<img src="https://elsewhere.test/x.png">'),
+      '<img src="https://elsewhere.test/x.png">',
+      'foreign origin not fetched'
+    );
+    assert.strictEqual(urls.length, 0, 'no fetches at all');
+  });
+
+  test('resolves relative image srcs against the ADO base URL', async () => {
+    mockFetch([{ url: '_apis/wit/attachments/rel' }]);
+    const client = new AdoClient('org', 'pat');
+    const out = await client.resolveImagesInHtml('<img src="/_apis/wit/attachments/rel?fileName=a.png">');
+    assert.ok(out.includes('data:image/png;base64,'), `Got: ${out}`);
+  });
+
+  test('dedupes repeated identical attachment URLs', async () => {
+    const { urls } = mockFetch([{ url: 'attachments/dup' }]);
+    const client = new AdoClient('org', 'pat');
+    const html = `<p>${ADO_IMG}</p><p>${ADO_IMG}</p>`;
+    const out = await client.resolveImagesInHtml(html);
+    assert.strictEqual(urls.length, 1, 'fetched once despite two occurrences');
+    assert.strictEqual((out.match(/data:image/g) || []).length, 2, 'both occurrences rewritten');
+  });
+});

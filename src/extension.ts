@@ -68,7 +68,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.extensionUri,
     services,
     context,
-    (items) => treeProvider?.refresh(items)
+    (items, currentUser) => {
+      // Push the signed-in user first so the tree color-codes assignment
+      // (mine = blue, someone else's = orange, unassigned = grey circle).
+      treeProvider?.setCurrentUser(currentUser ?? '');
+      treeProvider?.refresh(items);
+    }
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

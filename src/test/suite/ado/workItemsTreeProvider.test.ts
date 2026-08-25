@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import { WorkItemsTreeProvider, WorkItemNode, WorkItemsModeHeader } from '../../../ado/WorkItemsTreeProvider';
 
 /** Root work item nodes, skipping the mode header row. */
@@ -109,5 +110,70 @@ suite('WorkItemsTreeProvider', () => {
     assert.strictEqual(feature.contextValue, 'workItemNode', 'assigned item uses the work item menu');
     const orphan = childrenOf(provider, feature).find(c => c.workItemId === 2)!;
     assert.strictEqual(orphan.contextValue, 'unassignedWorkItemNode', 'unassigned child gets Take Ownership menu');
+  });
+});
+
+suite('WorkItemsTreeProvider assignment icons', () => {
+  /** Icon id + color of a node (ThemeIcon form). */
+  function iconOf(node: WorkItemNode): { id: string; color?: string } {
+    const t = node.iconPath as vscode.ThemeIcon;
+    return { id: t.id, color: (t.color as vscode.ThemeColor | undefined)?.id };
+  }
+
+  /** Index the root nodes by work item id (the tree sorts by type/title). */
+  function byId(provider: WorkItemsTreeProvider): Map<number, WorkItemNode> {
+    return new Map(rootsOf(provider).map(n => [n.workItemId, n]));
+  }
+
+  test('color-codes items as mine / others / unassigned after setCurrentUser', () => {
+    const provider = new WorkItemsTreeProvider();
+    provider.setCurrentUser('Jane Doe');
+    provider.refresh([
+      { id: 1, title: 'My task', state: 'Active', assignedTo: 'Jane Doe', workItemType: 'Task', isContext: false },
+      { id: 2, title: 'Other task', state: 'Active', assignedTo: 'John Smith', workItemType: 'Bug', isContext: false },
+      { id: 3, title: 'Nobody task', state: 'New', assignedTo: '', workItemType: 'User Story', isContext: false },
+    ]);
+    const nodes = byId(provider);
+    assert.deepStrictEqual(iconOf(nodes.get(1)!), { id: 'account', color: 'charts.blue' }, 'assigned to me = blue person');
+    assert.deepStrictEqual(iconOf(nodes.get(2)!), { id: 'account', color: 'charts.orange' }, 'assigned to others = orange person');
+    assert.deepStrictEqual(iconOf(nodes.get(3)!), { id: 'circle-outline', color: 'charts.grey' }, 'unassigned = grey empty circle');
+  });
+
+  test('type moves into the description and assignment into the tooltip', () => {
+    const provider = new WorkItemsTreeProvider();
+    provider.setCurrentUser('Jane Doe');
+    provider.refresh([
+      { id: 5, title: 'Ship it', state: 'Active', assignedTo: 'Jane Doe', workItemType: 'Task', isContext: false },
+      { id: 6, title: 'Free item', state: 'New', assignedTo: '', workItemType: 'Bug', isContext: true },
+    ]);
+    const nodes = byId(provider);
+    const mine = nodes.get(5)!;
+    const unassigned = nodes.get(6)!;
+    assert.ok(String(mine.description).includes('· Task'), 'type shown in the description');
+    assert.ok(String(mine.tooltip).includes('Assigned to you'), 'tooltip names the assignment');
+    assert.ok(String(unassigned.description).includes('· Bug') && String(unassigned.description).includes('· context'), 'type + context marker kept');
+    assert.ok(String(unassigned.tooltip).includes('Unassigned'), 'tooltip marks unassigned');
+  });
+
+  test('assigned items default to "other" until the current user is known', () => {
+    const provider = new WorkItemsTreeProvider();
+    provider.refresh([
+      { id: 9, title: 'X', state: 'Active', assignedTo: 'Someone', workItemType: 'Task', isContext: false },
+    ]);
+    assert.strictEqual(iconOf(rootsOf(provider)[0]).color, 'charts.orange', 'unknown identity → other');
+  });
+
+  test('agent-run and selected states still override the assignment icon', () => {
+    const provider = new WorkItemsTreeProvider();
+    provider.setCurrentUser('Jane Doe');
+    provider.refresh([
+      { id: 11, title: 'Running', state: 'Active', assignedTo: 'Jane Doe', workItemType: 'Task', isContext: false },
+      { id: 12, title: 'Selected', state: 'Active', assignedTo: 'John Smith', workItemType: 'Bug', isContext: false },
+    ]);
+    provider.updateAgentStatus(11, 'claude', 'running');
+    provider.setSelected(12);
+    const nodes = byId(provider);
+    assert.strictEqual(iconOf(nodes.get(11)!).id, 'loading~spin', 'agent run keeps the spinner');
+    assert.deepStrictEqual(iconOf(nodes.get(12)!), { id: 'check-all', color: 'charts.green' }, 'selection keeps the green check');
   });
 });

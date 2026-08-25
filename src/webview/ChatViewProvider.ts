@@ -201,7 +201,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // H11: the provider needs ExtensionContext for workspaceState (Q4 history,
     // org switching) and for the tree-refresh callback (C7).
     private readonly _context: vscode.ExtensionContext,
-    private readonly onItemsFetched?: (items: any[]) => void
+    private readonly onItemsFetched?: (items: any[], currentUser?: string) => void
   ) {
     // Restore the last-used tree mode (My / All / Unassigned), if any.
     const stored = this._context.workspaceState?.get<string>('adoCode.workItemsMode');
@@ -340,26 +340,76 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // ── Proposed tasks: parse, display, save, create ──────────────────
 
   /**
+   * Resolve ADO rich-text attachment images (<img src=...> pointing at the
+   * org's attachment endpoint) into inline data: URLs before the detail is
+   * posted to the webview — the raw attachment URLs require authentication
+   * a webview cannot attach, so they would render as broken images.
+   */
+  private async resolveWorkItemImages<T>(item: T): Promise<T> {
+    const out: any = { ...(item as any) };
+    for (const key of ['description', 'acceptanceCriteria', 'reproSteps', 'systemInfo'] as const) {
+      if (typeof out[key] === 'string' && out[key].includes('<img')) {
+        out[key] = await this.services.ado.resolveImagesInHtml(out[key]);
+      }
+    }
+    if (Array.isArray(out.comments)) {
+      out.comments = await Promise.all(out.comments.map(async (c: any) =>
+        typeof c?.text === 'string' && c.text.includes('<img')
+          ? { ...c, text: await this.services.ado.resolveImagesInHtml(c.text) }
+          : c
+      ));
+    }
+    return out as T;
+  }
+
+  /**
    * Extract proposed tasks from the AI response. Looks for a
-   * "## PROPOSED_TASKS" heading followed by a JSON code block.
+   * "## PROPOSED_TASKS" heading (case/underscore tolerant) followed by
+   * either a JSON code block or a numbered markdown list.
    * Returns the parsed tasks and the analysis text (everything before the heading).
    */
   private parseProposedTasks(text: string): { analysis: string; tasks: ProposedTask[] } | null {
-    const marker = '## PROPOSED_TASKS';
-    const idx = text.indexOf(marker);
-    if (idx === -1) return null;
-    const analysis = text.substring(0, idx).trim();
-    const jsonBlock = text.substring(idx + marker.length);
-    // Extract JSON from ```json ... ``` code fence
-    const jsonMatch = jsonBlock.match(/```json\s*([\s\S]*?)```/);
-    if (!jsonMatch) return null;
-    try {
-      const tasks = JSON.parse(jsonMatch[1]);
-      if (!Array.isArray(tasks) || tasks.length === 0) return null;
-      return { analysis, tasks };
-    } catch {
-      return null;
+    const markerMatch = text.match(/^#{1,6}\s*proposed[_ ]?tasks\s*$/im);
+    if (!markerMatch || markerMatch.index === undefined) return null;
+    const analysis = text.substring(0, markerMatch.index).trim();
+    const block = text.substring(markerMatch.index + markerMatch[0].length);
+
+    // 1) Structured JSON under a code fence (```json, ```JSON, or bare ```).
+    //    The generated-tasks prompt asks for ```json; models occasionally
+    //    capitalize the language tag or omit it entirely.
+    const jsonMatch = block.match(/```\s*(?:json)?\s*([\s\S]*?)```/i);
+    if (jsonMatch && jsonMatch[1].trim().startsWith('[')) {
+      try {
+        const tasks = JSON.parse(jsonMatch[1].trim());
+        if (Array.isArray(tasks) && tasks.length > 0) return { analysis, tasks };
+      } catch { /* fall through to the list fallback */ }
     }
+
+    // 2) A bare JSON array without any fence (models sometimes skip it).
+    const bareMatch = block.match(/\[[\s\S]*\]/);
+    if (bareMatch) {
+      try {
+        const tasks = JSON.parse(bareMatch[0]);
+        if (Array.isArray(tasks) && tasks.length > 0) return { analysis, tasks };
+      } catch { /* fall through to the list fallback */ }
+    }
+
+    // 3) Fallback: a numbered markdown list ("1. Title — description").
+    //    Models frequently answer "Break it down…" with a numbered list
+    //    instead of the JSON fence; without this fallback the whole batch
+    //    silently never reaches the review editor / ADO.
+    const listTasks: ProposedTask[] = [];
+    const listRe = /^\s*\d+[.)]\s+(.+)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = listRe.exec(block)) !== null) {
+      const title = m[1].trim().replace(/\*\*/g, '').trim();
+      if (title) {
+        listTasks.push({ workItemType: 'Task', title, description: '', acceptanceCriteria: '', assignedTo: '', tags: '' });
+      }
+    }
+    if (listTasks.length > 0) return { analysis, tasks: listTasks };
+
+    return null;
   }
 
   /**
@@ -606,9 +656,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const titleMatch = body.match(/Task\s+\d+:\s*(.+)/);
       const title = titleMatch ? titleMatch[1].trim() : body.split('\n')[0].trim();
 
-      // Parse fields from bullet points
+      // Parse fields from bullet points — capture the FULL body, not just the
+      // first line: descriptions commonly carry numbered/bulleted sub-items on
+      // continuation lines, and truncating at the first newline silently drops
+      // them from the posted work item. Stop at the next known field bullet,
+      // the next task section, or EOF.
       const getField = (name: string): string => {
-        const re = new RegExp(`\\*\\*${name}:\\*\\*\\s*(.+)`, 'i');
+        const re = new RegExp(
+          `\\*\\*${name}:\\*\\*\\s*([\\s\\S]*?)(?=\\n- \\*\\*(?:Type|Description|Acceptance Criteria|Assigned To|Tags):|\\n## \\[|$)`,
+          'i'
+        );
         const m = body.match(re);
         return m ? m[1].trim() : '';
       };
@@ -1333,7 +1390,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       try {
         const project = this.activeProject();
         const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, this.activeWorkItem.id);
-        this.postMessage({ type: 'workItemDetail', item: {
+        this.postMessage({ type: 'workItemDetail', item: await this.resolveWorkItemImages({
           id: detail.id,
           title: detail.fields['System.Title'],
           state: detail.fields['System.State'],
@@ -1346,7 +1403,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           iterationPath: detail.fields['System.IterationPath'] ?? '',
           creator: detail.fields['System.CreatedBy']?.displayName ?? '',
           comments: comments.map(c => ({ id: c.id, text: c.text, createdBy: c.createdBy.displayName, createdDate: c.createdDate })),
-        }});
+        })});
       } catch (err) {
         logger.error('Chat: failed to restore active work item detail', err);
       }
@@ -2190,6 +2247,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.postMessage({ type: 'loading', loading: true });
+    // The signed-in user's display name (lazy, cached) — lets the sidebar
+    // tree color-code items as mine / someone else's / unassigned.
+    const currentUserPromise = this.getCurrentUserDisplayName();
     // The merged tree shows ONE dataset at a time (mode: mine / all /
     // unassigned) — fetch that mode's base list, then hierarchy-expand it
     // (parents + children fetched) so the tree renders real nesting
@@ -2216,12 +2276,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // To webview (chat / task list)
       this.postMessage({ type: 'workItems', items: summaries });
       // To the sidebar tree view (built in Task 9) — via injected callback (C7)
-      this.onItemsFetched?.(summaries);
+      this.onItemsFetched?.(summaries, await currentUserPromise);
     } catch (err) {
       this.postMessage({ type: 'error', message: `Failed to fetch ${workItemsModeLabel(this.workItemsMode)}: ${err instanceof Error ? err.message : err}` });
     }
 
     this.postMessage({ type: 'loading', loading: false });
+  }
+
+  /** Display name of the signed-in user, fetched once and cached. */
+  private currentUserDisplayName = '';
+
+  private async getCurrentUserDisplayName(): Promise<string> {
+    if (this.currentUserDisplayName) return this.currentUserDisplayName;
+    try {
+      const me = await this.services.ado.getMe();
+      this.currentUserDisplayName = me.displayName ?? '';
+    } catch {
+      // Identity unknown — the tree falls back to "assigned to someone
+      // else" for every assigned item; not worth erroring over.
+    }
+    return this.currentUserDisplayName;
   }
 
   /**
@@ -2777,7 +2852,7 @@ app.Run();
     if (!ok) return;
 
     // Show task detail panel in the chat
-    this.postMessage({ type: 'workItemDetail', item: {
+    this.postMessage({ type: 'workItemDetail', item: await this.resolveWorkItemImages({
       id: this.activeWorkItem.id,
       title: this.activeWorkItem.title,
       state: 'Active',
@@ -2790,7 +2865,7 @@ app.Run();
       iterationPath: detail.fields['System.IterationPath'] ?? '',
       creator: detail.fields['System.CreatedBy']?.displayName ?? '',
       comments: this.activeWorkItem.comments ?? [],
-    }});
+    })});
 
     vscode.window.showInformationMessage(`ADO Code: task ADO-${workItemId} picked up. Happy coding!`);
   }
@@ -2893,7 +2968,7 @@ app.Run();
         comments: comments.map(c => ({ author: c.createdBy.displayName, text: c.text, date: c.createdDate })),
       };
       this.cacheActiveWorkItem(detail.fields['System.ChangedDate']);
-      this.postMessage({ type: 'workItemDetail', item: {
+      this.postMessage({ type: 'workItemDetail', item: await this.resolveWorkItemImages({
         id: this.activeWorkItem.id,
         title: this.activeWorkItem.title,
         state: detail.fields['System.State'],
@@ -2906,7 +2981,7 @@ app.Run();
         iterationPath: detail.fields['System.IterationPath'] ?? '',
         creator: detail.fields['System.CreatedBy']?.displayName ?? '',
         comments: this.activeWorkItem.comments ?? [],
-      }});
+      })});
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
@@ -4079,7 +4154,10 @@ First analyze the user story and explain your breakdown reasoning, then output t
       title: this.activeWorkItem?.title ?? `Work item ${workItemId}`,
       state: newState,
       date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
-      workItemUrl: `https://dev.azure.com/${settings.adoOrganization}/${project}/_workitems/edit/${workItemId}`,
+      // Percent-encode org + project so markdown links survive project names
+      // with spaces (ADO's renderer truncates a link destination at the first
+      // unencoded space, spilling the rest of the line as literal text).
+      workItemUrl: `https://dev.azure.com/${encodeURIComponent(settings.adoOrganization)}/${encodeURIComponent(project)}/_workitems/edit/${workItemId}`,
       branch: branch ?? undefined,
       commitHash: commitHash ?? undefined,
     };
