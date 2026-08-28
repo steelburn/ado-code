@@ -1,13 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import { logger } from '../services/logger';
 import { ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
 
+/**
+ * Scaffolds new projects from wizard requests. Deliberately vscode-free so it
+ * runs under plain mocha (fast tests) — the host (ChatViewProvider) resolves
+ * the targetPath before calling createProject.
+ */
 export class ProjectCreationService {
-  constructor(_context: vscode.ExtensionContext) {}
-
   /**
    * Create a new project based on the wizard request.
    * Handles directory creation, template scaffolding, git init, and initial commit.
@@ -24,9 +25,21 @@ export class ProjectCreationService {
           error: 'No target path specified',
         };
       }
-      const projectDir = path.join(request.targetPath, request.projectName);
 
-      logger.info(`ProjectCreation: creating project "${request.projectName}" with template "${request.templateId}"`);
+      // Reject empty / path-traversing project names before path.join
+      const projectName = (request.projectName || '').trim();
+      if (!projectName) {
+        return { success: false, path: '', error: 'Project name is required' };
+      }
+      if (/[/\\]/.test(projectName) || projectName === '.' || projectName === '..') {
+        return {
+          success: false,
+          path: '',
+          error: `Invalid project name "${request.projectName}" (must be a plain folder name)`,
+        };
+      }
+
+      const projectDir = path.join(request.targetPath, projectName);
 
       // Ensure target path exists
       if (!fs.existsSync(request.targetPath)) {
@@ -35,34 +48,31 @@ export class ProjectCreationService {
 
       // Check if project directory already exists
       if (fs.existsSync(projectDir)) {
-        logger.warn(`ProjectCreation: directory "${projectDir}" already exists`);
         return {
           success: false,
           path: projectDir,
-          error: `Directory "${request.projectName}" already exists at ${request.targetPath}`,
+          error: `Directory "${projectName}" already exists at ${request.targetPath}`,
         };
       }
 
       // Scaffold files based on template
-      await this.scaffoldByTemplate(projectDir, request);
+      await this.scaffoldByTemplate(projectDir, { ...request, projectName });
 
       // Initialize git if requested
       if (request.gitInit) {
-        await this.initGit(projectDir);
+        await this.initGit(projectDir, request.gitBranchName);
       }
 
       // Create initial commit if requested
       if (request.gitInitialCommit && request.gitInit) {
-        await this.createInitialCommit(projectDir, request.projectName);
+        await this.createInitialCommit(projectDir, projectName);
       }
 
-      logger.info(`ProjectCreation: project "${request.projectName}" created successfully at ${projectDir}`);
       return {
         success: true,
         path: projectDir,
       };
     } catch (err) {
-      logger.error(`ProjectCreation: failed to create project`, err);
       return {
         success: false,
         path: '',
@@ -212,7 +222,7 @@ export class ProjectCreationService {
     if (opts.docker) {
       fs.writeFileSync(
         path.join(dir, 'Dockerfile'),
-        `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\nCMD ["node", "dist/index.js"]\n`
+        `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install\nCOPY . .\nRUN npm run build\nCMD ["node", "dist/index.js"]\n`
       );
     }
 
@@ -373,6 +383,7 @@ export class ProjectCreationService {
     const dirs = [
       'app/Http/Controllers',
       'app/Models',
+      'bootstrap',
       'routes',
       'config',
       'database/migrations',
@@ -392,6 +403,12 @@ export class ProjectCreationService {
       `#!/usr/bin/env php\n<?php\n\nuse Symfony\\Component\\Console\\Input\\ArgvInput;\n\ndefine('LARAVEL_START', microtime(true));\n\nrequire __DIR__.'/vendor/autoload.php';\n\n$app = require_once __DIR__.'/bootstrap/app.php';\n\n$kernel = $app->make(Illuminate\\Contracts\\Console\\Kernel::class);\n\n$status = $kernel->handle($input = new ArgvInput, new Symfony\\Component\\Console\\Output\\ConsoleOutput);\n\n$kernel->terminate($input, $status);\n`
     );
     fs.chmodSync(path.join(dir, 'artisan'), 0o755);
+
+    // Laravel 11 bootstrap: artisan's require_once above needs bootstrap/app.php
+    fs.writeFileSync(
+      path.join(dir, 'bootstrap', 'app.php'),
+      `<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Exceptions;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n    )\n    ->withMiddleware(function (Middleware $middleware) {\n        //\n    })\n    ->withExceptions(function (Exceptions $exceptions) {\n        //\n    })\n    ->create();\n`
+    );
 
     fs.writeFileSync(
       path.join(dir, 'routes', 'web.php'),
@@ -453,7 +470,7 @@ export class ProjectCreationService {
     fs.writeFileSync(path.join(dir, `${name}.csproj`), csproj);
     fs.writeFileSync(
       path.join(dir, `${name}.sln`),
-      `\nMicrosoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\nVisualStudioVersion = 17.0.31903.59\nMinimumVisualStudioVersion = 10.0.40219.1\nProject("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "${name}", "${name}.csproj", "{GUID-HERE}"\nEndProject\nGlobal\n\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n\t\tDebug|Any CPU = Debug|Any CPU\n\t\tRelease|Any CPU = Release|Any CPU\n\tEndGlobalSection\nEndGlobal\n`
+      `\nMicrosoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\nVisualStudioVersion = 17.0.31903.59\nMinimumVisualStudioVersion = 10.0.40219.1\nProject("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "${name}", "${name}.csproj", "{${this.newGuid()}}"\nEndProject\nGlobal\n\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n\t\tDebug|Any CPU = Debug|Any CPU\n\t\tRelease|Any CPU = Release|Any CPU\n\tEndGlobalSection\nEndGlobal\n`
     );
 
     fs.mkdirSync(path.join(dir, 'Controllers'), { recursive: true });
@@ -663,6 +680,9 @@ export class ProjectCreationService {
       pkg.devDependencies.postcss = '^8.0.0';
       pkg.devDependencies.autoprefixer = '^10.0.0';
     }
+    if (opts.prisma) {
+      pkg.devDependencies.prisma = '^5.0.0';
+    }
 
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
 
@@ -703,7 +723,7 @@ export class ProjectCreationService {
     fs.mkdirSync(path.join(dir, 'src', 'app'), { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'src', 'app', 'layout.tsx'),
-      `import type { Metadata } from 'next';\n\nexport const metadata: Metadata = {\n  title: '${name}',\n  description: '${description || ''}',\n};\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang="en">\n      <body>{children}</body>\n    </html>\n  );\n}\n`
+      `import type { Metadata } from 'next';\n${opts.tailwind ? "import './globals.css';\n" : ''}\nexport const metadata: Metadata = {\n  title: '${name}',\n  description: '${description || ''}',\n};\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang="en">\n      <body>{children}</body>\n    </html>\n  );\n}\n`
     );
     fs.writeFileSync(
       path.join(dir, 'src', 'app', 'page.tsx'),
@@ -726,8 +746,8 @@ export class ProjectCreationService {
     }
 
     if (opts.prisma) {
-      pkg.devDependencies.prisma = '^5.0.0';
-      fs.writeFileSync(path.join(dir, 'prisma', 'schema.prisma'), `// Prisma schema\n\n datasource db {\n   provider = "postgresql"\n   url      = env("DATABASE_URL")\n }\n\n generator client {\n   provider = "prisma-client-js"\n }\n`);
+      fs.mkdirSync(path.join(dir, 'prisma'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'prisma', 'schema.prisma'), `// Prisma schema\n\ndatasource db {\n  provider = "postgresql"\n  url      = env("DATABASE_URL")\n}\n\ngenerator client {\n  provider = "prisma-client-js"\n}\n`);
     }
 
     this.writeGitignore(dir, 'node-ts');
@@ -786,7 +806,7 @@ export class ProjectCreationService {
       'php-laravel': '/vendor/\n.env\n.env.backup\n.phpunit.result.cache\nHomestead.json\nHomestead.yaml\nauth.json\nnpm-debug.log\nyarn-error.log\n/.fleet\n/.idea\n/.vscode\n',
       php: '/vendor/\ncomposer.lock\n.phpunit.result.cache\n',
       dotnet: '/bin/\n/obj/\n/user/\n*.user\n*.suo\n*.userosscache\n*.sln.docstates\n',
-      empty: '',
+      empty: '.env\n.DS_Store\n',
     };
 
     const content = gitignores[templateId] || 'node_modules/\n';
@@ -795,26 +815,44 @@ export class ProjectCreationService {
     }
   }
 
-  // ──────────────────────────────────────────────
-  //  Git operations
-  // ──────────────────────────────────────────────
-  private async initGit(dir: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      execFile('git', ['init'], { cwd: dir }, (err: any) =>
-        err ? reject(err) : resolve()
-      );
+  /** RFC-4122-ish v4 GUID for generated .sln files (no crypto import needed). */
+  private newGuid(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
     });
   }
 
-  private async createInitialCommit(dir: string, projectName: string): Promise<void> {
-    const exec = (cmd: string, args: string[]): Promise<void> =>
-      new Promise((resolve, reject) => {
-        execFile(cmd, args, { cwd: dir }, (err: any) =>
-          err ? reject(err) : resolve()
-        );
+  // ──────────────────────────────────────────────
+  //  Git operations
+  // ──────────────────────────────────────────────
+  private run(cmd: string, args: string[], cwd: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(cmd, args, { cwd }, (err: any, stdout: string, stderr: string) => {
+        if (err) {
+          const detail = ((stderr || '').toString() || err.message || '').trim();
+          reject(new Error(detail || String(err)));
+        } else {
+          resolve((stdout || '').toString().trim());
+        }
       });
+    });
+  }
 
-    await exec('git', ['add', '.']);
-    await exec('git', ['commit', '-m', `Initial commit: ${projectName}`]);
+  private async initGit(dir: string, branchName?: string): Promise<void> {
+    const branch = (branchName || '').trim() || 'main';
+    try {
+      // git init -b needs git >= 2.28 (2020) — the common case.
+      await this.run('git', ['init', '-b', branch], dir);
+    } catch {
+      // Older git: plain init, then move the unborn HEAD onto the branch.
+      await this.run('git', ['init'], dir);
+      await this.run('git', ['checkout', '-b', branch], dir).catch(() => undefined);
+    }
+  }
+
+  private async createInitialCommit(dir: string, projectName: string): Promise<void> {
+    await this.run('git', ['add', '.'], dir);
+    await this.run('git', ['commit', '-m', `Initial commit: ${projectName}`], dir);
   }
 }

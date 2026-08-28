@@ -10,7 +10,10 @@ suite('GitService', () => {
 
   setup(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-git-'));
-    cp.execSync('git init', { cwd: tmpDir });
+    // Deterministic default branch (git >= 2.28): some machines have no
+    // init.defaultBranch config, where plain `git init` defaults to master and
+    // the protected-branch test's `git checkout -b master` then fails.
+    cp.execSync('git init -b main', { cwd: tmpDir });
     cp.execSync('git config user.email test@test.com', { cwd: tmpDir });
     cp.execSync('git config user.name test', { cwd: tmpDir });
   });

@@ -2,6 +2,21 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.6.3] - 2026-08-28
+
+### Improvements
+- **New Project wizard creates projects anywhere**: The wizard previously always failed with "No target path specified" — the webview sent an empty target folder for the host to resolve and the host never did, so every create attempt aborted before touching disk. The host now resolves the destination itself: the open workspace folder (blank directories included) is used automatically, and you're asked to pick a folder when none is open
+- **Empty-workspace prompt opens the full wizard**: The "Create New Project" offer shown in an empty folder used an old limited inline flow (6 templates, no options, no review) — it now opens the full wizard with all 9 templates and every step
+- **Wizard template defaults apply even when you skip the options step**: Picking a template now pre-fills its option defaults (README/.gitignore/LICENSE for Empty, ESLint/Prettier/Jest for Node, Tailwind for Next.js, …), so jumping straight to Review no longer drops them
+- **Wizard git branch name is honored**: The "Initial Branch Name" field was collected but ignored — `git init` used whatever your machine's default branch happens to be. The chosen branch (default `main`) is now actually created
+- **ADO integration creates the work item**: The ADO Integration step collected work-item type and area path but did nothing with them. Creating a project with integration enabled now creates the work item in your active project (type + area path included); failures are reported in the success toast and never block project creation
+- **Wizard errors are visible again**: Create failures used the global error banner, which sits behind the wizard's full-screen overlay — they now render inside the wizard and the Create button re-enables after a failure
+- **Scaffolded projects are more solid**: Laravel scaffolds now include the missing `bootstrap/app.php` (artisan couldn't run) and emit valid PHP namespaces in `artisan`/`routes/web.php`; composer.json PSR-4 keys autoload correctly (single trailing backslash — the old double-escape broke autoloading); the Node.js Dockerfile uses `npm install` (no lockfile is generated, so `npm ci` would fail); .NET solutions get a real project GUID instead of a `{GUID-HERE}` placeholder; Next.js projects with Prisma actually list the dependency in package.json and Tailwind projects import their stylesheet
+- **Project-name validation**: Empty or path-traversing project names are rejected up front with a clear message instead of writing outside the target folder
+
+### Fixed
+- **24 new tests covering every project type**: Each of the 9 templates (Node TS/JS, Python, PHP Laravel/plain, .NET Web API/Console, React, Next.js, Empty) is now exercised end-to-end — scaffolded files, git init, initial commit, branch name — plus option behaviour, validation, and the create-in-a-blank-directory flow. Generated Laravel PHP is also linted with `php -l` during verification
+
 ## [0.6.2] - 2026-08-25
 
 ### Improvements

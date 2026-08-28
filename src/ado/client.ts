@@ -535,6 +535,7 @@ export class AdoClient {
       acceptanceCriteria?: string;
       tags?: string;
       assignedTo?: string;
+      areaPath?: string;
     },
     parentWorkItemId?: number
   ): Promise<{ id: number; url: string }> {
@@ -546,6 +547,7 @@ export class AdoClient {
     if (fields.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: markdownToHtml(fields.acceptanceCriteria) });
     if (fields.tags) body.push({ op: 'add', path: '/fields/System.Tags', value: fields.tags });
     if (fields.assignedTo) body.push({ op: 'add', path: '/fields/System.AssignedTo', value: fields.assignedTo });
+    if (fields.areaPath) body.push({ op: 'add', path: '/fields/System.AreaPath', value: fields.areaPath });
 
     // Add parent link if specified
     if (parentWorkItemId) {

@@ -200,6 +200,18 @@ The extension infers the active model's capabilities from its id:
 
 ## Release Notes
 
+### 0.6.3
+
+- **New Project wizard actually creates projects**: The wizard always failed with "No target path specified" — the webview sent an empty target folder for the host to resolve and the host never did. The host now resolves the destination itself: your open workspace folder (blank directories included) is used automatically, or you're asked to pick a folder when none is open
+- **Empty-workspace prompt opens the full wizard**: The "Create New Project" offer in an empty folder previously used a limited inline flow (6 templates) — it now opens the full wizard with all 9 templates and every step
+- **Wizard template defaults apply when you skip the options step**: Picking a template pre-fills its option defaults (README/.gitignore/LICENSE for Empty, ESLint/Prettier/Jest for Node, Tailwind for Next.js, …)
+- **Wizard git branch name is honored**: "Initial Branch Name" was collected but ignored — the chosen branch (default `main`) is now actually created
+- **ADO integration creates the work item**: Enabling it now creates the work item in your active project (type + area path included); failures show in the success toast and never block creation
+- **Wizard errors are visible again**: Failures render inside the wizard (the old global banner was hidden behind the overlay) and Create re-enables after a failure
+- **Scaffolded projects are more solid**: Laravel gets the missing `bootstrap/app.php` and valid PHP namespaces; composer.json PSR-4 autoloads correctly; the Node Dockerfile uses `npm install`; .NET solutions get a real project GUID; Next.js Prisma/Tailwind options actually take effect
+- **Project-name validation**: Empty or path-traversing names are rejected up front
+- **24 new tests**: every one of the 9 templates is exercised end-to-end (scaffold, git init, commit, branch) plus options, validation, and the blank-directory flow
+
 ### 0.6.2
 
 - **Images inside work items now display**: Rich-text fields (Description, Acceptance Criteria, Repro Steps, System Info) and discussion comments can contain `<img>` tags pointing at ADO's attachment endpoint — those URLs need authentication a webview can't attach, so they used to render as broken images. The extension now fetches each attachment with your PAT and inlines it as a `data:image/...` URL in the chat task panel and the standalone work-item panel (capped at 10 images / 2 MB each / 8 MB total per field)

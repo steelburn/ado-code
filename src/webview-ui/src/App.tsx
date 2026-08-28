@@ -132,6 +132,9 @@ function App() {
   const [adoReminderDismissed, setAdoReminderDismissed] = useState(false);
   // Project creation wizard
   const [showProjectWizard, setShowProjectWizard] = useState(false);
+  // Creation failure shown INSIDE the wizard (App-level, so it survives the
+  // fixed overlay that would hide the global error banner).
+  const [projectWizardError, setProjectWizardError] = useState<string | null>(null);
   // Skill catalog
   const [showSkillCatalog, setShowSkillCatalog] = useState(false);
   // Activity indicator — shows a banner while a skill is executing or tasks are generating
@@ -420,9 +423,10 @@ function App() {
 
         case 'projectWizardCreated':
           if (msg.success) {
+            setProjectWizardError(null);
             setShowProjectWizard(false);
           } else {
-            setError(msg.error || 'Failed to create project');
+            setProjectWizardError(msg.error || 'Failed to create project');
           }
           break;
         case 'openSkillCatalog':
@@ -843,7 +847,14 @@ function App() {
       )}
       {/* Project creation wizard */}
       {showProjectWizard && (
-        <ProjectCreationWizard onClose={() => setShowProjectWizard(false)} />
+        <ProjectCreationWizard
+          onClose={() => {
+            setProjectWizardError(null);
+            setShowProjectWizard(false);
+          }}
+          error={projectWizardError}
+          onClearError={() => setProjectWizardError(null)}
+        />
       )}
     </div>
   );

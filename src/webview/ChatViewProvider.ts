@@ -2049,13 +2049,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Project creation wizard
           case 'projectWizardCreate': {
             logger.info('ChatViewProvider: projectWizardCreate received');
-            const projectResult = await this.services.projectCreation.createProject(message.request);
+            const request = message.request;
+            // The webview sends targetPath:'' ("host will resolve") — resolve it
+            // to the open workspace folder (blank dirs included), or ask the
+            // user to pick a folder when none is open.
+            let targetPath =
+              (request.targetPath || '').trim() ||
+              vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
+              '';
+            if (!targetPath) {
+              const picked = await vscode.window.showOpenDialog({
+                canSelectFolders: true,
+                canSelectFiles: false,
+                canSelectMany: false,
+                openLabel: 'Create project here',
+                title: 'Select the folder where the new project will be created',
+              });
+              targetPath = picked?.[0]?.fsPath || '';
+            }
+            if (!targetPath) {
+              this.postMessage({
+                type: 'projectWizardCreated',
+                success: false,
+                path: '',
+                error: 'No target folder selected — project not created.',
+              });
+              break;
+            }
+            const projectResult = await this.services.projectCreation.createProject({ ...request, targetPath });
+            // ADO integration: create a work item for the scaffolded project.
+            // Non-fatal — the project is already on disk; failures become a note.
+            let adoNote = '';
+            if (projectResult.success && request.adoIntegration) {
+              try {
+                const active = getActiveOrg(this._context, getSettings());
+                if (active.name && active.project && getSettings().adoPat) {
+                  const wi = await this.services.ado.createWorkItem(
+                    active.project,
+                    request.adoWorkItemType || 'Task',
+                    {
+                      title: `Scaffold project: ${request.projectName}`,
+                      description: request.projectDescription || undefined,
+                      areaPath: request.adoAreaPath || undefined,
+                    }
+                  );
+                  adoNote = ` · work item #${wi.id} created`;
+                } else {
+                  adoNote = ' · ADO integration skipped (no organization/PAT configured)';
+                }
+              } catch (err) {
+                adoNote = ` · ADO integration failed: ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }
             this.postMessage({
               type: 'projectWizardCreated',
               success: projectResult.success,
               path: projectResult.path,
               error: projectResult.error,
             });
+            if (projectResult.success) {
+              vscode.window.showInformationMessage(
+                `ADO Code: project "${request.projectName}" created at ${projectResult.path}${adoNote}`
+              );
+            }
             break;
           }
         }
@@ -2431,7 +2487,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== '__pycache__'
       );
       if (meaningful.length === 0) {
-        await this.handleEmptyDirectory(root);
+        await this.handleEmptyDirectory();
         return;
       }
 
@@ -2455,7 +2511,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Handle an empty workspace — ask what the user wants to build. */
-  private async handleEmptyDirectory(root: string): Promise<void> {
+  private async handleEmptyDirectory(): Promise<void> {
     const choice = await this.requestConfirmation(
       'Empty Workspace',
       'This directory is empty. Would you like to set up a new project?',
@@ -2467,219 +2523,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
 
     if (choice === 'create') {
-      await this.scaffoldProject(root);
+      // Route through the full wizard — it resolves this directory as the
+      // target path and covers ALL templates (the legacy inline scaffolders
+      // only covered 6 types and duplicated ProjectCreationService).
+      this.postMessage({ type: 'openProjectWizard' });
     } else if (choice === 'open') {
       vscode.commands.executeCommand('workbench.action.files.openFolder');
     }
-  }
-
-  /** Scaffold a new project based on user selections. */
-  private async scaffoldProject(root: string): Promise<void> {
-    const projectType = await this.requestConfirmation(
-      'Project Type',
-      'What kind of project would you like to create?',
-      [
-        { label: 'Node.js (TypeScript)', value: 'node-ts' },
-        { label: 'Node.js (JavaScript)', value: 'node-js' },
-        { label: 'Python', value: 'python' },
-        { label: 'PHP (Laravel)', value: 'php-laravel' },
-        { label: 'PHP (Plain)', value: 'php' },
-        { label: '.NET (C# Web API)', value: 'dotnet-webapi' },
-        { label: '.NET (C# Console)', value: 'dotnet-console' },
-        { label: 'Cancel', value: '', isDangerous: true },
-      ]
-    );
-    if (!projectType) return;
-
-    const projectName = await vscode.window.showInputBox({
-      prompt: 'Project name?',
-      placeHolder: 'my-project',
-      ignoreFocusOut: true,
-    });
-    if (!projectName) return;
-
-    const projectDir = path.join(root, projectName);
-
-    try {
-      if (projectType === 'node-ts') {
-        await this.scaffoldNodeTs(projectDir, projectName);
-      } else if (projectType === 'node-js') {
-        await this.scaffoldNodeJs(projectDir, projectName);
-      } else if (projectType === 'python') {
-        await this.scaffoldPython(projectDir, projectName);
-      } else if (projectType === 'php-laravel') {
-        await this.scaffoldPhpLaravel(projectDir, projectName);
-      } else if (projectType === 'php') {
-        await this.scaffoldPhp(projectDir, projectName);
-      } else if (projectType === 'dotnet-webapi') {
-        await this.scaffoldDotNetWebApi(projectDir, projectName);
-      } else if (projectType === 'dotnet-console') {
-        await this.scaffoldDotNetConsole(projectDir, projectName);
-      }
-
-      const initGit = await this.requestConfirmation(
-        'Initialize Git',
-        `Initialize a git repository in ${projectName}?`,
-        [
-          { label: 'Yes, init git', value: 'yes' },
-          { label: 'No', value: 'no', isDangerous: true },
-        ]
-      );
-      if (initGit === 'yes') {
-        const exec = execFile;
-        await new Promise<void>((resolve, reject) => {
-          exec('git', ['init'], { cwd: projectDir }, (err: any) => err ? reject(err) : resolve());
-        });
-      }
-
-      vscode.window.showInformationMessage(`ADO Code: project "${projectName}" created.`);
-    } catch (err) {
-      vscode.window.showErrorMessage(`ADO Code: failed to create project: ${err instanceof Error ? err.message : err}`);
-    }
-  }
-
-  private async scaffoldNodeTs(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
-      name, version: '0.1.0', description: '',
-      scripts: { build: 'tsc', start: 'node dist/index.js', test: 'echo "no tests"' },
-      devDependencies: { typescript: '^5.0.0', '@types/node': '^20.0.0' },
-    }, null, 2));
-    fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({
-      compilerOptions: { target: 'ES2022', module: 'commonjs', outDir: 'dist', rootDir: 'src', strict: true, esModuleInterop: true },
-      include: ['src'], exclude: ['node_modules', 'dist'],
-    }, null, 2));
-    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'src', 'index.ts'), `console.log('Hello, ${name}!');\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\ndist/\n');
-  }
-
-  private async scaffoldNodeJs(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
-      name, version: '0.1.0', description: '',
-      main: 'index.js',
-      scripts: { start: 'node index.js', test: 'echo "no tests"' },
-    }, null, 2));
-    fs.writeFileSync(path.join(dir, 'index.js'), `console.log('Hello, ${name}!');\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
-  }
-
-  private async scaffoldPython(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    const modName = name.replace(/-/g, '_');
-    fs.writeFileSync(path.join(dir, 'pyproject.toml'), `[project]
-name = "${name}"
-version = "0.1.0"
-description = ""
-requires-python = ">=3.9"
-
-[project.scripts]
-${name} = "${modName}:main"
-`);
-    fs.writeFileSync(path.join(dir, `${modName}.py`), `def main():\n    print("Hello, ${name}!")\n\nif __name__ == "__main__":\n    main()\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), '__pycache__/\n*.pyc\n.env\nvenv/\n');
-  }
-
-  private async scaffoldPhpLaravel(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({
-      name: `app/${name}`,
-      description: '',
-      type: 'project',
-      require: {
-        php: '^8.1',
-        'laravel/framework': '^11.0',
-        'laravel/tinker': '^2.9',
-      },
-      'require-dev': {
-        'fakerphp/faker': '^1.23',
-        'laravel/pint': '^1.13',
-        'laravel/sail': '^1.26',
-        'mockery/mockery': '^1.6',
-        'nunomaduro/collision': '^8.0',
-        'phpunit/phpunit': '^11.0',
-      },
-      'autoload': { 'psr-4': { 'App\\\\': 'app/', 'Database\\\\Factories\\\\': 'database/factories/', 'Database\\\\Seeders\\\\': 'database/seeders/' } },
-      'autoload-dev': { 'psr-4': { 'Tests\\\\': 'tests/' } },
-      'scripts': { 'post-autoload-dump': ['@php artisan package:discover --ansi', '@php artisan vendor:publish --tag=assets --ansi --force'] },
-      'extra': { 'laravel': { 'dont-discover': [] } },
-      'config': { 'optimize-autoloader': true, 'preferred-install': 'dist', 'sort-packages': true, 'allow-plugins': { 'pestphp/pest-plugin': true, 'php-http/discovery': true } },
-      'minimum-stability': 'stable',
-      'prefer-stable': true,
-    }, null, 2));
-
-    // Basic Laravel structure
-    const dirs = ['app/Http/Controllers', 'app/Models', 'routes', 'config', 'database/migrations', 'database/seeders', 'resources/views', 'resources/css', 'public', 'tests/Feature', 'tests/Unit'];
-    for (const d of dirs) fs.mkdirSync(path.join(dir, d), { recursive: true });
-
-    fs.writeFileSync(path.join(dir, 'artisan'), `#!/usr/bin/env php\n<?php\n\nuse Symfony\\Component\\Console\\Input\\ArgvInput;\n\ndefine('LARAVEL_START', microtime(true));\n\nrequire __DIR__.'/vendor/autoload.php';\n\n$app = require_once __DIR__.'/bootstrap/app.php';\n\n$kernel = $app->make(Illuminate\\Contracts\\Console\\Kernel::class);\n\n$status = $kernel->handle($input = new ArgvInput, new Symfony\\Component\\Console\\Output\\ConsoleOutput);\n\n$kernel->terminate($input, $status);\n`);
-    fs.chmodSync(path.join(dir, 'artisan'), 0o755);
-
-    fs.writeFileSync(path.join(dir, 'routes', 'web.php'), `<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/', function () {\n    return view('welcome');\n});\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), '/vendor/\n.env\n.env.backup\n.phpunit.result.cache\nHomestead.json\nHomestead.yaml\nauth.json\nnpm-debug.log\nyarn-error.log\n/.fleet\n/.idea\n/.vscode\n');
-  }
-
-  private async scaffoldPhp(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({
-      name: `app/${name}`,
-      description: '',
-      require: { php: '^8.1' },
-      'require-dev': { 'phpunit/phpunit': '^11.0', 'squizlabs/php_codesniffer': '^3.7' },
-      autoload: { 'psr-4': { 'App\\': 'src/' } },
-      'autoload-dev': { 'psr-4': { 'App\\Tests\\': 'tests/' } },
-    }, null, 2));
-
-    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'src', 'index.php'), `<?php\n\necho "Hello, ${name}!\n";\n`);
-    fs.writeFileSync(path.join(dir, 'phpunit.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<phpunit bootstrap="vendor/autoload.php" colors="true">\n    <testsuites>\n        <testsuite name="Unit">\n            <directory>tests</directory>\n        </testsuite>\n    </testsuites>\n</phpunit>\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), '/vendor/\ncomposer.lock\n.phpunit.result.cache\n');
-  }
-
-  private async scaffoldDotNetWebApi(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    const csproj = `<Project Sdk="Microsoft.NET.Sdk.Web">\n\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Nullable>enable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <RootNamespace>${name}</RootNamespace>\n  </PropertyGroup>\n\n  <ItemGroup>\n    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />\n    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />\n  </ItemGroup>\n\n</Project>\n`;
-    fs.writeFileSync(path.join(dir, `${name}.csproj`), csproj);
-    fs.writeFileSync(path.join(dir, `${name}.sln`), `\nMicrosoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\nVisualStudioVersion = 17.0.31903.59\nMinimumVisualStudioVersion = 10.0.40219.1\nProject("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "${name}", "${name}.csproj", "{GUID-HERE}"\nEndProject\nGlobal\n\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n\t\tDebug|Any CPU = Debug|Any CPU\n\t\tRelease|Any CPU = Release|Any CPU\n\tEndGlobalSection\nEndGlobal\n`);
-
-    fs.mkdirSync(path.join(dir, 'Controllers'), { recursive: true });
-    fs.mkdirSync(path.join(dir, 'Models'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'Program.cs'), `var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-var app = builder.Build();
-
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
-
-app.UseHttpsRedirection();
-app.UseAuthorization();
-app.MapControllers();
-
-app.Run();
-`);
-    fs.writeFileSync(path.join(dir, 'appsettings.json'), JSON.stringify({
-      Logging: { LogLevel: { Default: 'Information', 'Microsoft.AspNetCore': 'Warning' } },
-      AllowedHosts: '*',
-    }, null, 2));
-    fs.writeFileSync(path.join(dir, 'Controllers', 'WeatherForecastController.cs'), `using Microsoft.AspNetCore.Mvc;\n\nnamespace ${name}.Controllers;\n\n[ApiController]\n[Route("[controller]")]\npublic class WeatherForecastController : ControllerBase\n{\n    private static readonly string[] Summaries = [\n        "Freezing", "Bracing", "Chilly", "Cool", "Mild",\n        "Warm", "Balmy", "Hot", "Sweltering", "Scorching"\n    ];\n\n    private readonly ILogger<WeatherForecastController> _logger;\n\n    public WeatherForecastController(ILogger<WeatherForecastController> logger)\n    {\n        _logger = logger;\n    }\n\n    [HttpGet] public IEnumerable<object> Get() =>\n        Enumerable.Range(1, 5).Select(index => new\n        {\n            Date = DateOnly.FromDateTime(DateTime.Now.AddDays(index)),\n            TemperatureC = Random.Shared.Next(-20, 55),\n            Summary = Summaries[Random.Shared.Next(Summaries.Length)]\n        })\n        .ToArray();\n}\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), '/bin/\n/obj/\n/user/\n*.user\n*.suo\n*.userosscache\n*.sln.docstates\n');
-  }
-
-  private async scaffoldDotNetConsole(dir: string, name: string): Promise<void> {
-    fs.mkdirSync(dir, { recursive: true });
-    const csproj = `<Project Sdk="Microsoft.NET.Sdk">\n\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net8.0</TargetFramework>\n    <Nullable>enable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <RootNamespace>${name}</RootNamespace>\n  </PropertyGroup>\n\n</Project>\n`;
-    fs.writeFileSync(path.join(dir, `${name}.csproj`), csproj);
-    fs.writeFileSync(path.join(dir, 'Program.cs'), `Console.WriteLine("Hello, ${name}!");\n`);
-    fs.writeFileSync(path.join(dir, '.gitignore'), '/bin/\n/obj/\n/user/\n*.user\n*.suo\n');
   }
 
   /** Offer to initialize git in the workspace. */

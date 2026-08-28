@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { vscode } from '../../vscode';
 import { WizardState, PROJECT_TEMPLATES } from './types';
 import { StepProjectType } from './StepProjectType';
@@ -11,6 +11,9 @@ import './styles.css';
 
 interface Props {
   onClose: () => void;
+  /** Creation failure surfaced by the host (App-level, so it survives the overlay). */
+  error?: string | null;
+  onClearError?: () => void;
 }
 
 const STEPS = [
@@ -22,7 +25,16 @@ const STEPS = [
   'Review & Create',
 ];
 
-export function ProjectCreationWizard({ onClose }: Props) {
+/** Default option values for a template (applied when the template is picked, so
+ *  defaults hold even if the user skips the Template Options step). */
+function defaultsFor(templateId: string): Record<string, any> {
+  const template = PROJECT_TEMPLATES.find(t => t.id === templateId);
+  const defaults: Record<string, any> = {};
+  template?.options.forEach(o => { defaults[o.id] = o.default; });
+  return defaults;
+}
+
+export function ProjectCreationWizard({ onClose, error, onClearError }: Props) {
   const [state, setState] = useState<WizardState>({
     step: 0,
     templateId: null,
@@ -39,7 +51,12 @@ export function ProjectCreationWizard({ onClose }: Props) {
   });
 
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  // A host-reported failure re-enables the Create button (it stays "Creating…"
+  // and disabled otherwise, since the wizard never unmounts on failure).
+  useEffect(() => {
+    if (error) setCreating(false);
+  }, [error]);
 
   const updateState = useCallback((updates: Partial<WizardState>) => {
     setState(prev => ({ ...prev, ...updates }));
@@ -71,7 +88,7 @@ export function ProjectCreationWizard({ onClose }: Props) {
 
   const handleCreate = async () => {
     setCreating(true);
-    setError(null);
+    onClearError?.();
 
     vscode.postMessage({
       type: 'projectWizardCreate',
@@ -87,7 +104,7 @@ export function ProjectCreationWizard({ onClose }: Props) {
         gitInit: state.gitInit,
         gitInitialCommit: state.gitInitialCommit,
         gitBranchName: state.gitBranchName,
-        targetPath: '', // Host will resolve
+        targetPath: '', // Host will resolve (workspace root or folder picker)
       },
     });
   };
@@ -98,7 +115,7 @@ export function ProjectCreationWizard({ onClose }: Props) {
         return (
           <StepProjectType
             selectedTemplateId={state.templateId}
-            onSelect={id => updateState({ templateId: id })}
+            onSelect={id => updateState({ templateId: id, templateOptions: defaultsFor(id) })}
           />
         );
       case 1:

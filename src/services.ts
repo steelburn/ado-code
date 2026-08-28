@@ -78,7 +78,7 @@ export function createServices(context: vscode.ExtensionContext): Services {
     mcp: new McpManager(context),
     skills: new SkillManager(context),
     skillRegistry: new SkillRegistryService(context),
-    projectCreation: new ProjectCreationService(context),
+    projectCreation: new ProjectCreationService(),
     workspaceMemory,
     memory: new UserMemory(context),
     understanding: new UnderstandingService(workspaceRoot, git, workspaceMemory),
