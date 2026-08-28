@@ -483,6 +483,14 @@ function App() {
     });
   }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles]);
 
+  // Wizard focus: while a full-page wizard is open (first-run setup,
+  // Configuration page, project creation) ask the host to collapse the
+  // sibling sidebar views so this webview gets the whole container height.
+  const wizardOpen = Boolean(config && !config.configured) || showConfig || showProjectWizard;
+  useEffect(() => {
+    vscode.postMessage({ type: 'maximizeWizard', active: wizardOpen });
+  }, [wizardOpen]);
+
   // ── Actions ────────────────────────────────────────────────────
   const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
     // Prepend attached file contents to the message so the LLM sees them

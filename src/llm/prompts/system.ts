@@ -90,6 +90,8 @@ function buildToolGuidelines(mode: ModeConfig): string {
   lines.push(
     '- If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the SAME request so they execute in parallel (e.g. several `read_file` calls, or get_work_items + get_selection). Otherwise wait for previous calls to finish first to determine the dependent values.',
     '- When making several disjoint changes to the SAME file, batch them into ONE `edit_file` call using the `edits` array instead of separate calls.',
+    '- To fetch details of SEVERAL work items, pass all their ids in ONE `get_work_item` call via the `ids` array instead of repeated calls.',
+    '- To run several quick terminal commands, pass them as the `commands` array in ONE `run_terminal_command` call instead of repeated calls (each command still runs separately, in order; outputs are concatenated).',
     '',
   );
 

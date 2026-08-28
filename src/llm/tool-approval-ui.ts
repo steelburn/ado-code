@@ -57,6 +57,31 @@ export function clearSessionAutoApprovals(): void {
 // ─── Per-command session approval (terminal command allowlist) ──────────────
 
 /**
+ * The commands a run_terminal_command call will execute, in order: the
+ * `commands` batch array if present, else the single `command` string.
+ * Empty entries are dropped. Shared by the executor gate, the consent
+ * session cache and the deny-key logic so single + batch calls agree.
+ */
+export function terminalCommandList(args: Record<string, any>): string[] {
+  if (Array.isArray(args.commands) && args.commands.length > 0) {
+    return args.commands.map((c: unknown) => String(c)).filter(Boolean);
+  }
+  const single = String(args.command ?? '').trim();
+  return single ? [single] : [];
+}
+
+/**
+ * Canonical identity of a terminal-command call (single or batch) used for
+ * consent deny keys and session-approval records: the commands joined with
+ * ' | ' (e.g. `git status | git diff`). A batch is only auto-approved when
+ * the SAME batch was approved before; a single command of the same string
+ * is still treated separately.
+ */
+export function terminalCommandKey(args: Record<string, any>): string {
+  return terminalCommandList(args).join(' | ');
+}
+
+/**
  * Tracks exact terminal commands the user chose to "allow for session".
  * Key is the trimmed command string. Reset when the chat is cleared.
  */

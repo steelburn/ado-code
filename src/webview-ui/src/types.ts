@@ -90,7 +90,11 @@ export type WebviewToExtensionMessage =
   | { type: 'deleteSession'; sessionId: string }
   | { type: 'clearAllSessions' }
   // Project creation wizard
-  | { type: 'projectWizardCreate'; request: ProjectCreationRequest };
+  | { type: 'projectWizardCreate'; request: ProjectCreationRequest }
+  // Wizard focus: a full-page wizard (Configuration page / project creation)
+  // opened or closed in the chat webview — the host collapses the sibling
+  // sidebar views so the wizard gets the whole view container.
+  | { type: 'maximizeWizard'; active: boolean };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -126,6 +130,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
   // Project selection
   | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> }
+  // Open the in-webview Configuration page (host-side trigger, e.g. from the
+  // chat kebab "Configuration…" menu item).
+  | { type: 'openSettings' }
   // Wizard model picker — model ids plus OPTIONAL live capability hints from
   // gateways that expose them (OpenRouter/Ollama). Undefined = use heuristic.
   | { type: 'modelList'; models: Array<{ id: string; vision?: boolean; tools?: boolean }> }

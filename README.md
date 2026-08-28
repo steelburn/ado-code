@@ -6,7 +6,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 
 - Fetch work items from Azure DevOps in one tree view with a mode toggle — My Work Items / All Work Items / Unassigned — rendered as a real hierarchy (Epic → Feature → User Story → Task)
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
-- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes) — independent tool calls run in parallel, batched `edit_file` edits, and a `search_files` grep tool with per-line truncation
+- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes) — independent tool calls run in parallel (even in mixed batches: consent-free calls don't wait behind approval cards), batched `edit_file` edits, batch `get_work_item` `ids` / `run_terminal_command` `commands` arrays, and a `search_files` grep tool with per-line truncation
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, Pi, and more)
 - **Git worktree isolation**: Concurrent agents run in isolated worktrees — no branch conflicts
@@ -27,6 +27,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
 - **Reorganized Configuration UI**: Settings are grouped into navigable sidebar categories — Connection, AI & Modes, Permissions, Workflow, and Integrations — each with a setting-count badge, so you can jump straight to what you need instead of scrolling. The Advanced toggle gates a dedicated **Advanced** category: per-mode model selection, capability overrides, the choice detection model, and native token counting
 - **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js, Python, React, Next.js, Laravel, .NET) — configure options, ADO integration, and git setup before creation (`/new-project`)
+- **Wizard focus**: The Configuration page, project-creation wizard, and first-run setup take over the whole sidebar while open — the sibling views (Work Items / Status / Worktrees) collapse automatically and are restored when the wizard closes, so wizards never share space with the trees. The chat kebab's "Configuration…" opens the in-app Configuration page
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, filtering, and enable/disable toggle (`/skills`)
 - **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — "Execute in Chat" button injects the skill prompt and triggers the LLM
 - **Skill import**: Import custom skills from local .json files, SKILL.md files (YAML frontmatter + markdown), or .tar.gz/.zip archives — imported skills persist across VS Code restarts
@@ -199,6 +200,14 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### Unreleased
+
+- **Mixed-batch tool calls stay parallel**: When a model turn mixes consent-free calls (reads, allowlisted commands) with calls that need your approval, the free ones now run concurrently instead of the whole batch serializing behind the first consent card — approval cards still appear one at a time, never stacked
+- **Batch work-item reads**: `get_work_item` accepts an `ids` array — several work items in one call (up to 20, batch-fetched with discussion threads loaded in parallel)
+- **Batch terminal commands**: `run_terminal_command` accepts a `commands` array — several commands in one call, one consent card, outputs concatenated; every command is still checked for shell operators and the act-mode allowlist
+- **Wizards take over the sidebar**: Configuration page, project-creation wizard, and first-run setup collapse the sibling views (Work Items / Status / Worktrees) while open and restore them on close
+- **"Configuration…" opens the in-app Configuration page**: The chat kebab no longer jumps to VS Code's native settings — it opens the in-webview Configuration page (full-width, with the sibling views collapsed)
 
 ### 0.6.3
 

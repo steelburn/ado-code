@@ -545,4 +545,64 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
     assert.strictEqual(tasks[0].acceptanceCriteria, 'User can log in.\n  - With a sub-bullet');
     assert.strictEqual(tasks[1].workItemType, 'Bug');
   });
+
+  test('maximizeWizard hides sibling sidebar views on wizard open and restores them on close', async () => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const handlers: Array<(msg: any) => void> = [];
+    const webviewView: any = {
+      onDidDispose: () => {},
+      onDidChangeVisibility: () => {},
+      webview: {
+        options: {},
+        html: '',
+        postMessage: () => {},
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (h: (msg: any) => void) => { handlers.push(h); },
+      },
+    };
+    const executed: string[] = [];
+    const orig = vscode.commands.executeCommand;
+    (vscode.commands as any).executeCommand = async (id: string) => { executed.push(id); };
+    try {
+      await (provider as any).resolveWebviewView(webviewView, {}, {});
+      const toggles = () => executed.filter(id => id.endsWith('.toggleVisibility'));
+
+      await handlers[0]({ type: 'maximizeWizard', active: true });
+      assert.deepStrictEqual(toggles(), [
+        'adoCode.workItems.toggleVisibility',
+        'adoCode.status.toggleVisibility',
+        'adoCode.worktrees.toggleVisibility',
+      ], 'all three sibling views hidden when a wizard opens');
+
+      // Repeated open while already open must not double-toggle.
+      await handlers[0]({ type: 'maximizeWizard', active: true });
+      assert.strictEqual(toggles().length, 3, 'no duplicate toggles for a repeated open');
+
+      await handlers[0]({ type: 'maximizeWizard', active: false });
+      assert.deepStrictEqual(toggles().slice(3), toggles().slice(0, 3), 'close restores exactly the views that were hidden');
+    } finally {
+      (vscode.commands as any).executeCommand = orig;
+    }
+  });
+
+  test("kebab 'Configuration…' routes to the in-webview Configuration page", async () => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const handlers: Array<(msg: any) => void> = [];
+    const posted: any[] = [];
+    const webviewView: any = {
+      onDidDispose: () => {},
+      onDidChangeVisibility: () => {},
+      webview: {
+        options: {},
+        html: '',
+        postMessage: (m: any) => posted.push(m),
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (h: (msg: any) => void) => { handlers.push(h); },
+      },
+    };
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+    await handlers[0]({ type: 'openSettings' });
+    const openMsg = posted.find(m => m.type === 'openSettings');
+    assert.ok(openMsg, 'host posts openSettings back to the webview (in-app Configuration page)');
+  });
 });

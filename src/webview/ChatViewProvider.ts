@@ -19,7 +19,7 @@ import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker, isHarmlessCommand } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
-import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals } from '../llm/tool-approval-ui';
+import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals, terminalCommandKey, terminalCommandList } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
 import { AgentRunner } from '../agents/AgentRunner';
 import type { AgentRun } from '../agents/types';
@@ -76,6 +76,18 @@ function trimConversationToPairs(msgs: LlmMessage[], maxPairs: number): LlmMessa
   }
   return head === 1 ? [msgs[0], ...tail] : tail;
 }
+
+// ── Wizard focus (sidebar space maximization) ───────────────────────────────
+// The wizards (Configuration page, project creation) are full-page overlays
+// INSIDE the chat webview. While one is open, the sibling views in the
+// adoCode container are hidden via their `${viewId}.toggleVisibility` command
+// (the same toggle as the container's Views-menu checkbox), so the chat
+// webview hosting the wizard gets the whole container height. Views hidden
+// here are restored when the wizard closes; views the user had hidden before
+// the wizard stay hidden afterwards (the restore toggle returns them to their
+// pre-wizard state).
+const WIZARD_SIBLING_VIEWS = ['adoCode.workItems', 'adoCode.status', 'adoCode.worktrees'];
+const wizardHiddenViews = new Set<string>();
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -941,6 +953,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Hide / restore the sibling sidebar views while a full-page wizard is
+   * open in the chat webview (see WIZARD_SIBLING_VIEWS above). Best-effort:
+   * the toggle command may be missing on older VS Code or the view may not
+   * be materialized yet — failures are swallowed, never fatal.
+   *
+   * The hidden-view set is persisted in workspaceState so a restart while a
+   * wizard is open doesn't double-toggle: views already hidden (per the
+   * persisted set) are recorded without another toggle, and close restores
+   * exactly the views the wizard hid.
+   */
+  private async setWizardFocus(active: boolean): Promise<void> {
+    const store = this._context.workspaceState;
+    const persisted = store.get<string[]>('adoCode.wizardHiddenViews', []);
+    if (active) {
+      for (const viewId of WIZARD_SIBLING_VIEWS) {
+        if (wizardHiddenViews.has(viewId)) continue;
+        wizardHiddenViews.add(viewId);
+        if (persisted.includes(viewId)) continue; // already hidden — record only
+        void Promise.resolve(vscode.commands.executeCommand(`${viewId}.toggleVisibility`)).catch(() => undefined);
+      }
+      await store.update('adoCode.wizardHiddenViews', [...wizardHiddenViews]);
+    } else {
+      const toRestore = [...wizardHiddenViews];
+      wizardHiddenViews.clear();
+      for (const viewId of toRestore) {
+        void Promise.resolve(vscode.commands.executeCommand(`${viewId}.toggleVisibility`)).catch(() => undefined);
+      }
+      await store.update('adoCode.wizardHiddenViews', []);
+    }
+  }
+
+  /**
    * Request user consent for a mutating tool (inline mode). Renders an
    * Approve/Reject card in the chat webview and waits for the answer; falls
    * back to a native QuickPick when the webview is unavailable. The broker
@@ -957,7 +1001,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // reaches this hook for run_terminal_command too — the executor's
     // command cache only gates act mode).
     if (isSessionAutoApproved(tool)) return true;
-    if (tool === 'run_terminal_command' && isCommandSessionApproved(String(args.command ?? ''))) return true;
+    // Batch-aware: a `commands` array is keyed by its joined commands, so a
+    // previously session-approved batch (or single command) auto-approves.
+    if (tool === 'run_terminal_command' && isCommandSessionApproved(terminalCommandKey(args))) return true;
 
     const { requestId, decision } = this.consentBroker.request({ tool, args });
     // Compute auto-approve timer for harmless (read-only) terminal commands.
@@ -966,8 +1012,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (tool === 'run_terminal_command') {
       const settings = getSettings();
       if (settings.consentHarmlessAutoApprove) {
-        const cmd = String(args.command ?? '');
-        if (isHarmlessCommand(cmd)) {
+        // Batch-aware: the countdown only starts when EVERY command is harmless.
+        const cmds = terminalCommandList(args);
+        if (cmds.length > 0 && cmds.every(c => isHarmlessCommand(c))) {
           autoApproveMs = Math.max(1, settings.consentHarmlessAutoApproveSeconds) * 1000;
         }
       }
@@ -1567,7 +1614,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.postMessage({ type: 'config', config: { ...this._sanitizedConfig(), configured: false } });
             break;
           case 'openSettings':
-            vscode.commands.executeCommand('workbench.action.openSettings', 'adoCode');
+            // The chat kebab "Configuration…" opens the IN-WEBVIEW
+            // Configuration page (the full-page wizard) — posting back to the
+            // webview lets it maximize itself (sibling views collapse via the
+            // webview's maximizeWizard message).
+            this.postMessage({ type: 'openSettings' });
+            break;
+          case 'maximizeWizard':
+            // A full-page wizard opened/closed in the chat webview — collapse
+            // the sibling sidebar views so the wizard gets the whole container.
+            void this.setWizardFocus(Boolean((message as { active?: boolean }).active));
             break;
           case 'cycleMode': {
             const modes = ['inline', 'plan', 'act', 'yolo'] as const;
@@ -1630,17 +1686,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (message.approved && message.scope && this.consentBroker.pending) {
               const pending = this.consentBroker.pending;
               if (message.scope === 'session') {
-                // Allow for Session: exact command (terminal) or tool name.
+                // Allow for Session: exact command(s) (terminal, batch-aware)
+                // or tool name.
                 if (pending.tool === 'run_terminal_command') {
-                  addSessionCommandApproval(String(pending.args.command ?? '').trim());
+                  addSessionCommandApproval(terminalCommandKey(pending.args));
                 } else {
                   addSessionToolApproval(pending.tool);
                 }
               } else if (message.scope === 'permanent' && pending.tool === 'run_terminal_command') {
-                // Fire-and-forget: update setting in background
-                addToTerminalAllowlist(String(pending.args.command ?? '').trim()).catch(err =>
-                  logger.error(`[tool-approval] failed to update allowlist: ${err}`),
-                );
+                // Fire-and-forget: add EVERY command of a batch to the allowlist.
+                for (const cmd of terminalCommandList(pending.args)) {
+                  addToTerminalAllowlist(cmd).catch(err =>
+                    logger.error(`[tool-approval] failed to update allowlist: ${err}`),
+                  );
+                }
               }
             }
             this.consentBroker.resolve(message.requestId, message.approved);

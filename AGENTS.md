@@ -104,12 +104,16 @@ definitions/ path was removed.
 ToolExecutor gates by mode: plan=read-only, inline=consent, act=auto-approve,
 yolo=auto-approve everything (no consent, no allowlist). gateTool() is the shared
 gate used by execute() and canAutoExecute(); the agentic loop runs batches in
-PARALLEL unless a call would prompt (then sequential, one consent card at a time),
-with a per-file mutation queue for same-file edits and a truncated-response guard
+PARALLEL — consent-requiring calls within a batch run sequentially (one
+consent card at a time) while the rest of the batch still executes
+concurrently, with a per-file mutation queue for same-file edits and a
+truncated-response guard
 (stopReason length/max_tokens ⇒ fail the batch, never execute partial args).
-Tool names: get_work_items, get_work_item, read_file, edit_file, write_to_file,
+Tool names: get_work_items, get_work_item (single `id` OR batch `ids` array),
+read_file, edit_file (multi-edit `edits` array), write_to_file,
 search_files (grep with per-line 500-char truncation), apply_diff,
-run_terminal_command, delegate_to_agent, restore_checkpoint, set_memory,
+run_terminal_command (single `command` OR batch `commands` array),
+delegate_to_agent, restore_checkpoint, set_memory,
 execute_skill (loads skill instructions, read-only), read/write/list_workspace_memory,
 commit_worktree, push_worktree, create_pull_request, resolve_pr_conflicts,
 mcp__<server>__<tool>

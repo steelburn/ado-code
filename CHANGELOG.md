@@ -2,6 +2,15 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [Unreleased]
+
+### Improvements
+- **Mixed-batch tool calls stay parallel**: When a model turn issues several tool calls and only some of them need your approval, the consent-free calls (reads, allowlisted commands) now execute concurrently while the approval-requiring calls still run one at a time — previously the whole batch serialized behind the first consent card, so read-only work waited on your click. Approval cards still never stack
+- **Batch work-item reads**: `get_work_item` now accepts an `ids` array — fetch several work items in ONE call (details batch-fetched, discussion threads loaded in parallel, up to 20 ids) instead of N repeated calls and round-trips
+- **Batch terminal commands**: `run_terminal_command` now accepts a `commands` array — run several commands in ONE call (each still checked for shell operators and the act-mode allowlist), outputs concatenated with `$ command` headers, a single consent card instead of one per command
+- **Wizards take over the sidebar**: Opening the Configuration page, the project-creation wizard, or the first-run setup screen now collapses the sibling views (Work Items / Status / Worktrees) so the wizard gets the whole view container; the views are restored when the wizard closes, and views you'd hidden yourself stay hidden afterwards
+- **"Configuration…" opens the in-app Configuration page**: The chat kebab's Configuration… item previously opened VS Code's native settings — it now opens the in-webview Configuration page (the same surface the ADO-not-configured banner offers), which also gets the full-width wizard treatment above
+
 ## [0.6.3] - 2026-08-28
 
 ### Improvements

@@ -252,7 +252,7 @@ suite('agentic loop parallel tool execution (pi parity)', () => {
     assert.ok(String(toolMsgs[1].content).includes('echoed: b'));
   });
 
-  test('batch containing a consent-requiring call runs sequentially', async () => {
+  test('a batch where EVERY call needs consent runs sequentially', async () => {
     const fetchStub = async (_url: any, init: any) => {
       const body = JSON.parse(init.body);
       if (!body.messages.some((m: any) => m.role === 'tool')) {
@@ -289,6 +289,66 @@ suite('agentic loop parallel tool execution (pi parity)', () => {
     await runAgenticChat(client, exec, [{ role: 'user', content: 'go' }]);
 
     assert.strictEqual(maxActive, 1, 'consent-requiring batch must run sequentially');
+  });
+
+  test('mixed batch: consent calls stay one-at-a-time while auto calls run in parallel', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (!body.messages.some((m: any) => m.role === 'tool')) {
+        // One response, FOUR calls: two auto-executable reads, two consent-gated.
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                { id: 'call_a', type: 'function', function: { name: 'echo', arguments: '{"value":"a"}' } },
+                { id: 'call_x', type: 'function', function: { name: 'echo', arguments: '{"value":"x"}' } },
+                { id: 'call_b', type: 'function', function: { name: 'echo', arguments: '{"value":"b"}' } },
+                { id: 'call_y', type: 'function', function: { name: 'echo', arguments: '{"value":"y"}' } },
+              ],
+            },
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    let active = 0;
+    let maxActive = 0;
+    let consentActive = 0;
+    let maxConsentActive = 0;
+    const exec = stubExecutor();
+    // a/b auto-execute (e.g. read-only); x/y need a consent card.
+    exec.canAutoExecute = (_name: string, args: Record<string, any>) => args.value === 'a' || args.value === 'b';
+    exec.execute = async (_name: string, args: Record<string, any>) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (args.value === 'x' || args.value === 'y') {
+        consentActive += 1;
+        maxConsentActive = Math.max(maxConsentActive, consentActive);
+      }
+      await new Promise((r) => setTimeout(r, 15));
+      active -= 1;
+      if (args.value === 'x' || args.value === 'y') consentActive -= 1;
+      return `echoed: ${args.value}`;
+    };
+
+    const client = new LlmClient(config);
+    await runAgenticChat(client, exec, [{ role: 'user', content: 'go' }]);
+
+    // The auto calls ran concurrently WITH the consent calls…
+    assert.ok(maxActive >= 2, `expected auto calls to overlap consent calls, maxActive=${maxActive}`);
+    // …while consent calls never overlapped each other (one card at a time).
+    assert.strictEqual(maxConsentActive, 1, 'consent-requiring calls must stay sequential');
+
+    // Results fed back in the ORIGINAL call order (tool_call_id references stay valid).
+    const second = bodies[1];
+    const toolMsgs = second.messages.filter((m: any) => m.role === 'tool');
+    assert.deepStrictEqual(toolMsgs.map((m: any) => m.tool_call_id), ['call_a', 'call_x', 'call_b', 'call_y']);
   });
 
   test('response hitting the output token limit fails all tool calls (no execution)', async () => {

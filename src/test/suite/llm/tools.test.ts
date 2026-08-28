@@ -6,6 +6,8 @@ function stubServices(): any {
     ado: {
       getWorkItemsAssignedTo: async () => [],
       getWorkItemWithDiscussion: async () => ({ detail: { id: 1, fields: {} }, comments: [] }),
+      getWorkItemsByIds: async () => [],
+      getComments: async () => [],
       updateWorkItem: async () => ({}),
       addComment: async () => ({ id: 1 }),
     },
@@ -414,5 +416,94 @@ suite('ToolExecutor token optimization', () => {
     assert.ok(names.includes('edit_file'));
     assert.ok(names.includes('run_terminal_command'));
     assert.ok(names.includes('read_file'));
+  });
+});
+
+suite('ToolExecutor batch tool calls (fewer round-trips)', () => {
+  test('get_work_item accepts an ids array and batch-fetches in one call', async () => {
+    const services = stubServices();
+    services.ado.getWorkItemsByIds = async (ids: number[]) =>
+      ids.map(id => ({
+        id,
+        fields: {
+          'System.Title': `T${id}`,
+          'System.State': 'Active',
+          'System.Description': `desc ${id}`,
+          'System.Tags': 'tag',
+        },
+      }));
+    services.ado.getComments = async () => [{ id: 1, text: 'hi', createdBy: { displayName: 'Me' }, createdDate: '' }];
+    const ex = createToolExecutor(services, {} as any, { onApprove: async () => true });
+    ex.setMode('act');
+
+    const res = await ex.execute('get_work_item', { ids: [101, 102] });
+    const parsed = JSON.parse(String(res));
+    assert.ok(Array.isArray(parsed), 'ids → array result');
+    assert.strictEqual(parsed.length, 2);
+    assert.strictEqual(parsed[0].id, 101);
+    assert.strictEqual(parsed[1].id, 102);
+    assert.strictEqual(parsed[0].title, 'T101');
+    assert.strictEqual(parsed[1].state, 'Active');
+    assert.strictEqual(parsed[0].thread[0].author, 'Me');
+  });
+
+  test('get_work_item single id keeps the single-object shape', async () => {
+    const services = stubServices();
+    services.ado.getWorkItemsByIds = async () => [{ id: 7, fields: { 'System.Title': 'T7', 'System.State': 'Active' } }];
+    services.ado.getComments = async () => [];
+    const ex = createToolExecutor(services, {} as any, { onApprove: async () => true });
+    ex.setMode('act');
+
+    const res = await ex.execute('get_work_item', { id: 7 });
+    const parsed = JSON.parse(String(res));
+    assert.ok(!Array.isArray(parsed), 'id alone → single object (backwards compatible)');
+    assert.strictEqual(parsed.id, 7);
+    assert.strictEqual(parsed.title, 'T7');
+  });
+
+  test('get_work_item with neither id nor ids returns a crisp error', async () => {
+    const ex = makeExecutor('act');
+    const res = await ex.execute('get_work_item', {});
+    assert.ok(String(res).includes('provide id or ids'));
+  });
+
+  test('run_terminal_command commands array runs each command and concatenates outputs', async () => {
+    const ex = makeExecutor('act');
+    const res = await ex.execute('run_terminal_command', { commands: ['echo first-output', 'echo second-output'] });
+    const out = String(res);
+    assert.ok(out.includes('$ echo first-output'), 'first command echoed as header');
+    assert.ok(out.includes('first-output'), 'first output present');
+    assert.ok(out.includes('$ echo second-output'), 'second command echoed as header');
+    assert.ok(out.includes('second-output'), 'second output present');
+  });
+
+  test('run_terminal_command commands array rejects shell operators in any entry', async () => {
+    const ex = makeExecutor('act');
+    const res = await ex.execute('run_terminal_command', { commands: ['git status', 'rm -rf ~ && echo pwned'] });
+    assert.ok(String(res).includes('not allowed'));
+  });
+
+  test('inline mode: batch terminal deny keys by the joined command set', async () => {
+    let approveCalls = 0;
+    const ex = createToolExecutor(stubServices(), {} as any, {
+      onApprove: async () => { approveCalls += 1; return false; },
+      onUpdateState: async () => {},
+    });
+    ex.setMode('inline');
+
+    const batch = { commands: ['git status', 'git diff'] };
+    const r1 = await ex.execute('run_terminal_command', batch);
+    assert.ok(String(r1).includes('rejected by user'));
+    assert.strictEqual(approveCalls, 1, 'batch prompted once');
+
+    // Same batch again → silent deny, no second prompt.
+    const r2 = await ex.execute('run_terminal_command', batch);
+    assert.ok(String(r2).includes('denied earlier this turn'));
+    assert.strictEqual(approveCalls, 1, 'same batch not re-prompted');
+
+    // A DIFFERENT command still prompts (per-command deny semantics).
+    const r3 = await ex.execute('run_terminal_command', { command: 'git log' });
+    assert.ok(String(r3).includes('rejected by user'));
+    assert.strictEqual(approveCalls, 2, 'new command prompts again');
   });
 });

@@ -4,9 +4,10 @@ import { execFile } from 'child_process';
 import { LlmTool } from './types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
-import { isCommandSessionApproved } from './tool-approval-ui';
+import { isCommandSessionApproved, terminalCommandKey, terminalCommandList } from './tool-approval-ui';
 import { matchesToolPattern, matchesCommandPattern } from './consent';
 import { countTokens } from './context/tokenCounter';
+import type { AdoWorkItem, AdoComment } from '../ado/types';
 
 // ── Tool-result size guard ────────────────────────────────────────────────
 // Token optimization: a tool result is stored in the conversation and
@@ -206,9 +207,11 @@ function gateTool(
     }
     // After one denial, re-prompting the SAME command/tool is pointless —
     // deny it silently for the rest of the turn. A NEW command or tool still
-    // pops a consent card (the user may allow it).
+    // pops a consent card (the user may allow it). Terminal commands key by
+    // the exact command string (single or batch-joined) so a NEW command in
+    // a batch still prompts.
     const denyKey = name === 'run_terminal_command'
-      ? `run_terminal_command:${String(args.command ?? '')}`
+      ? `run_terminal_command:${terminalCommandKey(args)}`
       : name;
     if (state.deniedKeys.has(denyKey)) {
       return { action: 'block', error: `tool '${name}' rejected by user (denied earlier this turn)` };
@@ -222,16 +225,17 @@ function gateTool(
   // support wildcards: "git *" permits any git subcommand.
   if (name === 'run_terminal_command' && state.mode === 'act' && !toolAutoApproved) {
     const allowlist = vscode.workspace.getConfiguration('adoCode').get<string[]>('act.terminalAllowlist', ['npm test', 'npm run lint', 'git diff', 'git status']);
-    const command = String(args.command ?? '');
-    if (!matchesCommandPattern(command, allowlist)) {
+    // Single OR batch: EVERY command must pass the allowlist / session cache.
+    const commands = terminalCommandList(args);
+    if (!commands.every(c => matchesCommandPattern(c, allowlist))) {
       // Check session cache first (user chose "Allow for Session" earlier)
-      if (!isCommandSessionApproved(command)) {
+      if (!commands.every(c => isCommandSessionApproved(c))) {
         // Not in allowlist and not session-approved — ask user
         if (!hooks?.onApprove) {
-          return { action: 'block', error: `command not allowed in act mode (allowlist + no shell operators): ${command}` };
+          return { action: 'block', error: `command not allowed in act mode (allowlist + no shell operators): ${commands.join('; ')}` };
         }
-        if (state.deniedKeys.has(`run_terminal_command:${command}`)) {
-          return { action: 'block', error: `command rejected by user: ${command} (denied earlier this turn)` };
+        if (state.deniedKeys.has(`run_terminal_command:${terminalCommandKey(args)}`)) {
+          return { action: 'block', error: `command rejected by user: ${commands.join('; ')} (denied earlier this turn)` };
         }
         return { action: 'prompt' };
       }
@@ -301,11 +305,13 @@ export function createToolExecutor(
     },
     {
       name: 'get_work_item',
-      description: 'Get details (description, acceptance criteria, comments) of one work item',
+      description: 'Get details (description, acceptance criteria, comments) of one or more work items. For SEVERAL items, pass ALL ids in the `ids` array — ONE call instead of repeated ones (max 20 per call).',
       parameters: {
         type: 'object',
-        properties: { id: { type: 'number', description: 'Work item ID' } },
-        required: ['id'],
+        properties: {
+          id: { type: 'number', description: 'Work item ID (single fetch)' },
+          ids: { type: 'array', items: { type: 'number' }, description: 'Batch fetch: multiple work item IDs to fetch in this one call' },
+        },
       },
     },
     {
@@ -487,11 +493,13 @@ export function createToolExecutor(
     },
     {
       name: 'run_terminal_command',
-      description: 'Run a shell command in the workspace (mutating; restricted in act mode)',
+      description: 'Run a shell command in the workspace (mutating; restricted in act mode). For several quick commands, pass the `commands` array — ONE call runs them all in order (outputs concatenated) instead of repeated calls.',
       parameters: {
         type: 'object',
-        properties: { command: { type: 'string' } },
-        required: ['command'],
+        properties: {
+          command: { type: 'string', description: 'Single command to run' },
+          commands: { type: 'array', items: { type: 'string' }, description: 'Batch: commands to run in this one call (each is still checked for shell operators)' },
+        },
       },
     },
     {
@@ -622,7 +630,7 @@ export function createToolExecutor(
           return JSON.stringify({ error: `tool '${name}' requires approval, but no approval hook is wired` });
         }
         const denyKey = name === 'run_terminal_command'
-          ? `run_terminal_command:${String(args.command ?? '')}`
+          ? `run_terminal_command:${terminalCommandKey(args)}`
           : name;
         const ok = await approve(name, args);
         if (!ok) {
@@ -647,21 +655,49 @@ export function createToolExecutor(
           return JSON.stringify(items.map(i => ({ id: i.id, title: i.fields['System.Title'], state: i.fields['System.State'], type: i.fields['System.WorkItemType'] })));
         }
         case 'get_work_item': {
-          const { detail, comments } = await services.ado.getWorkItemWithDiscussion(project, args.id);
-          // Cap potentially-large free-text fields so the result stays within
-          // the token budget when fed back to the model (see capToolResult).
-          const thread = (comments ?? [])
-            .slice(0, 20)
-            .map(c => ({ author: c.createdBy?.displayName ?? '?', text: capToolResult(String(c.text ?? ''), 400) }));
-          return JSON.stringify({
-            id: detail.id,
-            title: detail.fields['System.Title'],
-            state: detail.fields['System.State'],
-            description: capToolResult(String(detail.fields['System.Description'] ?? ''), 1500),
-            acceptanceCriteria: capToolResult(String(detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ?? ''), 800),
-            tags: detail.fields['System.Tags'],
-            thread,
-          });
+          // Single (`id`) OR batch (`ids`) — the batch path replaces N
+          // repeated calls with one: details via the by-ids endpoint (chunked
+          // internally), comments fetched per item in parallel.
+          const ids: number[] = [];
+          if (Array.isArray(args.ids)) {
+            for (const raw of args.ids) {
+              const n = Number(raw);
+              if (Number.isFinite(n) && n > 0) ids.push(n);
+            }
+          }
+          if (args.id != null && Number.isFinite(Number(args.id))) ids.unshift(Number(args.id));
+          const batch = Array.isArray(args.ids);
+          if (ids.length === 0) {
+            return JSON.stringify({ error: 'get_work_item: provide id or ids' });
+          }
+          const wanted = ids.slice(0, 20);
+          const byId = new Map<number, AdoWorkItem>();
+          for (const wi of await services.ado.getWorkItemsByIds(wanted)) {
+            byId.set(wi.id, wi);
+          }
+          const items = await Promise.all(wanted.map(async (id): Promise<Record<string, unknown>> => {
+            const detail = byId.get(id);
+            if (!detail) return { id, error: `work item ${id} not found` };
+            let comments: AdoComment[] = [];
+            try {
+              comments = await services.ado.getComments(project, id);
+            } catch {
+              // Comments are a nice-to-have; one failing thread must not sink
+              // the whole batch.
+            }
+            return {
+              id: detail.id,
+              title: detail.fields['System.Title'],
+              state: detail.fields['System.State'],
+              description: capToolResult(String(detail.fields['System.Description'] ?? ''), 1500),
+              acceptanceCriteria: capToolResult(String(detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ?? ''), 800),
+              tags: detail.fields['System.Tags'],
+              thread: (comments ?? []).slice(0, 20).map(c => ({ author: c.createdBy?.displayName ?? '?', text: capToolResult(String(c.text ?? ''), 400) })),
+            };
+          }));
+          // `id` alone → the same single-object shape as before; `ids` → array.
+          const payload = batch ? items : items[0];
+          return capToolResult(JSON.stringify(payload));
         }
         case 'update_work_item_state':
           // Route through the ChatViewProvider hook so the changelog completion
@@ -855,23 +891,34 @@ export function createToolExecutor(
           // command and reject shell operators. C-2 fix: `\s` must NOT be in
           // the operator class (spaces are legal — allowlist entries like
           // `npm test` are multi-word); operators are the dangerous chars.
-          const cmd = String(args.command ?? '').trim();
-          if (!cmd) {
+          // Batch (`commands` array) runs each command in order — same
+          // checks, one call, concatenated outputs.
+          const commands = terminalCommandList(args);
+          if (commands.length === 0) {
             return JSON.stringify({ error: 'run_terminal_command: empty command' });
           }
-          if (!/^[^&|;`$<>()\r\n]*$/.test(cmd)) {
-            return JSON.stringify({ error: `run_terminal_command: shell operators not allowed: ${args.command}` });
+          for (const cmd of commands) {
+            if (!/^[^&|;`$<>()\r\n]*$/.test(cmd)) {
+              return JSON.stringify({ error: `run_terminal_command: shell operators not allowed: ${cmd}` });
+            }
           }
-          const argv = cmd.match(/"[^"]*"|\S+/g) ?? [];
-          if (!argv[0]) {
-            return JSON.stringify({ error: 'run_terminal_command: no command to run' });
-          }
-          const result = await new Promise<string>((resolve) => {
-            execFile(argv[0]!, argv.slice(1), { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, timeout: 120000 }, (err: any, stdout: any, stderr: any) => {
-              resolve(stdout || stderr || (err?.message ?? ''));
+          const outputs: string[] = [];
+          for (const cmd of commands) {
+            const argv = cmd.match(/"[^"]*"|\S+/g) ?? [];
+            if (!argv[0]) {
+              return JSON.stringify({ error: 'run_terminal_command: no command to run' });
+            }
+            const result = await new Promise<string>((resolve) => {
+              execFile(argv[0]!, argv.slice(1), { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, timeout: 120000 }, (err: any, stdout: any, stderr: any) => {
+                resolve(stdout || stderr || (err?.message ?? ''));
+              });
             });
-          });
-          return capToolResult(result.slice(0, 8000));
+            outputs.push(result);
+          }
+          const joined = commands.length > 1
+            ? outputs.map((o, i) => `$ ${commands[i]}\n${o}`).join('\n\n')
+            : (outputs[0] ?? '');
+          return capToolResult(joined.slice(0, 8000));
         }
         case 'set_memory': {
           services.memory.set(args.key, args.category, args.content);

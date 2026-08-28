@@ -114,12 +114,19 @@ export async function runAgenticChat(
     // C1 fix: ONE tool message per result, each carrying its own toolCallId
     // (OpenAI requires one role:'tool' message per tool_call_id).
     //
-    // pi-parity parallel execution: if every call in the batch runs WITHOUT
-    // user interaction (read-only / yolo / auto-approved / allowlisted), run
-    // them concurrently and re-order results back to call order. If any call
-    // needs a consent card, the whole batch runs sequentially so approval
-    // prompts appear one at a time — never stacked modals.
-    const batchIsSequential = toolCalls.some(call => !executor.canAutoExecute(call.name, call.arguments));
+    // pi-parity parallel execution: calls that run WITHOUT user interaction
+    // (read-only / yolo / auto-approved / allowlisted) execute concurrently,
+    // while calls that need a consent card run sequentially — approval
+    // prompts appear one at a time, never stacked modals. The two groups run
+    // in PARALLEL with each other, so a mixed batch no longer serializes
+    // read-only work behind a consent prompt. Results are re-ordered back to
+    // the original call order below (keeps tool_call_id references valid and
+    // conversation ordering deterministic).
+    const autoCalls: ToolCall[] = [];
+    const promptCalls: ToolCall[] = [];
+    for (const call of toolCalls) {
+      (executor.canAutoExecute(call.name, call.arguments) ? autoCalls : promptCalls).push(call);
+    }
     const logResult = (call: ToolCall, content: string) => {
       const resultPreview = content.length > 200 ? content.slice(0, 200) + '…' : content;
       logger.info(`Tool result [${call.name}]: ${resultPreview}`);
@@ -143,31 +150,41 @@ export async function runAgenticChat(
       }
     };
 
-    let results: string[];
-    if (batchIsSequential) {
-      results = [];
-      for (const call of toolCalls) {
-        results.push(await executeOne(call));
-        if (signal?.aborted) break;
-      }
-    } else {
-      // Concurrent: all calls start together; results re-ordered below to
-      // match the original call order (keeps tool_call_id references valid
-      // and conversation ordering deterministic). Each execute() is wrapped
-      // in its own try/catch so one failure can't kill the batch.
-      results = await Promise.all(toolCalls.map(call => executeOne(call)));
-    }
+    const resultsByCall = new Map<string, string>();
+    await Promise.all([
+      // Consent-requiring calls: strictly sequential — one approval card at a
+      // time. Each is wrapped in its own try/catch inside executeOne.
+      (async () => {
+        for (const call of promptCalls) {
+          resultsByCall.set(call.id, await executeOne(call));
+          if (signal?.aborted) break;
+        }
+      })(),
+      // Auto-executable calls: concurrent. Each execute() is wrapped in its
+      // own try/catch so one failure can't kill the batch; results are
+      // re-ordered back to call order below.
+      (async () => {
+        const groupResults = await Promise.all(autoCalls.map(call => executeOne(call)));
+        for (let k = 0; k < autoCalls.length; k++) {
+          resultsByCall.set(autoCalls[k]!.id, groupResults[k]!);
+        }
+      })(),
+    ]);
 
-    for (let k = 0; k < toolCalls.length && k < results.length; k++) {
-      const call = toolCalls[k];
+    // Push tool messages in ORIGINAL call order. Calls skipped by an abort
+    // have no result and are not pushed (the aborted turn won't send another
+    // request anyway).
+    for (const call of toolCalls) {
+      const content = resultsByCall.get(call.id);
+      if (content === undefined) continue;
       // Flip the card to "completed" with the result.
-      onProgress?.({ toolResult: { id: call.id, name: call.name, content: results[k] } });
-      messages.push({ role: 'tool', content: results[k], toolCallId: call.id });
+      onProgress?.({ toolResult: { id: call.id, name: call.name, content } });
+      messages.push({ role: 'tool', content, toolCallId: call.id });
     }
 
     // Set protectFrom for the NEXT iteration = start of THIS iteration's new
     // messages (its assistant tool_calls + the tool results we just pushed).
-    protectFrom = messages.length - (toolCalls.length + 1);
+    protectFrom = messages.length - (resultsByCall.size + 1);
   }
 
   throw new Error(`agentic loop exceeded ${maxIterations} iterations`);
