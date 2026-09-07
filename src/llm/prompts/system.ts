@@ -97,7 +97,8 @@ function buildToolGuidelines(mode: ModeConfig): string {
 
   const guidelines: Partial<Record<string, string[]>> = {
     read: [
-      'Use read tools to understand the codebase before making changes.',
+      'When studying an unfamiliar codebase or feature area, orient on directory structure and documentation FIRST, then drill into code: use `list_workspace` to map the layout and read the doc/entry files (README.md, AGENTS.md, docs/, package.json scripts) before individual source files. The cached `Repository Understanding` section in your prompt (when present) already summarizes the layout — start from it instead of re-listing everything.',
+      'Read files lazily and narrowly: prefer `search_files` and targeted `read_file` ranges (startLine/endLine) over whole-file reads, and avoid reading many files up front — everything you read stays in the conversation for the whole session, so read only what the current step actually needs.',
       'Always check existing patterns and conventions before editing.',
       'When searching, prefer `search_files` over reading files one by one.',
     ],

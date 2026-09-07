@@ -129,6 +129,7 @@ export function buildAgentPrompt(
 ): string {
   const lines = [
     `Read and follow AGENTS.md in the current directory — it contains the project structure, build commands, conventions, and constraints you must respect.`,
+    `Study the repository efficiently: orient on the directory structure and docs first (AGENTS.md, README, docs/), then read only the files you actually need — avoid reading many files up front.`,
     ``,
     `You are working on Azure DevOps work item #${workItem.id}: ${workItem.title}`,
     ``,

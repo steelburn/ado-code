@@ -4052,7 +4052,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Token optimization diagnostics: log how much this turn actually cost
       // (iterations, tool calls, and request payload tokens incl. system+tools).
       logger.debug(
-        `Chat turn cost — iterations: ${result.iterations}, tools: ${result.toolCalls.length}, ` +
+        `Chat turn cost — iterations: ${result.iterations}${result.reachedIterationLimit ? ' (iteration limit reached — forced conclusion)' : ''}, ` +
+        `tools: ${result.toolCalls.length}, ` +
         `conversation: ${countMessageTokens(turnConversation).toLocaleString()} tokens, ` +
         `per-request overhead (system+tools): ${this.contextOverhead().toLocaleString()} tokens`
       );
@@ -4065,22 +4066,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Never end a chat turn with nothing visible: a model that stops right
       // after its tool work (no closing text) previously produced an invisible
       // "answer" — the thread just stopped. Conclude deterministically instead.
+      // A turn stopped by the iteration budget gets a limit-specific message
+      // (agentic.ts normally supplies one, but guard the empty case too).
       if (!cleanText.trim()) {
-        const tools = result.toolCalls.length;
-        cleanText = tools > 0
-          ? `Done — executed ${tools} tool call${tools === 1 ? '' : 's'}. Let me know what you'd like to do next.`
-          : '_The model returned an empty response — please try again._';
+        if (result.reachedIterationLimit) {
+          cleanText = `I've reached the maximum number of iterations for this turn before finishing. Reply to continue, or raise the Iteration budget (\`adoCode.act.toolBudget\`) and ask again.`;
+        } else {
+          const tools = result.toolCalls.length;
+          cleanText = tools > 0
+            ? `Done — executed ${tools} tool call${tools === 1 ? '' : 's'}. Let me know what you'd like to do next.`
+            : '_The model returned an empty response — please try again._';
+        }
       }
       turnPost({ type: 'assistantMessage', content: cleanText, done: true });
       turnConversation.push({ role: 'assistant', content: cleanText });
       turnConversation = this.trimConversation(turnConversation);
       this.replaceSessionConversation(turnSessionId, turnConversation);
       await this.persistConversation(turnSessionId, turnConversation);
-      if (mode === 'plan') turnPost({ type: 'planReady', plan: cleanText });
+      // A forced conclusion is NOT a finished plan / task proposal — the loop
+      // never got to a natural end, so structured outcomes must not fire.
+      if (mode === 'plan' && !result.reachedIterationLimit) turnPost({ type: 'planReady', plan: cleanText });
 
       // Detect proposed tasks from generate-tasks flow — show analysis in chat,
       // open editor tab with checkboxes for user review before creating in ADO.
-      const proposedTasksResult = this.parseProposedTasks(cleanText);
+      const proposedTasksResult = result.reachedIterationLimit ? null : this.parseProposedTasks(cleanText);
       if (proposedTasksResult && this.activeWorkItem) {
         const { analysis, tasks } = proposedTasksResult;
         // Show the analysis portion in chat (strip the JSON block)

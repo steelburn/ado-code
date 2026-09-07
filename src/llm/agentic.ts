@@ -1,8 +1,88 @@
 import { LlmClient } from './client';
-import { LlmMessage, ToolCall, LlmAgenticResult } from './types';
+import { LlmMessage, LlmTool, ToolCall, LlmAgenticResult } from './types';
 import { ToolExecutor } from './tools';
 import { logger } from '../services/logger';
 import { DEFAULT_MAX_ITERATIONS } from '../shared/agenticLimits';
+
+/**
+ * User-turn appended as the final message when the model exhausts its
+ * iteration budget mid-work. It must STOP calling tools and write its final
+ * reply: acknowledging the limit, summarizing progress, and stating what
+ * remains — the model knows the full conversation, so its wrap-up is far
+ * richer than a synthesized error.
+ */
+function wrapUpInstruction(maxIterations: number): string {
+  return [
+    `[iteration limit reached] You have used all ${maxIterations} iterations (model round-trips) allowed for this turn.`, // eslint-disable-line max-len
+    'You may not call any more tools.',
+    'Write your final reply to the user now: say that you have reached the maximum number of iterations for this turn,',
+    'briefly summarize what you have accomplished so far, and state what is still left to do (or what you would do next if given more steps).',
+  ].join(' ');
+}
+
+/** Deterministic conclusion used when the forced wrap-up round-trip fails or
+ *  returns nothing usable — the turn still ends with a real chat message, and
+ *  the count it reports is ITERATIONS (model round-trips), not tool calls. */
+function fallbackLimitConclusion(maxIterations: number, executedCalls: ToolCall[]): string {
+  const calls = executedCalls.length;
+  return [
+    `I've reached the maximum of ${maxIterations} iterations for this turn before the work was complete, so I'm stopping here.`,
+    calls > 0 ? `${calls} tool call${calls === 1 ? '' : 's'} ${calls === 1 ? 'was' : 'were'} executed across those iterations.` : '',
+    'Tell me to continue and I will pick up where I left off — or raise the Iteration budget',
+    '(`adoCode.act.toolBudget` in Settings → ADO Code → Act) and ask again.',
+  ].filter(Boolean).join(' ');
+}
+
+/**
+ * Graceful end-of-turn when the model exhausts its iteration budget while
+ * still requesting tools. NOT an error: the user sees a concluding chat
+ * message. One extra, NON-budgeted round-trip lets the model itself summarize
+ * progress and what remains; if that wrap-up call fails, is aborted, or
+ * returns nothing usable (empty, truncated, or tool calls only), fall back to
+ * a deterministic conclusion. Tool calls in the wrap-up response are NEVER
+ * executed — the budget is exhausted, so running more tools would defeat it.
+ */
+async function concludeAtIterationLimit(
+  client: LlmClient,
+  messages: LlmMessage[],
+  tools: LlmTool[],
+  signal: AbortSignal | undefined,
+  maxIterations: number,
+  executedCalls: ToolCall[],
+): Promise<LlmAgenticResult> {
+  // The caller reconciles user-stopped turns itself — never spend a wrap-up
+  // round-trip (or a deterministic message) after the user asked to stop.
+  if (signal?.aborted) {
+    throw new Error('agentic loop stopped before the concluding reply');
+  }
+  const withWrapUp: LlmMessage[] = [
+    ...messages,
+    { role: 'user', content: wrapUpInstruction(maxIterations) },
+  ];
+  try {
+    const { text, toolCalls, stopReason } = await client.chatWithTools(withWrapUp, tools, signal);
+    const usable =
+      text && text.trim().length > 0
+      && (!toolCalls || toolCalls.length === 0)
+      && stopReason !== 'length' && stopReason !== 'max_tokens';
+    if (usable) {
+      return { text: text.trim(), toolCalls: executedCalls, iterations: maxIterations, reachedIterationLimit: true };
+    }
+    logger.warn('agentic: wrap-up response unusable (tool calls / empty / truncated) — using deterministic conclusion');
+  } catch (err) {
+    // User stop → let the host reconcile the stopped turn. Any other wrap-up
+    // failure must not turn the whole turn into an error banner: the budget
+    // was already consumed and the deterministic conclusion is accurate.
+    if (signal?.aborted) throw err;
+    logger.warn('agentic: wrap-up conclusion call failed — using deterministic conclusion', err);
+  }
+  return {
+    text: fallbackLimitConclusion(maxIterations, executedCalls),
+    toolCalls: executedCalls,
+    iterations: maxIterations,
+    reachedIterationLimit: true,
+  };
+}
 
 /**
  * Compact OLD tool results to save re-send cost on later loop iterations.
@@ -48,6 +128,15 @@ export interface AgenticProgressUpdate {
   toolResult?: { id: string; name: string; content: string };
 }
 
+/**
+ * Agentic tool loop. One ITERATION = one model round-trip (`chatWithTools`);
+ * a single round-trip may request a batch of parallel tool calls, and the
+ * whole batch still costs ONE iteration (the iteration budget is NOT a
+ * tool-call budget). The loop ends when the model replies without tools, or —
+ * if it exhausts `maxIterations` while still requesting tools — with a forced
+ * concluding reply (`result.reachedIterationLimit === true`) instead of
+ * throwing, so the user always gets a real chat conclusion.
+ */
 export async function runAgenticChat(
   client: LlmClient,
   executor: ToolExecutor,
@@ -136,7 +225,9 @@ export async function runAgenticChat(
       const argsSummary = Object.keys(call.arguments).length > 0
         ? JSON.stringify(call.arguments)
         : '(no args)';
-      logger.info(`Tool call [${i + 1}/${maxIterations}]: ${call.name} ${argsSummary}`);
+      // Iteration budget is counted in model round-trips, so a tool inside a
+      // batch reports the ITERATION it belongs to, not a per-tool counter.
+      logger.info(`Tool call [iteration ${i + 1}/${maxIterations}]: ${call.name} ${argsSummary}`);
       // Live "running" tool card in the chat (plus status-bar detail).
       onProgress?.({ tool: { id: call.id, name: call.name, args: call.arguments } });
       try {
@@ -151,6 +242,14 @@ export async function runAgenticChat(
     };
 
     const resultsByCall = new Map<string, string>();
+    // One model round-trip may execute a BATCH of parallel tool calls — that
+    // whole batch is a SINGLE iteration, not one per call (pi parity).
+    if (toolCalls.length > 1) {
+      logger.debug(
+        `agentic: iteration ${i + 1}/${maxIterations} executes a batch of ${toolCalls.length} tool call(s) `
+        + `(${autoCalls.length} auto + ${promptCalls.length} consent-gated) — counts as ONE iteration`
+      );
+    }
     await Promise.all([
       // Consent-requiring calls: strictly sequential — one approval card at a
       // time. Each is wrapped in its own try/catch inside executeOne.
@@ -187,5 +286,11 @@ export async function runAgenticChat(
     protectFrom = messages.length - (resultsByCall.size + 1);
   }
 
-  throw new Error(`agentic loop exceeded ${maxIterations} iterations`);
+  // The model spent its whole iteration budget still asking for tools. Do NOT
+  // throw here (the caller would surface a bare error banner): the turn ends
+  // with a proper concluding chat message instead (see concludeAtIterationLimit).
+  logger.warn(
+    `agentic: exhausted ${maxIterations} iteration(s) after ${allToolCalls.length} tool call(s) — forcing a concluding reply`
+  );
+  return concludeAtIterationLimit(client, messages, executor.tools, signal, maxIterations, allToolCalls);
 }

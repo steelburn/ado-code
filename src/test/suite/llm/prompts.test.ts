@@ -173,4 +173,23 @@ suite('generateSystemPrompt (chat system prompt)', () => {
     });
     assert.ok(/if an `AGENTS\.md` file exists/i.test(prompt), 'conditional on the file existing');
   });
+
+  test('read guidance: structure + docs first, lazy narrow reads (context economy)', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+    });
+    assert.ok(prompt.includes('directory structure and documentation FIRST'), 'structure-first exploration taught');
+    assert.ok(prompt.includes('README.md'), 'doc files named as first reads');
+    assert.ok(prompt.includes('list_workspace'), 'layout mapping tool named');
+    assert.ok(prompt.includes('startLine/endLine'), 'targeted read_file ranges taught');
+    assert.ok(prompt.includes('avoid reading many files'), 'bulk reads discouraged');
+  });
+
+  test('buildAgentPrompt tells the agent to study structure/docs before code', () => {
+    const prompt = buildAgentPrompt(baseItem, 'feature/ADO-7-add-feature');
+    assert.ok(prompt.includes('directory structure and docs first'), 'delegated agents orient on docs before files');
+    assert.ok(prompt.includes('read only the files you actually need'), 'lazy reads for delegated agents');
+  });
 });

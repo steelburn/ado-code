@@ -80,7 +80,12 @@ export interface ToolResult {
 export interface LlmAgenticResult {
   text: string;                 // final assistant text
   toolCalls: ToolCall[];        // all calls made during the loop
-  iterations: number;
+  iterations: number;           // model round-trips used (NOT tool-call count)
+  /** True when the loop exhausted its iteration budget mid-work and ended
+   *  with a forced concluding reply instead of the model finishing on its
+   *  own. The host uses this to present the turn as stopped-by-limit rather
+   *  than as a normal completion. */
+  reachedIterationLimit?: boolean;
 }
 
 /**

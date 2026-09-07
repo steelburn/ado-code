@@ -96,17 +96,89 @@ suite('OpenAiProvider chatWithTools', () => {
     assert.strictEqual(toolMsgs[0].tool_call_id, assistantMsg.tool_calls[0].id);
   });
 
-  test('loop terminates when maxIterations exceeded', async () => {
+  test('hitting the iteration budget concludes gracefully instead of throwing', async () => {
     const fetchStub = async () => jsonResponse({
       choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'echo', arguments: '{"value":"x"}' } }] } }],
     });
     (globalThis as any).fetch = fetchStub;
 
     const client = new LlmClient(config);
-    await assert.rejects(
-      runAgenticChat(client, stubExecutor(), [{ role: 'user', content: 'go' }], undefined, 3),
-      /exceeded 3 iterations/
-    );
+    const result = await runAgenticChat(client, stubExecutor(), [{ role: 'user', content: 'go' }], undefined, 3);
+
+    // No throw: the turn ends with a concluding chat message.
+    assert.strictEqual(result.reachedIterationLimit, true);
+    // The budget counts model round-trips — 3 budgeted round-trips ran.
+    assert.strictEqual(result.iterations, 3);
+    // Every budgeted round-trip executed its tool; the forced wrap-up ran NONE.
+    assert.strictEqual(result.toolCalls.length, 3);
+    // The conclusion tells the user the iteration limit was reached (the stub
+    // answers the wrap-up with yet another tool call, so the deterministic
+    // fallback fires — and it still lands as a real chat conclusion).
+    assert.ok(result.text.includes('maximum of 3 iterations'), `unexpected conclusion: ${result.text}`);
+  });
+
+  test('a batch of N parallel tool calls in one model round-trip is ONE iteration', async () => {
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      if (!body.messages.some((m: any) => m.role === 'tool')) {
+        // First round-trip: the model issues FIVE independent tool calls.
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [1, 2, 3, 4, 5].map((n) => ({
+                id: `call_${n}`,
+                type: 'function',
+                function: { name: 'echo', arguments: JSON.stringify({ value: String(n) }) },
+              })),
+            },
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(client, stubExecutor(), [{ role: 'user', content: 'go' }]);
+
+    assert.strictEqual(result.toolCalls.length, 5, 'five tool calls executed');
+    assert.strictEqual(result.iterations, 2, '5 tools in one round-trip cost ONE iteration + the final round-trip');
+    assert.strictEqual(result.text, 'done');
+  });
+
+  test('forced wrap-up lets the model conclude in the chat (no tools executed after the cap)', async () => {
+    const bodies: any[] = [];
+    let executed = 0;
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length <= 2) {
+        // Budgeted round-trips keep requesting a tool…
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: `call_${bodies.length}`, type: 'function', function: { name: 'echo', arguments: '{"value":"x"}' } }] } }],
+        });
+      }
+      // …the forced wrap-up round-trip gets a plain-text conclusion.
+      return jsonResponse({
+        choices: [{ message: { role: 'assistant', content: "I've reached the iteration limit for this turn. Completed: first pass; Remaining: verify tests.", tool_calls: [] } }],
+      });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const exec = stubExecutor();
+    exec.execute = async (_name: string, args: Record<string, any>) => { executed += 1; return `echoed: ${args.value}`; };
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(client, exec, [{ role: 'user', content: 'go' }], undefined, 2);
+
+    assert.strictEqual(result.reachedIterationLimit, true);
+    assert.strictEqual(result.iterations, 2);
+    assert.strictEqual(executed, 2, 'only the two budgeted tools executed — the wrap-up ran none');
+    assert.ok(result.text.includes('reached the iteration limit'), `expected model conclusion, got: ${result.text}`);
+    // The wrap-up request carries the stop-and-conclude instruction.
+    assert.ok(JSON.stringify(bodies[2].messages).includes('iteration limit reached'));
   });
 });
 

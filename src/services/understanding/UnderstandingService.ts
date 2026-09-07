@@ -78,8 +78,9 @@ const MAX_TOTAL_CHARS = 12000;
 /** System prompt for the LLM repo-summary generator. */
 const SUMMARY_SYSTEM_PROMPT =
   'You analyze a software repository for an AI coding assistant that helps with Azure DevOps work items. ' +
-  'Produce a concise repository understanding in Markdown covering: architecture and how the pieces fit together; ' +
-  'key modules/directories and their responsibilities; conventions (naming, structure, error handling, testing); ' +
+  'Produce a concise repository understanding in Markdown that lets a future session navigate quickly WITHOUT reading many files. ' +
+  'Lead with the directory structure and where the documentation lives (README, AGENTS.md, docs/), then name the key entry files worth reading first. ' +
+  'Cover: architecture and how the pieces fit together; key modules/directories and their responsibilities; conventions (naming, structure, error handling, testing); ' +
   'how to build, test, and lint; common gotchas. Keep it under 600 words. Do not invent facts — only describe what the repository actually shows.';
 
 // ---------------------------------------------------------------------------

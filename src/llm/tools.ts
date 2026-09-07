@@ -416,7 +416,7 @@ export function createToolExecutor(
     // ── Q3 resolution: code tools ─────────────────────────────────────────
     {
       name: 'read_file',
-      description: 'Read a workspace file (or a line range) and return its contents',
+      description: 'Read a workspace file or a line range (startLine/endLine). Without a range, long files return only their first 200 lines with a truncation note. Prefer narrow ranges or search_files over whole files — every read stays in the conversation context for the session.',
       parameters: {
         type: 'object',
         properties: {
@@ -448,7 +448,7 @@ export function createToolExecutor(
     },
     {
       name: 'list_workspace',
-      description: 'List files in the workspace root (optionally filtered by glob)',
+      description: 'Map the workspace structure: list files (optionally filtered by a glob like `src/**/*.ts`; capped at 500 entries). Use this to see directory layout before reading files.',
       parameters: {
         type: 'object',
         properties: { glob: { type: 'string', description: 'e.g. src/**/*.ts' } },

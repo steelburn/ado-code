@@ -3,7 +3,9 @@
  *
  * One iteration = one model round-trip in the agentic tool loop
  * (runAgenticChat); a single iteration may execute a BATCH of parallel tool
- * calls, so this is an ITERATION budget, not a tool-call budget.
+ * calls, so this is an ITERATION budget, not a tool-call budget. A turn that
+ * exhausts the budget ends with a concluding chat reply
+ * (`reachedIterationLimit`), not a thrown error.
  *
  * Single source of truth for both the `adoCode.act.toolBudget` setting
  * default (config/settings.ts; package.json contributes mirrors the value)

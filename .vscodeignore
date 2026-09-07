@@ -7,4 +7,5 @@ tsconfig.json
 **/*.map
 .hermes/**
 .gitignore
+.ado-code/**
 out/test/**
