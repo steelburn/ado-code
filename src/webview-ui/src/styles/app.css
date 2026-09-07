@@ -2020,6 +2020,22 @@ code {
   flex-shrink: 0;
 }
 
+.config-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, #f14c4c);
+  background: var(--vscode-inputValidation-errorBackground, rgba(241, 76, 76, 0.15));
+  color: var(--vscode-errorForeground, #f14c4c);
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+
+.config-error-text {
+  word-break: break-word;
+}
+
 .config-back {
   background: none;
   border: none;

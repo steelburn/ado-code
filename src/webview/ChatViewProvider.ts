@@ -1707,12 +1707,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.postMessage({ type: 'fullConfig', config: this._allSettings() });
             break;
           case 'saveConfig': {
-            // Apply each setting to VS Code configuration
+            // Apply each setting to VS Code configuration. Per-key try/catch:
+            // one invalid/undeclared value must never abort the loop and
+            // silently drop the remaining keys (a rejected update on an early
+            // key used to prevent adoPat — and everything after it — from ever
+            // being written, while the page still showed "✓ Saved").
             const cfg = vscode.workspace.getConfiguration('adoCode');
+            // Previous settings — used below to detect which fields the page
+            // actually changed (the page echoes the GLOBAL values, which may
+            // differ from this workspace's deliberate per-workspace override).
+            const prevSettings = getSettings();
+            let saveError: string | null = null;
             for (const [key, value] of Object.entries(message.config)) {
               // Never persist derived values back into settings.
               if (key === 'modelCapabilities') continue;
-              await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+              try {
+                await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+              } catch (err) {
+                saveError = `"${key}": ${err instanceof Error ? err.message : String(err)}`;
+                break;
+              }
+            }
+            if (saveError) {
+              this.postMessage({ type: 'error', message: `Failed to save ${saveError}` });
+              break;
+            }
+            // Keep the workspaceState active-org/project bindings in sync for
+            // fields the page actually edited: getActiveOrg consults them FIRST,
+            // so a stale binding (or one left from a wizard save that stored '')
+            // would otherwise shadow the settings just written and ADO would
+            // keep resolving the old org/project. Non-empty wins; clearing the
+            // field clears the binding so the settings default applies.
+            const posted = message.config as Record<string, unknown>;
+            if (typeof posted.adoOrganization === 'string' && posted.adoOrganization !== prevSettings.adoOrganization) {
+              await this._context.workspaceState.update('adoCode.activeOrgName', posted.adoOrganization || undefined);
+            }
+            if (typeof posted.adoProject === 'string' && posted.adoProject !== prevSettings.adoProject) {
+              await this._context.workspaceState.update('adoCode.activeProject', posted.adoProject || undefined);
             }
             const sc = this._sanitizedConfig();
             this.postMessage({ type: 'config', config: sc });
@@ -2570,9 +2601,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     // Wizard saves must also write workspaceState so getActiveOrg (workspaceState
-    // first) resolves the same project the wizard just chose.
+    // first) resolves the same project the wizard just chose. Only non-empty
+    // values are stored — an empty adoProject (ADO skipped / project not picked)
+    // must CLEAR any stale binding instead of freezing "" as the active project,
+    // which would shadow later Configuration-page saves ("PAT update doesn't
+    // take effect" symptom: refresh bails with "configure ... PAT first").
     if ((config as any).adoProject !== undefined) {
-      await this._context.workspaceState.update('adoCode.activeProject', (config as any).adoProject);
+      const proj = (config as any).adoProject as string;
+      await this._context.workspaceState.update('adoCode.activeProject', proj || undefined);
       // Re-check workspace binding after config save
       const root = this.services.git.workspaceRoot;
       if (root) this.checkProjectBinding(root);

@@ -124,12 +124,20 @@ export async function selectActiveOrganization(context: vscode.ExtensionContext)
   await context.workspaceState.update('adoCode.activeProject', org.project);
 }
 
-/** Resolve the ACTIVE org + project (workspaceState first, settings fallback). */
+/** Resolve the ACTIVE org + project (workspaceState first, settings fallback).
+ * Only NON-EMPTY workspaceState bindings win: an empty or stale stored value
+ * (e.g. a wizard save that stored '' for adoProject, or an org-switch binding
+ * from before a Configuration-page save) must never shadow the settings that
+ * the Configuration page / setup wizard just wrote — otherwise PAT/org/project
+ * updates silently stop taking effect and ADO gates fail with "configure
+ * organization, project and PAT first". */
 export function getActiveOrg(context: vscode.ExtensionContext, settings: AdoCodeSettings): { name: string; project: string; url: string } {
   // Defensive: workspaceState may be undefined in test environments.
   const ws = context.workspaceState;
-  const name = ws?.get<string>('adoCode.activeOrgName', settings.adoOrganization) ?? settings.adoOrganization;
-  const project = ws?.get<string>('adoCode.activeProject', settings.adoProject) ?? settings.adoProject;
+  const storedName = ws?.get<string>('adoCode.activeOrgName') || '';
+  const storedProject = ws?.get<string>('adoCode.activeProject') || '';
+  const name = storedName || settings.adoOrganization;
+  const project = storedProject || settings.adoProject;
   const configured = settings.organizations.find(o => o.name === name);
   return {
     name,

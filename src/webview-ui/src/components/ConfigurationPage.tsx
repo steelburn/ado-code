@@ -854,6 +854,9 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
         setLoading(false);
       } else if (msg.type === 'error') {
         setFetchError(msg.message);
+        // A host-side save failure must not leave the stale "✓ Saved" flash.
+        setSaved(false);
+        setDirty(true);
       }
     };
     window.addEventListener('message', handler);
@@ -948,6 +951,12 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
           {saved ? '✓ Saved' : 'Save'}
         </button>
       </div>
+
+      {fetchError && (
+        <div className="config-error-banner">
+          <span className="config-error-text">⚠ {fetchError}</span>
+        </div>
+      )}
 
       <div className="config-layout">
         {/* Sidebar navigation — one entry per category; Advanced appears
