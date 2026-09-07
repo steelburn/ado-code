@@ -19,15 +19,48 @@ export interface ConsentRequestPayload {
 
 export interface ConsentRequest extends ConsentRequestPayload {
   requestId: string;
+  /** Absolute deadline (ms epoch) of the FIRST timeout that applies — the
+   *  auto-approve instant when `autoApproveMs` is set, else the hard-deny
+   *  instant. Mirrored to the webview so the card countdown tracks the host
+   *  timer exactly (and survives card remounts / full-page wizard detours). */
+  expiresAt: number;
+  /** When set, the request AUTO-APPROVES after this many ms (harmless
+   *  commands). The hard-deny timeout is then only a backstop. */
+  autoApproveMs?: number;
 }
 
+/** What the host decided when a consent request timed out. */
+export type ConsentTimeoutAction = 'approve' | 'deny';
+
 export interface ConsentBroker {
-  /** Register a new consent request; resolves true only on explicit approval. */
-  request(payload: ConsentRequestPayload): { requestId: string; decision: Promise<boolean> };
+  /**
+   * Register a new consent request; resolves true only on explicit approval.
+   * `options.autoApproveMs` starts a timer that auto-approves (harmless
+   * read-only commands); without it the request hard-denies after the
+   * broker timeout. Returns the deadline the card should count down to.
+   */
+  request(
+    payload: ConsentRequestPayload,
+    options?: { autoApproveMs?: number }
+  ): { requestId: string; decision: Promise<boolean>; expiresAt: number };
   /** Resolve a pending request from a user response (webview message). */
   resolve(requestId: string, approved: boolean): void;
   /** Fail every pending request (chat cleared, turn aborted, newer message). */
   rejectAll(): void;
+  /**
+   * Freeze the pending request's timers, preserving the time remaining
+   * (user switched away from the chat, or a full-page wizard/config is open
+   * and the prompt card is not visible). A paused request cannot time out.
+   */
+  pause(): void;
+  /**
+   * Un-freeze the timers, re-based onto the frozen remaining time, and push
+   * the new deadline onto `pending.expiresAt` so the host can re-post the
+   * card with an accurate countdown. No-op when not paused.
+   */
+  resume(): void;
+  /** True while the pending request's timers are frozen. */
+  readonly paused: boolean;
   /** The in-flight request, if any. */
   readonly pending: ConsentRequest | null;
 }
@@ -202,23 +235,73 @@ export function matchesCommandPattern(command: string, patterns: string[]): bool
 // End of wildcard permission matching
 // ---------------------------------------------------------------------------
 
-export function createConsentBroker(timeoutMs = 120000): ConsentBroker {
+export function createConsentBroker(
+  timeoutMs = 120000,
+  /** Called when a request resolves because its time ran out — lets the host
+   *   surface the expiry (e.g. clear the webview card). Never called when the
+   *   user answered first. */
+  onTimeout?: (request: ConsentRequest, action: ConsentTimeoutAction) => void
+): ConsentBroker {
   let pendingRequest: ConsentRequest | null = null;
   let pendingResolve: ((approved: boolean) => void) | null = null;
-  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  // Two independent deadlines: the auto-approve instant (harmless commands)
+  // and the hard-deny instant. Whichever fires first wins and cancels both.
+  let approveAt: number | undefined;
+  let denyAt: number | undefined;
+  let approveTimer: ReturnType<typeof setTimeout> | undefined;
+  let denyTimer: ReturnType<typeof setTimeout> | undefined;
+  // While frozen (pause), the deadlines no longer advance — remaining time
+  // is preserved by re-basing them onto `Date.now()` at resume().
+  let frozen = false;
+
+  function clearTimers(): void {
+    if (approveTimer) clearTimeout(approveTimer);
+    if (denyTimer) clearTimeout(denyTimer);
+    approveTimer = undefined;
+    denyTimer = undefined;
+  }
 
   function clearPending(): void {
-    if (pendingTimer) clearTimeout(pendingTimer);
-    pendingTimer = undefined;
+    clearTimers();
+    frozen = false;
+    approveAt = undefined;
+    denyAt = undefined;
     pendingRequest = null;
     pendingResolve = null;
+  }
+
+  /** Resolve the pending request with the timed-out outcome, if still pending. */
+  function settle(requestId: string, action: ConsentTimeoutAction): void {
+    // Already answered/superseded? Leave the outcome alone.
+    if (!pendingRequest || pendingRequest.requestId !== requestId || !pendingResolve) return;
+    onTimeout?.(pendingRequest, action);
+    pendingResolve(action === 'approve');
+    clearPending();
+  }
+
+  /** (Re)arm both timers from their (frozen or fresh) deadlines. */
+  function arm(requestId: string): void {
+    clearTimers();
+    if (frozen || !pendingRequest || pendingRequest.requestId !== requestId) return;
+    const now = Date.now();
+    if (approveAt !== undefined) {
+      const delay = approveAt - now;
+      if (delay <= 0) { settle(requestId, 'approve'); return; }
+      approveTimer = setTimeout(() => settle(requestId, 'approve'), delay);
+    }
+    const denyDelay = (denyAt ?? now) - now;
+    if (denyDelay <= 0) { settle(requestId, 'deny'); return; }
+    denyTimer = setTimeout(() => settle(requestId, 'deny'), denyDelay);
   }
 
   return {
     get pending() {
       return pendingRequest;
     },
-    request(payload) {
+    get paused() {
+      return frozen;
+    },
+    request(payload, options) {
       // The agentic loop executes tool calls sequentially, so at most one
       // request is outstanding — but never strand a previous one silently.
       if (pendingResolve) {
@@ -226,17 +309,18 @@ export function createConsentBroker(timeoutMs = 120000): ConsentBroker {
         clearPending();
       }
       const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      pendingRequest = { requestId, tool: payload.tool, args: payload.args };
+      const autoApproveMs =
+        options?.autoApproveMs && options.autoApproveMs > 0 ? options.autoApproveMs : undefined;
+      const now = Date.now();
+      approveAt = autoApproveMs ? now + autoApproveMs : undefined;
+      denyAt = now + timeoutMs;
+      // The card counts down to the EARLIER deadline (the one that matters).
+      pendingRequest = { requestId, tool: payload.tool, args: payload.args, autoApproveMs, expiresAt: approveAt ?? denyAt };
       const decision = new Promise<boolean>((resolve) => {
         pendingResolve = resolve;
-        pendingTimer = setTimeout(() => {
-          // User never answered — DENY. The agentic loop must not block
-          // forever on a prompt nobody saw.
-          pendingResolve?.(false);
-          clearPending();
-        }, timeoutMs);
+        arm(requestId);
       });
-      return { requestId, decision };
+      return { requestId, decision, expiresAt: pendingRequest.expiresAt };
     },
     resolve(requestId, approved) {
       if (!pendingRequest || pendingRequest.requestId !== requestId || !pendingResolve) return;
@@ -248,6 +332,31 @@ export function createConsentBroker(timeoutMs = 120000): ConsentBroker {
         pendingResolve(false);
         clearPending();
       }
+    },
+    pause() {
+      if (frozen || !pendingRequest) return;
+      frozen = true;
+      clearTimers();
+      // Convert the absolute deadlines into REMAINING durations so time spent
+      // paused never counts against the user (deadlines don't advance while
+      // frozen; resume() re-bases them onto a fresh Date.now()).
+      const now = Date.now();
+      if (approveAt !== undefined) {
+        approveAt = Math.max(0, approveAt - now);
+      }
+      denyAt = Math.max(0, (denyAt ?? now) - now);
+    },
+    resume() {
+      if (!frozen || !pendingRequest) return;
+      frozen = false;
+      // approveAt/denyAt currently hold the REMAINING ms frozen at pause().
+      const now = Date.now();
+      if (approveAt !== undefined) {
+        approveAt = now + approveAt;
+      }
+      denyAt = now + (denyAt ?? 0);
+      pendingRequest.expiresAt = approveAt ?? denyAt;
+      arm(pendingRequest.requestId);
     },
   };
 }

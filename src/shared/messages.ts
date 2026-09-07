@@ -133,9 +133,14 @@ export type ExtensionToWebviewMessage =
   | { type: 'editorContext'; text: string }
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
   // Consent: the agent requires user approval for a mutating tool (inline mode)
-  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number }
+  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number; expiresAt?: number }
   // Generic confirmation: ask the user to pick an option (replaces showQuickPick / showWarningMessage)
-  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }> }
+  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }>; expiresAt?: number }
+  // A consent/confirmation request resolved by its timeout (auto-approve,
+  // auto-deny or auto-cancel) — the webview clears the matching card. Sent
+  // so cards never linger as zombies even when they were hidden behind a
+  // full-page wizard/config at the moment of expiry.
+  | { type: 'promptExpired'; requestId: string; action: 'approve' | 'deny' | 'cancel' }
   // File search results for @ mentions
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history

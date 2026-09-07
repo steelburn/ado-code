@@ -100,9 +100,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private executor?: ToolExecutor;
   // Consent broker for inline-mode mutating tools: tracks the in-flight
   // approve/reject request so the agentic loop never hangs on a missed prompt.
-  private readonly consentBroker = createConsentBroker();
+  // Timeout expiry posts promptExpired so the webview clears the card even
+  // when it was hidden (full-page wizard/config) at the moment of expiry.
+  private readonly consentBroker = createConsentBroker(120_000, (req, action) => {
+    this.postMessage({ type: 'promptExpired', requestId: req.requestId, action });
+  });
   // Generic confirmation broker for in-chat cards (replaces native dialogs).
-  private readonly confirmBroker = createConfirmationBroker();
+  // Same expiry surface: auto-cancel resolves the wait AND clears the card.
+  private readonly confirmBroker = createConfirmationBroker(120_000, (req) => {
+    this.postMessage({ type: 'promptExpired', requestId: req.requestId, action: 'cancel' });
+  });
+  // Prompt-timeout pause: while the chat view is hidden (user switched to
+  // another view) or a full-page wizard/config is open inside it, pending
+  // consent/confirmation timers are frozen so a detour never burns the
+  // user's decision time. On return the timers resume with the remaining
+  // time and the card is re-posted with a fresh expiresAt.
+  private viewHidden = false;
+  private wizardOpen = false;
+  private promptsPaused = false;
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
   /** True when chat content has changed since last refresh cycle. */
@@ -953,6 +968,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Pause/resume the prompt brokers when the chat view is hidden or a
+   * full-page wizard/config is open. Idempotent per state transition; on
+   * resume the pending cards are re-posted with the re-based expiresAt so
+   * the webview countdown continues from the true remaining time.
+   */
+  private updatePromptPause(): void {
+    const shouldPause = this.viewHidden || this.wizardOpen;
+    if (shouldPause === this.promptsPaused) return;
+    this.promptsPaused = shouldPause;
+    if (shouldPause) {
+      this.consentBroker.pause();
+      this.confirmBroker.pause();
+    } else {
+      this.consentBroker.resume();
+      this.confirmBroker.resume();
+      this.repostPendingPrompts();
+    }
+  }
+
+  /** Re-post any still-pending prompt cards (post-resume countdown refresh). */
+  private repostPendingPrompts(): void {
+    const pendingConsent = this.consentBroker.pending;
+    if (pendingConsent) {
+      this.postMessage({
+        type: 'consentRequest',
+        requestId: pendingConsent.requestId,
+        tool: pendingConsent.tool,
+        args: pendingConsent.args,
+        autoApproveMs: pendingConsent.autoApproveMs,
+        expiresAt: pendingConsent.expiresAt,
+      });
+    }
+    const pendingConfirm = this.confirmBroker.pending;
+    if (pendingConfirm) {
+      this.postMessage({
+        type: 'confirmationRequest',
+        requestId: pendingConfirm.requestId,
+        title: pendingConfirm.title,
+        description: pendingConfirm.description,
+        options: pendingConfirm.options,
+        expiresAt: pendingConfirm.expiresAt,
+      });
+    }
+  }
+
+  /**
    * Hide / restore the sibling sidebar views while a full-page wizard is
    * open in the chat webview (see WIZARD_SIBLING_VIEWS above). Best-effort:
    * the toggle command may be missing on older VS Code or the view may not
@@ -1005,9 +1066,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // previously session-approved batch (or single command) auto-approves.
     if (tool === 'run_terminal_command' && isCommandSessionApproved(terminalCommandKey(args))) return true;
 
-    const { requestId, decision } = this.consentBroker.request({ tool, args });
     // Compute auto-approve timer for harmless (read-only) terminal commands.
     // The timer duration comes from the user setting; 0 or disabled = no timer.
+    // Passed to the broker so the auto-approve fires HOST-SIDE at the deadline
+    // (even when the card is hidden behind a full-page wizard/config); the
+    // webview only renders the countdown from the returned expiresAt.
     let autoApproveMs: number | undefined;
     if (tool === 'run_terminal_command') {
       const settings = getSettings();
@@ -1019,8 +1082,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     }
+
+    const { requestId, decision, expiresAt } = this.consentBroker.request(
+      { tool, args },
+      // The auto-approve countdown needs the webview card — skip it in the
+      // no-view native-pick fallback (the 120s hard deny stays as backstop).
+      this._view && autoApproveMs ? { autoApproveMs } : undefined
+    );
+    // Created while the chat is hidden / a wizard is open? Freeze immediately
+    // so the timer can't expire before the user ever sees the card.
+    if (this.promptsPaused) this.consentBroker.pause();
     if (this._view) {
-      this.postMessage({ type: 'consentRequest', requestId, tool, args, autoApproveMs });
+      this.postMessage({ type: 'consentRequest', requestId, tool, args, autoApproveMs, expiresAt });
     } else {
       // No webview (e.g. invoked before resolve or after disposal): native pick.
       const pick = await vscode.window.showQuickPick(['Approve', 'Reject'], {
@@ -1057,9 +1130,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * is unavailable. Returns the chosen value, or null on cancel/timeout.
    */
   async requestConfirmation(title: string, description: string, options: ConfirmationOption[]): Promise<string | null> {
-    const { requestId, decision } = this.confirmBroker.request({ title, description, options });
+    const { requestId, decision, expiresAt } = this.confirmBroker.request({ title, description, options });
+    // Created while the chat is hidden / a wizard is open? Freeze immediately
+    // so the timer can't expire before the user ever sees the card.
+    if (this.promptsPaused) this.confirmBroker.pause();
     if (this._view) {
-      this.postMessage({ type: 'confirmationRequest', requestId, title, description, options });
+      this.postMessage({ type: 'confirmationRequest', requestId, title, description, options, expiresAt });
     } else {
       // No webview: native QuickPick fallback.
       const pick = await vscode.window.showQuickPick(
@@ -1371,23 +1447,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Do NOT reject pending consent here: the user may have switched away
     // while the LLM turn was running, and the agentic loop keeps executing
     // host-side. Force-denying a consent prompt mid-turn would fail the tool
-    // call and stall the run. The broker's 120s timeout already guarantees
-    // the loop can never hang, and resolveWebviewView re-posts the pending
-    // card so the user can still approve on return.
-    // Confirmations are different: they are pre-processing interactions with
-    // no timeout, so a view close should cancel them (never block forever).
-    webviewView.onDidDispose(() => { this.confirmBroker.rejectAll(); });
+    // call and stall the run. The broker's timeout already guarantees the
+    // loop can never hang, and resolveWebviewView re-posts the pending card
+    // so the user can still approve on return.
+    // Confirmations are different: they are pre-processing interactions, so a
+    // view close (dispose) should cancel them (never block forever). While a
+    // view is merely HIDDEN the timeouts pause instead (see updatePromptPause),
+    // so a detour to another view never burns the user's decision time.
+    webviewView.onDidDispose(() => {
+      this.confirmBroker.rejectAll();
+      // A consent prompt paused while the view was hidden/wizard-open must
+      // not stay frozen forever now that its card is gone — release it so
+      // the deny backstop can unblock the agentic loop.
+      if (this.consentBroker.paused) this.consentBroker.resume();
+    });
 
     // When the view becomes visible again, re-announce the loading state
     // so the "Thinking…" indicator re-appears.  With retainContextWhenHidden
     // the React state is preserved, but the browser may have suspended CSS
     // animations while the frame was hidden.  Re-postting loading:true is
-    // idempotent if the state was already correct.
+    // idempotent if the state was already correct. Also pause/resume prompt
+    // timeouts: a detour to another view must never burn decision time.
     webviewView.onDidChangeVisibility(() => {
+      this.viewHidden = !webviewView.visible;
+      this.updatePromptPause();
       if (webviewView.visible && this.workingActive) {
         this.postMessage({ type: 'loading', loading: true });
       }
     });
+    this.viewHidden = !webviewView.visible;
+    this.updatePromptPause();
 
     // retainContextWhenHidden keeps the React app alive when the user
     // switches away from Chat, so streaming responses aren't lost.
@@ -1422,11 +1511,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // approve (or reject) the in-flight tool call on return.
     const pendingConsent = this.consentBroker.pending;
     if (pendingConsent) {
+      // Re-post with the ORIGINAL deadlines so the card countdown reflects the
+      // true remaining time (the broker's timers kept running host-side).
       this.postMessage({
         type: 'consentRequest',
         requestId: pendingConsent.requestId,
         tool: pendingConsent.tool,
         args: pendingConsent.args,
+        autoApproveMs: pendingConsent.autoApproveMs,
+        expiresAt: pendingConsent.expiresAt,
       });
     }
 
@@ -1622,8 +1715,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           case 'maximizeWizard':
             // A full-page wizard opened/closed in the chat webview — collapse
-            // the sibling sidebar views so the wizard gets the whole container.
-            void this.setWizardFocus(Boolean((message as { active?: boolean }).active));
+            // the sibling views so the wizard gets the whole container, and
+            // pause/resume prompt timeouts while the wizard hides them.
+            this.wizardOpen = Boolean((message as { active?: boolean }).active);
+            void this.setWizardFocus(this.wizardOpen);
+            this.updatePromptPause();
             break;
           case 'cycleMode': {
             const modes = ['inline', 'plan', 'act', 'yolo'] as const;

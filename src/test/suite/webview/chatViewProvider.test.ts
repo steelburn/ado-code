@@ -38,6 +38,7 @@ suite('ChatViewProvider', () => {
     assert.strictEqual(req.tool, 'edit_file');
     assert.deepStrictEqual(req.args, args);
     assert.ok(req.requestId);
+    assert.ok(typeof req.expiresAt === 'number' && req.expiresAt > Date.now(), 'card gets an expiresAt deadline to count down to');
     // Simulate the webview's consentResponse handler (message switch → broker).
     (provider as any).consentBroker.resolve(req.requestId, true);
     assert.strictEqual(await decision, true);
@@ -583,6 +584,99 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
     } finally {
       (vscode.commands as any).executeCommand = orig;
     }
+  });
+
+  /** Build a resolvable webview stub that records posts + visibility changes. */
+  function makeTrackedWebview() {
+    const handlers: Array<(msg: any) => void> = [];
+    const visibilityHandlers: Array<() => void> = [];
+    const posted: any[] = [];
+    const webviewView: any = {
+      visible: true,
+      onDidDispose: () => {},
+      onDidChangeVisibility: (h: () => void) => visibilityHandlers.push(h),
+      webview: {
+        options: {},
+        html: '',
+        postMessage: (m: any) => posted.push(m),
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (h: (msg: any) => void) => { handlers.push(h); },
+      },
+    };
+    return { webviewView, handlers, visibilityHandlers, posted };
+  }
+
+  test('prompt timeouts pause while the chat view is hidden and resume when it returns', async () => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const { webviewView, visibilityHandlers, posted } = makeTrackedWebview();
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const consentBroker = (provider as any).consentBroker;
+    assert.strictEqual(consentBroker.paused, false, 'not paused while the view is visible');
+
+    // Switch away → frozen.
+    webviewView.visible = false;
+    await visibilityHandlers[0]();
+    assert.strictEqual(consentBroker.paused, true, 'consent timer frozen while the view is hidden');
+
+    // Return → resumed with a re-posted deadline.
+    webviewView.visible = true;
+    await visibilityHandlers[0]();
+    assert.strictEqual(consentBroker.paused, false, 'consent timer resumes when the view returns');
+    const repost = posted.filter((m: any) => m.type === 'consentRequest').pop();
+    assert.ok(repost, 'pending consent card re-posted on return');
+    assert.ok(typeof repost.expiresAt === 'number' && repost.expiresAt > Date.now(), 're-posted with a fresh countdown deadline');
+
+    consentBroker.resolve(repost.requestId, true);
+    assert.strictEqual(await decision, true);
+  });
+
+  test('pending confirmations pause while the chat view is hidden and re-post on return', async () => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const { webviewView, visibilityHandlers, posted } = makeTrackedWebview();
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+
+    const decision = provider.requestConfirmation('Delete Session', 'Really?', [
+      { label: 'Delete', value: 'confirm' },
+      { label: 'Cancel', value: 'cancel' },
+    ]);
+    const confirmBroker = (provider as any).confirmBroker;
+    webviewView.visible = false;
+    await visibilityHandlers[0]();
+    assert.strictEqual(confirmBroker.paused, true, 'confirmation timer frozen while the view is hidden');
+
+    webviewView.visible = true;
+    await visibilityHandlers[0]();
+    assert.strictEqual(confirmBroker.paused, false, 'confirmation timer resumes when the view returns');
+    const repost = posted.filter((m: any) => m.type === 'confirmationRequest').pop();
+    assert.ok(repost && repost.title === 'Delete Session', 'pending confirmation re-posted on return');
+    assert.ok(repost.expiresAt > Date.now(), 're-posted with a fresh countdown deadline');
+    (provider as any).confirmBroker.resolve(repost.requestId, 'confirm');
+    assert.strictEqual(await decision, 'confirm');
+  });
+
+  test('opening a full-page wizard pauses pending prompts; closing it resumes and re-posts', async () => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const { webviewView, handlers, posted } = makeTrackedWebview();
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+
+    const decision = provider.requestConsent('add_comment', { id: 1, text: 'hi' });
+    const consentBroker = (provider as any).consentBroker;
+
+    // Wizard opens (Configuration page / project creation) → freeze.
+    await handlers[0]({ type: 'maximizeWizard', active: true });
+    assert.strictEqual(consentBroker.paused, true, 'consent frozen while the wizard is open');
+
+    // User presses Back → resume + re-post the card with the remaining time.
+    await handlers[0]({ type: 'maximizeWizard', active: false });
+    assert.strictEqual(consentBroker.paused, false, 'consent resumes when the wizard closes');
+    const repost = posted.filter((m: any) => m.type === 'consentRequest').pop();
+    assert.ok(repost, 'pending consent re-posted after the wizard closes');
+    assert.ok(repost.expiresAt > Date.now(), 're-posted with a fresh countdown deadline');
+
+    consentBroker.resolve(repost.requestId, true);
+    assert.strictEqual(await decision, true);
   });
 
   test("kebab 'Configuration…' routes to the in-webview Configuration page", async () => {

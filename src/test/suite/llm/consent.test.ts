@@ -68,6 +68,108 @@ suite('ConsentBroker', () => {
     assert.deepStrictEqual(broker.pending?.args, args);
     assert.ok(broker.pending?.requestId);
   });
+
+  test('autoApproveMs auto-approves at the deadline and reports the approve action', async () => {
+    const events: Array<{ id: string; action: string }> = [];
+    const broker = createConsentBroker(200, (req, action) => events.push({ id: req.requestId, action }));
+    const { requestId, decision } = broker.request(
+      { tool: 'run_terminal_command', args: { command: 'git status' } },
+      { autoApproveMs: 20 }
+    );
+    assert.strictEqual(await decision, true, 'auto-approves without an explicit answer');
+    assert.strictEqual(broker.pending, null);
+    assert.deepStrictEqual(events, [{ id: requestId, action: 'approve' }], 'approve expiry reported');
+  });
+
+  test('without autoApproveMs the timeout denies and reports the deny action', async () => {
+    const events: Array<{ id: string; action: string }> = [];
+    const broker = createConsentBroker(20, (req, action) => events.push({ id: req.requestId, action }));
+    const { requestId, decision } = broker.request({ tool: 'run_terminal_command', args: { command: 'rm -rf x' } });
+    assert.strictEqual(await decision, false, 'hard timeout denies');
+    assert.strictEqual(broker.pending, null);
+    assert.deepStrictEqual(events, [{ id: requestId, action: 'deny' }], 'deny expiry reported');
+  });
+
+  test('an explicit answer suppresses the timeout callback', async () => {
+    const events: Array<{ id: string; action: string }> = [];
+    const broker = createConsentBroker(20, (req, action) => events.push({ id: req.requestId, action }));
+    const { requestId, decision } = broker.request(
+      { tool: 'run_terminal_command', args: { command: 'git status' } },
+      { autoApproveMs: 10 }
+    );
+    broker.resolve(requestId, true);
+    assert.strictEqual(await decision, true);
+    await new Promise(r => setTimeout(r, 40));
+    assert.deepStrictEqual(events, [], 'no expiry callback once the user answered');
+  });
+
+  test('request returns the effective deadline (expiresAt)', async () => {
+    const before = Date.now();
+    const broker = createConsentBroker();
+    // Plain case: deadline is now + broker timeout.
+    const plain = broker.request({ tool: 'edit_file', args: {} });
+    assert.ok(plain.expiresAt >= before + 119000 && plain.expiresAt <= before + 121000,
+      'deny deadline ~now+120s');
+    // Auto-approve case supersedes it: deadline is now + autoApproveMs.
+    const approved = broker.request({ tool: 'run_terminal_command', args: { command: 'git status' } }, { autoApproveMs: 5000 });
+    assert.ok(approved.expiresAt >= before + 4900 && approved.expiresAt <= before + 5100,
+      `auto-approve deadline ~now+5000 (got ${approved.expiresAt - before})`);
+    assert.strictEqual(broker.pending?.autoApproveMs, 5000, 'pending keeps autoApproveMs for re-posting');
+    assert.ok(broker.pending?.expiresAt && broker.pending.expiresAt > Date.now(), 'pending keeps expiresAt for re-posting');
+    // Clean up both pending timers so the suite never idles on them.
+    broker.resolve(approved.requestId, true);
+  });
+
+  test('pause freezes the hard-deny timeout; resume keeps the remaining time', async () => {
+    const events: Array<{ id: string; action: string }> = [];
+    const broker = createConsentBroker(50, (req, action) => events.push({ id: req.requestId, action }));
+    const { requestId, decision } = broker.request({ tool: 'run_terminal_command', args: { command: 'rm -rf x' } });
+    await new Promise(r => setTimeout(r, 15)); // burn part of the window
+    broker.pause();
+    assert.ok(broker.paused, 'paused reports true');
+    await new Promise(r => setTimeout(r, 70)); // would have denied at 50ms
+    assert.deepStrictEqual(events, [], 'no timeout while paused');
+    broker.resume();
+    assert.strictEqual(broker.paused, false, 'paused reports false after resume');
+    assert.strictEqual(await decision, false, 'still denies after resume');
+    assert.deepStrictEqual(events, [{ id: requestId, action: 'deny' }], 'deny fires once, after resume');
+  });
+
+  test('pause freezes the auto-approve timer too', async () => {
+    const events: Array<{ id: string; action: string }> = [];
+    const broker = createConsentBroker(500, (req, action) => events.push({ id: req.requestId, action }));
+    const { requestId, decision } = broker.request(
+      { tool: 'run_terminal_command', args: { command: 'git status' } },
+      { autoApproveMs: 30 }
+    );
+    await new Promise(r => setTimeout(r, 10));
+    broker.pause();
+    await new Promise(r => setTimeout(r, 80)); // would have auto-approved at 30ms
+    assert.deepStrictEqual(events, [], 'no auto-approve while paused');
+    broker.resume();
+    assert.strictEqual(await decision, true, 'auto-approves after resume');
+    assert.deepStrictEqual(events, [{ id: requestId, action: 'approve' }], 'approve fires once, after resume');
+  });
+
+  test('resume re-bases expiresAt onto the frozen remaining time', async () => {
+    const broker = createConsentBroker();
+    broker.request({ tool: 'edit_file', args: {} });
+    broker.pause();
+    await new Promise(r => setTimeout(r, 20));
+    broker.resume();
+    const remaining = broker.pending!.expiresAt - Date.now();
+    assert.ok(remaining > 110000, `~full window survives a pause (got ${remaining}ms remaining)`);
+    broker.resolve(broker.pending!.requestId, true);
+  });
+
+  test('the user can still answer while paused', async () => {
+    const broker = createConsentBroker(20);
+    const { requestId, decision } = broker.request({ tool: 'edit_file', args: {} });
+    broker.pause();
+    broker.resolve(requestId, true);
+    assert.strictEqual(await decision, true);
+    assert.strictEqual(broker.paused, false, 'answering clears the paused state');
+  });
 });
 
 suite('Session command approval cache', () => {

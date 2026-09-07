@@ -261,6 +261,10 @@ function App() {
             tool: msg.tool,
             args: msg.args,
             autoApproveMs: msg.autoApproveMs,
+            // Host-enforced deadline — the card counts down to it, and the
+            // host resolves the prompt when it passes (even if this card is
+            // hidden behind the full-page wizard/config at that moment).
+            expiresAt: msg.expiresAt,
           });
           break;
 
@@ -271,7 +275,22 @@ function App() {
             title: msg.title,
             description: msg.description,
             options: msg.options,
+            expiresAt: msg.expiresAt,
           });
+          break;
+
+        case 'promptExpired':
+          // A consent/confirmation request timed out and the host already
+          // resolved it (auto-approve / auto-deny / auto-cancel) — drop the
+          // card so it can't linger as a zombie. No response is sent: the
+          // host owns the outcome, and a fabricated option value could hit
+          // the wrong branch of the waiting flow.
+          if (msg.action === 'approve' || msg.action === 'deny') {
+            setConsent(prev => (prev?.requestId === msg.requestId ? null : prev));
+          }
+          if (msg.action === 'cancel') {
+            setConfirmation(prev => (prev?.requestId === msg.requestId ? null : prev));
+          }
           break;
 
         case 'choicePrompt':
@@ -823,7 +842,15 @@ function App() {
 
       {/* Confirmation card — in-chat replacement for native VS Code dialogs */}
       {confirmation && (
-        <ConfirmationCard request={confirmation} onRespond={handleConfirmationResponse} />
+        <ConfirmationCard
+          request={confirmation}
+          onRespond={handleConfirmationResponse}
+          onExpired={(requestId) => {
+            // Timeout auto-cancel: the host already resolved the wait as
+            // cancelled — just remove the card (never fabricate a value).
+            if (confirmation?.requestId === requestId) setConfirmation(null);
+          }}
+        />
       )}
 
       {/* Input */}

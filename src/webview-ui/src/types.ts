@@ -140,9 +140,12 @@ export type ExtensionToWebviewMessage =
   | { type: 'editorContext'; text: string }
   | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
   // Consent: the agent requires user approval for a mutating tool (inline mode)
-  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number }
+  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number; expiresAt?: number }
   // Generic confirmation: in-chat card replacing native VS Code dialogs
-  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }> }
+  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }>; expiresAt?: number }
+  // A consent/confirmation request resolved by its timeout — the webview
+  // clears the matching card (see shared/messages.ts for the host side).
+  | { type: 'promptExpired'; requestId: string; action: 'approve' | 'deny' | 'cancel' }
   // File search results for @ mentions
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history

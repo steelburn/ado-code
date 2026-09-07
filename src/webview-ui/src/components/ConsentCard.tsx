@@ -1,11 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useMemo } from 'react';
+import { useCountdown, formatCountdown } from './ui/useCountdown';
 
 export interface ConsentRequest {
   requestId: string;
   tool: string;
   args: Record<string, any>;
-  /** When set, the card auto-approves after this many milliseconds. */
+  /** When set, the request AUTO-APPROVES after this many ms (harmless
+   *  read-only commands) — the host enforces the deadline even when the card
+   *  is hidden behind a full-page wizard/config. */
   autoApproveMs?: number;
+  /** Absolute deadline (epoch ms) of the timeout the host will enforce: the
+   *  auto-approve instant when `autoApproveMs` is set, else the auto-deny
+   *  instant. The countdown tracks this so it survives card remounts. */
+  expiresAt?: number;
 }
 
 type ConsentScope = 'once' | 'session' | 'permanent';
@@ -44,9 +51,15 @@ function summarize(tool: string, args: Record<string, any>): string {
  * the chat is cleared or a new session starts). Terminal commands get one
  * extra option, "Allow Permanently" (persists to act.terminalAllowlist).
  *
- * When `autoApproveMs` is set (harmless commands), a countdown timer appears.
- * If the timer expires, the command is auto-approved. The user can still
- * click any button to cancel the timer and respond immediately.
+ * Every card shows a countdown to the host-enforced timeout, with the
+ * post-timeout action in the label:
+ *   - harmless terminal commands (autoApproveMs) → "Auto-approving in m:ss"
+ *   - everything else                          → "Auto-denying in m:ss"
+ * The user can still click any button to cancel the timer and respond
+ * immediately. The countdown is DISPLAY ONLY: the host owns the deadline
+ * and resolves it (approve/deny) — even when this card is unmounted or the
+ * view hidden, and pausing while the user detours to another view or a
+ * full-page wizard/config freezes the time remaining instead of expiring it.
  */
 export function ConsentCard({ request, onRespond }: Props) {
   const isTerminal = request.tool === 'run_terminal_command';
@@ -54,44 +67,25 @@ export function ConsentCard({ request, onRespond }: Props) {
     ? JSON.stringify(request.args, null, 2)
     : '{}';
 
-  // ── Auto-approve countdown timer ────────────────────────────────────────
+  // Auto-approve (harmless commands) vs auto-deny (everything else).
   const autoApproveMs = request.autoApproveMs;
-  const [remainingMs, setRemainingMs] = useState(autoApproveMs ?? 0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const firedRef = useRef(false);
+  const autoApproves = !!autoApproveMs && autoApproveMs > 0;
+  // Absolute deadline; legacy producers without expiresAt fall back to a
+  // mount-relative auto-approve window so the countdown still appears. The
+  // deadline is memoized per request so it never drifts across renders.
+  const expiresAt = useMemo(() => {
+    if (request.expiresAt) return request.expiresAt;
+    return autoApproves ? Date.now() + autoApproveMs! : undefined;
+  }, [request.expiresAt, request.requestId, autoApproves, autoApproveMs]);
 
-  useEffect(() => {
-    if (!autoApproveMs || autoApproveMs <= 0) return;
+  // Display-only countdown to the host-enforced deadline. The HOST resolves
+  // the request when the deadline passes (auto-approve / auto-deny) and posts
+  // promptExpired to clear this card; the card never auto-responds itself, so
+  // a paused timer (user on another view / in a full-page wizard) can't be
+  // defeated by a client tick firing while the user is away.
+  const countdown = useCountdown(expiresAt);
 
-    setRemainingMs(autoApproveMs);
-    firedRef.current = false;
-
-    const tickMs = 100; // update display every 100ms for smooth countdown
-    timerRef.current = setInterval(() => {
-      setRemainingMs(prev => {
-        const next = prev - tickMs;
-        if (next <= 0) {
-          // Timer expired — auto-approve (once)
-          if (timerRef.current) clearInterval(timerRef.current);
-          if (!firedRef.current) {
-            firedRef.current = true;
-            // Defer to avoid setState-during-render
-            setTimeout(() => onRespond(request.requestId, true), 0);
-          }
-          return 0;
-        }
-        return next;
-      });
-    }, tickMs);
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [autoApproveMs, request.requestId, onRespond]);
-
-  // Remaining seconds (ceiling so "5s" shows while > 0)
-  const remainingSec = remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
-  const hasTimer = !!autoApproveMs && autoApproveMs > 0;
+  const showTimer = !!countdown && countdown.remainingMs > 0;
 
   return (
     <div className="consent-card">
@@ -111,17 +105,20 @@ export function ConsentCard({ request, onRespond }: Props) {
         <div className="consent-card-summary">{summarize(request.tool, request.args)}</div>
         <pre className="consent-card-args">{argsText}</pre>
       </div>
-      {/* Auto-approve timer bar */}
-      {hasTimer && remainingMs > 0 && (
+      {/* Countdown to the host-enforced timeout — label names the post-timeout
+          action so the user knows what happens if they don't answer. */}
+      {showTimer && (
         <div className="consent-card-timer">
           <div className="consent-card-timer-bar">
             <div
               className="consent-card-timer-fill"
-              style={{ width: `${(remainingMs / autoApproveMs!) * 100}%` }}
+              style={{ width: `${(countdown.remainingMs / Math.max(1, countdown.totalMs)) * 100}%` }}
             />
           </div>
           <span className="consent-card-timer-text">
-            Auto-approving in {remainingSec}s
+            {autoApproves
+              ? `Auto-approving in ${formatCountdown(countdown.remainingMs)}`
+              : `Auto-denying in ${formatCountdown(countdown.remainingMs)}`}
           </span>
         </div>
       )}
