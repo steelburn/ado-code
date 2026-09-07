@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session, ImageAttachment } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
-import { MessageList } from './components/MessageList';
+import { MessageList, LiveTraceEntry, TraceEntry } from './components/MessageList';
 import { InputBar } from './components/InputBar';
 import { KebabMenu } from './components/KebabMenu';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
@@ -52,73 +52,51 @@ interface WorkItemDetail {
   comments?: Array<any>;
 }
 
-/** A tool call surfaced live by the agentic loop while the turn is running. */
-interface LiveToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, any>;
-  result?: string;
-  /** false when the user hid tool calls in chat — only a "…" indicator shows. */
-  showDetails?: boolean;
-  /** Completion flag for hidden calls, which never carry result content. */
-  done?: boolean;
-}
-
-/** Serialize a completed tool call back into the fenced block format that
- *  MessageList.parseToolCalls renders as a collapsible card. Kept as a
- *  permanent record in the final assistant message. */
-function toolCallToFence(tc: LiveToolCall): string {
-  const record: Record<string, any> = { id: tc.id, name: tc.name, arguments: tc.arguments };
-  if (tc.result !== undefined) {
-    // Cap stored result so overlarge tool output can't bloat the message.
-    record.result = tc.result.length > 8000 ? tc.result.slice(0, 8000) + '\n…(truncated)' : tc.result;
-  }
-  return '```tool_call\n' + JSON.stringify(record) + '\n```';
+/** Cap an over-long payload kept in a finished turn's record so a huge tool
+ *  result or chain-of-thought can't bloat the message. */
+function capRecord(text: string | undefined, limit: number): string | undefined {
+  if (text === undefined) return undefined;
+  return text.length > limit ? text.slice(0, limit) + '\n…(truncated)' : text;
 }
 
 function App() {
   // ── State ──────────────────────────────────────────────────────
-  const [messages, setMessages] = useState<Array<{ role: string; content: string; id?: string; reasoning?: string }>>([]);
+  const [messages, setMessages] = useState<Array<{ role: string; content: string; id?: string; trace?: TraceEntry[] }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
   const [mode, setMode] = useState('inline');
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
-  // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
-  const [thinking, setThinking] = useState('');
-  const thinkingRef = useRef('');
+  // Ordered live trace of the current turn: thinking blocks and tool cards in
+  // the order the loop produced them. Each complete reasoning step from the
+  // agentic loop (newBlock) is its own entry, so thinking stays BETWEEN the
+  // tool batches it introduced — never glued into a single blob above them.
+  const [liveTrace, setLiveTrace] = useState<LiveTraceEntry[]>([]);
+  // Mirror of liveTrace for the (stale-closure) message handler — the
+  // useEffect below mounts once, so plain state reads there are frozen.
+  const traceRef = useRef<LiveTraceEntry[]>([]);
+  // Stable keys for thinking blocks (tool blocks key on their call id).
+  const thinkingSeqRef = useRef(0);
+  const commitLiveTrace = useCallback((next: LiveTraceEntry[]) => {
+    traceRef.current = next;
+    setLiveTrace(next);
+  }, []);
   // Answer text streamed by the CURRENT turn, buffered in the live bubble: it
   // renders in-flow UNDER the reasoning + tool cards (reasoning flows up and
   // scrolls away naturally instead of pinning a fixed box at the bottom) and
   // materializes as a normal assistant message when the turn completes.
   const [streamText, setStreamText] = useState('');
   const streamTextRef = useRef('');
-  // Live tool calls from the agentic loop — each starts as "running" and
-  // flips to "completed" when the host posts its result. Shown while the
-  // turn is in flight, then merged into the final assistant message.
-  const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
-  // Mirror of liveToolCalls for the (stale-closure) message handler — the
-  // useEffect below mounts once, so plain state reads there are frozen.
-  const liveToolCallsRef = useRef<LiveToolCall[]>([]);
-  const updateLiveToolCalls = useCallback(
-    (updater: (prev: LiveToolCall[]) => LiveToolCall[]) => {
-      liveToolCallsRef.current = updater(liveToolCallsRef.current);
-      setLiveToolCalls(liveToolCallsRef.current);
-    },
-    []
-  );
 
-  /** Drop everything that only exists while a turn is live (thinking text,
-   *  buffered stream, tool cards, activity label). Called on completion,
-   *  errors, new sends, and session switches. */
+  /** Drop everything that only exists while a turn is live (ordered trace of
+   *  thinking/tool segments, buffered stream, activity label). Called on
+   *  completion, errors, new sends, and session switches. */
   const finishTurnState = useCallback(() => {
-    setThinking('');
-    thinkingRef.current = '';
+    setLiveTrace([]);
+    traceRef.current = [];
     setStreamText('');
     streamTextRef.current = '';
     setActiveActivity(null);
-    liveToolCallsRef.current = [];
-    setLiveToolCalls([]);
   }, []);
 
   // Agent state — supports multiple concurrent runs
@@ -199,28 +177,36 @@ function App() {
             // A reply arriving means the agentic turn finished — no consent
             // prompt can still be pending.
             setConsent(null);
-            // Snapshot the tools run this turn BEFORE finishTurnState wipes
-            // them. Hidden tool calls (chat.showToolCalls=false) are excluded
-            // — never merged into the message nor persisted.
-            const finishedToolCalls = liveToolCallsRef.current.filter(tc => tc.showDetails !== false);
-            const toolLog = finishedToolCalls.length > 0
-              ? finishedToolCalls.map(toolCallToFence).join('\n\n')
-              : '';
-            const text = (streamTextRef.current || '') + (msg.content || '');
-            if (!text.trim() && !toolLog && !thinkingRef.current.trim()) {
+            // Snapshot nothing here: the finished message is built from the
+            // live trace below (before finishTurnState wipes it). Hidden tool
+            // calls (chat.showToolCalls=false) are excluded — never recorded
+            // into the message.
+            const segs: TraceEntry[] = traceRef.current
+              .filter(seg => seg.kind === 'thinking' || seg.call.showDetails !== false)
+              .map(seg =>
+                seg.kind === 'thinking'
+                  ? { kind: 'thinking' as const, text: capRecord(seg.text, 12000) || '' }
+                  : {
+                      kind: 'tool' as const,
+                      call: {
+                        id: seg.call.id,
+                        name: seg.call.name,
+                        arguments: seg.call.arguments,
+                        result: capRecord(seg.call.result, 8000),
+                        showDetails: seg.call.showDetails,
+                        done: seg.call.done,
+                      },
+                    }
+              );
+            const text = ((streamTextRef.current || '') + (msg.content || '')).trim();
+            if (!text && segs.length === 0) {
               finishTurnState();
               break; // nothing to show — never ends the chat abruptly
             }
-            // Materialize the whole turn as ONE assistant message: tool fences
-            // + streamed text + final content, with the reasoning preserved as
-            // a collapsed "Thinking" disclosure above it (in-flow, transient —
-            // not persisted into session history).
-            const parts = [toolLog, text].filter(Boolean);
-            const reasoning = thinkingRef.current.trim();
             const finalMsg: any = {
               role: 'assistant',
-              content: parts.join('\n\n'),
-              ...(reasoning ? { reasoning: reasoning.slice(0, 6000) } : {}),
+              content: text,
+              ...(segs.length > 0 ? { trace: segs } : {}),
             };
             setMessages(prev => [...prev, finalMsg]);
             finishTurnState();
@@ -236,37 +222,55 @@ function App() {
           break;
 
         case 'thinkingMessage':
-          // AI thinking/reasoning text — accumulate in the live bubble (above
-          // the tools and streamed answer). Both done states carry content
-          // (reasoning block ends), so append either way; the block collapses
-          // into the finished message's disclosure when the turn completes.
+          // AI thinking/reasoning text. `newBlock` marks a complete pre-tool
+          // reasoning step from the agentic loop → it becomes its OWN trace
+          // entry, so each thinking block stays between the tool batches it
+          // introduced. Plain streamed deltas (no newBlock) may split
+          // mid-word — they coalesce into the current block with no glue.
           if (msg.content) {
-            thinkingRef.current += msg.content;
-            setThinking(thinkingRef.current);
+            const next = [...traceRef.current];
+            if (msg.newBlock) {
+              next.push({ key: `th-${++thinkingSeqRef.current}`, kind: 'thinking', text: msg.content });
+            } else {
+              const last = next[next.length - 1];
+              if (last && last.kind === 'thinking') {
+                last.text += msg.content;
+              } else {
+                next.push({ key: `th-${++thinkingSeqRef.current}`, kind: 'thinking', text: msg.content });
+              }
+            }
+            commitLiveTrace(next);
           }
           break;
 
         case 'toolCall':
-          // Agentic loop is about to run a tool — add a live "running" card
-          // (or a bare heartbeat when the user hid tool details).
-          updateLiveToolCalls(prev => {
-            if (prev.some(t => t.id === msg.call.id)) return prev;
-            return [
-              ...prev,
+          // Agentic loop is about to run a tool — insert its card in flow,
+          // directly after whatever thinking block preceded it.
+          if (!traceRef.current.some(t => t.kind === 'tool' && t.key === msg.call.id)) {
+            commitLiveTrace([
+              ...traceRef.current,
               {
-                id: msg.call.id,
-                name: msg.call.name,
-                arguments: msg.call.arguments || {},
-                showDetails: msg.call.showDetails !== false,
+                key: msg.call.id,
+                kind: 'tool',
+                call: {
+                  id: msg.call.id,
+                  name: msg.call.name,
+                  arguments: msg.call.arguments || {},
+                  showDetails: msg.call.showDetails !== false,
+                },
               },
-            ];
-          });
+            ]);
+          }
           break;
 
         case 'toolResult':
           // Tool finished — mark its card completed with the result.
-          updateLiveToolCalls(prev =>
-            prev.map(t => (t.id === msg.callId ? { ...t, result: msg.content, done: true } : t))
+          commitLiveTrace(
+            traceRef.current.map(t =>
+              t.kind === 'tool' && t.key === msg.callId
+                ? { ...t, call: { ...t.call, result: msg.content, done: true } }
+                : t
+            )
           );
           break;
 
@@ -274,8 +278,12 @@ function App() {
           // Hidden tool calls (chat.showToolCalls=false) never carry result
           // content — the host posts this bare tick so the "Working…"
           // disclosure can flip the row from running to completed.
-          updateLiveToolCalls(prev =>
-            prev.map(t => (t.id === msg.callId ? { ...t, done: true } : t))
+          commitLiveTrace(
+            traceRef.current.map(t =>
+              t.kind === 'tool' && t.key === msg.callId
+                ? { ...t, call: { ...t.call, done: true } }
+                : t
+            )
           );
           break;
 
@@ -897,10 +905,9 @@ function App() {
       <MessageList
         messages={messages}
         loading={loading}
-        thinking={thinking}
+        liveTrace={liveTrace}
         streamText={streamText}
         activity={activeActivity}
-        liveToolCalls={liveToolCalls}
       />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}

@@ -11,12 +11,16 @@ interface Message {
   isError?: boolean;
   /** Stable bubble id (host run card) — updates REPLACE this bubble. */
   id?: string;
-  /** Reasoning text of a completed turn — rendered as a collapsed "Thinking"
-   *  disclosure above the answer. Transient (never persisted to history). */
-  reasoning?: string;
+  /** Ordered record of a completed agentic turn: thinking blocks interleaved
+   *  with the tool calls that followed them (chronological). Rendered in flow
+   *  and left VISIBLE — the turn's work is never collapsed away on completion.
+   *  Transient (never persisted to session history). */
+  trace?: TraceEntry[];
 }
 
-interface ToolCallInfo {
+/** A tool call surfaced by the agentic loop — live (running → completed) or
+ *  recorded in a finished turn's trace. */
+export interface ToolCallInfo {
   id: string;
   name: string;
   arguments: Record<string, any>;
@@ -27,19 +31,28 @@ interface ToolCallInfo {
   done?: boolean;
 }
 
+/** One segment of a turn's ordered record. `thinking` blocks sit between the
+ *  tool calls they introduced — not lumped above them. */
+export type TraceEntry =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool'; call: ToolCallInfo };
+
+/** Live variant — carries a stable key so blocks update in place while the
+ *  turn streams (thinking text grows, tool cards flip running → completed). */
+export type LiveTraceEntry = TraceEntry & { key: string };
+
 interface Props {
   messages: Message[];
   loading: boolean;
-  /** AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking) */
-  thinking?: string;
+  /** Ordered segments of the CURRENT live turn (thinking blocks + tool cards
+   *  in the order they were produced). */
+  liveTrace?: LiveTraceEntry[];
   /** Answer text streamed by the current turn — rendered in-flow UNDER the
    *  reasoning + tool cards so the reasoning flows up and scrolls away as the
    *  reply grows (instead of a fixed box pinned at the bottom). */
   streamText?: string;
   /** Activity indicator text (e.g., "Executing skill: Code Review") */
   activity?: string | null;
-  /** Live tool calls from the agentic loop — shown while the turn runs. */
-  liveToolCalls?: ToolCallInfo[];
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -126,12 +139,13 @@ function stripChoiceFences(content: string): string {
 
 // ── Sub-components ───────────────────────────────────────────────
 
-const ToolCallBlock: React.FC<{ tc: ToolCallInfo }> = ({ tc }) => {
-  // Running cards start expanded (so args are visible while the tool works);
-  // completed cards collapse to just the header + status badge. The user can
-  // always override either way.
+const ToolCallBlock: React.FC<{ tc: ToolCallInfo; defaultOpen?: boolean }> = ({ tc, defaultOpen = false }) => {
+  // Live cards start expanded while the tool runs; completed cards collapse to
+  // just the header + status badge. Finished turn records pass defaultOpen so
+  // the tool's work stays visible after the loop ends. The user can always
+  // override either way.
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
-  const expanded = userExpanded ?? !tc.result;
+  const expanded = userExpanded ?? (defaultOpen || !tc.result);
 
   // Status: running → spinner badge; done → success; JSON error result → error
   const statusBadge = !tc.result ? (
@@ -389,32 +403,32 @@ const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
 };
 
 /**
- * Collapsed "💭 Thinking" disclosure for a completed turn's reasoning.
- * Mirrors the tool-call cards: content streams openly while the turn runs;
- * once the answer lands, the reasoning collapses to a header the user can
- * re-open. Reasoning is transient — it never persists into session history.
+ * Thinking/reasoning block with a collapse toggle. Defaults to OPEN wherever
+ * it appears (live bubble AND the finished turn record) — reasoning is never
+ * hidden once produced; the user may collapse any block on demand.
+ * Reasoning is transient — it never persists into session history.
  */
-const ReasoningDisclosure: React.FC<{ text: string }> = ({ text }) => {
-  const [open, setOpen] = useState(false);
+const ThinkingBlock: React.FC<{ text: string }> = ({ text }) => {
+  const [open, setOpen] = useState(true);
   return (
-    <div className="reasoning-disclosure">
+    <div className="thinking-block thinking-block-live">
       <button
-        className="reasoning-toggle"
+        className="thinking-header thinking-toggle"
         onClick={() => setOpen(!open)}
-        title={open ? 'Hide reasoning' : 'Show the reasoning behind this answer'}
+        title={open ? 'Hide reasoning' : 'Show the reasoning behind this step'}
       >
-        <span className="reasoning-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
-        <span className="reasoning-icon">💭</span>
-        <span className="reasoning-label">Thinking</span>
+        <span className="thinking-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+        <span className="thinking-icon">💭</span>
+        <span className="thinking-label">Thinking</span>
       </button>
-      {open && <div className="reasoning-text">{text}</div>}
+      {open && <div className="thinking-content">{text}</div>}
     </div>
   );
 };
 
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading, thinking, streamText, activity, liveToolCalls = [] }: Props) {
+export function MessageList({ messages, loading, liveTrace = [], streamText, activity }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(messages.length);
   // Signature of everything the chat area displays. Id-bubble replacements
@@ -427,13 +441,17 @@ export function MessageList({ messages, loading, thinking, streamText, activity,
   useEffect(() => {
     const last = messages[messages.length - 1];
     const tailKey = last ? `${last.id ?? ''}|${last.role}|${last.content.length}` : '';
+    const liveSig = [
+      liveTrace.length,
+      liveTrace.reduce((n, e) => n + (e.kind === 'thinking' ? (e.text || '').length : 0), 0),
+      liveTrace.filter(e => e.kind === 'tool' && !!(e.call.result || e.call.done)).length,
+    ].join('|');
     const sig = [
       messages.length,
       tailKey,
       loading,
       streamText?.length ?? 0,
-      thinking?.length ?? 0,
-      liveToolCalls.length,
+      liveSig,
       activity ?? '',
     ].join('|');
     if (sig === prevSigRef.current) return;
@@ -445,7 +463,7 @@ export function MessageList({ messages, loading, thinking, streamText, activity,
     // Single message → smooth scroll
     const behavior = countDelta > 1 ? 'instant' : 'smooth';
     bottomRef.current?.scrollIntoView({ behavior });
-  }, [messages, loading, thinking, streamText, activity, liveToolCalls]);
+  }, [messages, loading, liveTrace, streamText, activity]);
 
   if (messages.length === 0 && !loading) {
     return (
@@ -527,23 +545,44 @@ export function MessageList({ messages, loading, thinking, streamText, activity,
                   <p>{m.content}</p>
                 ) : (
                   <>
-                    {/* Completed turn reasoning — collapsed disclosure above the
-                        answer (transient, not persisted). */}
-                    {m.reasoning && <ReasoningDisclosure text={m.reasoning} />}
+                    {m.trace && m.trace.length > 0 ? (
+                      <>
+                        {/* Ordered record of the agentic turn: each thinking
+                            block stays where the model produced it — right
+                            before the tool batch it introduced — and nothing is
+                            collapsed away when the turn completes. */}
+                        <div className="turn-record">
+                          {m.trace.map((seg, j) =>
+                            seg.kind === 'thinking' ? (
+                              <ThinkingBlock key={`th-${j}`} text={seg.text} />
+                            ) : (
+                              <ToolCallBlock key={seg.call.id || `tc-${j}`} tc={seg.call} defaultOpen />
+                            )
+                          )}
+                        </div>
 
-                    {/* Render text parts with markdown */}
-                    {hasText && textParts.filter((t) => t.trim()).map((text, j) => (
-                      <MarkdownWithCodeCopy key={j} content={text} />
-                    ))}
+                        {/* Final answer — follows the record chronologically. */}
+                        {hasText && textParts.filter((t) => t.trim()).map((text, j) => (
+                          <MarkdownWithCodeCopy key={j} content={text} />
+                        ))}
+                      </>
+                    ) : (
+                      <>
+                        {/* Render text parts with markdown */}
+                        {hasText && textParts.filter((t) => t.trim()).map((text, j) => (
+                          <MarkdownWithCodeCopy key={j} content={text} />
+                        ))}
 
-                    {/* Render tool call blocks */}
-                    {toolCalls.map((tc) => (
-                      <ToolCallBlock key={tc.id} tc={tc} />
-                    ))}
+                        {/* Render tool call blocks */}
+                        {toolCalls.map((tc) => (
+                          <ToolCallBlock key={tc.id} tc={tc} />
+                        ))}
 
-                    {/* Fallback: if no text and no tool calls, render raw */}
-                    {!hasText && toolCalls.length === 0 && (
-                      <MarkdownWithCodeCopy content={displayContent} />
+                        {/* Fallback: if no text and no tool calls, render raw */}
+                        {!hasText && toolCalls.length === 0 && (
+                          <MarkdownWithCodeCopy content={displayContent} />
+                        )}
+                      </>
                     )}
                   </>
                 )}
@@ -568,34 +607,27 @@ export function MessageList({ messages, loading, thinking, streamText, activity,
                 </span>
               </div>
 
-              {/* Thinking/reasoning streams IN-FLOW here — above the tool cards
-                  and the answer text, inside the same assistant bubble that will
-                  become the reply. As the answer grows beneath it, the reasoning
-                  scrolls up naturally (it never pins a fixed box at the bottom). */}
-              {!!thinking && thinking.trim().length > 0 && (
-                <div className="thinking-block thinking-block-live">
-                  <div className="thinking-header">
-                    <span className="thinking-icon">💭</span>
-                    <span className="thinking-label">Thinking</span>
-                  </div>
-                  <div className="thinking-content">{thinking}</div>
-                </div>
-              )}
-
-              {/* Live tool calls — running → completed as results land.
-                  Detail cards render full arguments/results; hidden calls
-                  (chat.showToolCalls=false) collapse into a clickable
-                  "Working…" disclosure that lists the tool names on demand
-                  (no payload ever leaves the host). */}
-              {liveToolCalls.length > 0 && (
-                <div style={{ marginTop: 4 }}>
-                  {liveToolCalls
-                    .filter(tc => tc.showDetails !== false)
-                    .map(tc => (
-                      <ToolCallBlock key={tc.id} tc={tc} />
-                    ))}
-                  {liveToolCalls.some(tc => tc.showDetails === false) && (
-                    <HiddenToolCalls calls={liveToolCalls.filter(tc => tc.showDetails === false)} />
+              {/* Ordered live trace: thinking blocks and tool cards render in
+                  the order the loop produced them — each thinking block stays
+                  between the tool batches it introduced, and as the answer
+                  grows beneath it all, the trace scrolls up naturally. */}
+              {liveTrace.length > 0 && (
+                <div className="turn-record">
+                  {liveTrace.map(seg => {
+                    if (seg.kind === 'thinking') {
+                      return <ThinkingBlock key={seg.key} text={seg.text} />;
+                    }
+                    // Hidden calls (chat.showToolCalls=false) never carry
+                    // payloads — grouped into the "Working…" disclosure below.
+                    if (seg.call.showDetails === false) return null;
+                    return <ToolCallBlock key={seg.key} tc={seg.call} />;
+                  })}
+                  {liveTrace.some(seg => seg.kind === 'tool' && seg.call.showDetails === false) && (
+                    <HiddenToolCalls
+                      calls={liveTrace
+                        .filter(seg => seg.kind === 'tool' && seg.call.showDetails === false)
+                        .map(seg => (seg as { kind: 'tool'; call: ToolCallInfo }).call)}
+                    />
                   )}
                 </div>
               )}

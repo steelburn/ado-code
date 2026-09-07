@@ -101,8 +101,12 @@ export type ExtensionToWebviewMessage =
   // without it, id'd messages APPEND to the bubble (self-contained streams
   // such as auto-review that must not fuse with the active turn).
   | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean }
-  // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
-  | { type: 'thinkingMessage'; content: string; done: boolean }
+  // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended
+  // thinking). `newBlock` marks the start of a DISTINCT reasoning step — the
+  // agentic loop posts one complete pre-tool message per iteration — so the
+  // webview separates it from earlier reasoning with a blank line. Streamed
+  // deltas omit it: fragments of one continuous reasoning stream glue raw.
+  | { type: 'thinkingMessage'; content: string; done: boolean; newBlock?: boolean }
   | { type: 'workItems'; items: WorkItemSummary[] }
   | { type: 'workItemDetail'; item: WorkItemDetail }
   | { type: 'gitStatus'; isGitRepo: boolean; currentBranch: string | null; branchCreated: string | null }

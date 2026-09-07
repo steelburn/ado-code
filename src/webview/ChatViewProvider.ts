@@ -4040,7 +4040,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Only iterations that fed a tool call are thinking/prep text —
           // the final answer (update.final) is posted whole below.
           if (!update.final) {
-            this.postMessage({ type: 'thinkingMessage', content: update.text, done: false });
+            // Each iteration's text is ONE complete pre-tool reasoning step
+            // ("Let me check X…") — mark it as a new block so the webview
+            // separates consecutive steps instead of gluing them into one
+            // run-on blob ("…the structure.Let me read…").
+            this.postMessage({ type: 'thinkingMessage', content: update.text, done: false, newBlock: true });
           }
           this.setWorkingDetail('thinking…');
         }
