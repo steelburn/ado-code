@@ -527,9 +527,8 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
             className={`message message-${m.role}`}
             style={errorBorder}
           >
-            <div className={`message-avatar message-avatar-${m.role}`}>
-              {isError ? '⚠' : isUser ? 'You' : 'AI'}
-            </div>
+            {/* Author label circles (AI / You) removed: the header row below
+                already names the speaker, so the circles only cost width. */}
             <div className="message-body">
               <div className="message-header">
                 <span className="message-author">
@@ -593,7 +592,6 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
       })}
       {loading && (
         <div className="message message-assistant">
-          <div className="message-avatar message-avatar-assistant">AI</div>
           <div className="message-body">
             <div className="message-header">
               <span className="message-author">ADO Code</span>

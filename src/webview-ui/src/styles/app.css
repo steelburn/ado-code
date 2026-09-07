@@ -515,28 +515,9 @@ code {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.message-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.message-avatar-user {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-}
-
-.message-avatar-assistant {
-  background: var(--vscodecharts-blue, #3794ff);
-  color: #fff;
-}
-
+/* Author avatar circles (AI / You labels) removed — the author name in the
+   message header row identifies the speaker, so the circles only cost a
+   column of width on every message row. */
 .message-body {
   flex: 1;
   min-width: 0;
@@ -573,18 +554,14 @@ code {
   margin-bottom: 0;
 }
 
-.message-user {
-  flex-direction: row-reverse; /* avatar on the right, text flows right→left */
-}
-
 /* Meta line above the bubble — hugs the right like the bubble itself. */
 .message-user .message-header {
   justify-content: flex-end;
 }
 
 /* User text as a right-aligned bubble. The bubble shrinks to its content
-   (up to 85% of the panel) and sits flush against the avatar on the right.
-   Text inside stays left-aligned for readability — the block is what hugs
+   (up to 85% of the panel) and hugs the right edge of the panel. Text
+   inside stays left-aligned for readability — the block is what hugs
    the right edge. */
 .message-user .message-content {
   width: fit-content;
