@@ -1,6 +1,7 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
+import { resolveSpawn } from '../resolveBin';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -11,9 +12,12 @@ export class GeminiAdapter implements AgentAdapter {
 
   constructor(private spawnFn: SpawnFn = cp.spawn) {}
 
-  private spawn(args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
+  private spawn(bin: string, args: string[], cwd: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = this.spawnFn('gemini', args, { cwd, signal }) as any;
+      // Spawn the SAME executable detection verified (run.bin) — on Windows a
+      // `.cmd` shim is routed through cmd.exe (see resolveSpawn).
+      const resolved = resolveSpawn(bin, args);
+      const child = this.spawnFn(resolved.bin, resolved.args, { cwd, signal, ...resolved.opts }) as any;
       let output = '';
       child.stdout.on('data', (d: any) => { output += d.toString(); });
       child.stderr.on('data', (d: any) => { output += d.toString(); });
@@ -23,11 +27,11 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal) {
-    return this.spawn(['-p', prompt], run.workdir, signal);
+    return this.spawn(run.bin ?? 'gemini', ['-p', prompt], run.workdir, signal);
   }
 
   resumeTask(run: AgentRun, followUp: string, signal?: AbortSignal) {
     // gemini -c resumes the most recent session; the follow-up is the next prompt.
-    return this.spawn(['-c', followUp], run.workdir, signal);
+    return this.spawn(run.bin ?? 'gemini', ['-c', followUp], run.workdir, signal);
   }
 }

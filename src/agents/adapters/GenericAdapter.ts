@@ -1,6 +1,7 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentName, AgentRun } from '../types';
+import { resolveSpawn } from '../resolveBin';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -20,7 +21,10 @@ export class GenericAdapter implements AgentAdapter {
 
   private spawn(bin: string, args: string[], cwd: string, signal?: AbortSignal, onChunk?: (chunk: string) => void): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = this.spawnFn(bin, args, { cwd, signal }) as any;
+      // Spawn the SAME executable detection verified (run.bin) — on Windows a
+      // `.cmd` shim is routed through cmd.exe (see resolveSpawn).
+      const resolved = resolveSpawn(bin, args);
+      const child = this.spawnFn(resolved.bin, resolved.args, { cwd, signal, ...resolved.opts }) as any;
       let output = '';
       child.stdout.on('data', (d: any) => {
         const text = d.toString();
@@ -48,7 +52,8 @@ export class GenericAdapter implements AgentAdapter {
       // pi / openclaw: -p "<prompt>"
       args.push('-p', prompt);
     }
-    return this.spawn(this.name, args, run.workdir, signal, onChunk);
+    // Spawn the resolved executable from the run when present (fallback: name).
+    return this.spawn(run.bin ?? this.name, args, run.workdir, signal, onChunk);
   }
 
   // No resumeTask — one-shot only (H13 synthesized follow-up).

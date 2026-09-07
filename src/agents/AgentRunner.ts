@@ -144,6 +144,10 @@ export class AgentRunner {
       id: `run-${Date.now()}-${workItemId}`,
       workItemId,
       agent: chosen.name,
+      // Spawn the exact executable detection verified (e.g. claude.cmd on
+      // Windows npm installs) — adapters fall back to their canonical name
+      // when this is absent (older persisted runs).
+      bin: chosen.bin ?? chosen.name,
       title: title || '',
       workdir,
       status: 'running',

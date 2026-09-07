@@ -1,6 +1,7 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
+import { resolveSpawn } from '../resolveBin';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -11,9 +12,12 @@ export class ClaudeAdapter implements AgentAdapter {
   // Inject spawn for tests (Node 23 exposes cp.spawn as non-configurable getter).
   constructor(private spawnFn: SpawnFn = cp.spawn) {}
 
-  private spawn(args: string[], cwd: string, signal?: AbortSignal, onChunk?: (chunk: string) => void): Promise<{ exitCode: number | null; output: string }> {
+  private spawn(bin: string, args: string[], cwd: string, signal?: AbortSignal, onChunk?: (chunk: string) => void): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
-      const child = this.spawnFn('claude', args, { cwd, signal }) as any;
+      // Spawn the SAME executable detection verified (run.bin) — on Windows a
+      // `.cmd` shim is routed through cmd.exe (see resolveSpawn).
+      const resolved = resolveSpawn(bin, args);
+      const child = this.spawnFn(resolved.bin, resolved.args, { cwd, signal, ...resolved.opts }) as any;
       let output = '';
       child.stdout.on('data', (d: any) => {
         const text = d.toString();
@@ -34,13 +38,13 @@ export class ClaudeAdapter implements AgentAdapter {
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
     // claude -p "<prompt>" --output-format json --max-turns 20 --allowedTools ...
     const args = ['-p', prompt, '--output-format', 'json', '--max-turns', '20', '--allowedTools', 'Read,Edit,Write,Bash'];
-    return this.spawn(args, run.workdir, signal, onChunk);
+    return this.spawn(run.bin ?? 'claude', args, run.workdir, signal, onChunk);
   }
 
   resumeTask(run: AgentRun, followUp: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
     // Requires session id captured at run time: claude -p "<followUp>" --resume <id>
     if (!run.sessionId) throw new Error('no session id to resume');
-    return this.spawn(['-p', followUp, '--resume', run.sessionId, '--output-format', 'json', '--max-turns', '10'], run.workdir, signal, onChunk);
+    return this.spawn(run.bin ?? 'claude', ['-p', followUp, '--resume', run.sessionId, '--output-format', 'json', '--max-turns', '10'], run.workdir, signal, onChunk);
   }
 
   extractSessionId(output: string): string | undefined {

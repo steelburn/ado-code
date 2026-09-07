@@ -64,6 +64,18 @@ suite('AgentAdapters', () => {
     assert.strictEqual(result.exitCode, 0);
   });
 
+  test('claude adapter spawns the resolved bin recorded on the run (Windows .cmd/.exe parity)', async () => {
+    const { spawnFn, captured } = fakeSpawn(JSON.stringify({ result: 'done' }), 0);
+    const adapter = new ClaudeAdapter(spawnFn);
+    const run = { ...makeRun('claude'), bin: 'claude.cmd' };
+    await adapter.runTask(run, 'hi');
+    assert.strictEqual(captured.bin, 'claude.cmd');
+    // resumeTask uses the same resolved bin.
+    const run2 = { ...makeRun('claude'), bin: 'claude.exe', sessionId: 'sess-9' };
+    await adapter.resumeTask!(run2, 'more');
+    assert.strictEqual(captured.bin, 'claude.exe');
+  });
+
   test('claude resumeTask requires a session id', async () => {
     const { spawnFn } = fakeSpawn('', 0);
     const adapter = new ClaudeAdapter(spawnFn);

@@ -5,6 +5,11 @@ export interface AgentCapability {
   displayName: string;
   installed: boolean;
   version?: string;
+  /** Resolved executable that answered the version probe — `claude.cmd` for
+   *  npm installs on Windows, `claude.exe` for native installs, `claude`
+   *  elsewhere. Adapters spawn THIS exact binary (see resolveSpawn) so
+   *  detection and execution always agree. */
+  bin?: string;
   /** Modes the adapter supports */
   modes: ('one-shot' | 'session')[];
 }
@@ -13,6 +18,10 @@ export interface AgentRun {
   id: string;               // local run id (e.g. run-<timestamp>-<workItemId>)
   workItemId?: number;
   agent: AgentName;
+  /** Resolved agent executable to spawn (recorded from detection — e.g.
+   *  `claude.cmd` on Windows npm installs). Adapters fall back to their
+   *  canonical name when absent (runs started before this field existed). */
+  bin?: string;
   title?: string;           // ADO work item title (commit/PR message defaults)
   sessionId?: string;       // external agent's session id (for resume)
   /** Chat session (adoCode session id) that delegated this run — the chat

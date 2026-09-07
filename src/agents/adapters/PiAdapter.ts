@@ -1,6 +1,7 @@
 import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
+import { resolveSpawn } from '../resolveBin';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -119,11 +120,14 @@ export class PiAdapter implements AgentAdapter {
     }
   }
 
-  private spawn(args: string[], cwd: string, signal?: AbortSignal, onChunk?: (chunk: string) => void): Promise<{ exitCode: number | null; output: string }> {
+  private spawn(bin: string, args: string[], cwd: string, signal?: AbortSignal, onChunk?: (chunk: string) => void): Promise<{ exitCode: number | null; output: string }> {
     return new Promise((resolve) => {
       // stdio: stdin closed — pi waits on stdin when spawned via node with an
       // open pipe (hangs indefinitely); one-shot mode never reads it.
-      const child = this.spawnFn('pi', args, { cwd, signal, stdio: ['ignore', 'pipe', 'pipe'] }) as any;
+      // Spawn the SAME executable detection verified (run.bin) — on Windows a
+      // `.cmd` shim is routed through cmd.exe (see resolveSpawn).
+      const resolved = resolveSpawn(bin, args);
+      const child = this.spawnFn(resolved.bin, resolved.args, { cwd, signal, stdio: ['ignore', 'pipe', 'pipe'], ...resolved.opts }) as any;
       const buffer = new LineBuffer();
       const state: PiStreamState = { finalText: '', thinkingShown: false, tools: new Map(), onChunk };
 
@@ -146,7 +150,7 @@ export class PiAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
-    return this.spawn(['-p', '--mode', 'json', prompt], run.workdir, signal, onChunk);
+    return this.spawn(run.bin ?? 'pi', ['-p', '--mode', 'json', prompt], run.workdir, signal, onChunk);
   }
 
   // No resumeTask — one-shot only (H13 synthesized follow-up).

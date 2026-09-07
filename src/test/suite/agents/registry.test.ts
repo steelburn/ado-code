@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { AgentRegistry, AGENT_SPECS, migrateEnabledAgents, PRE_DSH_ENABLED_DEFAULT } from '../../../agents/registry';
+import { AgentRegistry, AGENT_SPECS, DETECT_TTL_MS, migrateEnabledAgents, PRE_DSH_ENABLED_DEFAULT } from '../../../agents/registry';
 
 suite('AgentRegistry', () => {
   test('reports installed agents with version', async () => {
@@ -31,6 +31,21 @@ suite('AgentRegistry', () => {
     registry.clearCache();
     const third = await registry.detect();
     assert.notStrictEqual(first, third); // fresh array after clear
+  });
+
+  test('detect re-probes after the TTL so CLIs installed mid-session are found', async () => {
+    let t = 1000;
+    const registry = new AgentRegistry(() => t);
+    const first = await registry.detect();
+    // Same cached array while inside the TTL window…
+    t += DETECT_TTL_MS - 1000;
+    const second = await registry.detect();
+    assert.strictEqual(first, second);
+    // …but once the TTL elapses a fresh probe runs (a CLI installed after
+    // VS Code started now shows up without reloading the window).
+    t += DETECT_TTL_MS + 1000;
+    const third = await registry.detect();
+    assert.notStrictEqual(first, third);
   });
 
   test('AGENT_SPECS supportsSession drives modes (for installed agents)', async () => {

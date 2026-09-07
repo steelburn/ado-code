@@ -2,8 +2,18 @@ import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import { promisify } from 'util';
 import { AgentCapability, AgentName } from './types';
+import { agentBinCandidates } from './resolveBin';
 
 const execFile = promisify(cp.execFile);
+
+/**
+ * Detection results are re-probed once this long after the last probe, so a
+ * CLI installed (or updated) while VS Code is already running is picked up
+ * without reloading the window. Cheap: every probe is an execFile that either
+ * answers or ENOENTs in milliseconds; only binaries that HANG burn the 5s
+ * timeout, so frequent re-probing costs almost nothing.
+ */
+export const DETECT_TTL_MS = 15_000;
 
 export interface AgentSpec {
   name: AgentName;
@@ -119,9 +129,14 @@ export function migrateEnabledAgents(enabled: string[]): string[] {
 
 export class AgentRegistry {
   private cache?: AgentCapability[];
+  private cachedAt = 0;
+
+  // Clock injectable for tests (TTL expiry without waiting).
+  constructor(private now: () => number = Date.now) {}
 
   async detect(): Promise<AgentCapability[]> {
-    if (this.cache) return this.cache;
+    const now = this.now();
+    if (this.cache && now - this.cachedAt < DETECT_TTL_MS) return this.cache;
     // M3/M17: honor adoCode.agents.enabled — disabled agents are never probed.
     let enabled: string[] = [];
     try {
@@ -137,27 +152,41 @@ export class AgentRegistry {
         caps.push({ name: spec.name, displayName: spec.displayName, installed: false, version: undefined, modes: ['one-shot'] });
         continue;
       }
-      try {
-        // M12 fix: on Windows, npm-installed CLIs ship as .cmd shims.
-        // M-7 fix: execFile can't execute .cmd without shell:true — probe with
-        // a shell on win32 (args are static version flags, no injection risk).
-        const bin = process.platform === 'win32' ? `${spec.bin}.cmd` : spec.bin;
-        const { stdout } = await execFile(bin, spec.versionFlag, {
-          timeout: 5000,
-          shell: process.platform === 'win32',
-        });
+      // Try every executable shape the CLI could ship as — `.cmd` npm shim →
+      // native `.exe` → bare name — and record the EXACT executable that
+      // answered, so delegation spawns the same binary the probe verified
+      // (adapters resolve run.bin via resolveSpawn).
+      let found: { bin: string; version: string } | undefined;
+      for (const candidate of agentBinCandidates(spec.bin, process.platform)) {
+        try {
+          // M12/M-7 fix: on Windows, npm-installed CLIs ship as .cmd shims;
+          // execFile can't execute .cmd without shell:true — probe with a
+          // shell on win32 (args are static version flags, no injection risk).
+          const { stdout } = await execFile(candidate, spec.versionFlag, {
+            timeout: 5000,
+            shell: process.platform === 'win32',
+          });
+          found = { bin: candidate, version: stdout.trim().split('\n')[0] };
+          break;
+        } catch {
+          // try the next candidate shape
+        }
+      }
+      if (found) {
         caps.push({
           name: spec.name,
           displayName: spec.displayName,
           installed: true,
-          version: stdout.trim().split('\n')[0],
+          version: found.version,
+          bin: found.bin,
           modes: spec.supportsSession ? ['one-shot', 'session'] : ['one-shot'],
         });
-      } catch {
+      } else {
         caps.push({ name: spec.name, displayName: spec.displayName, installed: false, version: undefined, modes: ['one-shot'] });
       }
     }
     this.cache = caps;
+    this.cachedAt = now;
     return caps;
   }
 
@@ -168,5 +197,6 @@ export class AgentRegistry {
 
   clearCache(): void {
     this.cache = undefined;
+    this.cachedAt = 0;
   }
 }
