@@ -102,6 +102,8 @@ export async function activate(context: vscode.ExtensionContext) {
         async () => { await services.understanding.refreshNow(); }
       );
       vscode.window.showInformationMessage('ADO Code: repository understanding refreshed.');
+      // The refreshed understanding may show AGENTS.md is outdated — offer a sync.
+      chatProvider?.notifyUnderstandingRefreshed();
     })
   );
 

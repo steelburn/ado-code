@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
 import { AgentProgressPanel } from '../../../webview/AgentProgressPanel';
@@ -698,5 +701,138 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
     await handlers[0]({ type: 'openSettings' });
     const openMsg = posted.find(m => m.type === 'openSettings');
     assert.ok(openMsg, 'host posts openSettings back to the webview (in-app Configuration page)');
+  });
+});
+
+// ── AGENTS.md sync flow (checkAgentsMd) ────────────────────────────────────
+// Uses the real pure evaluator against a temp workspace and drives the
+// in-chat confirmation card through the broker, mirroring the webview.
+
+suite('ChatViewProvider · AGENTS.md sync', () => {
+  const tmpDirs: string[] = [];
+
+  function makeWorkspace(pkg: Record<string, any>, extra: Record<string, string> = {}): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-agentsmd-flow-'));
+    tmpDirs.push(root);
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg), 'utf8');
+    for (const [rel, content] of Object.entries(extra)) {
+      const p = path.join(root, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content, 'utf8');
+    }
+    return root;
+  }
+
+  /** Provider whose webview posts messages to `posted` and whose
+   *  confirmation cards are answered through the confirmBroker. Context
+   *  can be shared across providers to mirror real per-workspace state. */
+  function makeProvider(root: string, context?: any): { provider: ChatViewProvider; posted: any[] } {
+    const posted: any[] = [];
+    const provider = new ChatViewProvider(
+      vscode.Uri.file(root),
+      {
+        git: { workspaceRoot: root },
+        understanding: { ensureFresh: async () => true, getRepoSummary: () => '', getKnowledge: () => '' },
+      } as any,
+      context ?? makeSessionContext()
+    );
+    (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
+    return { provider, posted };
+  }
+
+  /** Wait until the async check posts its confirmation card. */
+  async function waitForCard(posted: any[]): Promise<void> {
+    const deadline = Date.now() + 5000;
+    while (!posted.some(m => m.type === 'confirmationRequest')) {
+      if (Date.now() > deadline) throw new Error('no confirmation card was posted');
+      await new Promise(r => setTimeout(r, 5));
+    }
+  }
+
+  function answerCard(posted: any[], provider: ChatViewProvider, value: string): void {
+    const req = posted.filter(m => m.type === 'confirmationRequest').pop();
+    assert.ok(req, 'a confirmation card was posted');
+    (provider as any).confirmBroker.resolve(req.requestId, value);
+  }
+
+  suiteTeardown(() => {
+    for (const dir of tmpDirs) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+  test('missing AGENTS.md → card → generate writes a managed file and remembers it', async () => {
+    const root = makeWorkspace({ name: 'demo', description: 'Demo', scripts: { compile: 'tsc' } });
+    const { provider, posted } = makeProvider(root);
+
+    const done = (provider as any).checkAgentsMd(root);
+    await waitForCard(posted);
+    answerCard(posted, provider, 'generate');
+    await done;
+
+    const md = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+    assert.ok(md.includes('<!-- ado-code:managed -->'), 'managed file generated');
+    assert.ok(md.includes('- `npm run compile`'), 'build command from package.json');
+    const prior = (provider as any)._context.workspaceState.get('adoCode.agentsMdSyncPrior');
+    assert.ok(prior && prior.declines === 0, 'generation remembered (acceptance clears declines)');
+  });
+
+  test('stale managed file → card → update rewrites the block in place', async () => {
+    const root = makeWorkspace({ name: 'demo', description: 'Demo', scripts: { compile: 'tsc' } });
+    const context = makeSessionContext();
+    const first = makeProvider(root, context);
+    const done = (first.provider as any).checkAgentsMd(root);
+    await waitForCard(first.posted);
+    answerCard(first.posted, first.provider, 'generate');
+    await done;
+    // A custom note lives outside the managed block.
+    fs.appendFileSync(path.join(root, 'AGENTS.md'), '\n## My Conventions\n- Hand-written rule.\n');
+
+    // The project gains a test script — AGENTS.md is now outdated.
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'demo', description: 'Demo', scripts: { compile: 'tsc', test: 'mocha' } }),
+      'utf8'
+    );
+
+    const { provider, posted } = makeProvider(root, context);
+    const sync = (provider as any).checkAgentsMd(root);
+    await waitForCard(posted);
+    answerCard(posted, provider, 'update');
+    await sync;
+
+    const md = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+    assert.ok(md.includes('- `npm test`'), 'new command synced into the block');
+    assert.ok(md.includes('## My Conventions\n- Hand-written rule.'), 'user content outside markers preserved');
+  });
+
+  test('declining an offer stops the next check from re-asking for the same state', async () => {
+    const root = makeWorkspace({ name: 'demo', description: 'Demo', scripts: { compile: 'tsc' } });
+    const context = makeSessionContext();
+    const { provider, posted } = makeProvider(root, context);
+    const done = (provider as any).checkAgentsMd(root);
+    await waitForCard(posted);
+    answerCard(posted, provider, 'generate');
+    await done;
+
+    // Drift the file (new script) but decline the update.
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'demo', description: 'Demo', scripts: { compile: 'tsc', lint: 'eslint' } }),
+      'utf8'
+    );
+    const again = (provider as any).checkAgentsMd(root);
+    await waitForCard(posted);
+    answerCard(posted, provider, 'keep');
+    await again;
+    const prior = (provider as any)._context.workspaceState.get('adoCode.agentsMdSyncPrior');
+    assert.ok(prior && prior.declines === 1, 'decline remembered');
+
+    // Same state, another check: no card, no change.
+    const { provider: p2, posted: posted2 } = makeProvider(root, context);
+    await (p2 as any).checkAgentsMd(root);
+    await new Promise(r => setTimeout(r, 20));
+    const cards = posted2.filter(m => m.type === 'confirmationRequest');
+    assert.strictEqual(cards.length, 0, 'no re-offer for an already-declined candidate');
   });
 });

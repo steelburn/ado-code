@@ -105,6 +105,18 @@ suite('UnderstandingService', () => {
     assert.ok(repo.includes('### LLM Summary'), 'summary section');
     assert.ok(repo.includes('Small demo repo'), 'summary content');
     assert.strictEqual(service.getMeta().repo!.hasSummary, true);
+    assert.strictEqual(service.getRepoSummary(), '## Architecture\nSmall demo repo with a tsc build.', 'getRepoSummary returns the summary section');
+  });
+
+  test('getRepoSummary is empty before any summary exists', async () => {
+    await service.ensureFresh();
+    assert.strictEqual(service.getRepoSummary(), '');
+  });
+
+  test('getKnowledge returns appended entries and empty before any', () => {
+    assert.strictEqual(service.getKnowledge(), '');
+    service.appendKnowledge('Decided to use tsc strict mode.');
+    assert.ok(service.getKnowledge().includes('Decided to use tsc strict mode.'), 'knowledge readable');
   });
 
   test('refreshRepoSummary is a no-op without a summarizer', async () => {

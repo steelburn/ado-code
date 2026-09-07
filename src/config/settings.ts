@@ -53,6 +53,8 @@ export interface AdoCodeSettings {
   understandingEnabled: boolean;
   /** Regenerate the LLM repository summary automatically when the repo fingerprint changes. */
   understandingAutoSummarize: boolean;
+  /** Offer to generate AGENTS.md when missing and update it when the repository understanding shows it outdated. */
+  agentsMdSync: boolean;
 }
 
 export function getSettings(): AdoCodeSettings {
@@ -100,6 +102,7 @@ export function getSettings(): AdoCodeSettings {
     useNativeTokenCounting: config.get<boolean>('llm.useNativeTokenCounting', false),
     understandingEnabled: config.get<boolean>('understanding.enabled', true),
     understandingAutoSummarize: config.get<boolean>('understanding.autoSummarize', true),
+    agentsMdSync: config.get<boolean>('understanding.agentsMdSync', true),
   };
 }
 

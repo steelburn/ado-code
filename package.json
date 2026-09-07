@@ -940,6 +940,11 @@
           "default": true,
           "description": "Automatically generate an LLM repository summary when the repo fingerprint changes (new branch/commit, edited AGENTS.md/package.json/README). Uses one model call per change; refresh manually anytime via 'ADO Code: Refresh Repository Understanding'."
         },
+        "adoCode.understanding.agentsMdSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep AGENTS.md in sync with the repository understanding: generate one when missing, and offer an in-place update when the understanding (.ado-code/understanding) shows AGENTS.md is outdated (build/test/lint commands, project structure, or the LLM repo summary changed). Updates are user-approved and preserve your edits outside the managed block."
+        },
         "adoCode.consent.harmlessAutoApprove": {
           "type": "boolean",
           "default": false,

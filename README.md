@@ -203,6 +203,7 @@ The extension infers the active model's capabilities from its id:
 
 ### Unreleased
 
+- **AGENTS.md keeps itself current**: generation now draws on the repository understanding (`.ado-code/understanding/`) — directory one-liners and an LLM architecture summary are folded in when the cache has them. AGENTS.md is generated when missing, and when the understanding shows the file is outdated (build/test/lint commands, project structure, or the refreshed LLM summary changed) ADO Code offers an **in-place update**: only the generated block between the `<!-- ado-code:managed -->` markers is rewritten, so your own sections survive. Updates show the exact reasons, offer a diff preview, and stop re-asking once you decline a candidate (`adoCode.understanding.agentsMdSync` to disable)
 - **Mixed-batch tool calls stay parallel**: When a model turn mixes consent-free calls (reads, allowlisted commands) with calls that need your approval, the free ones now run concurrently instead of the whole batch serializing behind the first consent card — approval cards still appear one at a time, never stacked
 - **Batch work-item reads**: `get_work_item` accepts an `ids` array — several work items in one call (up to 20, batch-fetched with discussion threads loaded in parallel)
 - **Batch terminal commands**: `run_terminal_command` accepts a `commands` array — several commands in one call, one consent card, outputs concatenated; every command is still checked for shell operators and the act-mode allowlist

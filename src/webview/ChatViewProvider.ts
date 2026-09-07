@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
+import * as os from 'os';
 import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
 import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
@@ -29,7 +30,7 @@ import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFen
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { AgentProgressPanel } from './AgentProgressPanel';
-import { buildAgentsMdContent } from './agentsMd';
+import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
 import { ConversationCondenser } from '../llm/context/condenser';
@@ -88,6 +89,13 @@ function trimConversationToPairs(msgs: LlmMessage[], maxPairs: number): LlmMessa
 // pre-wizard state).
 const WIZARD_SIBLING_VIEWS = ['adoCode.workItems', 'adoCode.status', 'adoCode.worktrees'];
 const wizardHiddenViews = new Set<string>();
+
+/**
+ * workspaceState key remembering which AGENTS.md sync candidates were
+ * declined — offers reappear only when the candidate actually changes, so
+ * the check never nags on every workspace load.
+ */
+const AGENTS_MD_SYNC_KEY = 'adoCode.agentsMdSyncPrior';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
@@ -2405,7 +2413,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'consent.harmlessAutoApprove', 'consent.harmlessAutoApproveSeconds', 'consent.autoApproveTools',
       'chat.showThinking', 'chat.showToolCalls',
       'ignore.dotAdoCode',
-      'understanding.enabled', 'understanding.autoSummarize',
+      'understanding.enabled', 'understanding.autoSummarize', 'understanding.agentsMdSync',
       'mcp.servers',
     ];
     const result: Record<string, any> = {};
@@ -2652,11 +2660,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.offerGitInit();
       }
 
-      // 3) No AGENTS.md — offer to generate
-      const agentsMdPath = path.join(root, 'AGENTS.md');
-      if (!fs.existsSync(agentsMdPath)) {
-        await this.offerGenerateAgentsMd(root);
-      }
+      // 3) AGENTS.md — generate when missing; offer a sync when the
+      // repository understanding (.ado-code/understanding) shows the file
+      // is outdated (build commands, structure, or LLM summary changed).
+      await this.checkAgentsMd(root);
 
       // 4) .ado-code not ignored — offer to add it to .gitignore/.dockerignore
       await this.checkDotAdoCodeIgnored(root);
@@ -2710,19 +2717,185 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Offer to generate AGENTS.md if missing. */
-  private async offerGenerateAgentsMd(root: string): Promise<void> {
+  /**
+   * AGENTS.md lifecycle, powered by the repository understanding:
+   *  - missing  → offer to generate a starter file (the cached LLM summary
+   *    is folded in when one exists);
+   *  - outdated → offer to sync. "Outdated" means the derived facts
+   *    (description, build/test/lint commands, top-level structure) or the
+   *    cached LLM repo summary no longer match what AGENTS.md says. The
+   *    managed block between the `<!-- ado-code:managed -->` markers is
+   *    replaced in place; edits outside it are always preserved.
+   *
+   * The generate-when-missing offer always runs (as before this rework);
+   * sync offers are gated by `adoCode.understanding.agentsMdSync`. Declines
+   * are remembered per workspace against the exact candidate, so the offer
+   * only reappears when something actually changed.
+   */
+  public async checkAgentsMd(root?: string): Promise<void> {
+    try {
+      const wsRoot = root ?? this.services.git.workspaceRoot;
+      if (!wsRoot) return;
+      const settings = getSettings();
+
+      // Understanding input for generation + drift: cheap reads after a
+      // fingerprint-only refresh — never blocks on the paid summarizer.
+      let summary = '';
+      const understanding = this.services.understanding;
+      if (settings.understandingEnabled && understanding) {
+        try { await understanding.ensureFresh(); } catch { /* best effort */ }
+        summary = understanding.getRepoSummary().trim();
+      }
+
+      const decision = evaluateAgentsMdSync(wsRoot, { summary }, this.agentsMdPrior());
+      switch (decision.kind) {
+        case 'none':
+          return;
+        case 'missing':
+          await this.offerGenerateAgentsMd(wsRoot, decision);
+          return;
+        case 'update':
+        case 'adopt': {
+          if (!settings.agentsMdSync) return;
+          await this.offerSyncAgentsMd(wsRoot, decision);
+          return;
+        }
+      }
+    } catch (err) {
+      logger.debug('Chat: AGENTS.md sync check failed', err);
+    }
+  }
+
+  /** Re-run the AGENTS.md sync check after the user refreshes understanding. */
+  public notifyUnderstandingRefreshed(): void {
+    void this.checkAgentsMd();
+  }
+
+  /** Offer to generate AGENTS.md when missing. */
+  private async offerGenerateAgentsMd(root: string, decision: AgentsMdSyncDecision): Promise<void> {
+    const keepsSync = getSettings().agentsMdSync;
     const choice = await this.requestConfirmation(
       'Missing AGENTS.md',
-      'No AGENTS.md found. This file helps coding agents (Claude, Codex, Hermes, Pi) understand your project. Generate it now?',
+      keepsSync
+        ? 'No AGENTS.md found. This file helps coding agents (Claude, Codex, Hermes, Pi) understand your project — build commands, structure, conventions — and ADO Code keeps it in sync as the repository changes. Generate it now?'
+        : 'No AGENTS.md found. This file helps coding agents (Claude, Codex, Hermes, Pi) understand your project — build commands, structure, conventions. Generate it now?',
       [
         { label: 'Generate AGENTS.md', value: 'generate' },
         { label: 'Skip', value: 'skip', isDangerous: true },
       ]
     );
     if (choice === 'generate') {
-      await this.generateAgentsMd(root);
-      vscode.window.showInformationMessage('ADO Code: AGENTS.md generated.');
+      this.applyAgentsMdSync(root, decision);
+      logger.info('Chat: AGENTS.md generated from workspace + understanding');
+      void vscode.window.showInformationMessage('ADO Code: AGENTS.md generated.');
+      await this.rememberAgentsMdDecision({ blockSig: decision.blockSig, factsSig: decision.factsSig, declines: 0 });
+    } else if (choice === 'skip') {
+      await this.declineAgentsMdSync(decision);
+    }
+  }
+
+  /** Offer to bring an outdated AGENTS.md back in sync with the repo. */
+  private async offerSyncAgentsMd(root: string, decision: AgentsMdSyncDecision): Promise<void> {
+    const adopt = decision.kind === 'adopt';
+    const title = adopt ? 'AGENTS.md out of sync' : 'AGENTS.md outdated';
+    const description = adopt
+      ? decision.reasons.join(' ')
+      : `AGENTS.md no longer matches the repository understanding: ${decision.reasons.join('; ').toLowerCase()}. Updating rewrites only the generated section between the markers — anything you added elsewhere (Conventions, notes, …) is preserved.`;
+
+    const choice = await this.requestConfirmation(title, description, [
+      { label: adopt ? 'Sync AGENTS.md' : 'Update AGENTS.md', value: 'update' },
+      { label: 'Preview changes', value: 'preview' },
+      { label: 'Keep as-is', value: 'keep', isDangerous: true },
+    ]);
+
+    if (choice === 'update') {
+      this.applyAgentsMdSync(root, decision);
+      logger.info(`Chat: AGENTS.md ${adopt ? 'synced' : 'updated'} (${decision.reasons.join('; ')})`);
+      void vscode.window.showInformationMessage(`ADO Code: AGENTS.md ${adopt ? 'synced' : 'updated'}.`);
+      await this.rememberAgentsMdDecision({ blockSig: decision.blockSig, factsSig: decision.factsSig, declines: 0 });
+    } else if (choice === 'preview') {
+      // Preview consumes the card; ask again once the diff is open.
+      const agentsMdPath = path.join(root, 'AGENTS.md');
+      const existing = fs.readFileSync(agentsMdPath, 'utf8');
+      const candidateFull = adopt
+        ? decision.candidate
+        : replaceManagedBlock(existing, decision.candidate);
+      this.openAgentsMdPreview(agentsMdPath, candidateFull);
+      const apply = await this.requestConfirmation(
+        'Apply AGENTS.md sync?',
+        'A diff of the proposed AGENTS.md is open in the editor. Apply the changes now?',
+        [
+          { label: adopt ? 'Sync AGENTS.md' : 'Update AGENTS.md', value: 'update' },
+          { label: 'Keep as-is', value: 'keep', isDangerous: true },
+        ]
+      );
+      if (apply === 'update') {
+        this.applyAgentsMdSync(root, decision);
+        logger.info(`Chat: AGENTS.md ${adopt ? 'synced' : 'updated'} after preview`);
+        await this.rememberAgentsMdDecision({ blockSig: decision.blockSig, factsSig: decision.factsSig, declines: 0 });
+      } else if (apply === 'keep') {
+        await this.declineAgentsMdSync(decision);
+      }
+    } else if (choice === 'keep') {
+      await this.declineAgentsMdSync(decision);
+    }
+    // choice === null → card dismissed without a decision; re-offer next load.
+  }
+
+  /** Write the candidate — full file for missing/adopt, in-place for update. */
+  private applyAgentsMdSync(root: string, decision: AgentsMdSyncDecision): void {
+    const agentsMdPath = path.join(root, 'AGENTS.md');
+    if (decision.kind === 'update') {
+      const existing = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, 'utf8') : '';
+      fs.writeFileSync(agentsMdPath, replaceManagedBlock(existing, decision.candidate), 'utf8');
+    } else {
+      fs.writeFileSync(agentsMdPath, decision.candidate, 'utf8');
+    }
+  }
+
+  /** Remember that the user declined THIS candidate — stop re-offering it. */
+  private async declineAgentsMdSync(decision: AgentsMdSyncDecision): Promise<void> {
+    const prior = this.agentsMdPrior() ?? { declines: 0 };
+    const sameFacts = prior.factsSig === decision.factsSig;
+    await this.rememberAgentsMdDecision({
+      blockSig: decision.blockSig,
+      factsSig: decision.factsSig,
+      declines: sameFacts ? (prior.declines ?? 0) + 1 : 1,
+    });
+    logger.debug('Chat: AGENTS.md sync declined (remembered per workspace)');
+  }
+
+  /** Per-workspace memory of declined AGENTS.md sync offers. */
+  private agentsMdPrior(): AgentsMdSyncPrior | undefined {
+    try {
+      return this._context.workspaceState?.get<AgentsMdSyncPrior>(AGENTS_MD_SYNC_KEY);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async rememberAgentsMdDecision(prior: AgentsMdSyncPrior): Promise<void> {
+    try {
+      await this._context.workspaceState?.update(AGENTS_MD_SYNC_KEY, prior);
+    } catch { /* best effort */ }
+  }
+
+  /** Open a read-only diff of the proposed AGENTS.md against the current file. */
+  private openAgentsMdPreview(currentPath: string, candidate: string): void {
+    const tmp = path.join(os.tmpdir(), `ado-code-agentsmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.md`);
+    try {
+      fs.writeFileSync(tmp, candidate, 'utf8');
+      void vscode.commands.executeCommand(
+        'vscode.diff',
+        vscode.Uri.file(currentPath),
+        vscode.Uri.file(tmp),
+        'AGENTS.md — ADO Code sync (preview)'
+      );
+      // The diff tab keeps its own buffer copy — clean the temp file later.
+      const t = setTimeout(() => { try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ } }, 30 * 60_000);
+      t.unref?.();
+    } catch (err) {
+      logger.debug('Chat: AGENTS.md preview failed', err);
     }
   }
 
@@ -2773,10 +2946,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // choice === null → card dismissed without a decision; re-offer next load.
   }
 
-  /** Generate a basic AGENTS.md template from the workspace structure. */
-  private async generateAgentsMd(root: string): Promise<void> {
-    fs.writeFileSync(path.join(root, 'AGENTS.md'), buildAgentsMdContent(root), 'utf8');
-  }
   /** H3: git pre-flight shared by startTask (Task 10) and startTaskWithAgent (Task 25).
    *  Returns true if it's safe to proceed. */
   private async ensureGitReady(workItemId: number): Promise<boolean> {

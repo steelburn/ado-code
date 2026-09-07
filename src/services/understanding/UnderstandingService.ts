@@ -271,6 +271,17 @@ export class UnderstandingService {
     this.currentWorkItemId = undefined;
   }
 
+  /** The cached LLM repository summary (`### LLM Summary` in repo.md), or ''. */
+  getRepoSummary(): string {
+    const repo = this.readFileIfExists(this.repoFile());
+    return repo ? this.readSummarySection(repo) : '';
+  }
+
+  /** The durable prior-session knowledge (knowledge.md), or ''. */
+  getKnowledge(): string {
+    return (this.readFileIfExists(this.knowledgeFile()) ?? '').trim();
+  }
+
   /**
    * Append a dated knowledge entry (e.g. a conversation-condensation
    * summary) to the durable knowledge store. Entries are stored as bare
