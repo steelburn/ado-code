@@ -77,7 +77,7 @@ function toolCallToFence(tc: LiveToolCall): string {
 
 function App() {
   // ── State ──────────────────────────────────────────────────────
-  const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
+  const [messages, setMessages] = useState<Array<{ role: string; content: string; id?: string; reasoning?: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
@@ -85,6 +85,13 @@ function App() {
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
   const [thinking, setThinking] = useState('');
+  const thinkingRef = useRef('');
+  // Answer text streamed by the CURRENT turn, buffered in the live bubble: it
+  // renders in-flow UNDER the reasoning + tool cards (reasoning flows up and
+  // scrolls away naturally instead of pinning a fixed box at the bottom) and
+  // materializes as a normal assistant message when the turn completes.
+  const [streamText, setStreamText] = useState('');
+  const streamTextRef = useRef('');
   // Live tool calls from the agentic loop — each starts as "running" and
   // flips to "completed" when the host posts its result. Shown while the
   // turn is in flight, then merged into the final assistant message.
@@ -99,6 +106,19 @@ function App() {
     },
     []
   );
+
+  /** Drop everything that only exists while a turn is live (thinking text,
+   *  buffered stream, tool cards, activity label). Called on completion,
+   *  errors, new sends, and session switches. */
+  const finishTurnState = useCallback(() => {
+    setThinking('');
+    thinkingRef.current = '';
+    setStreamText('');
+    streamTextRef.current = '';
+    setActiveActivity(null);
+    liveToolCallsRef.current = [];
+    setLiveToolCalls([]);
+  }, []);
 
   // Agent state — supports multiple concurrent runs
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -146,59 +166,82 @@ function App() {
       const msg = event.data;
       switch (msg.type) {
         case 'assistantMessage':
-          // FIX: never drop done:true content — in plan/act mode the host
-          // posts the WHOLE result in a single done:true message. The old
-          // handler discarded it, so Plan/Act replies never rendered. (Inline
-          // streaming sends empty-content done chunks, so appending is a
-          // no-op there.)
-          // A reply arriving means the agentic turn finished — no consent
-          // prompt can still be pending.
-          setConsent(null);
-          /* Clear turn-live state (thinking + tool-call cards). */
-          const finishTurn = () => {
-            setThinking('');
-            setActiveActivity(null);
-            liveToolCallsRef.current = [];
-            setLiveToolCalls([]);
-          };
+          // ── ID-stamped bubbles (evolving run card) ─────────────────────
+          // A done message carrying `id` updates an EXISTING bubble in place
+          // (or appends a new one) — used by the live delegation card so the
+          // chat keeps showing the run's progress instead of freezing at
+          // "started". Never a turn-lifecycle event: no spinner changes, no
+          // merge with the last assistant message.
+          if (msg.id) {
+            // Id'd bubbles stream IN PLACE: done:false chunks append to the
+            // existing bubble (isolated from the active turn's live buffer —
+            // e.g. an auto-review streaming while the user chats), and a
+            // done:true terminal message replaces it. Never a turn-lifecycle
+            // event: no spinner changes, no merge with the live turn.
+            setMessages(prev => {
+              const idx = prev.findIndex(m => m.id === msg.id);
+              if (idx < 0) {
+                return [...prev, { role: 'assistant', content: msg.content, id: msg.id }];
+              }
+              const copy = [...prev];
+              const cur = copy[idx]!;
+              copy[idx] = msg.replace
+                ? { role: 'assistant', content: msg.content, id: msg.id }
+                : { role: 'assistant', content: cur.content + msg.content, id: msg.id };
+              return copy;
+            });
+            break;
+          }
+
           if (msg.done) {
             setLoading(false);
+            // A reply arriving means the agentic turn finished — no consent
+            // prompt can still be pending.
+            setConsent(null);
+            // Snapshot the tools run this turn BEFORE finishTurnState wipes
+            // them. Hidden tool calls (chat.showToolCalls=false) are excluded
+            // — never merged into the message nor persisted.
+            const finishedToolCalls = liveToolCallsRef.current.filter(tc => tc.showDetails !== false);
+            const toolLog = finishedToolCalls.length > 0
+              ? finishedToolCalls.map(toolCallToFence).join('\n\n')
+              : '';
+            const text = (streamTextRef.current || '') + (msg.content || '');
+            if (!text.trim() && !toolLog && !thinkingRef.current.trim()) {
+              finishTurnState();
+              break; // nothing to show — never ends the chat abruptly
+            }
+            // Materialize the whole turn as ONE assistant message: tool fences
+            // + streamed text + final content, with the reasoning preserved as
+            // a collapsed "Thinking" disclosure above it (in-flow, transient —
+            // not persisted into session history).
+            const parts = [toolLog, text].filter(Boolean);
+            const reasoning = thinkingRef.current.trim();
+            const finalMsg: any = {
+              role: 'assistant',
+              content: parts.join('\n\n'),
+              ...(reasoning ? { reasoning: reasoning.slice(0, 6000) } : {}),
+            };
+            setMessages(prev => [...prev, finalMsg]);
+            finishTurnState();
           } else {
             setLoading(true);
-          }
-          // Snapshot the tools run this turn BEFORE finishTurn wipes them.
-          // Hidden tool calls (chat.showToolCalls=false) are excluded — the
-          // user asked for them to stay out of the chat, so they are neither
-          // merged into the final message nor persisted to session history.
-          const finishedToolCalls = msg.done
-            ? liveToolCallsRef.current.filter(tc => tc.showDetails !== false)
-            : [];
-          if (msg.done) finishTurn();
-
-          // The turn just finished — merge the live tool-call record into the
-          // assistant message so the tools the agent ran stay visible as
-          // collapsible cards above the answer (and survive session history).
-          const toolLog = msg.done && finishedToolCalls.length > 0
-            ? finishedToolCalls.map(toolCallToFence).join('\n\n')
-            : '';
-
-          if (!msg.content && !toolLog) break;
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            const content = toolLog ? toolLog + '\n\n' + msg.content : msg.content;
-            if (last && last.role === 'assistant') {
-              return [...prev.slice(0, -1), { role: 'assistant', content: last.content + content }];
+            // Buffer the streamed answer text; the live bubble renders it and
+            // it lands as a normal message on completion.
+            if (msg.content) {
+              streamTextRef.current += msg.content;
+              setStreamText(streamTextRef.current);
             }
-            return [...prev, { role: 'assistant', content }];
-          });
+          }
           break;
 
         case 'thinkingMessage':
-          // AI thinking/reasoning text — accumulate and display while streaming
-          if (!msg.done) {
-            setThinking(prev => prev + msg.content);
-          } else {
-            setThinking('');
+          // AI thinking/reasoning text — accumulate in the live bubble (above
+          // the tools and streamed answer). Both done states carry content
+          // (reasoning block ends), so append either way; the block collapses
+          // into the finished message's disclosure when the turn completes.
+          if (msg.content) {
+            thinkingRef.current += msg.content;
+            setThinking(thinkingRef.current);
           }
           break;
 
@@ -239,7 +282,7 @@ function App() {
           setLoading(msg.loading);
           break;
 
-        case 'error':
+        case 'error': {
           setError(msg.message);
           setLoading(false);
           // A failed project/model fetch must not leave the wizard stuck on
@@ -248,11 +291,16 @@ function App() {
           setModelsLoading(false);
           // An error ends the turn — no consent prompt can still be pending.
           setConsent(null);
-          setThinking(''); // Clear thinking on error
-          setActiveActivity(null); // Clear activity indicator on error
-          liveToolCallsRef.current = []; // Clear live tool cards
-          setLiveToolCalls([]);
+          // Flush any partially streamed answer into the thread (it was
+          // already visible in the live bubble) before resetting turn state —
+          // never silently drop text the user watched arrive.
+          const partialText = streamTextRef.current;
+          finishTurnState();
+          if (partialText && partialText.trim()) {
+            setMessages(prev => [...prev, { role: 'assistant', content: partialText }]);
+          }
           break;
+        }
 
         case 'consentRequest':
           // Agent requires consent for a mutating tool (inline mode).
@@ -349,8 +397,7 @@ function App() {
 
         case 'historyRestored':
           setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
-          liveToolCallsRef.current = [];
-          setLiveToolCalls([]);
+          finishTurnState();
           break;
 
         case 'sessionList':
@@ -360,8 +407,7 @@ function App() {
         case 'sessionSwitched':
           setMessages(msg.session.messages.map(m => ({ role: m.role, content: m.content })));
           setActiveSessionId(msg.session.id);
-          liveToolCallsRef.current = [];
-          setLiveToolCalls([]);
+          finishTurnState();
           break;
 
         case 'workItemDetail':
@@ -402,10 +448,16 @@ function App() {
             });
             return next;
           });
-          // Add completion message to chat thread
+          // Completion line for the chat thread — SKIPPED when an in-thread
+          // run card (id `run:<id>`) exists for this run: the card already
+          // carries the live outcome (running → succeeded/failed).
           const statusEmoji = msg.run.status === 'succeeded' ? '✅' : msg.run.status === 'failed' ? '❌' : '⚠️';
           const completionMsg = `${statusEmoji} **Agent ${msg.run.agent}** ${msg.run.status} for #${msg.run.workItemId ?? '?'}`;
-          setMessages(prev => [...prev, { role: 'assistant', content: completionMsg }]);
+          setMessages(prev =>
+            prev.some(m => m.id === `run:${resultId}`)
+              ? prev
+              : [...prev, { role: 'assistant', content: completionMsg }]
+          );
           setLoading(false);
           break;
         }
@@ -526,16 +578,14 @@ function App() {
     setAttachedFiles([]);
     setLoading(true); // Show loading indicator immediately
     // A new turn aborts any in-flight run — the host denies the pending
-    // prompt; drop the card here too.
+    // prompt; drop the card here too, and reset all turn-live state.
     setConsent(null);
-    setThinking('');
-    liveToolCallsRef.current = []; // New turn — clear any stale tool cards
-    setLiveToolCalls([]);
+    finishTurnState();
     // Activity indicator for specific commands
     if (content.trim().toLowerCase().startsWith('/generate-tasks')) {
       setActiveActivity('Generating tasks');
     }
-  }, []);
+  }, [attachedFiles, finishTurnState]);
 
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
     setConsent(null);
@@ -833,7 +883,14 @@ function App() {
       ))}
 
       {/* Messages */}
-      <MessageList messages={messages} loading={loading} thinking={thinking} activity={activeActivity} liveToolCalls={liveToolCalls} />
+      <MessageList
+        messages={messages}
+        loading={loading}
+        thinking={thinking}
+        streamText={streamText}
+        activity={activeActivity}
+        liveToolCalls={liveToolCalls}
+      />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
       {consent && (

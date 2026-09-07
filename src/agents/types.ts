@@ -15,6 +15,10 @@ export interface AgentRun {
   agent: AgentName;
   title?: string;           // ADO work item title (commit/PR message defaults)
   sessionId?: string;       // external agent's session id (for resume)
+  /** Chat session (adoCode session id) that delegated this run — the chat
+   *  thread that started it, used to route progress/conclusion updates into
+   *  the correct session even after the user switches chats. */
+  chatSessionId?: string;
   workdir: string;
   branch?: string;          // git branch this run is working on
   worktreePath?: string;    // isolated worktree directory (for concurrent runs)

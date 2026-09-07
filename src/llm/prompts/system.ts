@@ -159,6 +159,8 @@ function buildOutputFormatSection(): string {
     '- Be concise and technical — skip pleasantries.',
     '- When presenting a change, briefly explain *what* changed and *why*.',
     '- When finishing a task, summarize the result clearly.',
+    '- **Always end your turn with a conclusion.** When your activity is done, close with a short final summary of what you did and the current state. Never stop right after a tool result without a closing message — the user should never see the chat end abruptly mid-work.',
+    '- If you hand off work to an agent (`delegate_to_agent`) or start a long-running background task, say so explicitly: tell the user the run continues in the background (its progress streams in the agent panel and updates the run card in this chat) and that you will report the outcome when it completes.',
     '- If your response ends by offering the user a choice of next actions (e.g. "Want me to …?", "Should I … or …?"), append a fenced choice block at the very end — 2 to 6 short imperative options, no numbering or bullets:',
     '',
     '```choice',

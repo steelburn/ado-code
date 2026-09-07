@@ -91,7 +91,7 @@ export class AgentRunner {
     return this.runLogs.get(runId) ?? '';
   }
 
-  async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string, childIds?: number[]): Promise<AgentRun> {
+  async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string, childIds?: number[], chatSessionId?: string): Promise<AgentRun> {
     const installed = await this.registry.getInstalled();
     // M2 fix: honor adoCode.agents.autoSelect when no agent is specified.
     let chosen: AgentCapability | undefined;
@@ -149,6 +149,7 @@ export class AgentRunner {
       status: 'running',
       startedAt: new Date().toISOString(),
       childIds: childIds && childIds.length > 0 ? childIds : undefined,
+      chatSessionId,
     };
 
     // Create isolated worktree for this agent run. The branch is slugged from

@@ -1006,6 +1006,9 @@ Generate ONLY the commit message, nothing else.`;
     {
       onStatus: (run, delta) => {
         chatProvider.postMessage({ type: 'agentStatus', run, delta });
+        // Live in-thread run card for chat-originated runs (throttled) — the
+        // chat never looks finished while the delegated agent is still working.
+        chatProvider.notifyAgentRunProgress(run);
         // Update tree view with agent status
         if (run.workItemId) {
           treeProvider.updateAgentStatus(run.workItemId, run.agent, run.status);
@@ -1036,6 +1039,9 @@ Generate ONLY the commit message, nothing else.`;
         }
       },
       onComplete: (run, summary) => {
+        // Conclude the in-thread run card with the outcome and persist it into
+        // the delegating chat session's history.
+        chatProvider.notifyAgentRunComplete(run, summary);
         chatProvider.postMessage({ type: 'agentResult', run, summary });
         // Clear agent status from tree view
         if (run.workItemId) {

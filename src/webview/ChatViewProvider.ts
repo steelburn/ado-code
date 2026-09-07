@@ -651,6 +651,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'assistantMessage',
           content: message,
           done: true,
+          // Id'd bubble — safe to surface even while another chat turn streams.
+          id: `tasks:${parentId}:${Date.now()}`,
         });
         this.postMessage({ type: 'proposedTasksCreated', count: created.length, parentId });
       }
@@ -869,11 +871,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         originalArgs.parentWorkItemId,
       );
 
-      // Report in chat
+      // Report in chat — id'd so it always lands as its own bubble, even when
+      // it arrives in the middle of an LLM turn (create_work_item tool runs
+      // inside the agentic loop while the model waits on the draft review).
       this.postMessage({
         type: 'assistantMessage',
         content: `✅ Created ${originalArgs.workItemType} **#${result.id}** — ${parsed.title}\n\n${result.url}`,
         done: true,
+        id: `wi:${result.id}`,
       });
 
       // Clean up
@@ -902,6 +907,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (run.status !== 'succeeded' || !run.worktreePath) return;
 
     try {
+      // Streamed review bubbles belong to the chat session that delegated the
+      // run — a review landing after the user switched chats must never paint
+      // into a different session's thread (persistence below is still routed
+      // to the delegating session either way).
+      const reviewPost = (m: any): void => {
+        if (!run.chatSessionId || run.chatSessionId === this.getActiveSessionId()) {
+          this.postMessage(m);
+        }
+      };
+
       // Check if there are any changes in the worktree.
       const statResult = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
         execFile('git', ['diff', '--stat'], { cwd: run.worktreePath }, (err, stdout, stderr) => {
@@ -911,7 +926,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
 
       if (!statResult.stdout.trim()) {
-        this.postMessage({ type: 'assistantMessage', content: `**Auto-review:** Agent \`${run.agent}\` completed with no code changes.`, done: true });
+        reviewPost({ type: 'assistantMessage', content: `**Auto-review:** Agent \`${run.agent}\` completed with no code changes.`, done: true, id: `review:${run.id}` });
         return;
       }
 
@@ -950,25 +965,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const client = this.llmClient();
       const messages: LlmMessage[] = [{ role: 'user', content: reviewPrompt }];
 
-      // Post a header so the user knows a review is happening.
-      this.postMessage({ type: 'assistantMessage', content: `**Auto-review for agent \`${run.agent}\`** (${run.workItemId ? `#${run.workItemId}` : 'no work item'}):\n\n`, done: false });
+      // Stream the review into its own id'd bubble (appends in place) so it
+      // can never fuse with a user turn that happens to be streaming at the
+      // same time.
+      reviewPost({ type: 'assistantMessage', content: `**Auto-review for agent \`${run.agent}\`** (${run.workItemId ? `#${run.workItemId}` : 'no work item'}):\n\n`, done: false, id: `review:${run.id}` });
 
-      const showThinking = getSettings().chatShowThinking;
       let reviewText = '';
       for await (const chunk of client.streamChat(messages)) {
-        if (chunk.thinking && showThinking) {
-          this.postMessage({ type: 'thinkingMessage', content: chunk.thinking, done: false });
-        }
         reviewText += chunk.content;
-        this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
+        reviewPost({ type: 'assistantMessage', content: chunk.content, done: chunk.done, id: `review:${run.id}` });
         if (chunk.done) break;
       }
 
-      // Add to conversation for context continuity.
-      this.conversation.push({ role: 'user', content: `[Auto-review request for agent run ${run.id}]` });
-      this.conversation.push({ role: 'assistant', content: reviewText });
-      this.trimConversation();
-      await this.persistConversation();
+      // Add to conversation for context continuity. The review belongs to the
+      // chat session that delegated the run (falls back to the active session
+      // for runs started outside a chat) so a completion landing after the
+      // user switched chats never writes into the wrong session.
+      const reviewSessionId = run.chatSessionId ?? this.getActiveSessionId();
+      const reviewConv = reviewSessionId
+        ? this.sessionConversationFor(reviewSessionId)
+        : this.conversation;
+      reviewConv.push({ role: 'user', content: `[Auto-review request for agent run ${run.id}]` });
+      reviewConv.push({ role: 'assistant', content: reviewText });
+      const trimmedReview = this.trimConversation(reviewConv);
+      if (reviewSessionId) {
+        this.conversationBySession.set(reviewSessionId, trimmedReview);
+        await this.persistConversation(reviewSessionId, trimmedReview);
+      } else {
+        this.conversation = trimmedReview;
+        await this.persistConversation();
+      }
     } catch (err) {
       logger.error('Auto-review failed:', err);
       // Don't block completion — just log.
@@ -1302,25 +1328,106 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       finalPrompt += `\n\n${buildChildChecklist(childTasks)}`;
     }
 
+    // The run remembers which chat session delegated it, so progress and the
+    // final outcome can be routed back into THAT session's thread + history
+    // even after the user switches chats or starts another turn.
+    const chatSessionId = this.getActiveSessionId() ?? undefined;
     const run = await this.agentRunner.delegate(
       this.activeWorkItem.id,
       finalPrompt,
       agent as any,
       this.activeWorkItem.title,
-      childTasks.map(c => c.id)
+      childTasks.map(c => c.id),
+      chatSessionId
     );
-    // Show delegation start in chat so the user has a conversation trail.
+    // Show delegation start in chat so the user has a conversation trail. The
+    // bubble carries a stable id so later updates REPLACE it in place — the
+    // thread keeps ONE evolving run card instead of freezing at "started"
+    // while the run streams on in the panel.
     const agentDisplayName = agent || 'default agent';
     const workItemId = this.activeWorkItem.id;
     const workItemTitle = this.activeWorkItem.title;
     const childInfo = childTasks.length > 0 ? ` (including ${childTasks.length} child task(s))` : '';
-    const startMsg = `🤖 **Delegated to ${agentDisplayName}** for #${workItemId} — ${workItemTitle}${childInfo}\n\nOutput streaming in the panel above ↑`;
-    this.postMessage({ type: 'assistantMessage', content: startMsg, done: true });
-    this.conversation.push({ role: 'assistant', content: `[Agent delegation] ${agentDisplayName} started for #${workItemId}. Output is streaming in the agent panel.` });
-    this.trimConversation();
+    const startMsg = `🤖 **Delegated to ${agentDisplayName}** for #${workItemId} — ${workItemTitle}${childInfo}\n\n_⏳ Running… this card updates as the run progresses._`;
+    this.postMessage({ type: 'assistantMessage', content: startMsg, done: true, id: `run:${run.id}`, replace: true });
+    // Conversation trail marker (kept minimal — the full outcome replaces this
+    // entry when the run completes). Only touches the buffer while the session
+    // that delegated is still on screen.
+    if (chatSessionId && chatSessionId === this.getActiveSessionId()) {
+      this.conversation.push({ role: 'assistant', content: `[Agent delegation run:${run.id}] ${agentDisplayName} started for #${workItemId}. Output is streaming in the agent panel.` });
+      // Avoid mid-turn array replacement (a running agentic loop holds its own
+      // conversation reference) — trim only when no LLM turn is in flight.
+      if (!this.runningTurnAbort) this.conversation = this.trimConversation(this.conversation);
+    }
     // Result is delivered async via agentStatus/agentResult messages; return a
     // placeholder so the tool executor sees the run started.
     return JSON.stringify({ ok: true, runId: run.id, status: run.status });
+  }
+
+  // ── Agent run ↔ chat thread (evolving run card) ─────────────────────
+  /** Last time an in-thread status update was posted per run (throttle). */
+  private readonly runChatLastPost = new Map<string, number>();
+  private static readonly RUN_CHAT_INTERVAL_MS = 10_000;
+
+  private runElapsedLabel(run: AgentRun): string {
+    const start = new Date(run.startedAt).getTime();
+    const end = run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now();
+    const total = Math.max(0, end - start);
+    const s = Math.floor(total / 1000);
+    const m = Math.floor(s / 60);
+    const h = Math.floor(m / 60);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m % 60)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+  }
+
+  private runCardText(run: AgentRun, summary?: string): string {
+    const icon = run.status === 'succeeded' ? '✅' : run.status === 'failed' ? '❌' : run.status === 'cancelled' ? '⏹️' : run.status === 'interrupted' ? '⚠️' : '🤖';
+    const wi = run.workItemId
+      ? ` for #${run.workItemId}${run.title ? ` — ${run.title}` : ''}`
+      : '';
+    const head = `${icon} **Agent \`${run.agent}\` ${run.status === 'running' ? 'running' : run.status}**${wi} (${this.runElapsedLabel(run)})`;
+    if (run.status === 'running') {
+      return `${head}\n\n_Still working — full log streams in the agent panel; this card updates as it goes._`;
+    }
+    const tail = summary && summary.trim()
+      ? `\n\n${summary.trim().slice(0, 3000)}`
+      : '';
+    const branch = run.branch ? `\n\n_Branch \`${run.branch}\` — full log in the agent panel._` : '';
+    return `${head}${tail}${branch}`;
+  }
+
+  /** Live run progress → the in-thread delegation card (throttled). Posted
+   *  only when the delegating session is still the one displayed, so a run
+   *  never paints progress into a different session's chat. */
+  public notifyAgentRunProgress(run: AgentRun): void {
+    if (!run.chatSessionId) return;
+    if (run.chatSessionId !== this.getActiveSessionId()) return;
+    if (run.status !== 'running') return;
+    const now = Date.now();
+    const last = this.runChatLastPost.get(run.id) ?? 0;
+    if (now - last < ChatViewProvider.RUN_CHAT_INTERVAL_MS) return;
+    this.runChatLastPost.set(run.id, now);
+    this.postMessage({ type: 'assistantMessage', content: this.runCardText(run), done: true, id: `run:${run.id}`, replace: true });
+  }
+
+  /** Run terminal state → replace the in-thread delegation card with the
+   *  outcome AND persist the conclusion into the delegating session's history
+   *  (the "started" marker entry is replaced, so reloads show the final
+   *  result instead of a stale running line). */
+  public notifyAgentRunComplete(run: AgentRun, summary: string): void {
+    if (!run.chatSessionId) return;
+    if (run.chatSessionId === this.getActiveSessionId()) {
+      this.postMessage({ type: 'assistantMessage', content: this.runCardText(run, summary), done: true, id: `run:${run.id}`, replace: true });
+    }
+    // Persist into the delegating session regardless of which session is
+    // currently displayed — the outcome belongs to the session that asked.
+    const conv = this.conversationBySession.get(run.chatSessionId);
+    if (!conv) return;
+    const marker = `[Agent delegation run:${run.id}]`;
+    const idx = conv.findIndex(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.includes(marker));
+    if (idx < 0) return;
+    conv[idx] = { role: 'assistant', content: this.runCardText(run, summary) };
+    void this.persistConversation(run.chatSessionId, conv);
   }
 
   /**
@@ -1638,7 +1745,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'listAgentRuns':
             await this.handleAgentMessage(message);
             break;
-          case 'clearConversation':
+          case 'clearConversation': {
             // Full reset: abort any in-flight LLM stream and clear the loading
             // state too — a stuck spinner must not leave the input bar dead
             // after clearing. Any pending consent prompt is denied as well.
@@ -1649,12 +1756,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // cleared chat must not keep auto-approving tools.
             clearSessionAutoApprovals();
             this.conversation = [];
+            const clearedSessionId = this.getActiveSessionId();
+            if (clearedSessionId) this.conversationBySession.set(clearedSessionId, this.conversation);
             this.resetConversationCaches();
             await this.persistConversation();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
             this.markDirty();
             break;
+          }
           case 'stopGeneration':
             // Abort any in-flight LLM stream and deny pending consent prompts
             // so the agentic loop can finish instead of blocking on a missed
@@ -1818,9 +1928,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.sendSessionList();
             break;
           case 'switchSession':
+            // Stop the in-flight turn (if any) IN ITS OWN SESSION first — its
+            // conclusion lands in that session's buffer/history, never in the
+            // thread we're about to display. (Agent runs continue unaffected.)
+            this.stopRunningTurn();
             await this.loadSession(message.sessionId);
             break;
           case 'newSession':
+            this.stopRunningTurn();
             await this.createNewSession();
             break;
           case 'renameSession': {
@@ -1846,6 +1961,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               delConfirmOptions,
             );
             if (delDecision !== 'confirm') break;
+            // A running turn for the deleted session has nowhere left to
+            // persist — stop it so its late chunks can't post into a thread
+            // whose session no longer exists.
+            if (this.runningTurnSession === message.sessionId) this.stopRunningTurn();
+            this.conversationBySession.delete(message.sessionId);
             const updatedSessions = this.getSessions().filter(s => s.id !== message.sessionId);
             await this.saveSessions(updatedSessions);
             // If we deleted the active session, switch to the last remaining one
@@ -1883,6 +2003,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.saveSessions([]);
             await this.setActiveSessionId('');
             this.conversation = [];
+            this.conversationBySession.clear();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
             this.sendSessionList();
@@ -3314,15 +3435,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private llmAbort?: AbortController;
   // `conversation` is extended in Task 26 (multi-turn); declared here for Task 24.
   private conversation: LlmMessage[] = [];
+  // Per-session conversation buffers. A chat turn is bound to the session that
+  // was active when it started and reads/writes ONLY that session's buffer, so
+  // switching chats mid-turn can never bleed another session's messages into
+  // the visible thread or into the wrong persisted session. `conversation`
+  // mirrors the ACTIVE session's buffer (same array identity as its map entry).
+  private readonly conversationBySession = new Map<string, LlmMessage[]>();
+  // Session + abort controller of the single in-flight LLM turn (one turn runs
+  // at a time extension-wide). Session switches stop the running turn cleanly
+  // IN ITS OWN session; these fields identify whose turn it is for that stop.
+  private runningTurnSession?: string;
+  private runningTurnAbort?: AbortController;
+
+  /**
+   * Return the in-memory conversation buffer for a session, seeding it from
+   * the persisted session record the first time the session is touched this
+   * activation. Every load/save/turn flow goes through the map so writes
+   * always land on the array the session owns.
+   */
+  private sessionConversationFor(sessionId: string): LlmMessage[] {
+    const cached = this.conversationBySession.get(sessionId);
+    if (cached && cached.length > 0) return cached;
+    const session = this.getSessions().find(s => s.id === sessionId);
+    if (session && session.messages.length > 0) {
+      // The cache is either absent or an untouched empty seed (fresh session) —
+      // while storage carries history (written by an earlier flow/activation),
+      // the persisted copy is authoritative: load it.
+      const seeded = session.messages.map(m => ({ role: m.role as LlmMessage['role'], content: m.content }));
+      this.conversationBySession.set(sessionId, seeded);
+      return seeded;
+    }
+    if (!cached) {
+      const empty: LlmMessage[] = [];
+      this.conversationBySession.set(sessionId, empty);
+      return empty;
+    }
+    return cached;
+  }
+
+  /** Replace a session's buffer (post-condense/truncate) and keep the active
+   *  mirror pointer in sync when that session is on screen. */
+  private replaceSessionConversation(sessionId: string, conversation: LlmMessage[]): void {
+    this.conversationBySession.set(sessionId, conversation);
+    if (sessionId === this.getActiveSessionId()) this.conversation = conversation;
+  }
 
   /** Task 2: persist conversation to the active session in workspaceState. */
-  private async persistConversation(): Promise<void> {
-    const activeId = this.getActiveSessionId();
-    if (!activeId) return;
+  private async persistConversation(sessionId?: string, conversation?: LlmMessage[]): Promise<void> {
+    const targetId = sessionId ?? this.getActiveSessionId();
+    if (!targetId) return;
+    const target = conversation ?? this.conversation;
     const sessions = this.getSessions();
-    const session = sessions.find(s => s.id === activeId);
+    const session = sessions.find(s => s.id === targetId);
     if (!session) return;
-    session.messages = trimConversationToPairs(this.conversation, ChatViewProvider.MAX_PERSISTED_PAIRS)
+    session.messages = trimConversationToPairs(target, ChatViewProvider.MAX_PERSISTED_PAIRS)
       .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)' }));
     // Auto-name from first user message if still default
     if (session.name === 'New Session') {
@@ -3334,10 +3500,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Prune old sessions beyond the configured limit
     const maxSessions = vscode.workspace.getConfiguration('adoCode').get<number>('sessions.maxPerProject', 20);
     if (sessions.length > maxSessions) {
-      // Sort oldest-first, keep the most recent `maxSessions` (always keep active)
+      // Sort oldest-first, keep the most recent `maxSessions` (always keep the
+      // session being written AND the active session)
       const sorted = [...sessions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       const toKeep = new Set(sorted.slice(-maxSessions).map(s => s.id));
-      toKeep.add(activeId); // always keep active session
+      toKeep.add(targetId);
+      const activeId = this.getActiveSessionId();
+      if (activeId) toKeep.add(activeId);
       const pruned = sessions.filter(s => toKeep.has(s.id));
       await this.saveSessions(pruned);
     } else {
@@ -3350,7 +3519,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sessions = this.getSessions();
     const session = sessions.find(s => s.id === sessionId);
     if (!session) return;
-    this.conversation = session.messages.map(m => ({ role: m.role as LlmMessage['role'], content: m.content }));
+    this.conversation = this.sessionConversationFor(sessionId);
     this.resetConversationCaches();
     await this.setActiveSessionId(sessionId);
     this.postMessage({ type: 'historyRestored', messages: this.conversation });
@@ -3359,6 +3528,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Backward-compatible wrapper for extension.ts / tests that pass raw history. */
   public restoreConversation(history: LlmMessage[]): void {
     this.conversation = trimConversationToPairs(history, ChatViewProvider.MAX_PERSISTED_PAIRS);
+    // Keep the per-session map coherent with the active session after a direct
+    // restore (tests / external callers) so isolation still holds afterwards.
+    const activeId = this.getActiveSessionId();
+    if (activeId) this.conversationBySession.set(activeId, this.conversation);
     this.resetConversationCaches();
     this.postMessage({ type: 'historyRestored', messages: this.conversation });
   }
@@ -3375,7 +3548,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     sessions.push(session);
     await this.saveSessions(sessions);
     await this.setActiveSessionId(session.id);
-    this.conversation = [];
+    // Seed the per-session buffer for the fresh chat. The previous session's
+    // buffer stays alive in the map so an in-flight turn from it (aborted on
+    // the switch) never writes into this new session's thread.
+    this.conversation = this.sessionConversationFor(session.id);
     this.resetConversationCaches();
     // A new session is a fresh chat — "Allow for Session" approvals from the
     // previous session must not leak into it.
@@ -3403,6 +3579,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     sessions.push(session);
     await this.saveSessions(sessions);
     await this.setActiveSessionId(session.id);
+    this.conversationBySession.set(session.id, this.conversation);
     this.sendSessionList();
   }
 
@@ -3426,8 +3603,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.contextManager.setOverheadTokens(SYSTEM_PROMPT_OVERHEAD_TOKENS + toolTokens);
   }
 
-  /** Trim the conversation using ContextManager's priority-based truncation. */
-  private trimConversation(): void {
+  /** Trim a conversation using ContextManager's priority-based truncation.
+   *  Returns the (possibly replaced) array; when the trimmed array is the
+   *  active conversation the mirror pointer + per-session map stay in sync. */
+  private trimConversation(conv?: LlmMessage[]): LlmMessage[] {
+    const target = conv ?? this.conversation;
     // B1: keep the budget in sync with the ACTIVE model's window. setMaxTokens
     // is otherwise only updated when the model picker's /models fetch returns
     // live context data (which many gateways omit) — on a 64k model the
@@ -3436,19 +3616,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.contextManager.setMaxTokens(estimateContextWindow({ apiModelId: model }, this.lastModelInfos));
     // Track current usage (including per-request system prompt + tool schemas)
     this.syncContextOverhead();
-    this.contextManager.trackMessages(this.conversation);
+    this.contextManager.trackMessages(target);
 
+    let result = target;
     if (this.contextManager.shouldTruncate()) {
-      const before = this.conversation.length;
-      this.conversation = this.contextManager.truncateMessages(this.conversation);
-      const removed = before - this.conversation.length;
+      const before = target.length;
+      result = this.contextManager.truncateMessages(target);
+      const removed = before - result.length;
       if (removed > 0) {
         logger.debug(`Chat: context overflow — removed ${removed} message(s) via priority truncation`);
       }
     }
 
+    if (target === this.conversation) {
+      this.conversation = result;
+      const activeId = this.getActiveSessionId();
+      if (activeId) this.conversationBySession.set(activeId, result);
+    }
+
     // Update the status bar with accurate token counts
     this.updateTokenStatusBar();
+    return result;
   }
 
   /**
@@ -3458,13 +3646,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * dropped. Fails gracefully: on error the conversation is left uncondensed
    * and trimConversation() (80% hard drop) remains the safety net.
    */
-  private async maybeCondenseConversation(): Promise<void> {
-    if (!this.condenser.shouldCondense(this.conversation)) return;
+  private async maybeCondenseConversation(conv?: LlmMessage[]): Promise<LlmMessage[]> {
+    const target = conv ?? this.conversation;
+    if (!this.condenser.shouldCondense(target)) return target;
     logger.debug('Chat: context full — triggering conversation condensation');
     try {
       const client = this.llmClient();
       let summaryText = '';
-      this.conversation = await this.condenser.condense(this.conversation, async (text) => {
+      const condensed = await this.condenser.condense(target, async (text) => {
         let result = '';
         for await (const chunk of client.streamChat([
           { role: 'system', content: 'Summarize the following conversation concisely. Preserve: file paths changed, key decisions, errors encountered, and current task state. Output only the summary, no preamble.' },
@@ -3475,7 +3664,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         summaryText = result;
         return result;
       });
-      logger.debug(`Chat: condensation complete — ${this.conversation.length} messages remaining`);
+      logger.debug(`Chat: condensation complete — ${condensed.length} messages remaining`);
       // Distill the condensation into the durable repository-understanding
       // knowledge store, so the learning survives session close and reaches
       // new chat sessions AND delegated agents.
@@ -3486,8 +3675,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Knowledge capture is best-effort.
         }
       }
+      if (target === this.conversation) {
+        this.conversation = condensed;
+        const activeId = this.getActiveSessionId();
+        if (activeId) this.conversationBySession.set(activeId, condensed);
+      }
+      return condensed;
     } catch (err) {
       logger.debug('Chat: condensation failed, continuing with uncondensed conversation', err);
+      return target;
     }
   }
 
@@ -3501,16 +3697,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *   turn owns the conversation from here on). Object identity keeps the
    *   splice correct even if condensation re-indexed the array.
    */
-  private async reconcileStoppedTurn(abort: AbortController, pushedUser: LlmMessage): Promise<void> {
+  private async reconcileStoppedTurn(abort: AbortController, pushedUser: LlmMessage, sessionId: string, conversation: LlmMessage[]): Promise<void> {
+    // The conversation this turn wrote to may no longer be the session's live
+    // buffer (chat cleared / session deleted while the turn was stopping) —
+    // in that case there is nothing to reconcile: the reset already won, and
+    // persisting here would resurrect history the user just cleared.
+    if (this.conversationBySession.get(sessionId) !== conversation) return;
     if (this.llmAbort === abort) {
       const stopped = '(generation stopped)';
-      this.conversation.push({ role: 'assistant', content: stopped });
-      this.postMessage({ type: 'assistantMessage', content: stopped, done: true });
+      conversation.push({ role: 'assistant', content: stopped });
+      // Only surface the marker in the thread if its session is still the one
+      // on screen — a session switch stops the turn but must never draw a
+      // "stopped" bubble in another session's chat.
+      if (sessionId === this.getActiveSessionId()) {
+        this.postMessage({ type: 'assistantMessage', content: stopped, done: true });
+      }
     } else {
-      const idx = this.conversation.indexOf(pushedUser);
-      if (idx >= 0) this.conversation.splice(idx, 1);
+      const idx = conversation.indexOf(pushedUser);
+      if (idx >= 0) conversation.splice(idx, 1);
     }
-    await this.persistConversation();
+    await this.persistConversation(sessionId, conversation);
+  }
+
+  /** Abort the single in-flight LLM turn (if any) so switching chats / creating
+   *  a session can never mix two sessions' threads. The stopped turn reconciles
+   *  into ITS OWN session (marker + persist — see reconcileStoppedTurn); agent
+   *  runs are separate and continue unaffected. */
+  private stopRunningTurn(): void {
+    const abort = this.runningTurnAbort ?? this.llmAbort;
+    abort?.abort();
   }
 
   /** Update the token-usage status bar with accurate token counts. */
@@ -3661,18 +3876,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Iteration budget: caps the agentic tool loop's model round-trips
     // for this turn (one iteration may run a batch of parallel tool calls).
     const maxIterations = getSettings().actMaxIterations;
-    // Task 26: multi-turn — append this turn to the persisted conversation.
-    // Session tracking: auto-create the session on the FIRST message so the
-    // conversation is actually persisted (and the history list stops showing
-    // "No sessions yet" for users who never clicked New Session).
     await this.ensureSession(content);
+    // ── Session isolation: bind this turn to the session that owns it ──
+    // The turn reads/writes ONLY that session's buffer (never the buffer of a
+    // session the user switches to mid-turn) and only posts streamed progress
+    // while that session is on screen. Switching chats stops the turn cleanly
+    // IN ITS OWN session instead of corrupting another session's thread.
+    const turnSessionId = this.getActiveSessionId();
+    if (!turnSessionId) {
+      this.postMessage({ type: 'error', message: 'No active chat session — create a new one and try again.' });
+      return;
+    }
+    this.conversation = this.sessionConversationFor(turnSessionId);
+    this.runningTurnSession = turnSessionId;
+    this.runningTurnAbort = abort;
+    // Turn-owned posts: reach the webview only while THIS turn's session is
+    // the one displayed — late chunks from a stopped turn (session switch /
+    // new message) can never land in another session's thread.
+    const turnPost = (m: any): void => {
+      if (this.getActiveSessionId() === turnSessionId) this.postMessage(m);
+    };
+
+    let turnConversation = this.conversation;
     const pushedUser: LlmMessage = { role: 'user', content: llmContent };
-    this.conversation.push(pushedUser);
+    turnConversation.push(pushedUser);
     // A3: condense FIRST (LLM summary preserves context), then hard-truncate
     // only if still over budget. The old order dropped messages the summarizer
     // would have kept, then spent a paid call summarizing what was left.
-    await this.maybeCondenseConversation();
-    this.trimConversation();
+    turnConversation = await this.maybeCondenseConversation(turnConversation);
+    this.replaceSessionConversation(turnSessionId, turnConversation);
+    turnConversation = this.trimConversation(turnConversation);
+    this.replaceSessionConversation(turnSessionId, turnConversation);
 
     // Build system prompt — mode-aware with tool filtering, environment context,
     // and memory injection.
@@ -3713,7 +3947,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.lastSystemPrompt = systemPromptContent;
     const messages: LlmMessage[] = [
       { role: 'system', content: systemPromptContent },
-      ...this.conversation,
+      ...turnConversation,
     ];
     // Working indicator: the turn is in flight (host-side — survives the
     // chat view being hidden). Cleared in the finally below on completion,
@@ -3724,6 +3958,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // whether it carries tool details) is decided here, before the loop.
       const { chatShowThinking, chatShowToolCalls } = getSettings();
       const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, maxIterations, (update) => {
+        // The turn was stopped/switched away — never post its progress into a
+        // session that isn't its own (late chunks from an aborted loop).
+        if (this.getActiveSessionId() !== turnSessionId) return;
         // Live progress → chat webview: surface the AI's reasoning AND each
         // tool call as it runs (running → completed when the result lands),
         // so the user sees activity instead of a silent "Thinking…" until
@@ -3776,7 +4013,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // (iterations, tool calls, and request payload tokens incl. system+tools).
       logger.debug(
         `Chat turn cost — iterations: ${result.iterations}, tools: ${result.toolCalls.length}, ` +
-        `conversation: ${countMessageTokens(this.conversation).toLocaleString()} tokens, ` +
+        `conversation: ${countMessageTokens(turnConversation).toLocaleString()} tokens, ` +
         `per-request overhead (system+tools): ${this.contextOverhead().toLocaleString()} tokens`
       );
       // A4: the main model appends a ```choice fence when its answer offers
@@ -3784,12 +4021,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // the fence from everything the user sees or the conversation persists,
       // and use it as the choice prompt — no second model call needed.
       const fencedChoice = parseChoiceFence(result.text);
-      const cleanText = stripChoiceFence(result.text);
-      this.postMessage({ type: 'assistantMessage', content: cleanText, done: true });
-      this.conversation.push({ role: 'assistant', content: cleanText });
-      this.trimConversation();
-      await this.persistConversation();
-      if (mode === 'plan') this.postMessage({ type: 'planReady', plan: cleanText });
+      let cleanText = stripChoiceFence(result.text);
+      // Never end a chat turn with nothing visible: a model that stops right
+      // after its tool work (no closing text) previously produced an invisible
+      // "answer" — the thread just stopped. Conclude deterministically instead.
+      if (!cleanText.trim()) {
+        const tools = result.toolCalls.length;
+        cleanText = tools > 0
+          ? `Done — executed ${tools} tool call${tools === 1 ? '' : 's'}. Let me know what you'd like to do next.`
+          : '_The model returned an empty response — please try again._';
+      }
+      turnPost({ type: 'assistantMessage', content: cleanText, done: true });
+      turnConversation.push({ role: 'assistant', content: cleanText });
+      turnConversation = this.trimConversation(turnConversation);
+      this.replaceSessionConversation(turnSessionId, turnConversation);
+      await this.persistConversation(turnSessionId, turnConversation);
+      if (mode === 'plan') turnPost({ type: 'planReady', plan: cleanText });
 
       // Detect proposed tasks from generate-tasks flow — show analysis in chat,
       // open editor tab with checkboxes for user review before creating in ADO.
@@ -3798,8 +4045,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const { analysis, tasks } = proposedTasksResult;
         // Show the analysis portion in chat (strip the JSON block)
         if (analysis) {
-          this.postMessage({ type: 'assistantMessage', content: analysis, done: true });
-          this.conversation.push({ role: 'assistant', content: analysis });
+          turnPost({ type: 'assistantMessage', content: analysis, done: true });
+          turnConversation.push({ role: 'assistant', content: analysis });
+          await this.persistConversation(turnSessionId, turnConversation);
         }
         // Open editor tab with tasks for review
         await this.showProposedTasksInEditor(this.activeWorkItem.id, this.activeWorkItem.title, tasks);
@@ -3832,7 +4080,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (err) {
       if (abort.signal.aborted) {
-        await this.reconcileStoppedTurn(abort, pushedUser);
+        await this.reconcileStoppedTurn(abort, pushedUser, turnSessionId, turnConversation);
         return;
       }
       // INLINE resilience: the endpoint may not support tool calling (some
@@ -3841,17 +4089,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // working exactly like it did before tools were enabled here.
       if (mode === 'inline') {
         try {
-          const text = await this.streamAssistantTurn(messages, abort);
+          const text = await this.streamAssistantTurn(messages, abort, turnPost);
           if (text) {
             // Strip any ```choice fence the model appended — it must not be
             // persisted or re-sent; the webview suppresses it at render time.
-            this.conversation.push({ role: 'assistant', content: stripChoiceFence(text) });
-            this.trimConversation();
+            turnConversation.push({ role: 'assistant', content: stripChoiceFence(text) });
+            turnConversation = this.trimConversation(turnConversation);
+            this.replaceSessionConversation(turnSessionId, turnConversation);
           }
-          await this.persistConversation();
+          await this.persistConversation(turnSessionId, turnConversation);
         } catch (streamErr) {
           if (abort.signal.aborted) {
-            await this.reconcileStoppedTurn(abort, pushedUser);
+            await this.reconcileStoppedTurn(abort, pushedUser, turnSessionId, turnConversation);
             return;
           }
           const message = streamErr instanceof Error ? streamErr.message : String(streamErr);
@@ -3862,6 +4111,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
     } finally {
+      // Clear the running-turn identity ONLY if this turn is still the tracked
+      // one (a newer turn may already have claimed the slot after aborting us).
+      if (this.runningTurnAbort === abort) {
+        this.runningTurnAbort = undefined;
+        this.runningTurnSession = undefined;
+      }
       this.setWorking(false);
     }
   }
@@ -3873,24 +4128,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * the SSE stream without [DONE], and a missing done chunk leaves the
    * webview spinner stuck and the input bar disabled.
    */
-  private async streamAssistantTurn(messages: LlmMessage[], abort: AbortController): Promise<string> {
+  private async streamAssistantTurn(messages: LlmMessage[], abort: AbortController, post: (m: any) => void = (m) => this.postMessage(m)): Promise<string> {
     const showThinking = getSettings().chatShowThinking;
     let assistantText = '';
     let streamEnded = false;
     for await (const chunk of this.llmClient().streamChat(messages, abort.signal)) {
       if (chunk.thinking && showThinking) {
         // Forward thinking/reasoning text to the webview
-        this.postMessage({ type: 'thinkingMessage', content: chunk.thinking, done: false });
+        post({ type: 'thinkingMessage', content: chunk.thinking, done: false });
       }
       assistantText += chunk.content;
-      this.postMessage({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
+      post({ type: 'assistantMessage', content: chunk.content, done: chunk.done });
       if (chunk.done) {
         streamEnded = true;
         break;
       }
     }
     if (!streamEnded) {
-      this.postMessage({ type: 'assistantMessage', content: '', done: true });
+      post({ type: 'assistantMessage', content: '', done: true });
     }
     return assistantText;
   }
@@ -4060,6 +4315,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.consentBroker.rejectAll();
         this.confirmBroker.rejectAll();
         this.conversation = [];
+        const clearSlashSessionId = this.getActiveSessionId();
+        if (clearSlashSessionId) this.conversationBySession.set(clearSlashSessionId, this.conversation);
         this.resetConversationCaches();
         await this.persistConversation();
         this.postMessage({ type: 'historyRestored', messages: [] });
@@ -4087,6 +4344,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.saveSessions([]);
         await this.setActiveSessionId('');
         this.conversation = [];
+        this.conversationBySession.clear();
         this.resetConversationCaches();
         this.postMessage({ type: 'historyRestored', messages: [] });
         this.postMessage({ type: 'loading', loading: false });
@@ -4221,6 +4479,9 @@ First analyze the user story and explain your breakdown reasoning, then output t
         );
         if (picked) {
           const session = sessions.find(s => s.id === picked);
+          // Switching sessions via /resume must stop the running turn in ITS
+          // session first (same isolation rule as the session dropdown).
+          this.stopRunningTurn();
           await this.loadSession(picked);
           vscode.window.showInformationMessage(`ADO Code: resumed session "${session?.name ?? picked}".`);
         }

@@ -1638,6 +1638,72 @@ code {
   overflow-y: auto;
 }
 
+/* In the LIVE turn bubble the reasoning is part of the flowing conversation:
+   no internal scroll box — it scrolls with the chat and flows up as the
+   answer grows beneath it. */
+.thinking-block-live {
+  max-height: none;
+  overflow: visible;
+}
+
+/* Reasoning disclosure on completed messages (collapsed by default, like the
+   finished tool-call cards). Content is transient — never persisted. */
+.reasoning-disclosure {
+  margin: 4px 0;
+  border: 1px solid var(--vscode-inputValidation-infoBorder, #3794ff);
+  border-left: 3px solid var(--vscode-inputValidation-infoBorder, #3794ff);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--vscode-editorWidget-background);
+}
+
+.reasoning-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  background: var(--vscode-sideBar-background);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+}
+
+.reasoning-toggle .reasoning-chevron {
+  font-size: 0.8em;
+  transition: transform 0.15s;
+}
+
+.reasoning-toggle .reasoning-icon {
+  font-size: 13px;
+}
+
+.reasoning-toggle .reasoning-label {
+  font-weight: 600;
+  font-size: 0.85em;
+  color: var(--vscode-inputValidation-infoBorder, #3794ff);
+}
+
+.reasoning-text {
+  padding: 8px 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Streamed answer text inside the live turn bubble. */
+.stream-answer {
+  margin-top: 2px;
+}
+
 .thinking-header {
   display: flex;
   align-items: center;

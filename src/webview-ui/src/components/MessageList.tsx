@@ -9,6 +9,11 @@ interface Message {
   content: string;
   timestamp?: number; // epoch ms
   isError?: boolean;
+  /** Stable bubble id (host run card) — updates REPLACE this bubble. */
+  id?: string;
+  /** Reasoning text of a completed turn — rendered as a collapsed "Thinking"
+   *  disclosure above the answer. Transient (never persisted to history). */
+  reasoning?: string;
 }
 
 interface ToolCallInfo {
@@ -27,6 +32,10 @@ interface Props {
   loading: boolean;
   /** AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking) */
   thinking?: string;
+  /** Answer text streamed by the current turn — rendered in-flow UNDER the
+   *  reasoning + tool cards so the reasoning flows up and scrolls away as the
+   *  reply grows (instead of a fixed box pinned at the bottom). */
+  streamText?: string;
   /** Activity indicator text (e.g., "Executing skill: Code Review") */
   activity?: string | null;
   /** Live tool calls from the agentic loop — shown while the turn runs. */
@@ -379,22 +388,64 @@ const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
   );
 };
 
+/**
+ * Collapsed "💭 Thinking" disclosure for a completed turn's reasoning.
+ * Mirrors the tool-call cards: content streams openly while the turn runs;
+ * once the answer lands, the reasoning collapses to a header the user can
+ * re-open. Reasoning is transient — it never persists into session history.
+ */
+const ReasoningDisclosure: React.FC<{ text: string }> = ({ text }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="reasoning-disclosure">
+      <button
+        className="reasoning-toggle"
+        onClick={() => setOpen(!open)}
+        title={open ? 'Hide reasoning' : 'Show the reasoning behind this answer'}
+      >
+        <span className="reasoning-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+        <span className="reasoning-icon">💭</span>
+        <span className="reasoning-label">Thinking</span>
+      </button>
+      {open && <div className="reasoning-text">{text}</div>}
+    </div>
+  );
+};
+
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading, thinking, activity, liveToolCalls = [] }: Props) {
+export function MessageList({ messages, loading, thinking, streamText, activity, liveToolCalls = [] }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(messages.length);
+  // Signature of everything the chat area displays. Id-bubble replacements
+  // that touch a MID-thread message (e.g. the run card while the user scrolls
+  // older content) don't change it, so they never yank the scroll position.
+  const prevSigRef = useRef('');
 
   // Auto-scroll on new messages — instant for bulk loads (refresh/session switch),
   // smooth for single new messages (streaming).
   useEffect(() => {
+    const last = messages[messages.length - 1];
+    const tailKey = last ? `${last.id ?? ''}|${last.role}|${last.content.length}` : '';
+    const sig = [
+      messages.length,
+      tailKey,
+      loading,
+      streamText?.length ?? 0,
+      thinking?.length ?? 0,
+      liveToolCalls.length,
+      activity ?? '',
+    ].join('|');
+    if (sig === prevSigRef.current) return;
+    prevSigRef.current = sig;
+
     const countDelta = messages.length - prevCountRef.current;
     prevCountRef.current = messages.length;
     // Bulk load (refresh, session switch) → instant scroll, no animation
     // Single message → smooth scroll
     const behavior = countDelta > 1 ? 'instant' : 'smooth';
     bottomRef.current?.scrollIntoView({ behavior });
-  }, [messages, loading, thinking, activity, liveToolCalls]);
+  }, [messages, loading, thinking, streamText, activity, liveToolCalls]);
 
   if (messages.length === 0 && !loading) {
     return (
@@ -476,6 +527,10 @@ export function MessageList({ messages, loading, thinking, activity, liveToolCal
                   <p>{m.content}</p>
                 ) : (
                   <>
+                    {/* Completed turn reasoning — collapsed disclosure above the
+                        answer (transient, not persisted). */}
+                    {m.reasoning && <ReasoningDisclosure text={m.reasoning} />}
+
                     {/* Render text parts with markdown */}
                     {hasText && textParts.filter((t) => t.trim()).map((text, j) => (
                       <MarkdownWithCodeCopy key={j} content={text} />
@@ -508,8 +563,24 @@ export function MessageList({ messages, loading, thinking, activity, liveToolCal
               {/* Headline: what the AI is doing right now */}
               <div className="activity-indicator">
                 <div className="activity-spinner" />
-                <span className="activity-text">{activity ? `${activity}…` : 'Thinking…'}</span>
+                <span className="activity-text">
+                  {activity ? `${activity}…` : streamText ? 'Responding…' : 'Thinking…'}
+                </span>
               </div>
+
+              {/* Thinking/reasoning streams IN-FLOW here — above the tool cards
+                  and the answer text, inside the same assistant bubble that will
+                  become the reply. As the answer grows beneath it, the reasoning
+                  scrolls up naturally (it never pins a fixed box at the bottom). */}
+              {!!thinking && thinking.trim().length > 0 && (
+                <div className="thinking-block thinking-block-live">
+                  <div className="thinking-header">
+                    <span className="thinking-icon">💭</span>
+                    <span className="thinking-label">Thinking</span>
+                  </div>
+                  <div className="thinking-content">{thinking}</div>
+                </div>
+              )}
 
               {/* Live tool calls — running → completed as results land.
                   Detail cards render full arguments/results; hidden calls
@@ -529,14 +600,11 @@ export function MessageList({ messages, loading, thinking, activity, liveToolCal
                 </div>
               )}
 
-              {/* Thinking/reasoning text */}
-              {!!thinking && thinking.trim().length > 0 && (
-                <div className="thinking-block">
-                  <div className="thinking-header">
-                    <span className="thinking-icon">💭</span>
-                    <span className="thinking-label">Thinking</span>
-                  </div>
-                  <div className="thinking-content">{thinking}</div>
+              {/* Streamed answer text — flows beneath the reasoning/tool cards
+                  while the reply is generated. */}
+              {!!streamText && streamText.trim().length > 0 && (
+                <div className="stream-answer">
+                  <MarkdownWithCodeCopy content={streamText} />
                 </div>
               )}
             </div>

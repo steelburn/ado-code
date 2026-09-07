@@ -98,7 +98,11 @@ export type WebviewToExtensionMessage =
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
-  | { type: 'assistantMessage'; content: string; done: boolean }
+  // Optional `id` stamps an assistant bubble with a stable identity so a later
+  // done:true message with the SAME id REPLACES that bubble's content instead
+  // of appending a new one (live delegation card in the thread). `replace`
+  // forces replacement semantics; id'd messages without it append (streams).
+  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean }
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
   | { type: 'thinkingMessage'; content: string; done: boolean }
   | { type: 'workItems'; items: WorkItemSummary[] }

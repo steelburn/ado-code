@@ -92,7 +92,15 @@ export type WebviewToExtensionMessage =
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
-  | { type: 'assistantMessage'; content: string; done: boolean }
+  // Optional `id` stamps an assistant bubble with a stable identity so a later
+  // done:true message with the SAME id REPLACES that bubble's content instead
+  // of appending a new one. Used for the live delegation card: the host rewrites
+  // one in-thread bubble as the agent run progresses (running → terminal), so
+  // the chat never looks finished while background work is still going.
+  // `replace` (only meaningful with `id`) forces replacement semantics;
+  // without it, id'd messages APPEND to the bubble (self-contained streams
+  // such as auto-review that must not fuse with the active turn).
+  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean }
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended thinking)
   | { type: 'thinkingMessage'; content: string; done: boolean }
   | { type: 'workItems'; items: WorkItemSummary[] }
