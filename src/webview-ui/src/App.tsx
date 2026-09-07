@@ -14,6 +14,7 @@ import { ConfigurationPage } from './components/ConfigurationPage';
 import { ProjectCreationWizard } from './components/ProjectCreationWizard';
 import { SkillCatalog } from './components/SkillCatalog';
 import { vscode } from './vscode';
+import { ERROR_AUTO_DISMISS_MS } from './utils/errorBanner';
 import './styles/app.css';
 import './styles/markdown.css';
 
@@ -553,6 +554,16 @@ function App() {
       attachedFiles,
     });
   }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles]);
+
+  // Top error banner auto-dismiss: every host error funnels into the single
+  // `error` state, so one timer covers them all. Restarted whenever a new
+  // error replaces an old one; cancelled on manual ✕ or unmount (effect
+  // cleanup).
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => setError(null), ERROR_AUTO_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [error]);
 
   // Wizard focus: while a full-page wizard is open (first-run setup,
   // Configuration page, project creation) ask the host to collapse the

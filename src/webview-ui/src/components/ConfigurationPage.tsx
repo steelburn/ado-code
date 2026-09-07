@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { vscode } from '../vscode';
+import { ERROR_AUTO_DISMISS_MS } from '../utils/errorBanner';
 
 interface Props {
   onBack: () => void;
@@ -863,6 +864,14 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
     vscode.postMessage({ type: 'getFullConfig' });
     return () => window.removeEventListener('message', handler);
   }, []);
+
+  // Auto-dismiss host fetch/save failures: the banner sits at the top of the
+  // page with no ✕ of its own, so time it out instead of lingering.
+  useEffect(() => {
+    if (!fetchError) return;
+    const timer = setTimeout(() => setFetchError(null), ERROR_AUTO_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [fetchError]);
 
   const handleChange = useCallback((key: string, value: any) => {
     setConfig(prev => ({ ...prev, [key]: value }));
