@@ -77,13 +77,14 @@ const CATEGORIES: ConfigCategory[] = [
         icon: '⚡',
         settings: [
           { key: 'mode', label: 'Default Mode', type: 'enum', description: 'Tool-use mode for new conversations', options: ['inline', 'plan', 'act', 'yolo'] },
+          { key: 'yolo.pushApproval', label: 'YOLO still asks before pushing', type: 'boolean', description: 'Require approval before code is pushed to the remote repo (push_worktree tool / git push) even in YOLO mode', hint: 'Pushes are hard to undo and reach other people, so they stay gated even under full autonomy. Turn OFF to let YOLO push without asking.' },
         ],
       },
       {
         title: 'Act Mode',
         icon: '🚀',
         settings: [
-          { key: 'act.toolBudget', label: 'Iteration budget', type: 'number', description: 'Max agentic loop iterations per chat turn', hint: 'Each iteration is one model round-trip that may run several tool calls in parallel. Recommended: 15–30. Lower = faster stops, higher = more autonomous. Below 10 may truncate complex tasks.', min: 1, max: 100 },
+          { key: 'act.toolBudget', label: 'Iteration budget', type: 'number', description: 'Max agentic loop iterations per chat turn', hint: 'Each iteration is one model round-trip that may run several tool calls in parallel. Recommended: 100+. ADO Code works on large repositories where deep, multi-step work is common — start at 100 and raise it if turns keep hitting the ceiling. Lower = faster stops, higher = more autonomous.', min: 1, max: 1000 },
           { key: 'act.terminalAllowlist', label: 'Terminal allowlist', type: 'array', description: 'Allowed commands in act mode (supports wildcards, e.g. "git *", "npm run *")', hint: 'Entries are matched token-by-token, so they are safe from shell operators. A trailing * matches any remaining tokens: "git *" allows every git subcommand, "git push *" only pushes. Commands not matching any entry ask for approval.' },
         ],
       },
@@ -113,8 +114,7 @@ const CATEGORIES: ConfigCategory[] = [
         title: 'Consent',
         icon: '🔐',
         settings: [
-          { key: 'consent.harmlessAutoApprove', label: 'Auto-approve harmless commands', type: 'boolean', description: 'Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires.', hint: 'Read-only terminal commands like git status, git diff, npm test, ls, etc. are detected automatically. You can still approve or reject before the timer expires.' },
-          { key: 'consent.harmlessAutoApproveSeconds', label: 'Auto-approve delay (seconds)', type: 'number', description: 'Seconds before a harmless command auto-approves', hint: 'How long to wait before auto-approving a harmless command. Lower = faster, higher = more time to review. Range: 1–30 seconds.', min: 1, max: 30 },
+          { key: 'consent.harmlessAutoApprove', label: 'Auto-approve harmless commands', type: 'boolean', description: 'Run read-only terminal commands (git status/diff/log, npm test, ls, grep, …) immediately, without a consent card or countdown timer', hint: 'When ON, harmless read-only commands like git status, git diff, npm test and ls execute instantly — no approval prompt at all. When OFF, they ask for approval like any other mutating tool. Commands are detected automatically (no shell operators + a known read-only base/subcommand).' },
           { key: 'consent.autoApproveTools', label: 'Auto-approve tools (wildcards)', type: 'array', description: 'Tool names (or patterns) that run without a consent prompt', hint: 'Enter tool names like edit_file, or patterns with * and ? — e.g. "read_*" auto-approves read_file and read_workspace_memory, "get_*" auto-approves all get_* tools. Tools matching here skip the consent card in inline and act modes (plan mode still stays read-only). Terminal commands: "run_terminal_command" or "run_*" auto-approves ALL shell commands — treat that like yolo mode.' },
         ],
       },
@@ -216,7 +216,7 @@ const ADVANCED_CATEGORY: ConfigCategory = {
       title: 'Model & Counting',
       icon: '🔢',
       settings: [
-        { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'string', description: 'Optional cheaper model for AI choice-prompt detection (empty = use the main model)', placeholder: 'e.g. gpt-4o-mini, claude-haiku' },
+        { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'model', description: 'Optional cheaper model for AI choice-prompt detection (empty = use the main model)', placeholder: 'e.g. gpt-4o-mini, claude-haiku; type "off" to disable' },
         { key: 'llm.useNativeTokenCounting', label: 'Native token counting', type: 'boolean', description: 'Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) for status-bar accuracy' },
       ],
     },
@@ -873,6 +873,25 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
     return () => clearTimeout(timer);
   }, [fetchError]);
 
+  // 0.6.5: populate the model DROPDOWNS automatically — fetch the provider's
+  // model list once when the page opens with saved LLM credentials (Refresh is
+  // still available on the page). Previously every model control (Advanced
+  // per-mode rows, capability overrides, choice-detection model) silently
+  // fell back to a plain text field until the user manually fetched in
+  // Connection → LLM Provider.
+  const autoFetchedModels = useRef(false);
+  useEffect(() => {
+    if (loading) return;
+    if (autoFetchedModels.current) return;
+    const url = String(config.llmApiUrl ?? '').trim();
+    const key = String(config.llmApiKey ?? '').trim();
+    if (!url || !key) return;
+    autoFetchedModels.current = true; // once per page open; manual Refresh afterwards
+    onFetchModels?.(String(config.llmProvider ?? 'openai'), url, key);
+    // Run once when settings finish loading; model-list updates arrive via props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
   const handleChange = useCallback((key: string, value: any) => {
     setConfig(prev => ({ ...prev, [key]: value }));
     setDirty(true);
@@ -1187,6 +1206,22 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                     overrides={Array.isArray(config['llm.capabilityOverrides']) ? config['llm.capabilityOverrides'] : []}
                   />
                 </>
+              )}
+              {/* 0.6.5: the model pickers above (per-mode rows, choice-detection
+                  model, capability-override rows) are DROPDOWNS fed by the
+                  provider's model list — offer fetch/refresh right here in
+                  Advanced instead of requiring a detour to Connection. */}
+              {section.title === 'Model & Counting' && (
+                <ModelFetcher
+                  config={config}
+                  models={models ?? []}
+                  loading={modelsLoading ?? false}
+                  error={fetchError}
+                  onFetch={(provider, apiUrl, apiKey) => {
+                    setFetchError(null);
+                    onFetchModels?.(provider, apiUrl, apiKey);
+                  }}
+                />
               )}
             </div>
           ))}

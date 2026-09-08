@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "publisher": "steelburn",
   "engines": {
     "vscode": "^1.85.0"
@@ -57,12 +57,14 @@
     "commands": [
       {
         "command": "adoCode.selectWorkItem",
-        "title": "Select Work Item"
+        "title": "Select Work Item",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.startTask",
         "title": "Start Task",
-        "icon": "$(rocket)"
+        "icon": "$(rocket)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.switchOrganization",
@@ -76,46 +78,53 @@
       },
       {
         "command": "adoCode.chat.focus",
-        "title": "Focus Chat"
+        "title": "Focus Chat",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.delegateToAgent",
-        "title": "Delegate to Agent…"
+        "title": "Delegate to Agent…",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.startTaskWithAgent",
-        "title": "Assign to Agent…"
+        "title": "Assign to Agent…",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.reviewTaskDetail",
-        "title": "Review Task Detail"
+        "title": "Review Task Detail",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.showWorkItemDetail",
         "title": "Show Full Details",
-        "icon": "$(open-preview)"
+        "icon": "$(open-preview)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.requestClarification",
-        "title": "Request Clarification…"
+        "title": "Request Clarification…",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.checkTaskReplies",
-        "title": "Check Replies"
+        "title": "Check Work Item Replies",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.changeWorkItemState",
-        "title": "Change Item Status",
+        "title": "Change Work Item State",
         "category": "ADO Code"
       },
       {
         "command": "adoCode.takeOwnership",
-        "title": "Take Ownership",
+        "title": "Take Ownership of Work Item",
         "category": "ADO Code"
       },
       {
         "command": "adoCode.reassignWorkItem",
-        "title": "Reassign To…",
+        "title": "Reassign Work Item…",
         "category": "ADO Code"
       },
       {
@@ -287,59 +296,68 @@
       },
       {
         "command": "adoCode.mcpDisconnect",
-        "title": "Disconnect",
+        "title": "Disconnect MCP Server",
         "category": "ADO Code"
       },
       {
         "command": "adoCode.mcpReconnect",
-        "title": "Reconnect",
+        "title": "Reconnect MCP Server",
         "category": "ADO Code"
       },
       {
         "command": "adoCode.mcpViewDetails",
-        "title": "View Details",
+        "title": "MCP Server Details",
         "category": "ADO Code"
       },
       {
         "command": "adoCode.runViewSummary",
-        "title": "View Summary"
+        "title": "View Agent Summary",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.runOpenWorktree",
-        "title": "Open Worktree"
+        "title": "Open Agent Worktree",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.runCopyId",
-        "title": "Copy Run ID"
+        "title": "Copy Agent Run ID",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.agentViewDetail",
-        "title": "View Details"
+        "title": "View Agent Run Details",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.workItemsFilter",
         "title": "Filter Work Items",
-        "icon": "$(filter)"
+        "icon": "$(filter)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.workItemsSearch",
         "title": "Search Work Items",
-        "icon": "$(search)"
+        "icon": "$(search)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.workItemsClearFilters",
         "title": "Clear Filters",
-        "icon": "$(clear-all)"
+        "icon": "$(clear-all)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.workItemsToggleMode",
         "title": "Switch Work Items View (My / All / Unassigned)",
-        "icon": "$(list-selection)"
+        "icon": "$(list-selection)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.generateTasks",
         "title": "Generate Tasks",
-        "icon": "$(list-tree)"
+        "icon": "$(list-tree)",
+        "category": "ADO Code"
       },
       {
         "command": "adoCode.sendSelectionToChat",
@@ -786,19 +804,22 @@
           "enum": [
             "inline",
             "plan",
-            "act"
+            "act",
+            "yolo"
           ],
           "enumDescriptions": [
             "Streaming answer; tool calls shown inline, mutating tools require approval",
             "Read-only tools only; produces a plan; 'Begin implementation' switches to act",
-            "Autonomous agentic loop with auto-approval of mutating tools (iteration budget + terminal allowlist)"
+            "Autonomous agentic loop with auto-approval of mutating tools (iteration budget + terminal allowlist)",
+            "Full autonomy — auto-approves everything except pushing to the remote repo (see adoCode.yolo.pushApproval)"
           ],
           "description": "LLM tool-use mode (Q8 resolution)"
         },
         "adoCode.act.toolBudget": {
           "type": "number",
-          "default": 50,
-          "description": "Max agentic loop iterations per chat turn (each iteration = one model round-trip that may run a batch of tool calls in parallel; applies to all modes)"
+          "default": 100,
+          "minimum": 1,
+          "description": "Max agentic loop iterations per chat turn (each iteration = one model round-trip that may run a batch of tool calls in parallel; applies to all modes). Recommended: 100+ — this extension works on large repositories where deep, multi-step work is common."
         },
         "adoCode.act.terminalAllowlist": {
           "type": "array",
@@ -948,14 +969,12 @@
         "adoCode.consent.harmlessAutoApprove": {
           "type": "boolean",
           "default": false,
-          "description": "Show a countdown timer on consent cards for read-only commands (git status, npm test, etc.). The command auto-approves when the timer expires."
+          "description": "Auto-approve harmless (read-only) terminal commands — git status/diff/log, npm test, ls, grep, etc. — IMMEDIATELY, with no consent card and no countdown timer. Disabled = harmless commands still ask for approval like any other mutating tool."
         },
-        "adoCode.consent.harmlessAutoApproveSeconds": {
-          "type": "number",
-          "default": 20,
-          "minimum": 1,
-          "maximum": 30,
-          "description": "Seconds before a harmless command auto-approves. Lower = faster, higher = more time to review."
+        "adoCode.yolo.pushApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require approval before code is PUSHED to the remote repository (the push_worktree tool or a terminal \"git push\"), even in YOLO mode. Pushes are hard to undo and reach other people, so they stay gated by default. Set to false for full autonomy."
         },
         "adoCode.consent.autoApproveTools": {
           "type": "array",

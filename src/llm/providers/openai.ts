@@ -1,6 +1,16 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
 import type { ContentBlockParam } from './BaseProvider';
 import { toModelInfo, ModelInfo } from '../modelCapabilities';
+import { ADO_CODE_USER_AGENT } from '../../shared/version';
+
+/** Headers shared by every OpenAI-compatible request — identifies ADO Code. */
+function baseHeaders(config: LlmConfig): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${config.apiKey}`,
+    'User-Agent': ADO_CODE_USER_AGENT,
+  };
+}
 
 export class OpenAiProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
@@ -10,10 +20,7 @@ export class OpenAiProvider implements LlmProvider {
 
     const response = await fetch(`${config.apiUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
+      headers: baseHeaders(config),
       signal,
       body: JSON.stringify({
         model: config.model,
@@ -97,10 +104,7 @@ export class OpenAiProvider implements LlmProvider {
 
     const response = await fetch(`${config.apiUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
+      headers: baseHeaders(config),
       signal,
       body: JSON.stringify({
         model: config.model,
@@ -167,10 +171,7 @@ export class OpenAiProvider implements LlmProvider {
 
       const response = await fetch(`${config.apiUrl}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
-        },
+        headers: baseHeaders(config),
         body: JSON.stringify({
           model: config.model,
           messages: nativeMessages,
@@ -235,7 +236,10 @@ function convertContent(
 export async function listModelsOpenAi(config: LlmConfig): Promise<ModelInfo[]> {
   const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/models`, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${config.apiKey}` },
+    headers: {
+      'Authorization': `Bearer ${config.apiKey}`,
+      'User-Agent': ADO_CODE_USER_AGENT,
+    },
   });
   if (!response.ok) {
     throw new Error(`OpenAI API error: ${response.status} ${await response.text()}`);

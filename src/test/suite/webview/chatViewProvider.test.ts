@@ -836,3 +836,96 @@ suite('ChatViewProvider · AGENTS.md sync', () => {
     assert.strictEqual(cards.length, 0, 'no re-offer for an already-declined candidate');
   });
 });
+
+// ── 0.6.5: one work item per session ────────────────────────────────────────
+suite('ChatViewProvider · one work item per session (0.6.5)', () => {
+  function makeHarness(): { provider: ChatViewProvider; posted: any[] } {
+    const posted: any[] = [];
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, {} as any, context as any, () => {});
+    (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
+    return { provider, posted };
+  }
+
+  async function lastCard(posted: any[]): Promise<{ requestId: string; options: Array<{ label: string; value: string }> }> {
+    for (let i = 0; i < 50; i++) {
+      const card = [...posted].reverse().find(m => m.type === 'confirmationRequest');
+      if (card) return card;
+      await new Promise(r => setTimeout(r, 10));
+    }
+    throw new Error('no confirmation card posted');
+  }
+
+  test('first work item binds without prompting and sessionList carries the chip data', async () => {
+    const { provider, posted } = makeHarness();
+    await (provider as any).createNewSession();
+    const sid = (provider as any).getActiveSessionId();
+    const ok = await (provider as any).bindWorkItemToSession(101, 'Fix login');
+    assert.strictEqual(ok, true, 'first binding proceeds');
+    const session = (provider as any).getSessions().find((s: any) => s.id === sid);
+    assert.deepStrictEqual(session.workItemIds, [101], 'id recorded on the session');
+    assert.strictEqual(session.workItemTitles['101'], 'Fix login', 'title recorded');
+    assert.ok(!posted.some(m => m.type === 'confirmationRequest'), 'no multi-WI card on the first item');
+    const list = posted.find(m => m.type === 'sessionList');
+    assert.ok(list && list.sessions[0].workItemIds, 'sessionList carries workItemIds for the history chips');
+  });
+
+  test('binding the SAME work item again never prompts', async () => {
+    const { provider, posted } = makeHarness();
+    await (provider as any).createNewSession();
+    assert.strictEqual(await (provider as any).bindWorkItemToSession(7, 'A'), true);
+    assert.strictEqual(await (provider as any).bindWorkItemToSession(7, 'A'), true);
+    assert.strictEqual((provider as any).getSessions()[0].workItemIds.length, 1, 'no duplicate entry');
+    assert.ok(!posted.some(m => m.type === 'confirmationRequest'));
+  });
+
+  test('a DIFFERENT work item in an empty session records silently (no nag before history)', async () => {
+    const { provider, posted } = makeHarness();
+    await (provider as any).createNewSession();
+    assert.strictEqual(await (provider as any).bindWorkItemToSession(1, 'One'), true);
+    // Session still has no chat history — binding a second item must not nag.
+    assert.strictEqual(await (provider as any).bindWorkItemToSession(2, 'Two'), true);
+    assert.deepStrictEqual((provider as any).getSessions()[0].workItemIds, [1, 2]);
+    assert.ok(!posted.some(m => m.type === 'confirmationRequest'));
+  });
+
+  test('a second DIFFERENT work item in a session WITH history asks; choosing a fresh session splits the chat', async () => {
+    const { provider, posted } = makeHarness();
+    await (provider as any).createNewSession();
+    const firstId = (provider as any).getActiveSessionId();
+    await (provider as any).bindWorkItemToSession(101, 'Task one');
+    // Give the session chat history (the alert only fires when history exists).
+    const sessions = (provider as any).getSessions();
+    const s = sessions.find((x: any) => x.id === firstId);
+    s.messages = [{ role: 'user', content: 'hello' }];
+    await (provider as any).saveSessions(sessions);
+
+    const pending = (provider as any).bindWorkItemToSession(202, 'Task two');
+    const card = await lastCard(posted);
+    assert.ok(card.options.some(o => o.value === 'new-session'), 'card offers a fresh session');
+    assert.ok(card.options.some(o => o.value === 'stay'), 'card also allows staying');
+    (provider as any).confirmBroker.resolve(card.requestId, 'new-session');
+    assert.strictEqual(await pending, true, 'caller proceeds after choosing a fresh session');
+
+    const newId = (provider as any).getActiveSessionId();
+    assert.notStrictEqual(newId, firstId, 'a new session became active');
+    const all = (provider as any).getSessions();
+    assert.deepStrictEqual(all.find((x: any) => x.id === firstId).workItemIds, [101], 'old session keeps its item');
+    assert.deepStrictEqual(all.find((x: any) => x.id === newId).workItemIds, [202], 'new session bound to the second item');
+  });
+
+  test('cancelling the multi-WI card aborts the action (returns false, no binding)', async () => {
+    const { provider, posted } = makeHarness();
+    await (provider as any).createNewSession();
+    await (provider as any).bindWorkItemToSession(101, 'Task one');
+    const sessions = (provider as any).getSessions();
+    sessions.find((x: any) => x.id === (provider as any).getActiveSessionId()).messages = [{ role: 'user', content: 'hi' }];
+    await (provider as any).saveSessions(sessions);
+
+    const pending = (provider as any).bindWorkItemToSession(303, 'Task three');
+    const card = await lastCard(posted);
+    (provider as any).confirmBroker.resolve(card.requestId, 'cancel');
+    assert.strictEqual(await pending, false, 'cancel aborts');
+    assert.deepStrictEqual((provider as any).getSessions().find((x: any) => x.id === (provider as any).getActiveSessionId()).workItemIds, [101], 'nothing bound');
+  });
+});

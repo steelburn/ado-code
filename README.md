@@ -111,11 +111,11 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.llm.modeReasoningEffort` | Per-mode reasoning effort for reasoning models: `{ "inline": "low", "act": "high" }` — values: `low`, `medium`, `high` |
 | `adoCode.llm.useNativeTokenCounting` | Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible usage.prompt_tokens) for status-bar accuracy (default `true`) |
 | `adoCode.mode` | Tool-use mode: `inline`, `plan`, `act`, or `yolo` |
-| `adoCode.act.toolBudget` | Max agentic loop iterations per chat turn (each iteration = one model round-trip that may run several tool calls in parallel; applies to all modes) |
+| `adoCode.act.toolBudget` | Max agentic loop iterations per chat turn (default `100`, recommended `100+` for large repositories; each iteration = one model round-trip that may run several tool calls in parallel) |
 | `adoCode.act.terminalAllowlist` | Allowed command prefixes in act mode |
-| `adoCode.consent.harmlessAutoApprove` | Auto-approve harmless (read-only) terminal commands after a timer (default `false`) |
-| `adoCode.consent.harmlessAutoApproveSeconds` | Seconds before a harmless command auto-approves (default `20`, range 1–30) |
+| `adoCode.consent.harmlessAutoApprove` | Auto-approve harmless (read-only) terminal commands immediately — no consent card, no countdown (default `false`) |
 | `adoCode.consent.autoApproveTools` | Tool names or glob patterns (`read_*`, `get_*`, `edit_file`) that skip the consent prompt in inline/act modes (default `[]`) |
+| `adoCode.yolo.pushApproval` | Require approval before pushing to the remote repo (`push_worktree` / `git push`) even in YOLO mode (default `true`) |
 | `adoCode.chat.showThinking` | Show the model's thinking/reasoning text while it processes (default `true`) |
 | `adoCode.chat.showToolCalls` | Show live tool-call cards in the chat while the AI works (default `true`; off shows only a pulsing "…" indicator) |
 | `adoCode.git.requireGitRepo` | Block task pickup outside a git repo |
@@ -203,6 +203,19 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### 0.6.5
+
+- **Every LLM request carries a user-agent**: All provider calls (OpenAI-compatible and Anthropic: chat, tool calls, native token counts, `/models` fetches) now send `User-Agent: ADO-Code/0.6.5 (+https://github.com/steelburn/ado-code)` so gateway logs identify ADO Code traffic
+- **"Review Task Detail" is now an AI review**: Right-click → Review Task Detail no longer just opens the detail — it binds the work item to the chat and hands it to the AI, which reviews clarity/completeness, risks, suggested approach, and whether the task is ready to start. The review runs as a normal chat turn (it may read the repo, never mutates anything) and streams into the chat like any answer, next to the detail panel
+- **One work item per session**: Sessions now remember which ADO work items they processed (chips in the session-history dropdown). When a session that already worked on another item is asked to process a different one, ADO Code alerts you and recommends a separate session per work item — with one-click **Start a New Session**, **Stay**, or **Cancel** (cancel aborts the action before any ADO/git mutation)
+- **Hover shows the work item ID**: Work-item tree tooltips now open with `#<id> · <title>` in addition to the type/state/assignment details
+- **Command palette refreshed**: Every contributed command now groups under the **ADO Code** category with clearer titles (e.g. "Change Work Item State", "Reconnect MCP Server", "Copy Agent Run ID")
+- **Auto-approve harmless commands runs instantly**: With *Auto-approve harmless commands* on, read-only terminal commands (git status/diff/log, npm test, ls, grep, …) now execute immediately — no consent card and no countdown timer. The now-meaningless delay setting was removed
+- **Iteration budget defaults to 100**: `adoCode.act.toolBudget` (Iteration budget) defaults to **100** and the recommendation is 100+ — ADO Code works on large repositories where deep multi-step turns are the norm (config page allows up to 1000)
+- **Model pickers are dropdowns in Configuration → Advanced**: Opening the Configuration page auto-fetches the model list when LLM credentials are saved, so the main model, per-mode models, the choice-detection model, and **Model Capability Overrides** rows are dropdowns (with a "type a custom model" escape hatch and Refresh buttons in Advanced) instead of bare text fields
+- **Token counting includes tool content**: The heuristic counter now charges for every block actually sent to the LLM — tool-call argument JSON on assistant messages, tool-result payloads, and image blocks (size-based estimate); the host sizes its truncation/status-bar overhead from the REAL system prompt (memory/understanding/work-item context) instead of a fixed estimate
+- **YOLO still asks before pushing**: Pushing code to the remote repo (`push_worktree` or a terminal `git push`) requires approval even in YOLO mode — new `adoCode.yolo.pushApproval` toggle, default **on** (approval required)
 
 ### 0.6.4
 

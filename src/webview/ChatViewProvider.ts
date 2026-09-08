@@ -10,7 +10,7 @@ import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
 import { LlmClient } from '../llm/client';
-import { LlmMessage, LlmProviderType } from '../llm/types';
+import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
 import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem } from '../llm/prompts';
 import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
@@ -18,7 +18,7 @@ import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
-import { createConsentBroker, isHarmlessCommand } from '../llm/consent';
+import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals, terminalCommandKey, terminalCommandList } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/providers/BaseProvider';
@@ -1100,34 +1100,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // previously session-approved batch (or single command) auto-approves.
     if (tool === 'run_terminal_command' && isCommandSessionApproved(terminalCommandKey(args))) return true;
 
-    // Compute auto-approve timer for harmless (read-only) terminal commands.
-    // The timer duration comes from the user setting; 0 or disabled = no timer.
-    // Passed to the broker so the auto-approve fires HOST-SIDE at the deadline
-    // (even when the card is hidden behind a full-page wizard/config); the
-    // webview only renders the countdown from the returned expiresAt.
-    let autoApproveMs: number | undefined;
-    if (tool === 'run_terminal_command') {
-      const settings = getSettings();
-      if (settings.consentHarmlessAutoApprove) {
-        // Batch-aware: the countdown only starts when EVERY command is harmless.
-        const cmds = terminalCommandList(args);
-        if (cmds.length > 0 && cmds.every(c => isHarmlessCommand(c))) {
-          autoApproveMs = Math.max(1, settings.consentHarmlessAutoApproveSeconds) * 1000;
-        }
-      }
-    }
+    // 0.6.5: harmless-command auto-approval no longer uses a countdown timer —
+    // when adoCode.consent.harmlessAutoApprove is on, harmless (read-only)
+    // terminal commands never reach this hook (the executor's mode/consent
+    // gate in src/llm/tools.ts returns 'run' for them). Commands that DO reach
+    // this hook always present an approve/reject card (hard-deny backstop in
+    // the broker), so no autoApproveMs is scheduled here anymore.
 
     const { requestId, decision, expiresAt } = this.consentBroker.request(
       { tool, args },
-      // The auto-approve countdown needs the webview card — skip it in the
-      // no-view native-pick fallback (the 120s hard deny stays as backstop).
-      this._view && autoApproveMs ? { autoApproveMs } : undefined
+      undefined
     );
     // Created while the chat is hidden / a wizard is open? Freeze immediately
     // so the timer can't expire before the user ever sees the card.
     if (this.promptsPaused) this.consentBroker.pause();
     if (this._view) {
-      this.postMessage({ type: 'consentRequest', requestId, tool, args, autoApproveMs, expiresAt });
+      this.postMessage({ type: 'consentRequest', requestId, tool, args, expiresAt });
     } else {
       // No webview (e.g. invoked before resolve or after disposal): native pick.
       const pick = await vscode.window.showQuickPick(['Approve', 'Reject'], {
@@ -2562,7 +2550,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'act.toolBudget', 'act.terminalAllowlist',
       'sessions.maxPerProject',
       'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect', 'agents.autoReview',
-      'consent.harmlessAutoApprove', 'consent.harmlessAutoApproveSeconds', 'consent.autoApproveTools',
+      'consent.harmlessAutoApprove', 'consent.autoApproveTools', 'yolo.pushApproval',
       'chat.showThinking', 'chat.showToolCalls',
       'ignore.dotAdoCode',
       'understanding.enabled', 'understanding.autoSummarize', 'understanding.agentsMdSync',
@@ -3161,6 +3149,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     if (choice !== 'start') return;
 
+    // 0.6.5: one session per work item — starting a SECOND work item in a
+    // session that already processed another one asks first (a fresh session
+    // is offered). Aborts here on cancel, so no ADO state changes are made.
+    if (!(await this.bindWorkItemToSession(workItemId, title))) return;
+
     // Change ADO status to Active
     await this.services.ado.updateWorkItem(project, workItemId, [
       { op: 'add', path: '/fields/System.State', value: 'Active' },
@@ -3210,6 +3203,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 2) Fetch the full work item + discussion thread (clarification Q&A included)
     const project = this.activeProject(); // H-4
     const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+    // 0.6.5: one session per work item — a second work item in the same
+    // session offers a fresh session before the delegation binds to it.
+    const wiTitle = String(detail.fields['System.Title'] ?? `Work item ${workItemId}`);
+    if (!(await this.bindWorkItemToSession(workItemId, wiTitle))) return;
     this.activeWorkItem = {
       id: detail.id,
       title: detail.fields['System.Title'],
@@ -3290,6 +3287,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const project = this.activeProject(); // H-4
       const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+      // 0.6.5: one session per work item — selecting a DIFFERENT item into a
+      // session that already processed another one asks first.
+      const title = String(detail.fields['System.Title'] ?? `Work item ${workItemId}`);
+      if (!(await this.bindWorkItemToSession(workItemId, title))) return;
       this.activeWorkItem = {
         id: detail.id,
         title: detail.fields['System.Title'],
@@ -3341,15 +3342,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Task 28: full-detail review — fetch work item + discussion, post both to the webview. */
+  /**
+   * 0.6.5: "Review Task Detail" hands the work item to the AI. Fetches the
+   * item + discussion thread, binds it to the chat session (one-session-per-
+   * work-item guard), opens it in the detail panel, then runs a NORMAL chat
+   * turn that asks the model to review the task — the review streams into the
+   * chat like any AI answer (it may read the repo to ground the review, but
+   * never mutates anything on its own).
+   */
   async reviewTaskDetail(workItemId: number): Promise<void> {
     this.postMessage({ type: 'loading', loading: true });
+    let proceedToReview = false;
     try {
       const project = this.activeProject(); // H-4
       const { detail, comments, creator } = await this.services.ado.getWorkItemWithDiscussion(project, workItemId);
+      const title = String(detail.fields['System.Title'] ?? `Work item ${workItemId}`);
+      // 0.6.5: one work item per session — reviewing a DIFFERENT item in a
+      // session that already processed another one asks first.
+      if (!(await this.bindWorkItemToSession(workItemId, title))) return;
+      proceedToReview = true;
       this.activeWorkItem = {
         id: detail.id,
-        title: detail.fields['System.Title'],
+        title,
         description: detail.fields['System.Description'] || '',
         acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
         tags: detail.fields['System.Tags'] || '',
@@ -3360,7 +3374,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'workItemDetail',
         item: {
           id: detail.id,
-          title: detail.fields['System.Title'],
+          title,
           state: detail.fields['System.State'],
           assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
           workItemType: detail.fields['System.WorkItemType'],
@@ -3379,8 +3393,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message });
     } finally {
-      this.postMessage({ type: 'loading', loading: false });
+      // Only the pre-review phase is done — the review turn itself manages the
+      // spinner through its streamed chunks.
+      if (!proceedToReview) this.postMessage({ type: 'loading', loading: false });
     }
+    if (!proceedToReview || !this.activeWorkItem) return;
+
+    // The AI review turn: same session/system-prompt/tool pipeline as a user
+    // message (see runChatTurn). Read-only guidance only — the model must not
+    // change state or create anything during a review.
+    try {
+      await this.runChatTurn(this.buildReviewRequest(this.activeWorkItem));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage({ type: 'error', message });
+    }
+  }
+
+  /** Compose the user message that drives the AI review of the bound work item. */
+  private buildReviewRequest(item: WorkItemContext): string {
+    const lines = [
+      '[AI task review requested]',
+      `Please review the ADO work item shown above (#${item.id} — "${item.title}") critically.`, // eslint-disable-line max-len
+      '',
+      'Produce a concise, structured review covering:',
+      '1. **Clarity & completeness** — is the description and acceptance criteria specific enough to implement AND verify? What is missing, ambiguous, or contradictory?',
+      '2. **Risks & blockers** — technical or process risks, dependencies, and open questions (including anything unresolved in the discussion thread).',
+      '3. **Suggested approach** — high-level implementation steps and anything worth confirming before coding.',
+      '4. **Recommendation** — is this task ready to start, or does it need clarification / breaking into smaller items first?',
+      '',
+      'You may inspect the repository (read/search only) to ground the review in the actual codebase. ', // eslint-disable-line max-len
+      'This is a review — do NOT modify files, change work item state, comment on ADO, or create anything.',
+    ];
+    return lines.join('\n');
   }
 
   /** Task 28: ask the creator (or whoever) for clarification on the discussion thread. */
@@ -3626,6 +3671,89 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'sessionList', sessions, activeId });
   }
 
+  // ── 0.6.5: one work item per session ──────────────────────────────
+  // Sessions are chat histories; when a user processes SEVERAL ADO work
+  // items in a single session their context (system-prompt work-item block,
+  // clarification Q&A, tool chatter) mixes and the model drifts. Each session
+  // therefore records the work item ids bound to it (persisted on the Session
+  // record), the UI shows them as chips, and binding a DIFFERENT item into a
+  // session that already has history offers to start a fresh session.
+
+  /** Work item ids recorded on a session (empty when none bound yet). */
+  private sessionWorkItemIds(sessionId: string): number[] {
+    const session = this.getSessions().find(s => s.id === sessionId);
+    return session?.workItemIds ?? [];
+  }
+
+  /** Persist a work item binding on a session and refresh the history list. */
+  private async recordSessionWorkItem(sessionId: string, workItemId: number, title: string): Promise<void> {
+    if (!sessionId) return;
+    const sessions = this.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) return;
+    if (!session.workItemIds) session.workItemIds = [];
+    if (!session.workItemTitles) session.workItemTitles = {};
+    if (!session.workItemIds.includes(workItemId)) {
+      session.workItemIds.push(workItemId);
+      session.workItemTitles[String(workItemId)] = title;
+      await this.saveSessions(sessions);
+      this.sendSessionList();
+    }
+  }
+
+  /**
+   * Guard: the active session is about to process a work item. When the
+   * session ALREADY processed a DIFFERENT work item (and has chat history),
+   * alert the user that one session should focus on ONE work item and offer
+   * to continue in a fresh session (recommended). Returns true when the
+   * caller should proceed — i.e. the item may be bound to the session:
+   *  - same item again, first item, or a session without history → true;
+   *  - user picked "Start a New Session" → a fresh session is created+bound → true;
+   *  - user picked "Stay in This Session" → bound here → true;
+   *  - user cancelled → false (caller aborts the action).
+   */
+  private async bindWorkItemToSession(workItemId: number, title: string): Promise<boolean> {
+    const sessionId = this.getActiveSessionId();
+    if (!sessionId) return true; // no session yet — nothing to warn about
+    const sessions = this.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+    const prior = this.sessionWorkItemIds(sessionId);
+    if (prior.length === 0 || prior.includes(workItemId)) {
+      await this.recordSessionWorkItem(sessionId, workItemId, title);
+      return true;
+    }
+    // The session has already processed a DIFFERENT work item. Only alert
+    // when it also holds chat history — a freshly-opened empty session must
+    // not nag before its first real use.
+    if (!session || session.messages.length === 0) {
+      await this.recordSessionWorkItem(sessionId, workItemId, title);
+      return true;
+    }
+    const priorList = prior.map(id => `#${id}`).join(', ');
+    const choice = await this.requestConfirmation(
+      'Multiple Work Items in One Session',
+      `This session has already been used for ${prior.length} other work item${prior.length === 1 ? '' : 's'} (${priorList}). `
+        + 'Mixing several work items into one chat blends their context and confuses the AI. '
+        + 'ADO Code works best with a SEPARATE SESSION PER WORK ITEM.',
+      [
+        { label: '🗂 Start a New Session (recommended)', value: 'new-session' },
+        { label: 'Stay in This Session', value: 'stay' },
+        { label: 'Cancel', value: 'cancel', isDangerous: true },
+      ]
+    );
+    if (choice === 'new-session') {
+      await this.createNewSession();
+      const fresh = this.getActiveSessionId();
+      if (fresh) await this.recordSessionWorkItem(fresh, workItemId, title);
+      return true;
+    }
+    if (choice === 'stay') {
+      await this.recordSessionWorkItem(sessionId, workItemId, title);
+      return true;
+    }
+    return false; // cancelled — the caller must not process the item here
+  }
+
   /**
    * Refresh the context manager's fixed per-request overhead (system prompt +
    * tool schemas) so truncation/status reflect true token cost. Called before
@@ -3636,7 +3764,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Serialized tool JSON is roughly proportional to the tokens the provider
     // pays for the tool definitions on every request.
     const toolTokens = countTokens(JSON.stringify(toolSchemas));
-    this.contextManager.setOverheadTokens(SYSTEM_PROMPT_OVERHEAD_TOKENS + toolTokens);
+    // 0.6.5: size the overhead from the REAL last system prompt (memory,
+    // understanding, work-item context …) instead of the flat constant — the
+    // fixed estimate undercounted turns with large injected context, so
+    // truncation started later than the API window actually allowed.
+    const systemTokens = this.systemPromptTokens();
+    this.contextManager.setOverheadTokens(systemTokens + toolTokens);
   }
 
   /** Trim a conversation using ContextManager's priority-based truncation.
@@ -3770,7 +3903,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       // Instant display from the local heuristic (conversation + system + tools).
       const toolTokens = this.toolSchemaTokens();
-      const heuristic = countMessageTokens(this.conversation) + SYSTEM_PROMPT_OVERHEAD_TOKENS + toolTokens;
+      const heuristic = countMessageTokens(this.conversation) + this.systemPromptTokens() + toolTokens;
       this.renderTokenStatus(heuristic);
       // Kick off a throttled provider-native count for accuracy (fire-and-forget).
       // A1: Anthropic's /count_tokens endpoint is free — always on. OpenAI-
@@ -3826,10 +3959,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /** Token cost of the per-turn system prompt: the ACTUAL last prompt when one
+   *  has been built (memory/understanding/work-item context included), else the
+   *  conservative flat estimate used before the first turn. */
+  private systemPromptTokens(): number {
+    return this.lastSystemPrompt ? countTokens(this.lastSystemPrompt) : SYSTEM_PROMPT_OVERHEAD_TOKENS;
+  }
+
   /** Current fixed per-request overhead (system prompt + tool schemas). */
   private contextOverhead(): number {
     const toolTokens = countTokens(JSON.stringify(this.executor?.tools ?? []));
-    return SYSTEM_PROMPT_OVERHEAD_TOKENS + toolTokens;
+    return this.systemPromptTokens() + toolTokens;
   }
 
   /** Fresh client from current settings (avoids stale config after changes). */
@@ -3886,7 +4026,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ? `${contextBlock}\n\n[User message:]\n${content}`
         : content;
     }
+    // 0.6.5: everything after context assembly lives in runChatTurn so
+    // host-initiated turns (AI "Review Task Detail") share the exact same
+    // session/system-prompt/agentic-loop pipeline as user sends.
+    await this.runChatTurn(llmContent);
+  }
 
+  /**
+   * Run one chat turn from a prepared user message. Shared by normal user
+   * sends (handleUserMessage — which adds slash-command parsing and editor
+   * context before delegating) and host-initiated turns such as the AI
+   * "Review Task Detail" flow. Handles: session binding/isolation, context
+   * condensation + priority truncation, mode-aware system prompt (memory,
+   * understanding, active work item), the agentic tool loop with live
+   * progress, conclusion guarantees, and persistence into the session.
+   */
+  private async runChatTurn(llmContent: string | ContentBlockParam[]): Promise<void> {
     // Cancel any in-flight stream before starting a new one
     this.llmAbort?.abort();
     const abort = new AbortController();
@@ -3912,7 +4067,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Iteration budget: caps the agentic tool loop's model round-trips
     // for this turn (one iteration may run a batch of parallel tool calls).
     const maxIterations = getSettings().actMaxIterations;
-    await this.ensureSession(content);
+    // A session created by this turn is named from the message text (image-only
+    // sends fall back to a generic seed).
+    const sessionSeed = typeof llmContent === 'string' ? llmContent : messageText(llmContent);
+    await this.ensureSession(sessionSeed);
     // ── Session isolation: bind this turn to the session that owns it ──
     // The turn reads/writes ONLY that session's buffer (never the buffer of a
     // session the user switches to mid-turn) and only posts streamed progress

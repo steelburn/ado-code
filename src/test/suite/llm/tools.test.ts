@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import { createToolExecutor, ToolExecutor, capToolResult, applyOrderedEdits, truncateMatchLine, grepLines, GREP_MAX_LINE_LENGTH } from '../../../llm/tools';
 
 function stubServices(): any {
@@ -505,5 +506,123 @@ suite('ToolExecutor batch tool calls (fewer round-trips)', () => {
     const r3 = await ex.execute('run_terminal_command', { command: 'git log' });
     assert.ok(String(r3).includes('rejected by user'));
     assert.strictEqual(approveCalls, 2, 'new command prompts again');
+  });
+});
+
+// ── 0.6.5: consent & YOLO-push regressions ─────────────────────────────────
+suite('ToolExecutor · 0.6.5 consent & push gates', () => {
+  const cfg = () => vscode.workspace.getConfiguration('adoCode');
+
+  async function withSetting(key: string, value: any, fn: () => Promise<void>): Promise<void> {
+    const prev = cfg().get<any>(key);
+    await cfg().update(key, value, vscode.ConfigurationTarget.Global);
+    try {
+      await fn();
+    } finally {
+      await cfg().update(key, prev, vscode.ConfigurationTarget.Global);
+    }
+  }
+
+  test('harmlessAutoApprove: harmless commands run immediately in inline mode — no approval hook call', async () => {
+    await withSetting('consent.harmlessAutoApprove', true, async () => {
+      let approvals = 0;
+      const executor = createToolExecutor(
+        stubServices(),
+        {} as any,
+        { onApprove: async () => { approvals++; return true; } }
+      );
+      executor.setMode('inline');
+      // git status is harmless → the gate must auto-run it (never prompt).
+      assert.strictEqual(executor.canAutoExecute('run_terminal_command', { command: 'git status' }), true, 'harmless cmd is parallel-safe (no consent)');
+      const res = await executor.execute('run_terminal_command', { command: 'git status' });
+      assert.strictEqual(approvals, 0, 'approval hook never called for a harmless command');
+      assert.ok(!String(res).includes('requires approval') && !String(res).includes('rejected'), 'ran immediately, no consent text');
+    });
+  });
+
+  test('harmlessAutoApprove: a mutating command still asks for consent (git commit)', async () => {
+    await withSetting('consent.harmlessAutoApprove', true, async () => {
+      let approvals = 0;
+      const executor = createToolExecutor(
+        stubServices(),
+        {} as any,
+        { onApprove: async () => { approvals++; return true; } }
+      );
+      executor.setMode('inline');
+      assert.strictEqual(executor.canAutoExecute('run_terminal_command', { command: 'git commit -m x' }), false, 'non-harmless command still needs consent');
+      await executor.execute('run_terminal_command', { command: 'git commit -m x' });
+      assert.strictEqual(approvals, 1, 'consent hook fired for a mutating command');
+    });
+  });
+
+  test('yolo.pushApproval (default ON): push_worktree requires approval even in yolo', async () => {
+    await withSetting('yolo.pushApproval', true, async () => {
+      let approvals = 0;
+      const executor = createToolExecutor(
+        stubServices(),
+        {} as any,
+        { onApprove: async () => { approvals++; return true; } }
+      );
+      executor.setMode('yolo');
+      assert.strictEqual(executor.canAutoExecute('push_worktree', { runId: 'r1' }), false, 'yolo push is NOT auto');
+      const res = await executor.execute('push_worktree', { runId: 'r1' });
+      assert.strictEqual(approvals, 1, 'approval hook required for the push in yolo');
+      assert.ok(!String(res).includes('rejected'), 'approved push proceeds');
+    });
+  });
+
+  test('yolo.pushApproval OFF: push_worktree auto-runs in yolo', async () => {
+    await withSetting('yolo.pushApproval', false, async () => {
+      let approvals = 0;
+      const executor = createToolExecutor(
+        stubServices(),
+        {} as any,
+        { onApprove: async () => { approvals++; return true; } }
+      );
+      executor.setMode('yolo');
+      assert.strictEqual(executor.canAutoExecute('push_worktree', { runId: 'r1' }), true, 'push is auto when the guard is off');
+      await executor.execute('push_worktree', { runId: 'r1' });
+      assert.strictEqual(approvals, 0, 'no approval asked when disabled');
+    });
+  });
+
+  test('yolo.pushApproval (default ON): terminal git push prompts; git status still auto-runs', async () => {
+    await withSetting('yolo.pushApproval', true, async () => {
+      let approvals = 0;
+      const executor = createToolExecutor(
+        stubServices(),
+        {} as any,
+        { onApprove: async () => { approvals++; return true; } }
+      );
+      executor.setMode('yolo');
+      assert.strictEqual(executor.canAutoExecute('run_terminal_command', { command: 'git push origin main' }), false, 'git push gated in yolo');
+      assert.strictEqual(executor.canAutoExecute('run_terminal_command', { command: 'git status' }), true, 'git status still auto-runs in yolo');
+      await executor.execute('run_terminal_command', { command: 'git push origin main' });
+      assert.strictEqual(approvals, 1, 'git push asked for approval');
+    });
+  });
+
+  test('yolo push without an approval hook is blocked (never silently pushed)', async () => {
+    await withSetting('yolo.pushApproval', true, async () => {
+      const executor = createToolExecutor(stubServices(), {} as any, undefined);
+      executor.setMode('yolo');
+      const res = await executor.execute('push_worktree', { runId: 'r1' });
+      assert.ok(String(res).includes('requires approval'), 'push blocked without a hook');
+    });
+  });
+
+  test('yolo.pushApproval OFF: terminal git push auto-runs without consent', async () => {
+    await withSetting('yolo.pushApproval', false, async () => {
+      let approvals = 0;
+      const executor = createToolExecutor(
+        stubServices(),
+        {} as any,
+        { onApprove: async () => { approvals++; return true; } }
+      );
+      executor.setMode('yolo');
+      assert.strictEqual(executor.canAutoExecute('run_terminal_command', { command: 'git push origin main' }), true);
+      await executor.execute('run_terminal_command', { command: 'git push origin main' });
+      assert.strictEqual(approvals, 0);
+    });
   });
 });

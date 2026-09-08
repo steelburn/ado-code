@@ -40,10 +40,12 @@ export interface AdoCodeSettings {
   adoWarnOnSparseTask: boolean;
   ignoreDotAdoCode: boolean;
   agentsAutoReview: boolean;
+  /** Auto-approve harmless (read-only) terminal commands — immediately, with NO consent card or countdown timer. */
   consentHarmlessAutoApprove: boolean;
-  consentHarmlessAutoApproveSeconds: number;
   /** Tool-name glob patterns auto-approved without a consent prompt (e.g. "read_*", "get_*"). */
   consentAutoApproveTools: string[];
+  /** YOLO mode still requires approval before pushing to the remote repo (push_worktree / git push). */
+  yoloPushApproval: boolean;
   chatShowThinking: boolean;
   /** Hide the live tool-call cards in the chat (running/completed cards still execute normally). */
   chatShowToolCalls: boolean;
@@ -91,8 +93,8 @@ export function getSettings(): AdoCodeSettings {
     ignoreDotAdoCode: config.get<boolean>('ignore.dotAdoCode', true),
     agentsAutoReview: config.get<boolean>('agents.autoReview', true),
     consentHarmlessAutoApprove: config.get<boolean>('consent.harmlessAutoApprove', false),
-    consentHarmlessAutoApproveSeconds: config.get<number>('consent.harmlessAutoApproveSeconds', 20),
     consentAutoApproveTools: config.get<string[]>('consent.autoApproveTools', []),
+    yoloPushApproval: config.get<boolean>('yolo.pushApproval', true),
     chatShowThinking: config.get<boolean>('chat.showThinking', true),
     chatShowToolCalls: config.get<boolean>('chat.showToolCalls', true),
     // A1: the DECLARED default is false; the host additionally forces native

@@ -2,6 +2,20 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.6.5] - 2026-09-08
+
+### Improvements
+- **Every LLM request carries a user-agent**: All provider calls (OpenAI-compatible and Anthropic: chat, tool calls, native token counts, /models fetches) now send `User-Agent: ADO-Code/0.6.5 (+https://github.com/steelburn/ado-code)` so gateway/provider logs identify ADO Code traffic
+- **"Review Task Detail" is now an AI review**: Right-click a work item → Review Task Detail no longer only opens the detail — it binds the item to the chat and hands it to the AI, which reviews clarity/completeness, risks, dependencies, suggested approach, and whether the task is ready to start. The review runs as a normal chat turn (same system-prompt/tool pipeline; it may read the repo to ground the review but never mutates anything on its own) and streams into the chat next to the detail panel
+- **One work item per session**: Sessions now remember which ADO work items they processed and show them as #chips in the session-history dropdown. When a session that already worked on another item is asked to process a DIFFERENT work item, ADO Code alerts the user and recommends a separate session per work item — with one-click Start a New Session / Stay / Cancel (cancel aborts the action before any ADO state change, branch creation, or delegation happens)
+- **Work-item hover shows the ID**: Work-item tree tooltips now open with `#<id> · <title>` in addition to the existing type/state/assignment details
+- **Command palette refreshed**: Every contributed command now carries the ADO Code category and clearer titles ("Change Work Item State", "Reconnect MCP Server", "Copy Agent Run ID", "Check Work Item Replies", …) so the palette reads consistently
+- **Auto-approve harmless commands runs instantly**: With `adoCode.consent.harmlessAutoApprove` on, read-only terminal commands (git status/diff/log, npm test, ls, grep, …) now execute IMMEDIATELY — no consent card, no countdown timer (the old timed countdown is gone, along with the now-meaningless `consent.harmlessAutoApproveSeconds` setting). Off = harmless commands ask like any other mutating tool
+- **Iteration budget defaults to 100**: `adoCode.act.toolBudget` (Iteration budget) now defaults to 100 with the recommendation "100+" — this extension drives large repositories where deep multi-step agentic turns are the norm (the Configuration page allows up to 1000)
+- **Model pickers are dropdowns in Configuration → Advanced**: Opening the Configuration page auto-fetches the provider's model list when LLM credentials are saved, so the main model field, the Advanced per-mode model rows, the choice-detection model, and **Model Capability Overrides** rows all render as dropdowns (with a "type a custom model" escape hatch, and Refresh buttons inside Advanced) instead of bare text fields that only appeared once you manually fetched elsewhere
+- **Token counting includes tool + image content**: The local heuristic counter now charges for every block actually passed to the LLM — tool-call argument JSON on assistant messages, tool-result payloads, and image blocks (size-based estimate), instead of counting text only. The host also sizes its truncation and status-bar overhead from the REAL system prompt (memory + understanding + work-item context) rather than a fixed estimate, so context decisions reflect true per-request cost
+- **YOLO still asks before pushing**: Pushing code to the remote repository — the `push_worktree` tool OR a terminal `git push` — now requires approval even in YOLO mode. New `adoCode.yolo.pushApproval` setting, default **true** (approval required); disable it for full autonomy
+
 ## [0.6.4] - 2026-09-08
 
 ### Improvements

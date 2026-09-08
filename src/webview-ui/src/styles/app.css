@@ -1330,6 +1330,26 @@ code {
   opacity: 0.7;
 }
 
+/* 0.6.5: work-item chips — which ADO items this session processed */
+.session-history-wis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 4px 8px;
+}
+
+.session-history-wi {
+  font-size: 0.72em;
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-charts-blue);
+  background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-blue) 35%, transparent);
+  border-radius: 8px;
+  padding: 0 7px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 .session-history-rename-input {
   flex: 1;
   padding: 4px 8px;

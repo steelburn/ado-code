@@ -341,12 +341,12 @@ export class WorkItemNode extends vscode.TreeItem {
     if (agentRun) {
       // Show agent status in description
       this.description = `#${workItem.id} 🤖 ${agentRun.agent}`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}\nAgent: ${agentRun.agent} (${agentRun.status})`;
+      this.tooltip = `#${workItem.id} · ${workItem.title}\n${workItem.workItemType} - ${workItem.state}\nAgent: ${agentRun.agent} (${agentRun.status})`;
       this.iconPath = new vscode.ThemeIcon('loading~spin');
     } else if (isSelected) {
       // Selected item: highlighted icon + badge
       this.description = `#${workItem.id} ◀ active`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}\nSelected for chat context`;
+      this.tooltip = `#${workItem.id} · ${workItem.title}\n${workItem.workItemType} - ${workItem.state}\nSelected for chat context`;
       this.iconPath = new vscode.ThemeIcon('check-all', new vscode.ThemeColor('charts.green'));
     } else {
       // Assignment cue: blue person = yours, orange person = someone else's,
@@ -354,7 +354,7 @@ export class WorkItemNode extends vscode.TreeItem {
       // The work item type moves into the description so it isn't lost.
       const cue = ASSIGNMENT_ICONS[assignment];
       this.description = `#${workItem.id} · ${workItem.workItemType}${isContext ? ' · context' : ''}`;
-      this.tooltip = `${workItem.workItemType} - ${workItem.state}\n${assignmentLabel(assignment, workItem.assignedTo)}${isContext ? '\nContext item — not in the base list; pulled in for hierarchy' : ''}`;
+      this.tooltip = `#${workItem.id} · ${workItem.title}\n${workItem.workItemType} - ${workItem.state}\n${assignmentLabel(assignment, workItem.assignedTo)}${isContext ? '\nContext item — not in the base list; pulled in for hierarchy' : ''}`;
       this.iconPath = new vscode.ThemeIcon(cue.icon, cue.color);
     }
 

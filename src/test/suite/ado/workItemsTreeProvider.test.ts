@@ -151,8 +151,10 @@ suite('WorkItemsTreeProvider assignment icons', () => {
     const unassigned = nodes.get(6)!;
     assert.ok(String(mine.description).includes('· Task'), 'type shown in the description');
     assert.ok(String(mine.tooltip).includes('Assigned to you'), 'tooltip names the assignment');
+    assert.ok(String(mine.tooltip).includes('#5'), '0.6.5: hover shows the work item ID');
     assert.ok(String(unassigned.description).includes('· Bug') && String(unassigned.description).includes('· context'), 'type + context marker kept');
     assert.ok(String(unassigned.tooltip).includes('Unassigned'), 'tooltip marks unassigned');
+    assert.ok(String(unassigned.tooltip).includes('#6'), '0.6.5: hover shows the work item ID');
   });
 
   test('assigned items default to "other" until the current user is known', () => {

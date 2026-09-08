@@ -5,6 +5,9 @@ interface Session {
   name: string;
   createdAt: string;
   messages: Array<{ role: string; content: string }>;
+  /** 0.6.5: ADO work items processed in this session (chips). */
+  workItemIds?: number[];
+  workItemTitles?: Record<string, string>;
 }
 
 interface Props {
@@ -154,6 +157,19 @@ export function SessionHistory({
                       <span className="session-history-item-meta">
                         {session.messages.length} msgs · {formatDate(session.createdAt)}
                       </span>
+                      {(session.workItemIds ?? []).length > 0 && (
+                        <span className="session-history-wis">
+                          {(session.workItemIds ?? []).map(id => (
+                            <span
+                              key={id}
+                              className="session-history-wi"
+                              title={`Work item #${id}: ${session.workItemTitles?.[String(id)] ?? ''}`}
+                            >
+                              #{id}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                     </>
                   )}
                 </button>

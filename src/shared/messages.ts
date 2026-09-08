@@ -269,4 +269,9 @@ export interface Session {
   /** ISO date string */
   createdAt: string;
   messages: Array<{ role: string; content: string }>;
+  /** 0.6.5: ADO work item ids this session has processed (drives the
+   *  one-work-item-per-session alert + session-history chips). */
+  workItemIds?: number[];
+  /** Display titles for the ids above (session-history chips). */
+  workItemTitles?: Record<string, string>;
 }

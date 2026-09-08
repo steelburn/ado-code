@@ -5,7 +5,7 @@ import { LlmTool } from './types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
 import { isCommandSessionApproved, terminalCommandKey, terminalCommandList } from './tool-approval-ui';
-import { matchesToolPattern, matchesCommandPattern } from './consent';
+import { matchesToolPattern, matchesCommandPattern, isHarmlessCommand } from './consent';
 import { countTokens } from './context/tokenCounter';
 import type { AdoWorkItem, AdoComment } from '../ado/types';
 
@@ -192,6 +192,22 @@ function gateTool(
   // YOLO mode: skip ALL consent — auto-approve every tool including
   // terminal commands. No allowlist, no prompt. User chose full autonomy.
   if (state.mode === 'yolo') {
+    // …EXCEPT pushing code to a remote repo, which is hard to undo and
+    // reaches other people. adoCode.yolo.pushApproval (default true) routes
+    // push_worktree / `git push` through the approval hook even in YOLO;
+    // set it to false for full autonomy.
+    if (pushRequiresApproval(name, args)) {
+      if (!hooks?.onApprove) {
+        return { action: 'block', error: `'${name}' pushes to the remote repository and requires approval, but no approval hook is wired` };
+      }
+      const denyKey = name === 'run_terminal_command'
+        ? `run_terminal_command:${terminalCommandKey(args)}`
+        : 'push_worktree';
+      if (state.deniedKeys.has(denyKey)) {
+        return { action: 'block', error: `remote push rejected by user (denied earlier this turn)` };
+      }
+      return { action: 'prompt' };
+    }
     return { action: 'run' };
   }
   // Wildcard permission: tools matching adoCode.consent.autoApproveTools
@@ -199,6 +215,22 @@ function gateTool(
   // no terminal allowlist. Read fresh so edits apply without a restart.
   const autoApproveTools = vscode.workspace.getConfiguration('adoCode').get<string[]>('consent.autoApproveTools', []);
   const toolAutoApproved = matchesToolPattern(name, autoApproveTools);
+  // consent.harmlessAutoApprove: enabled ⇒ harmless (read-only) terminal
+  // commands skip the approval gate entirely and run IMMEDIATELY — no consent
+  // card, no countdown timer (0.6.5: the old timed auto-approve was too many
+  // gates). Applies wherever a terminal command would otherwise prompt:
+  // inline (mutating gate) and act (non-allowlisted commands). Plan mode
+  // still blocks mutating tools outright above; YOLO never reaches this
+  // branch (auto-runs everything — harmless commands included).
+  if (name === 'run_terminal_command' && !toolAutoApproved) {
+    const harmlessEnabled = vscode.workspace.getConfiguration('adoCode').get<boolean>('consent.harmlessAutoApprove', false);
+    if (harmlessEnabled) {
+      const cmds = terminalCommandList(args);
+      if (cmds.length > 0 && cmds.every(c => isHarmlessCommand(c))) {
+        return { action: 'run' };
+      }
+    }
+  }
   // C3 fix: inline mode REQUIRES an approval hook. If none is wired, DENY —
   // never silently execute a mutating tool.
   if (state.mode === 'inline' && !toolAutoApproved) {
@@ -255,6 +287,31 @@ function withFileMutationQueue<T>(key: string, fn: () => Promise<T>): Promise<T>
   // Store a never-rejecting tail so a failed op doesn't poison the chain.
   fileMutationQueues.set(key, run.catch(() => undefined));
   return run;
+}
+
+/**
+ * True when a call would PUSH code to a remote repository — the one operation
+ * YOLO mode still guards (adoCode.yolo.pushApproval, default on):
+ *   - the push_worktree tool (agent run branch → origin)
+ *   - terminal commands whose first token is `git` and second `push`
+ *     (e.g. "git push", "git push origin main"). Batch `commands` arrays
+ *     count when ANY member is a push.
+ */
+function pushRequiresApproval(name: string, args: Record<string, any>): boolean {
+  if (name === 'push_worktree') {
+    const enabled = vscode.workspace.getConfiguration('adoCode').get<boolean>('yolo.pushApproval', true);
+    return enabled;
+  }
+  if (name === 'run_terminal_command') {
+    const enabled = vscode.workspace.getConfiguration('adoCode').get<boolean>('yolo.pushApproval', true);
+    if (!enabled) return false;
+    const commands = terminalCommandList(args);
+    return commands.some(cmd => {
+      const tokens = cmd.match(/"[^"]*"|\S+/g) ?? [];
+      return tokens.length >= 2 && tokens[0]!.toLowerCase() === 'git' && tokens[1]!.toLowerCase() === 'push';
+    });
+  }
+  return false;
 }
 
 /**

@@ -13,4 +13,4 @@
  * constant instead of hardcoding the number twice so the two can never
  * drift apart again.
  */
-export const DEFAULT_MAX_ITERATIONS = 50;
+export const DEFAULT_MAX_ITERATIONS = 100;

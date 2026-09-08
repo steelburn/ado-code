@@ -1,6 +1,17 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
 import type { ContentBlockParam } from './BaseProvider';
 import { toModelInfo, ModelInfo } from '../modelCapabilities';
+import { ADO_CODE_USER_AGENT } from '../../shared/version';
+
+/** Anthropic request headers — identifies ADO Code in every API request. */
+function anthropicHeaders(config: LlmConfig): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': config.apiKey,
+    'anthropic-version': '2023-06-01',
+    'User-Agent': ADO_CODE_USER_AGENT,
+  };
+}
 
 export class AnthropicProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
@@ -47,11 +58,7 @@ export class AnthropicProvider implements LlmProvider {
 
     const response = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: anthropicHeaders(config),
       signal,
       body: JSON.stringify(body),
     });
@@ -193,11 +200,7 @@ export class AnthropicProvider implements LlmProvider {
 
     const response = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: anthropicHeaders(config),
       signal,
       body: JSON.stringify(body),
     });
@@ -260,11 +263,7 @@ export class AnthropicProvider implements LlmProvider {
 
       const response = await fetch(`${baseUrl}/v1/messages/count_tokens`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': config.apiKey,
-          'anthropic-version': '2023-06-01',
-        },
+        headers: anthropicHeaders(config),
         body: JSON.stringify(body),
       });
       if (!response.ok) return undefined;
@@ -284,6 +283,7 @@ async function listModelsAnthropic(config: LlmConfig): Promise<ModelInfo[]> {
     headers: {
       'x-api-key': config.apiKey,
       'anthropic-version': '2023-06-01',
+      'User-Agent': ADO_CODE_USER_AGENT,
     },
   });
   if (!response.ok) {

@@ -7,8 +7,8 @@
  */
 
 import type { LlmMessage } from "../types";
-import { messageText } from "../types";
 import type { ModelInfo } from "../modelCapabilities";
+import type { ContentBlockParam } from "../providers/BaseProvider";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,6 +25,14 @@ const TOOL_CALL_OVERHEAD_TOKENS = 8;
 
 /** Approximate overhead tokens for a single tool-result block. */
 const TOOL_RESULT_OVERHEAD_TOKENS = 4;
+
+// Vision-image token estimates (OpenAI-style pricing; other providers are
+// in the same ballpark). A base cost per image plus per-tile cost derived
+// from the encoded payload size, capped like the API caps high-detail tiles.
+const IMAGE_BASE_TOKENS = 85;
+const IMAGE_MAX_TOKENS = 1105;
+/** ~1 tile token per 900 raw image bytes beyond the base. */
+const IMAGE_BYTES_PER_TOKEN = 900;
 
 // ---------------------------------------------------------------------------
 // Model → context-window mapping
@@ -110,32 +118,80 @@ export function countTokens(text: string): number {
 }
 
 /**
+ * Token estimate for a single image content block. Providers bill vision
+ * input as a flat cost plus per-tile cost; we derive a rough tile count from
+ * the payload size (base64 overhead is ~4/3, so chars * 0.75 ≈ raw bytes).
+ * URL images carry no size hint — count the flat base only.
+ */
+export function countImageTokens(source: { type: 'base64' | 'url'; media_type?: string; data?: string; url?: string }): number {
+  if (source.type !== 'base64' || !source.data) {
+    return IMAGE_BASE_TOKENS;
+  }
+  const bytes = Math.floor(source.data.length * 0.75); // base64 → raw bytes
+  const tiles = Math.floor(bytes / IMAGE_BYTES_PER_TOKEN);
+  return Math.min(IMAGE_MAX_TOKENS, IMAGE_BASE_TOKENS + tiles);
+}
+
+/**
+ * Token count of a message's content: text blocks via the heuristic, image
+ * blocks via a size-based estimate, and ANY other structured block (tool_use
+ * inputs, tool_result payloads, …) via its serialized JSON — providers bill
+ * structured content roughly by payload size, so treating it as free would
+ * undercount every tool-assisted request. This is the count that reflects
+ * what is actually passed to the LLM.
+ */
+export function countContentTokens(content: string | ContentBlockParam[]): number {
+  if (typeof content === 'string') {
+    return countTokens(content);
+  }
+  let total = 0;
+  for (const block of content) {
+    if (block.type === 'text') {
+      total += countTokens(block.text);
+    } else if (block.type === 'image') {
+      total += countImageTokens(block.source);
+    } else {
+      // Unknown/structured block (tool_use, tool_result, …): serialize it.
+      total += countTokens(JSON.stringify(block));
+    }
+  }
+  return total;
+}
+
+/**
  * Count total tokens across an array of `LlmMessage` objects.
  *
- * Accounts for:
- *  - content tokens (via `countTokens`)
- *  - per-message role overhead
- *  - tool-call metadata (assistant messages that invoked tools)
- *  - tool-result metadata (role:'tool' messages)
+ * Accounts for everything that is actually serialized and sent to the
+ * provider:
+ *  - content tokens: text AND image blocks, plus any structured block
+ *    (tool_use / tool_result) carried inside a content array;
+ *  - per-message role overhead;
+ *  - tool-call metadata (assistant messages that invoked tools) — the call
+ *    id + serialized argument JSON the provider re-sends on later iterations;
+ *  - tool-result metadata + payload (role:'tool' messages).
  */
 export function countMessageTokens(messages: LlmMessage[]): number {
   let total = 0;
 
   for (const msg of messages) {
-    // Base content tokens
-    total += countTokens(messageText(msg.content));
+    // Base content tokens (text + images + any embedded structured blocks)
+    total += countContentTokens(msg.content);
 
     // Role / framing overhead
     total += ROLE_OVERHEAD_TOKENS;
 
-    // Tool-call overhead (assistant messages that carried tool invocations)
+    // Tool-call overhead (assistant messages that carried tool invocations).
+    // Providers re-send each call's id/name/arguments JSON on every later
+    // request until the matching tool result lands — count it all.
     if (msg.toolCalls && msg.toolCalls.length > 0) {
-      total += msg.toolCalls.length * TOOL_CALL_OVERHEAD_TOKENS;
-
-      // Also count the serialised arguments string of each call
       for (const tc of msg.toolCalls) {
+        total += TOOL_CALL_OVERHEAD_TOKENS;
+        // The arguments string is the bulk of a tool-call block.
         if (tc.arguments) {
           total += countTokens(tc.arguments);
+        }
+        if (tc.name) {
+          total += countTokens(tc.name);
         }
       }
     }
