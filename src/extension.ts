@@ -511,7 +511,11 @@ Generate ONLY the commit message, nothing else.`;
 
   // Task 17: chat focus command (keybinding target)
   context.subscriptions.push(
-    vscode.commands.registerCommand('adoCode.chat.focus', () => chatProvider.focus())
+    vscode.commands.registerCommand('adoCode.chat.focus', () => chatProvider.focus()),
+    vscode.commands.registerCommand('adoCode.rerunWizard', () => chatProvider.rerunWizard()),
+    vscode.commands.registerCommand('adoCode.openSettings', () => chatProvider.openSettings()),
+    vscode.commands.registerCommand('adoCode.moveChatToEditor', () => chatProvider.openChatInEditor()),
+    vscode.commands.registerCommand('adoCode.moveChatToSidebar', () => chatProvider.moveChatToSidebar())
   );
 
   // ── Task 3.1+3.2: memory commands ────────────────────────────────

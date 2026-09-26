@@ -2,6 +2,39 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.6.6] - 2026-09-26
+
+### Improvements
+- **Header menus and commands**:
+  - Added dedicated VS Code commands `adoCode.rerunWizard` and `adoCode.openSettings` accessible via the Command Palette.
+  - Added a "Refresh Work Items" action (`$(refresh)`) to the Work Items tab view title toolbar for direct access alongside work item actions.
+- **Move chat into Editor Area & return to sidebar**:
+  - Added option to open the chat interface in the main editor area as a tab via the chat view title action button (`$(link-external)`) or the chat kebab menu (`⋯` → "Move chat into Editor Area").
+  - Seamlessly return chat back to where it was before:
+    - Click the editor title bar action button (`$(layout-sidebar-left)` "Return Chat to Side Bar") on the editor tab.
+    - Click "Return Chat to Side Bar" in the sidebar view placeholder or the in-webview kebab menu (`⋯` → `↙️`).
+    - Close the editor tab (`✕`), which automatically restores and focuses the chat in the sidebar without losing conversation history, session state, or drafts.
+- **Interactive Mermaid chart rendering**:
+  - Full support for Mermaid diagrams (flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, etc.) across the Chat interface, in-webview Task Details (`TaskDetailPanel`), full Work Item Details (`WorkItemDetailPanel`), and Agent Run Summaries (`AgentSummaryPanel`).
+  - Interactive toggle button (`[ 📊 Diagram | </> Code ]`) allowing instant switching between the rendered visual diagram and the formatted Mermaid source code.
+  - One-click copy button (`📋 Copy Code`) to copy raw Mermaid source directly to clipboard.
+  - Theme-adaptive rendering automatically matching VS Code light, dark, and high-contrast themes.
+  - Safe error recovery displaying syntax error banners with fallback to code view if incomplete or invalid Mermaid syntax is provided.
+- **Export & copy Mermaid charts as SVG**:
+  - Added "Save SVG" button (`💾 Save SVG`) to Mermaid diagram toolbars across Chat, Work Item Details, and Agent Run Summaries. Prompts a native VS Code file save dialog with auto-detected diagram title, sanitized filename, and standard XML declaration headers (`<?xml version="1.0" encoding="UTF-8"?>`), with browser download fallback.
+  - Added "Copy SVG" button (`🖼️ Copy SVG`) to copy rendered SVG markup directly to clipboard.
+- **Extension branding and Activity Bar icons**:
+  - Contributed custom extension icon (`resources/icon.png`) and dedicated Activity Bar view container icons (`resources/activitybar-icon.svg`) for the primary (`adoCode`) and secondary (`adoCodeSecondary`) activity bar views, replacing generic comment icons.
+  - Chat editor panel displays custom activity bar icon.
+- **Unattached project option & standalone mode**:
+  - Added a `None (no project)` choice to the chat header project dropdown for working independently without attaching to an Azure DevOps project.
+  - Supports two primary workflows:
+    1. Working when ADO connectivity is not yet configured or skipped — the project dropdown remains visible and interactive, displaying `None (no project)`.
+    2. Working independently from ADO while still utilizing the assistant, agents, planning, and coding tools without binding to a project or work item.
+  - Switching to `None (no project)` clears stored project bindings in workspace state and empties work items from the chat and sidebar tree without displaying missing-credential warnings or warning popups.
+  - When ADO organization and PAT are configured, projects are auto-fetched in the background so you can re-attach to any project at any time from the dropdown, while keeping the "Azure DevOps isn't configured" banner hidden.
+  - Updated the setup wizard (`WelcomeScreen`) to offer `None (no project)` as the default initial select option.
+
 ## [0.6.5] - 2026-09-08
 
 ### Improvements

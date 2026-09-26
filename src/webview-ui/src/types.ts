@@ -68,6 +68,8 @@ export type WebviewToExtensionMessage =
   | { type: 'pickMode' }
   | { type: 'rerunWizard' }
   | { type: 'openSettings' }
+  | { type: 'moveChatToEditor' }
+  | { type: 'moveChatToSidebar' }
   | { type: 'cycleMode' }
   | { type: 'selectMode'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
   | { type: 'fetchProjects'; organization?: string; pat?: string }
@@ -167,7 +169,9 @@ export type ExtensionToWebviewMessage =
   // Skill import
   | { type: 'importSkillFromDisk' }
   // Right-click context menu: insert text into chat draft
-  | { type: 'insertText'; text: string };
+  | { type: 'insertText'; text: string }
+  // Chat moved to/from editor area notification for sidebar placeholder
+  | { type: 'chatMovedToEditor'; inEditor: boolean };
 
 // Shared types
 export interface MessageContext {
@@ -245,6 +249,7 @@ export interface ExtensionConfig {
   changelogPostToAdo: boolean;
   adoClarificationState: string;
   adoWarnOnSparseTask: boolean;
+  isEditor?: boolean;
 }
 
 // Session history

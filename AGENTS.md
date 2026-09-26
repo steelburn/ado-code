@@ -28,8 +28,8 @@ src/llm/context/ tokenCounter, contextManager, condenser
 src/memory/ UserMemory, WorkspaceMemory
 src/services/ checkpoints/, mcp/, ignoreFiles/ (keeps `.ado-code` out of .gitignore/.dockerignore), understanding/ (durable repo + work-item understanding cache)
 src/shared/ Message protocol types
-src/webview/ ChatViewProvider, StatusPanelProvider, WorktreesTreeProvider (dedicated agent-worktree view)
-src/webview-ui/ React app (components/, styles/)
+src/webview/ ChatViewProvider (sidebar & editor panel), StatusPanelProvider, WorktreesTreeProvider (dedicated agent-worktree view), svgExport.ts
+src/webview-ui/ React app (components/, styles/, Mermaid diagram renderer & SVG export)
 
 ## Architecture
 
@@ -91,8 +91,8 @@ Wired in extension.ts via wireUnderstanding() (summarizer + initial refresh),
 re-wired on org switch / config rebuild. Commands: adoCode.refreshUnderstanding.
 
 ### Webview
-ChatViewProvider.ts — message routing, commands
-webview-ui/src/ — React app with components
+ChatViewProvider.ts — message routing, commands, editor-tab panel (openChatInEditor / moveChatToSidebar)
+webview-ui/src/ — React app with components (ProjectSwitcher supports "None (no project)" for standalone / unconfigured mode; utils/mermaid.ts interactive Mermaid diagrams & SVG export)
 shared/messages.ts — typed message protocol
 
 ## Key Patterns

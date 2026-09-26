@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { AdoClient } from '../ado/client';
 import { getActiveOrg, getSettings } from '../config/settings';
+import { promptAndSaveSvg } from './svgExport';
 
 /**
  * Webview panel that shows full work item details in the main editor area.
@@ -12,8 +13,18 @@ export class WorkItemDetailPanel {
       'adoCode.workItemDetail',
       `ADO-${workItemId}`,
       vscode.ViewColumn.One,
-      { enableScripts: false }
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [context.extensionUri],
+      }
     );
+
+    panel.webview.onDidReceiveMessage(async (msg) => {
+      if (msg?.type === 'saveSvg' && typeof msg.content === 'string') {
+        await promptAndSaveSvg(msg.content, msg.defaultName);
+      }
+    });
 
     panel.webview.html = WorkItemDetailPanel.loadingHtml(workItemId);
 
@@ -105,6 +116,10 @@ export class WorkItemDetailPanel {
         `;
       }
 
+      const mermaidScriptUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'webview-ui-dist', 'mermaid.js')
+      );
+
       panel.webview.html = WorkItemDetailPanel.renderHtml({
         workItemId,
         title,
@@ -122,6 +137,8 @@ export class WorkItemDetailPanel {
         tags,
         commentsHtml,
         bugFieldsHtml,
+        mermaidScriptUri: mermaidScriptUri.toString(),
+        cspSource: panel.webview.cspSource,
       });
 
       // Update tab title with type
@@ -138,6 +155,7 @@ export class WorkItemDetailPanel {
     assignedTo: string; creator: string; areaPath: string; iterationPath: string;
     createdDate: string; changedDate: string; description: string;
     acceptanceCriteria: string; tags: string; commentsHtml: string; bugFieldsHtml: string;
+    mermaidScriptUri: string; cspSource: string;
   }): string {
     const descHtml = d.description ? WorkItemDetailPanel.renderAdoHtml(d.description) : '<em>No description</em>';
     const acHtml = d.acceptanceCriteria ? WorkItemDetailPanel.renderAdoHtml(d.acceptanceCriteria) : '<em>None</em>';
@@ -151,8 +169,8 @@ export class WorkItemDetailPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Allow inline data: images (ADO attachment screenshots are inlined as
-       data URLs by resolveImagesInHtml) plus plain https fallbacks. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline';">
+       data URLs by resolveImagesInHtml) plus plain https fallbacks, and mermaid script/styles. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline' ${d.cspSource}; script-src 'unsafe-inline' ${d.cspSource};">
   <title>ADO-${d.workItemId}</title>
   <style>
     body {
@@ -254,6 +272,7 @@ export class WorkItemDetailPanel {
   ${d.bugFieldsHtml}
 
   ${d.commentsHtml}
+  <script src="${d.mermaidScriptUri}"></script>
 </body>
 </html>`;
   }
@@ -280,6 +299,10 @@ display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
   private static renderAdoHtml(text: string): string {
     if (!text) return '';
     let html = text;
+    // Convert ```mermaid ... ``` code fences inside ADO descriptions/comments
+    html = html.replace(/```mermaid\s*\n([\s\S]*?)```/gi, (_match, code) => {
+      return `<pre><code class="language-mermaid">${code.trim()}</code></pre>`;
+    });
     // Strip dangerous tags (script, iframe, object, embed, form, input, style)
     html = html.replace(/<\s*(script|iframe|object|embed|form|input|style|textarea|select|button)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '');
     html = html.replace(/<\s*(script|iframe|object|embed|form|input|style|textarea|select|button)[^>]*\/?>/gi, '');

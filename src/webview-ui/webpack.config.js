@@ -2,10 +2,13 @@ const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 module.exports = {
-  entry: './src/index.tsx',
+  entry: {
+    webview: './src/index.tsx',
+    mermaid: './src/mermaidStandalone.ts',
+  },
   output: {
     path: path.resolve(__dirname, '../../webview-ui-dist'),
-    filename: 'webview.js',
+    filename: '[name].js',
     clean: true,
   },
   resolve: {
@@ -27,6 +30,7 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: './public/index.html',
+      chunks: ['webview'],
     }),
   ],
 };

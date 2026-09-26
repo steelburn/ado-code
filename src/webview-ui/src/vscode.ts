@@ -5,4 +5,16 @@ declare function acquireVsCodeApi(): {
   setState(state: any): void;
 };
 
-export const vscode = acquireVsCodeApi();
+let api: any = null;
+try {
+  if (typeof (window as any).__vscodeApi !== 'undefined') {
+    api = (window as any).__vscodeApi;
+  } else if (typeof acquireVsCodeApi === 'function') {
+    api = acquireVsCodeApi();
+    (window as any).__vscodeApi = api;
+  }
+} catch {
+  api = (window as any).__vscodeApi || null;
+}
+
+export const vscode = api;

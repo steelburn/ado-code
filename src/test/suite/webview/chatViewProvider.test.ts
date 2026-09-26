@@ -929,3 +929,44 @@ suite('ChatViewProvider · one work item per session (0.6.5)', () => {
     assert.deepStrictEqual((provider as any).getSessions().find((x: any) => x.id === (provider as any).getActiveSessionId()).workItemIds, [101], 'nothing bound');
   });
 });
+
+// ── selectProject: unattached / no project option ───────────────────────────
+suite('ChatViewProvider · selectProject', () => {
+  test('switching to empty project clears active project and posts empty work items', async () => {
+    const posted: any[] = [];
+    let treeItems: any[] | null = null;
+    const context = makeSessionContext();
+    await context.workspaceState.update('adoCode.activeProject', 'PreviousProject');
+    const services: any = {
+      git: { workspaceRoot: '' },
+      ado: {},
+    };
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), services, context, (items: any[]) => {
+      treeItems = items;
+    });
+    const handlers: Array<(msg: any) => void> = [];
+    const webviewView: any = {
+      onDidDispose: () => {},
+      onDidChangeVisibility: () => {},
+      webview: {
+        options: {},
+        html: '',
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (fn: any) => handlers.push(fn),
+        postMessage: (m: any) => posted.push(m),
+      },
+    };
+    await (provider as any).resolveWebviewView(webviewView, {}, {});
+    assert.strictEqual(handlers.length, 1);
+
+    await handlers[0]({ type: 'selectProject', projectName: '' });
+
+    const activeProject = context.workspaceState.get('adoCode.activeProject');
+    assert.strictEqual(activeProject, undefined, 'activeProject cleared in workspaceState');
+    const wiMsg = posted.find(m => m.type === 'workItems');
+    assert.ok(wiMsg, 'workItems message posted');
+    assert.deepStrictEqual(wiMsg.items, [], 'workItems posted as empty array');
+    assert.deepStrictEqual(treeItems, [], 'tree view items cleared');
+  });
+});
+

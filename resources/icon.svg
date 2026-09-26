@@ -1,0 +1,95 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0e1322"/>
+      <stop offset="50%" stop-color="#080b14"/>
+      <stop offset="100%" stop-color="#03050a"/>
+    </linearGradient>
+
+    <!-- Squircle Border Glow Gradient -->
+    <linearGradient id="borderGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00BCF2"/>
+      <stop offset="40%" stop-color="#0078D4" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#002040" stop-opacity="0.2"/>
+    </linearGradient>
+
+    <!-- ADO Ribbon Gradient (Cyan to Electric Azure) -->
+    <linearGradient id="loopGrad" x1="80" y1="256" x2="432" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00F0FF"/>
+      <stop offset="30%" stop-color="#00BCF2"/>
+      <stop offset="70%" stop-color="#0078D4"/>
+      <stop offset="100%" stop-color="#004578"/>
+    </linearGradient>
+
+    <!-- AI Radial Glow -->
+    <radialGradient id="sparkleGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00F0FF" stop-opacity="0.85"/>
+      <stop offset="45%" stop-color="#00BCF2" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#0078D4" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Glow Drop Shadow Filter -->
+    <filter id="glowFilter" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background Container Squircle -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="url(#bgGrad)"/>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="none" stroke="url(#borderGrad)" stroke-width="3"/>
+
+  <!-- Radial Glow Behind AI Sparkle Node -->
+  <circle cx="160" cy="180" r="90" fill="url(#sparkleGlow)"/>
+
+  <!-- Main ADO Infinity Loop + AI Fusion Ribbon -->
+  <g filter="url(#glowFilter)">
+    <!-- Seamless Figure-8 Infinity Path -->
+    <path d="M 256 256 
+             C 192 168, 80 168, 80 256 
+             C 80 344, 192 344, 256 256 
+             C 320 168, 432 168, 432 256 
+             C 432 344, 320 344, 256 256 
+             Z" 
+          fill="none" 
+          stroke="url(#loopGrad)" 
+          stroke-width="34" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <!-- Inner Ribbon Light Flow Line -->
+    <path d="M 256 256 
+             C 192 178, 96 178, 96 256 
+             C 96 334, 192 334, 256 256 
+             C 320 178, 416 178, 416 256" 
+          fill="none" 
+          stroke="#50E6FF" 
+          stroke-width="6" 
+          stroke-linecap="round" 
+          opacity="0.75"/>
+  </g>
+
+  <!-- Primary AI Sparkle Diamond (Top Left Loop Accent) -->
+  <g transform="translate(160, 180)">
+    <circle cx="0" cy="0" r="28" fill="url(#sparkleGlow)"/>
+    <!-- 4-Point AI Sparkle Star -->
+    <path d="M 0 -34 Q 0 0 -34 0 Q 0 0 0 34 Q 0 0 34 0 Q 0 0 0 -34 Z" fill="#FFFFFF"/>
+    <path d="M 0 -22 Q 0 0 -22 0 Q 0 0 0 22 Q 0 0 22 0 Q 0 0 0 -22 Z" fill="#00F0FF"/>
+  </g>
+
+  <!-- Code Chevron Icon </ > (Inside Left Loop) -->
+  <g transform="translate(140, 242)" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- < -->
+    <path d="M 0 0 L -12 14 L 0 28"/>
+    <!-- / -->
+    <path d="M 20 -4 L 9 32" stroke="#50E6FF"/>
+    <!-- > -->
+    <path d="M 28 0 L 40 14 L 28 28"/>
+  </g>
+
+  <!-- Secondary Micro AI Sparkle (Top Right Accent) -->
+  <g transform="translate(380, 160)">
+    <path d="M 0 -14 Q 0 0 -14 0 Q 0 0 0 14 Q 0 0 14 0 Q 0 0 0 -14 Z" fill="#50E6FF" opacity="0.9"/>
+  </g>
+</svg>

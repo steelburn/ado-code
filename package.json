@@ -2,8 +2,9 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "publisher": "steelburn",
+  "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -50,7 +51,11 @@
     "onCommand:adoCode.worktreeShowChanges",
     "onCommand:adoCode.generateTasks",
     "onCommand:adoCode.sendSelectionToChat",
-    "onCommand:adoCode.sendFileToChat"
+    "onCommand:adoCode.sendFileToChat",
+    "onCommand:adoCode.rerunWizard",
+    "onCommand:adoCode.openSettings",
+    "onCommand:adoCode.moveChatToEditor",
+    "onCommand:adoCode.moveChatToSidebar"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -74,6 +79,31 @@
       {
         "command": "adoCode.refreshWorkItems",
         "title": "Refresh Work Items",
+        "icon": "$(refresh)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.rerunWizard",
+        "title": "Rerun Setup Wizard",
+        "icon": "$(sync)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.openSettings",
+        "title": "Configuration…",
+        "icon": "$(gear)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.moveChatToEditor",
+        "title": "Move Chat into Editor Area",
+        "icon": "$(link-external)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.moveChatToSidebar",
+        "title": "Return Chat to Side Bar",
+        "icon": "$(layout-sidebar-left)",
         "category": "ADO Code"
       },
       {
@@ -403,6 +433,13 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "adoCode.moveChatToSidebar",
+          "when": "activeWebviewType == 'adoCode.chatEditor'",
+          "group": "navigation"
+        }
+      ],
       "scm/title": [
         {
           "command": "adoCode.generateCommitMessage",
@@ -411,6 +448,16 @@
         }
       ],
       "view/title": [
+        {
+          "command": "adoCode.moveChatToEditor",
+          "when": "view == adoCode.chat && !adoCode.chatInEditor",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.moveChatToSidebar",
+          "when": "view == adoCode.chat && adoCode.chatInEditor",
+          "group": "navigation"
+        },
         {
           "command": "adoCode.workItemsToggleMode",
           "when": "view == adoCode.workItems",
@@ -428,6 +475,11 @@
         },
         {
           "command": "adoCode.workItemsClearFilters",
+          "when": "view == adoCode.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "adoCode.refreshWorkItems",
           "when": "view == adoCode.workItems",
           "group": "navigation"
         }
@@ -649,14 +701,14 @@
         {
           "id": "adoCode",
           "title": "ADO Code",
-          "icon": "$(comment-discussion)"
+          "icon": "resources/activitybar-icon.svg"
         }
       ],
       "secondaryBar": [
         {
           "id": "adoCodeSecondary",
           "title": "ADO Code (Secondary)",
-          "icon": "$(comment-discussion)"
+          "icon": "resources/activitybar-icon.svg"
         }
       ]
     },

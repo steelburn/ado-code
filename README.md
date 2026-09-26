@@ -69,6 +69,9 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 - **Agent summary panel**: Completion summaries open in a styled HTML panel with metadata and duration
 - Workspace scaffolding: new project wizard for Node.js, Python, PHP (Laravel), .NET C# with auto-generated files
 - Workspace-to-ADO project binding: prevents working on items from the wrong project
+- **Standalone / unattached project mode**: Choose `None (no project)` in the header project dropdown to work independently with the AI assistant without attaching to an Azure DevOps project, or when ADO connectivity is not configured
+- **Interactive Mermaid diagram rendering & SVG export**: Mermaid diagrams (flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, etc.) render interactively across Chat, Task Details, Work Item Details, and Agent Run Summaries — with instant `[ 📊 Diagram | </> Code ]` view switching, `📋 Copy Code`, `🖼️ Copy SVG`, and `💾 Save SVG` (native file save dialog with auto-named `.svg` file export)
+- **Move chat into editor area**: Open the chat assistant in the main editor area as a tab (`$(link-external)`) or move it back to the sidebar (`$(layout-sidebar-left)`) seamlessly without losing conversation state, session history, or task bindings
 
 ## Requirements
 
@@ -95,7 +98,7 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 |---------|-------------|
 | `adoCode.organizations` | ADO organizations (array of `{ name, url, project }`) |
 | `adoCode.adoOrganization` | Active Azure DevOps organization name |
-| `adoCode.adoProject` | Active Azure DevOps project name |
+| `adoCode.adoProject` | Active Azure DevOps project name (empty for standalone / no project) |
 | `adoCode.adoServerUrl` | Optional on-prem ADO Server (TFS) base URL — empty = cloud |
 | `adoCode.adoPat` | Personal Access Token |
 | `adoCode.ado.clarificationState` | State set when clarification is requested |
@@ -203,6 +206,15 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 ## Release Notes
+
+### 0.6.6
+
+- **Interactive Mermaid chart rendering**: Full support for Mermaid diagrams (flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, etc.) across Chat, Task Details (`TaskDetailPanel`), full Work Item Details (`WorkItemDetailPanel`), and Agent Summaries (`AgentSummaryPanel`) — with instant `[ 📊 Diagram | </> Code ]` toggle between diagram view and formatted Mermaid source code, syntax error banners with fallback to code view, and automatic theme adaptation
+- **Export & copy Mermaid charts as SVG**: `💾 Save SVG` action prompts a native VS Code file save dialog with auto-detected diagram title, sanitized filename, and standard XML declaration headers (`<?xml version="1.0" encoding="UTF-8"?>`); `🖼️ Copy SVG` copies rendered SVG markup directly to clipboard; `📋 Copy Code` copies raw Mermaid source
+- **Move chat into editor area & return to sidebar**: Click the chat view title action button (`$(link-external)`) or kebab menu to open chat in an editor tab; seamlessly return to sidebar via the editor tab toolbar (`$(layout-sidebar-left)`), placeholder button, or tab close (`✕`), preserving conversation history, sessions, and active task bindings
+- **Unattached project option & standalone mode**: Added `None (no project)` to the header project dropdown for working independently with the assistant and coding tools without binding to Azure DevOps, or when ADO is unconfigured, keeping credentials warnings hidden
+- **Header menus and quick commands**: Added commands `adoCode.rerunWizard` (Rerun Setup Wizard), `adoCode.openSettings` (Configuration…), and a direct `Refresh Work Items` action (`$(refresh)`) on the Work Items tab view title toolbar
+- **Extension branding and Activity Bar icons**: Contributed custom extension icon (`resources/icon.png`) and dedicated Activity Bar view container icons (`resources/activitybar-icon.svg`), replacing generic comment icons
 
 ### 0.6.5
 

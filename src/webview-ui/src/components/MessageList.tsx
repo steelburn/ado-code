@@ -3,6 +3,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { Tooltip } from './ui/Tooltip';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
+import { processMermaidInContainer } from '../utils/mermaid';
 
 interface Message {
   role: string;
@@ -254,14 +255,11 @@ const MarkdownWithCodeCopy: React.FC<{ content: string }> = ({ content }) => {
   // After render, attach copy buttons to code blocks
   useEffect(() => {
     if (!containerRef.current) return;
+    processMermaidInContainer(containerRef.current);
     const pres = containerRef.current.querySelectorAll('pre');
     pres.forEach((pre) => {
-      // Skip if already has a copy button
-      if (pre.parentElement?.classList.contains('code-block-wrapper')) return;
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'code-block-wrapper';
-      wrapper.style.position = 'relative';
+      // Skip if already in a mermaid container or already has a copy button
+      if (pre.closest('.mermaid-container') || pre.parentElement?.classList.contains('code-block-wrapper')) return;
 
       // Language label from class: <pre><code class="language-xxx">
       const codeEl = pre.querySelector('code');
@@ -271,6 +269,13 @@ const MarkdownWithCodeCopy: React.FC<{ content: string }> = ({ content }) => {
         const m = cls.match(/language-(\w+)/);
         if (m) lang = m[1];
       }
+
+      // Skip mermaid blocks
+      if (lang.toLowerCase() === 'mermaid' || codeEl?.className.includes('mermaid')) return;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'code-block-wrapper';
+      wrapper.style.position = 'relative';
 
       // Create language label
       if (lang) {

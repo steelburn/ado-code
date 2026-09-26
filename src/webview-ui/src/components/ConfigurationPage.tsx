@@ -1006,22 +1006,22 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
 
           <div className="config-nav-footer">
             <div className="config-nav-divider" />
-            <div className="config-advanced-toggle">
-              <label className="config-toggle">
+            <label className="config-advanced-toggle">
+              <span className="config-toggle">
                 <input
                   type="checkbox"
                   checked={isAdvanced}
                   onChange={handleToggleAdvanced}
                 />
                 <span className="config-toggle-slider" />
-              </label>
+              </span>
               <div className="config-advanced-toggle-text">
                 <div className="config-advanced-toggle-label">Advanced Configuration</div>
                 <div className="config-advanced-toggle-desc">
                   Per-mode models, capability overrides, token counting
                 </div>
               </div>
-            </div>
+            </label>
           </div>
         </nav>
 

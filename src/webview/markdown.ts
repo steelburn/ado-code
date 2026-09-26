@@ -31,8 +31,9 @@ export function renderMarkdown(text: string): string {
     .replace(/>/g, '&gt;');
 
   // Code blocks (``` ... ```)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
-    return `<pre><code>${code.trim()}</code></pre>`;
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    const langClass = lang ? ` class="language-${lang}"` : '';
+    return `<pre><code${langClass}>${code.trim()}</code></pre>`;
   });
 
   // Inline code

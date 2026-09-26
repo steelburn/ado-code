@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify'; // H-9 fix: import the sanitizer
 import { highlightCode } from '../utils/highlightCode';
+import { processMermaidInContainer } from '../utils/mermaid';
 
 interface Props {
   content: string;
@@ -139,6 +140,9 @@ export function MarkdownRenderer({ content }: Props) {
       raw = raw.replace(
         /<pre><code class="language-(\w+)">([\s\S]*?)<\/code><\/pre>/gi,
         (_match: string, lang: string, code: string) => {
+          if (lang.toLowerCase() === 'mermaid') {
+            return `<pre><code class="language-mermaid">${code}</code></pre>`;
+          }
           const decoded = decodeEntities(code);
           const highlighted = highlightCode(decoded, lang);
           return `<pre><code class="language-${lang}">${highlighted}</code></pre>`;
@@ -146,6 +150,7 @@ export function MarkdownRenderer({ content }: Props) {
       );
 
       ref.current.innerHTML = DOMPurify.sanitize(raw);
+      processMermaidInContainer(ref.current);
     }
   }, [content]);
 

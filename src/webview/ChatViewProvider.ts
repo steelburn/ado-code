@@ -30,6 +30,7 @@ import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFen
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { AgentProgressPanel } from './AgentProgressPanel';
+import { promptAndSaveSvg } from './svgExport';
 import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
@@ -100,6 +101,7 @@ const AGENTS_MD_SYNC_KEY = 'adoCode.agentsMdSyncPrior';
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
+  private _editorPanel?: vscode.WebviewPanel;
   /** Capability hints from the last /models fetch — live data wins over the heuristic. */
   private lastModelInfos: ModelInfo[] = [];
   // Task 24 (H5): wired via setAgentRunner AFTER both exist (services built
@@ -1114,7 +1116,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Created while the chat is hidden / a wizard is open? Freeze immediately
     // so the timer can't expire before the user ever sees the card.
     if (this.promptsPaused) this.consentBroker.pause();
-    if (this._view) {
+    if (this._view || this._editorPanel) {
       this.postMessage({ type: 'consentRequest', requestId, tool, args, expiresAt });
     } else {
       // No webview (e.g. invoked before resolve or after disposal): native pick.
@@ -1156,7 +1158,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Created while the chat is hidden / a wizard is open? Freeze immediately
     // so the timer can't expire before the user ever sees the card.
     if (this.promptsPaused) this.confirmBroker.pause();
-    if (this._view) {
+    if (this._view || this._editorPanel) {
       this.postMessage({ type: 'confirmationRequest', requestId, title, description, options, expiresAt });
     } else {
       // No webview: native QuickPick fallback.
@@ -1594,7 +1596,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
     // Task 19: React app decides welcome-vs-chat from the sanitized config payload
-    this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+    this.postConfig();
+    if (this._editorPanel) {
+      webviewView.webview.postMessage({ type: 'chatMovedToEditor', inEditor: true });
+    }
 
     // Task 2: migrate legacy history, send session list, restore active session
     // Wrap in try-catch so a migration/session error never breaks the webview.
@@ -1629,28 +1634,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Restore the active work item detail so the task panel is visible after
     // a webview refresh or tab switch. Re-fetch from ADO to get complete fields
     // (assignedTo, workItemType, etc.) that WorkItemContext alone lacks.
-    if (this.activeWorkItem) {
-      try {
-        const project = this.activeProject();
-        const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, this.activeWorkItem.id);
-        this.postMessage({ type: 'workItemDetail', item: await this.resolveWorkItemImages({
-          id: detail.id,
-          title: detail.fields['System.Title'],
-          state: detail.fields['System.State'],
-          assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
-          workItemType: detail.fields['System.WorkItemType'],
-          description: detail.fields['System.Description'] || '',
-          acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
-          tags: detail.fields['System.Tags'] || '',
-          areaPath: detail.fields['System.AreaPath'] ?? '',
-          iterationPath: detail.fields['System.IterationPath'] ?? '',
-          creator: detail.fields['System.CreatedBy']?.displayName ?? '',
-          comments: comments.map(c => ({ id: c.id, text: c.text, createdBy: c.createdBy.displayName, createdDate: c.createdDate })),
-        })});
-      } catch (err) {
-        logger.error('Chat: failed to restore active work item detail', err);
-      }
-    }
+    await this.restoreActiveWorkItemDetail();
 
     // Auto-refresh work items — only when dirty, view is active, and idle.
     // The timer checks every minute; the actual refresh fires only when all
@@ -1672,7 +1656,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(
       async (message: WebviewToExtensionMessage) => {
-        switch (message.type) {
+        await this.handleWebviewMessage(message);
+      },
+      undefined,
+      []
+    );
+  }
+
+  private async handleWebviewMessage(message: WebviewToExtensionMessage): Promise<void> {
+    try {
+      switch (message.type) {
           case 'userMessage':
             this.touchIdle();
             await this.handleUserMessage(message.content, message.images);
@@ -1689,7 +1682,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.refreshWorkItems();
             break;
           case 'getConfig':
-            this.postMessage({ type: 'config', config: this._sanitizedConfig() });
+            this.postConfig();
+            if (this._editorPanel) {
+              this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: true });
+            }
             break;
           case 'getFullConfig':
             this.postMessage({ type: 'fullConfig', config: this._allSettings() });
@@ -1904,13 +1900,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // refreshWorkItems) reads 'adoCode.activeProject' from
             // workspaceState FIRST — after the org-switcher command has run,
             // a stale stored value would silently override the setting.
-            await this._context.workspaceState.update('adoCode.activeProject', message.projectName);
+            await this._context.workspaceState.update('adoCode.activeProject', message.projectName || undefined);
             this.postMessage({ type: 'config', config: this._sanitizedConfig() });
             // Re-check workspace binding after project switch
             const root = this.services.git.workspaceRoot;
             if (root) this.checkProjectBinding(root);
-            // Auto-refresh work items with new project
-            await this.refreshWorkItems();
+            // Auto-refresh work items with new project (or clear if none)
+            if (message.projectName) {
+              await this.refreshWorkItems();
+            } else {
+              this.postMessage({ type: 'workItems', items: [] });
+              this.onItemsFetched?.([], '');
+            }
             this.markDirty();
             break;
           }
@@ -1943,9 +1944,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           // Task 2: session management
-          case 'listSessions':
+          case 'listSessions': {
             this.sendSessionList();
+            const activeId = this.getActiveSessionId();
+            if (activeId) {
+              await this.loadSession(activeId);
+            }
+            if (this.activeWorkItem) {
+              void this.restoreActiveWorkItemDetail();
+            }
             break;
+          }
           case 'switchSession':
             // Stop the in-flight turn (if any) IN ITS OWN SESSION first — its
             // conclusion lands in that session's buffer/history, never in the
@@ -2349,6 +2358,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             break;
           }
+          case 'saveSvg':
+            await promptAndSaveSvg(message.content, message.defaultName);
+            break;
           // Project creation wizard
           case 'projectWizardCreate': {
             logger.info('ChatViewProvider: projectWizardCreate received');
@@ -2417,15 +2429,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             break;
           }
+          case 'moveChatToEditor':
+            await this.openChatInEditor();
+            break;
+          case 'moveChatToSidebar':
+            this.moveChatToSidebar();
+            break;
         }
-      },
-      undefined,
-      []
-    );
-  }
+      } catch (err) {
+        logger.error('ChatViewProvider: message handler failed', err);
+      }
+    }
 
   public postMessage(message: any) {
     this._view?.webview.postMessage(message);
+    this._editorPanel?.webview.postMessage(message);
   }
 
   /**
@@ -2469,6 +2487,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const temp = new AdoClient(message.organization, message.pat);
       return temp.getProjects();
     }
+    const s = getSettings();
+    const active = getActiveOrg(this._context, s);
+    if (!active.name || !s.adoPat) {
+      return [];
+    }
     return this.services.ado.getProjects();
   }
 
@@ -2500,7 +2523,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Task 19: never send adoPat/llmApiKey to the webview — secrets stay in the host. */
-  private _sanitizedConfig() {
+  private _sanitizedConfig(isEditor: boolean = false) {
     const s = getSettings();
     return {
       adoOrganization: s.adoOrganization,
@@ -2513,12 +2536,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // ADO is optional: `configured` (LLM) gates the welcome wizard, but ADO
       // features only activate once the org + project + PAT are present.
       adoConfigured: Boolean(s.adoOrganization && s.adoProject && s.adoPat),
+      adoConnectionConfigured: Boolean(s.adoOrganization && s.adoPat),
       // Capabilities of the ACTIVE model — the webview gates image pasting
       // (vision) and warns when tool calling is unavailable. Precedence:
       // user override > LIVE gateway hints (cached from the last /models
       // fetch — OpenRouter and Ollama expose them) > id heuristic.
       modelCapabilities: getModelCapabilities(s.llmModel, this.liveHintsFor(s.llmModel), s.llmCapabilityOverrides),
+      isEditor,
     };
+  }
+
+  /** Broadcast configuration to the sidebar view (isEditor: false) and editor panel (isEditor: true). */
+  public postConfig(overrides?: Record<string, any>): void {
+    if (this._view) {
+      this._view.webview.postMessage({ type: 'config', config: { ...this._sanitizedConfig(false), ...overrides } });
+    }
+    if (this._editorPanel) {
+      this._editorPanel.webview.postMessage({ type: 'config', config: { ...this._sanitizedConfig(true), ...overrides } });
+    }
+  }
+
+  /** Restore active work item detail into the webview (task panel). */
+  private async restoreActiveWorkItemDetail(): Promise<void> {
+    if (!this.activeWorkItem) return;
+    try {
+      const project = this.activeProject();
+      const { detail, comments } = await this.services.ado.getWorkItemWithDiscussion(project, this.activeWorkItem.id);
+      this.postMessage({
+        type: 'workItemDetail',
+        item: await this.resolveWorkItemImages({
+          id: detail.id,
+          title: detail.fields['System.Title'],
+          state: detail.fields['System.State'],
+          assignedTo: detail.fields['System.AssignedTo']?.displayName ?? '',
+          workItemType: detail.fields['System.WorkItemType'],
+          description: detail.fields['System.Description'] || '',
+          acceptanceCriteria: detail.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '',
+          tags: detail.fields['System.Tags'] || '',
+          areaPath: detail.fields['System.AreaPath'] ?? '',
+          iterationPath: detail.fields['System.IterationPath'] ?? '',
+          creator: detail.fields['System.CreatedBy']?.displayName ?? '',
+          comments: comments.map(c => ({ id: c.id, text: c.text, createdBy: c.createdBy.displayName, createdDate: c.createdDate })),
+        }),
+      });
+    } catch (err) {
+      logger.error('Chat: failed to restore active work item detail', err);
+    }
   }
 
   /** Live capability hints for a model id from the last /models fetch. */
@@ -2607,6 +2670,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // C10 fix: resolve the ACTIVE org from workspaceState (getActiveOrg), not raw settings.
     const active = getActiveOrg(this._context, getSettings());
     if (!active.name || !getSettings().adoPat || !active.project) {
+      if (!active.project && active.name && getSettings().adoPat) {
+        this.postMessage({ type: 'workItems', items: [] });
+        this.onItemsFetched?.([], '');
+        return;
+      }
       vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
       return;
     }
@@ -4453,8 +4521,116 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Task 17 (H12 fix): reveal the adoCode view container + focus the chat view. */
   public focus(): void {
+    if (this._editorPanel) {
+      this._editorPanel.reveal();
+      return;
+    }
     vscode.commands.executeCommand('workbench.view.extension.adoCode');
     this._view?.show?.(true);
+  }
+
+  /** Open the chat in the main editor area as a tab. */
+  public async openChatInEditor(): Promise<void> {
+    if (this._editorPanel) {
+      this._editorPanel.reveal();
+      return;
+    }
+
+    void vscode.commands.executeCommand('setContext', 'adoCode.chatInEditor', true);
+    this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: true });
+
+    const panel = vscode.window.createWebviewPanel(
+      'adoCode.chatEditor',
+      'ADO Code Chat',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri],
+        retainContextWhenHidden: true,
+      }
+    );
+
+    panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'activitybar-icon.svg');
+
+    (panel.webview.options as any) = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri],
+      retainContextWhenHidden: true,
+    };
+
+    panel.webview.html = this._getHtmlForWebview(panel.webview);
+
+    panel.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
+      await this.handleWebviewMessage(message);
+    });
+
+    panel.onDidDispose(() => {
+      if (this._editorPanel === panel) {
+        this.moveChatToSidebar();
+      }
+    });
+
+    this._editorPanel = panel;
+
+    // Ensure the active session has the latest conversation persisted
+    const activeId = this.getActiveSessionId();
+    if (activeId) {
+      this.conversationBySession.set(activeId, this.conversation);
+      void this.persistConversation(activeId, this.conversation);
+    }
+
+    // Send initial config
+    this.postConfig();
+  }
+
+  /** Move the chat back to the sidebar and close the editor tab. */
+  public moveChatToSidebar(): void {
+    if (this._editorPanel) {
+      const panel = this._editorPanel;
+      this._editorPanel = undefined;
+      try {
+        panel.dispose();
+      } catch {
+        // already disposed
+      }
+    }
+
+    void vscode.commands.executeCommand('setContext', 'adoCode.chatInEditor', false);
+    this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: false });
+
+    if (this._view) {
+      this._view.show(false);
+    } else {
+      vscode.commands.executeCommand('workbench.view.extension.adoCode');
+    }
+
+    try {
+      const activeId = this.getActiveSessionId();
+      if (activeId) {
+        this.conversationBySession.set(activeId, this.conversation);
+        void this.persistConversation(activeId, this.conversation);
+        void this.loadSession(activeId);
+      }
+      this.sendSessionList();
+      this.postConfig();
+      if (this.activeWorkItem) {
+        void this.restoreActiveWorkItemDetail();
+      }
+    } catch (err) {
+      logger.error('moveChatToSidebar: session reload failed', err);
+    }
+  }
+
+  /** Rerun the setup wizard (welcome screen). */
+  public rerunWizard(): void {
+    this.focus();
+    this.postConfig({ configured: false });
+  }
+
+  /** Open the in-webview Configuration page. */
+  public openSettings(): void {
+    this.focus();
+    this.postMessage({ type: 'openSettings' });
   }
 
   /**
@@ -4884,7 +5060,7 @@ First analyze the user story and explain your breakdown reasoning, then output t
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:;">
+        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource}; img-src ${webview.cspSource} data:;">
   <title>ADO Code</title>
 </head>
 <body>

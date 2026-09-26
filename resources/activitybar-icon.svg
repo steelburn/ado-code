@@ -1,0 +1,18 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Chat Bubble Frame -->
+  <path d="M 3.5 5 C 3.5 4.2, 4.2 3.5, 5 3.5 L 19 3.5 C 19.8 3.5, 20.5 4.2, 20.5 5 L 20.5 14 C 20.5 14.8, 19.8 15.5, 19 15.5 L 10.5 15.5 L 6 19.5 L 6 15.5 C 4.6 15.5, 3.5 14.8, 3.5 14 Z" 
+        stroke="currentColor" 
+        stroke-width="1.6" 
+        stroke-linejoin="round"/>
+
+  <!-- Perfectly Centered Code Chevron </ > inside Chat Bubble -->
+  <!-- < (Left Chevron) -->
+  <path d="M 8.5 7.5 L 7.0 9.5 L 8.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- / (Slash) -->
+  <path d="M 12.7 7.0 L 11.3 12.0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  <!-- > (Right Chevron) -->
+  <path d="M 15.5 7.5 L 17.0 9.5 L 15.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- AI Sparkle Star Badge (Protruding Top Right) -->
+  <path d="M 19.5 1.5 Q 19.5 3.5 17.5 3.5 Q 19.5 3.5 19.5 5.5 Q 19.5 3.5 21.5 3.5 Q 19.5 3.5 19.5 1.5 Z" fill="currentColor"/>
+</svg>

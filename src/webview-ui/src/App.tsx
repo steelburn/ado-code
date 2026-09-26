@@ -28,7 +28,9 @@ interface SanitizedConfig {
   configured: boolean;
   /** ADO is optional — false when the user skipped it in the setup wizard. */
   adoConfigured?: boolean;
+  adoConnectionConfigured?: boolean;
   modelCapabilities?: { vision: boolean; tools: boolean };
+  isEditor?: boolean;
 }
 
 interface AgentInfo {
@@ -67,6 +69,7 @@ function App() {
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
   const [mode, setMode] = useState('inline');
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
+  const [chatMovedToEditor, setChatMovedToEditor] = useState(false);
   // Ordered live trace of the current turn: thinking blocks and tool cards in
   // the order the loop produced them. Each complete reasoning step from the
   // agentic loop (newBlock) is its own entry, so thinking stays BETWEEN the
@@ -373,7 +376,7 @@ function App() {
           // fully configured (no creds in the message → host uses saved
           // settings). ADO may be skipped — never auto-fetch projects when it
           // isn't configured (the host would only error out).
-          if (cfg.configured && cfg.adoConfigured === true && !projectsRequestedRef.current) {
+          if (cfg.configured && (cfg.adoConnectionConfigured ?? cfg.adoConfigured) === true && !projectsRequestedRef.current) {
             projectsRequestedRef.current = true;
             setProjectsLoading(true);
             vscode.postMessage({ type: 'fetchProjects' });
@@ -412,6 +415,12 @@ function App() {
         case 'sessionList':
           setSessions(msg.sessions);
           setActiveSessionId(msg.activeId);
+          if (msg.activeId) {
+            const active = msg.sessions.find(s => s.id === msg.activeId);
+            if (active && Array.isArray(active.messages) && active.messages.length > 0) {
+              setMessages(prev => (prev.length === 0 ? active.messages : prev));
+            }
+          }
           break;
         case 'sessionSwitched':
           setMessages(msg.session.messages.map(m => ({ role: m.role, content: m.content })));
@@ -518,6 +527,10 @@ function App() {
           if (msg.text) {
             setDraft(prev => (prev ? prev + '\n\n' : '') + msg.text);
           }
+          break;
+
+        case 'chatMovedToEditor':
+          setChatMovedToEditor(msg.inEditor);
           break;
       }
     };
@@ -704,6 +717,12 @@ function App() {
       case 'openSettings':
         setShowConfig(true);
         break;
+      case 'moveChatToEditor':
+        vscode.postMessage({ type: 'moveChatToEditor' });
+        break;
+      case 'moveChatToSidebar':
+        vscode.postMessage({ type: 'moveChatToSidebar' });
+        break;
       case 'clearAllSessions':
         handleDeleteAllSessions();
         break;
@@ -798,6 +817,25 @@ function App() {
     );
   }
 
+  if (chatMovedToEditor && !config?.isEditor) {
+    return (
+      <div className="app chat-layout">
+        <div className="chat-moved-placeholder">
+          <div className="chat-moved-icon">↗️</div>
+          <h2>Chat is open in the Editor Area</h2>
+          <p>The conversation is currently active in an editor tab.</p>
+          <button
+            className="btn btn-primary chat-moved-btn"
+            onClick={() => vscode.postMessage({ type: 'moveChatToSidebar' })}
+            type="button"
+          >
+            ↙️ Return Chat to Side Bar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app chat-layout">
       {/* Task detail panel (collapsible) */}
@@ -814,7 +852,7 @@ function App() {
           so keep nudging until it's set up (banner reappears on reload / after
           closing Configuration if still skipped; dismissed only for this page
           session via the ✕ button). */}
-      {config.configured && config.adoConfigured !== true && !adoReminderDismissed && (
+      {config.configured && !(config.adoConnectionConfigured ?? config.adoConfigured) && !adoReminderDismissed && (
         <div className="ado-not-configured-banner">
           <span className="ado-not-configured-text">
             <strong>Azure DevOps isn't configured</strong> — work items, ADO task tracking, branches, and pull requests are disabled.
@@ -866,6 +904,11 @@ function App() {
         />
         <KebabMenu
           items={[
+            {
+              label: config?.isEditor ? 'Return Chat to Side Bar' : 'Move chat into Editor Area',
+              icon: config?.isEditor ? '↙️' : '↗️',
+              action: config?.isEditor ? 'moveChatToSidebar' : 'moveChatToEditor',
+            },
             { label: 'Refresh Work Items', icon: '↻', action: 'refreshWorkItems' },
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
             { label: 'Configuration…', icon: '⚙', action: 'openSettings' },

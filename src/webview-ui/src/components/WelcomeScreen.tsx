@@ -205,7 +205,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
               <strong>Azure DevOps isn't configured.</strong> Work items, ADO task tracking, branches, and pull requests are disabled.
             </div>
             <div>
-              You can set it up later anytime from the <strong>⋯ menu → Configuration</strong>, or by re-running this wizard.
+              You can set it up later anytime from the <strong>ADO Code menu → Configuration</strong>, or by re-running this wizard.
             </div>
             <button className="btn btn-secondary" onClick={() => setAdoSkipped(false)} type="button">
               Configure now
@@ -246,7 +246,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
                   value={form.adoProject}
                   onChange={e => update('adoProject', e.target.value)}
                 >
-                  <option value="">Select a project…</option>
+                  <option value="">None (no project)</option>
                   {projects.map(p => (
                     <option key={p.id} value={p.name}>{p.name}</option>
                   ))}
@@ -279,7 +279,11 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
 
       {form.llmApiKey && !adoFormComplete && (
         <div className="welcome-save-hint">
-          ⚠ You're about to continue without Azure DevOps — work items, task tracking, and PR flows will stay disabled. You can configure ADO later from the ⋯ menu → Configuration.
+          {form.adoOrganization && form.adoPat && !form.adoProject ? (
+            <>ℹ Continuing without an attached ADO project — you can select a project anytime from the header dropdown.</>
+          ) : (
+            <>⚠ You're about to continue without Azure DevOps — work items, task tracking, and PR flows will stay disabled. You can configure ADO later from the ADO Code menu → Configuration.</>
+          )}
         </div>
       )}
 

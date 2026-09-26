@@ -7,6 +7,7 @@ export async function run(): Promise<void> {
     ui: 'tdd',
     color: true,
     timeout: 20000,
+    grep: process.env.MOCHA_GREP,
   });
 
   const testsRoot = __dirname;

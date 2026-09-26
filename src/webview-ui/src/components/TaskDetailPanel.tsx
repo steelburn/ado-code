@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import DOMPurify from 'dompurify';
+import { processMermaidInContainer } from '../utils/mermaid';
 
 interface TaskDetail {
   id: number;
@@ -52,6 +53,10 @@ function getCommentDate(c: { date?: string; createdDate?: string }): string | un
 function renderAdoHtml(text: string): string {
   if (!text) return '';
   let html = text;
+  // Convert ```mermaid ... ``` code fences inside ADO descriptions/comments
+  html = html.replace(/```mermaid\s*\n([\s\S]*?)```/gi, (_match, code) => {
+    return `<pre><code class="language-mermaid">${code.trim()}</code></pre>`;
+  });
   // Strip dangerous tags (script, iframe, object, embed, form, input, style)
   html = html.replace(/<\s*(script|iframe|object|embed|form|input|style|textarea|select|button)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '');
   html = html.replace(/<\s*(script|iframe|object|embed|form|input|style|textarea|select|button)[^>]*\/?>/gi, '');
@@ -72,6 +77,7 @@ function AdoHtmlContent({ html }: { html: string }) {
   useEffect(() => {
     if (ref.current) {
       ref.current.innerHTML = DOMPurify.sanitize(renderAdoHtml(html));
+      processMermaidInContainer(ref.current);
     }
   }, [html]);
   return <div ref={ref} className="task-detail-section-content" />;

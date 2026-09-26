@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AgentRun } from '../agents/types';
 import { escapeHtml, renderMarkdown } from './markdown';
 import { agentDisplayName } from './AgentProgressPanel';
+import { promptAndSaveSvg } from './svgExport';
 
 /**
  * Webview panel that shows agent run summaries in the editor area.
@@ -18,7 +19,7 @@ export class AgentSummaryPanel {
    * already exists, reveal it (and refresh its content) instead of creating
    * a duplicate.
    */
-  public static show(_context: vscode.ExtensionContext, run: AgentRun, summary: string): void {
+  public static show(context: vscode.ExtensionContext, run: AgentRun, summary: string): void {
     if (!summary) return;
 
     const panelId = `adoCode.agentSummary.${run.id}`;
@@ -27,7 +28,7 @@ export class AgentSummaryPanel {
     const existing = AgentSummaryPanel.panels.get(panelId);
     if (existing) {
       existing.reveal(vscode.ViewColumn.Beside);
-      existing.webview.html = AgentSummaryPanel.renderHtml(run, summary);
+      existing.webview.html = AgentSummaryPanel.renderHtml(run, summary, existing.webview, context);
       return;
     }
 
@@ -35,10 +36,20 @@ export class AgentSummaryPanel {
       panelId,
       title,
       vscode.ViewColumn.Beside,
-      { enableScripts: false, retainContextWhenHidden: true }
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [context.extensionUri],
+      }
     );
 
-    panel.webview.html = AgentSummaryPanel.renderHtml(run, summary);
+    panel.webview.onDidReceiveMessage(async (msg) => {
+      if (msg?.type === 'saveSvg' && typeof msg.content === 'string') {
+        await promptAndSaveSvg(msg.content, msg.defaultName);
+      }
+    });
+
+    panel.webview.html = AgentSummaryPanel.renderHtml(run, summary, panel.webview, context);
     panel.onDidDispose(() => AgentSummaryPanel.panels.delete(panelId));
     AgentSummaryPanel.panels.set(panelId, panel);
   }
@@ -52,7 +63,12 @@ export class AgentSummaryPanel {
     return `${statusIcon} ${agentLabel}${wiLabel}`;
   }
 
-  private static renderHtml(run: AgentRun, summary: string): string {
+  private static renderHtml(
+    run: AgentRun,
+    summary: string,
+    webview: vscode.Webview,
+    context: vscode.ExtensionContext
+  ): string {
     const agentLabel = agentDisplayName(run.agent);
     const statusColor = run.status === 'succeeded' ? '#4caf50' :
                         run.status === 'failed' ? '#f44336' :
@@ -64,11 +80,16 @@ export class AgentSummaryPanel {
     // Convert markdown-ish summary to HTML
     const summaryHtml = renderMarkdown(summary);
 
+    const mermaidScriptUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(context.extensionUri, 'webview-ui-dist', 'mermaid.js')
+    );
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource};">
   <title>${escapeHtml(AgentSummaryPanel.formatTitle(run))}</title>
   <style>
     body {
@@ -164,6 +185,7 @@ export class AgentSummaryPanel {
     <h2>Summary</h2>
     <div class="summary-content">${summaryHtml}</div>
   </div>
+  <script src="${mermaidScriptUri}"></script>
 </body>
 </html>`;
   }
