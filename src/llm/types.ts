@@ -44,7 +44,7 @@ export interface LlmProvider {
    * back to the local heuristic. Not all providers expose a free endpoint
    * (Anthropic does; OpenAI-compatible gateways vary).
    */
-  countTokens?(messages: LlmMessage[], config: LlmConfig): Promise<number | undefined>;
+  countTokens?(messages: LlmMessage[], config: LlmConfig, tools?: LlmTool[]): Promise<number | undefined>;
   /** Model ids (+ capability hints when the gateway exposes them) — wizard model picker. */
   listModels?(config: LlmConfig): Promise<ModelInfo[]>;
 }
@@ -86,6 +86,8 @@ export interface LlmAgenticResult {
    *  own. The host uses this to present the turn as stopped-by-limit rather
    *  than as a normal completion. */
   reachedIterationLimit?: boolean;
+  /** True when the loop was terminated early due to a detected degenerate tool loop. */
+  loopDetected?: boolean;
 }
 
 /**

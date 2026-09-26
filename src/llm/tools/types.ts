@@ -43,21 +43,23 @@ export type ToolName =
   | 'list_workspace_memory'
   | 'set_memory'
   | 'execute_skill'
+  | 'delete_file'
 
 /**
  * Type map defining the native (typed) argument structure for each tool.
  * Tools not listed here will fall back to `Record<string, unknown>`.
  */
 export interface NativeToolArgs {
-  read_file: { path: string; offset?: number; limit?: number }
-  search_files: { path?: string; regex: string; file_pattern?: string | null; limit?: number }
+  read_file: { path?: string; paths?: string[]; startLine?: number; endLine?: number; offset?: number; limit?: number }
+  search_files: { path?: string; regex: string; flags?: string; file_pattern?: string | null; limit?: number }
   edit_file: { path: string; oldText: string; newText: string }
   execute_command: { command: string; cwd?: string; timeout?: number }
   write_to_file: { path: string; content: string }
+  delete_file: { path: string; recursive?: boolean }
   get_work_items: Record<string, never>
   get_work_item: { id: number }
   get_selection: Record<string, never>
-  list_workspace: { glob?: string }
+  list_workspace: { glob?: string; details?: boolean }
   apply_diff: { path: string; diff: string }
   update_work_item_state: { id: number; state: string }
   add_comment: { id: number; text: string }
@@ -91,7 +93,7 @@ export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado' | 'memory'
 /** Maps each ToolGroup to its member ToolNames. */
 export interface ToolGroupMap {
   read: ('read_file' | 'search_files' | 'get_selection' | 'list_workspace' | 'execute_skill')[]
-  write: ('edit_file' | 'write_to_file' | 'apply_diff')[]
+  write: ('edit_file' | 'write_to_file' | 'apply_diff' | 'delete_file')[]
   execute: ('execute_command' | 'delegate_to_agent')[]
   mcp: never[]
   ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment' | 'create_work_item')[]
@@ -101,7 +103,7 @@ export interface ToolGroupMap {
 /** Default group-to-tools mapping. */
 export const TOOL_GROUP_MAP: ToolGroupMap = {
   read: ['read_file', 'search_files', 'get_selection', 'list_workspace', 'execute_skill'],
-  write: ['edit_file', 'write_to_file', 'apply_diff'],
+  write: ['edit_file', 'write_to_file', 'apply_diff', 'delete_file'],
   execute: ['execute_command', 'delegate_to_agent'],
   mcp: [],
   ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment', 'create_work_item'],
@@ -115,6 +117,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   edit_file: 'Edit file',
   execute_command: 'Run command',
   write_to_file: 'Write file',
+  delete_file: 'Delete file',
   get_work_items: 'List work items',
   get_work_item: 'Get work item',
   get_selection: 'Get selection',

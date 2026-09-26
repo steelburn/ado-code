@@ -114,8 +114,10 @@ function App() {
   const [attachedFiles, setAttachedFiles] = useState<Array<{ name: string; content: string }>>([]);
   // Pending consent: the agent (inline mode) wants to run a mutating tool.
   const [consent, setConsent] = useState<ConsentRequest | null>(null);
-  // Pending confirmation: in-chat card replacing native VS Code dialogs.
-  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+  // Pending confirmation: in-chat card replacing native VS Code dialogs,
+  // tracked per session so switching away and back preserves open prompts.
+  const [confirmationsBySession, setConfirmationsBySession] = useState<Record<string, ConfirmationRequest | null>>({});
+  const confirmationsBySessionRef = useRef<Record<string, ConfirmationRequest | null>>({});
   // Wizard model picker (LLM provider) — ids + optional live capability hints
   const [models, setModels] = useState<Array<{ id: string; vision?: boolean; tools?: boolean }>>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -127,6 +129,10 @@ function App() {
   // Session history
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+
+  const currentSessionKey = activeSessionId || 'default';
+  const confirmation = confirmationsBySession[currentSessionKey] ?? null;
 
   // Configuration page
   const [showConfig, setShowConfig] = useState(false);
@@ -328,16 +334,23 @@ function App() {
           });
           break;
 
-        case 'confirmationRequest':
+        case 'confirmationRequest': {
           // Generic in-chat confirmation card (replaces native dialogs).
-          setConfirmation({
+          const curKey = activeSessionIdRef.current || 'default';
+          const req: ConfirmationRequest = {
             requestId: msg.requestId,
             title: msg.title,
             description: msg.description,
             options: msg.options,
             expiresAt: msg.expiresAt,
+          };
+          setConfirmationsBySession(prev => {
+            const next = { ...prev, [curKey]: req };
+            confirmationsBySessionRef.current = next;
+            return next;
           });
           break;
+        }
 
         case 'promptExpired':
           // A consent/confirmation request timed out and the host already
@@ -349,22 +362,43 @@ function App() {
             setConsent(prev => (prev?.requestId === msg.requestId ? null : prev));
           }
           if (msg.action === 'cancel') {
-            setConfirmation(prev => (prev?.requestId === msg.requestId ? null : prev));
+            setConfirmationsBySession(prev => {
+              let changed = false;
+              const next = { ...prev };
+              for (const [k, v] of Object.entries(next)) {
+                if (v?.requestId === msg.requestId) {
+                  delete next[k];
+                  changed = true;
+                }
+              }
+              if (changed) {
+                confirmationsBySessionRef.current = next;
+                return next;
+              }
+              return prev;
+            });
           }
           break;
 
-        case 'choicePrompt':
+        case 'choicePrompt': {
           // AI detected a choice prompt — show as inline confirmation card.
           // isChoice marks it: clicking an option sends the choice as a user
           // message (the LLM then acts on it as a follow-up turn).
-          setConfirmation({
+          const curKey = activeSessionIdRef.current || 'default';
+          const req: ConfirmationRequest = {
             requestId: msg.requestId,
             title: 'Choose an option',
             description: msg.question,
             options: msg.options,
             isChoice: true,
+          };
+          setConfirmationsBySession(prev => {
+            const next = { ...prev, [curKey]: req };
+            confirmationsBySessionRef.current = next;
+            return next;
           });
           break;
+        }
 
         case 'config': {
           const cfg = msg.config as unknown as SanitizedConfig;
@@ -409,12 +443,14 @@ function App() {
 
         case 'historyRestored':
           setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
+          setConsent(null);
           finishTurnState();
           break;
 
         case 'sessionList':
           setSessions(msg.sessions);
           setActiveSessionId(msg.activeId);
+          activeSessionIdRef.current = msg.activeId;
           if (msg.activeId) {
             const active = msg.sessions.find(s => s.id === msg.activeId);
             if (active && Array.isArray(active.messages) && active.messages.length > 0) {
@@ -425,6 +461,8 @@ function App() {
         case 'sessionSwitched':
           setMessages(msg.session.messages.map(m => ({ role: m.role, content: m.content })));
           setActiveSessionId(msg.session.id);
+          activeSessionIdRef.current = msg.session.id;
+          setConsent(null);
           finishTurnState();
           break;
 
@@ -556,6 +594,14 @@ function App() {
     if (saved?.attachedFiles && Array.isArray(saved.attachedFiles) && saved.attachedFiles.length > 0) {
       setAttachedFiles(saved.attachedFiles);
     }
+    if (saved?.confirmationsBySession) {
+      setConfirmationsBySession(saved.confirmationsBySession);
+      confirmationsBySessionRef.current = saved.confirmationsBySession;
+    }
+    if (saved?.activeSessionId) {
+      setActiveSessionId(saved.activeSessionId);
+      activeSessionIdRef.current = saved.activeSessionId;
+    }
 
     vscode.postMessage({ type: 'getConfig' });
     vscode.postMessage({ type: 'listAgents' });
@@ -573,8 +619,10 @@ function App() {
       showProjectWizard,
       showSkillCatalog,
       attachedFiles,
+      confirmationsBySession,
+      activeSessionId,
     });
-  }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles]);
+  }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles, confirmationsBySession, activeSessionId]);
 
   // Top error banner auto-dismiss: every host error funnels into the single
   // `error` state, so one timer covers them all. Restarted whenever a new
@@ -612,6 +660,12 @@ function App() {
     // A new turn aborts any in-flight run — the host denies the pending
     // prompt; drop the card here too, and reset all turn-live state.
     setConsent(null);
+    setConfirmationsBySession(prev => {
+      const curKey = activeSessionIdRef.current || 'default';
+      const next = { ...prev, [curKey]: null };
+      confirmationsBySessionRef.current = next;
+      return next;
+    });
     finishTurnState();
     // Activity indicator for specific commands
     if (content.trim().toLowerCase().startsWith('/generate-tasks')) {
@@ -629,8 +683,14 @@ function App() {
     // message (same flow as typing it) so the LLM executes the choice.
     // The host never registered a confirmBroker request for choice cards,
     // so a confirmationResponse there would be a no-op.
-    const wasChoice = confirmation?.isChoice === true;
-    setConfirmation(null);
+    const curKey = activeSessionIdRef.current || 'default';
+    const curConf = confirmationsBySessionRef.current[curKey];
+    const wasChoice = curConf?.isChoice === true;
+    setConfirmationsBySession(prev => {
+      const next = { ...prev, [curKey]: null };
+      confirmationsBySessionRef.current = next;
+      return next;
+    });
     if (wasChoice) {
       setMessages(prev => [...prev, { role: 'user', content: value }]);
       setLoading(true);
@@ -638,7 +698,32 @@ function App() {
       return;
     }
     vscode.postMessage({ type: 'confirmationResponse', requestId, value });
-  }, [confirmation]);
+  }, []);
+
+  const handleConfirmationDismiss = useCallback((requestId: string) => {
+    const curKey = activeSessionIdRef.current || 'default';
+    const curConf = confirmationsBySessionRef.current[curKey];
+    const wasChoice = curConf?.isChoice === true;
+    setConfirmationsBySession(prev => {
+      const next = { ...prev, [curKey]: null };
+      confirmationsBySessionRef.current = next;
+      return next;
+    });
+    if (!wasChoice) {
+      vscode.postMessage({ type: 'confirmationResponse', requestId, value: '' });
+    }
+  }, []);
+
+  const handleConfirmationToggleMinimize = useCallback((requestId: string, isMin: boolean) => {
+    const curKey = activeSessionIdRef.current || 'default';
+    setConfirmationsBySession(prev => {
+      const cur = prev[curKey];
+      if (!cur || cur.requestId !== requestId) return prev;
+      const next = { ...prev, [curKey]: { ...cur, minimized: isMin } };
+      confirmationsBySessionRef.current = next;
+      return next;
+    });
+  }, []);
 
   const handleClear = useCallback(() => {
     vscode.postMessage({ type: 'clearConversation' });
@@ -646,6 +731,13 @@ function App() {
     // Clear must fully reset the input: a stuck spinner (hung LLM stream)
     // would otherwise leave the send button dead after clearing.
     setLoading(false);
+    setConsent(null);
+    setConfirmationsBySession(prev => {
+      const curKey = activeSessionIdRef.current || 'default';
+      const next = { ...prev, [curKey]: null };
+      confirmationsBySessionRef.current = next;
+      return next;
+    });
     setDraft('');
   }, []);
 
@@ -681,6 +773,8 @@ function App() {
 
   // Session history callbacks
   const handleSwitchSession = useCallback((sessionId: string) => {
+    setActiveSessionId(sessionId);
+    activeSessionIdRef.current = sessionId;
     vscode.postMessage({ type: 'switchSession', sessionId });
   }, []);
 
@@ -697,12 +791,21 @@ function App() {
 
   const handleDeleteSession = useCallback((sessionId: string) => {
     vscode.postMessage({ type: 'deleteSession', sessionId });
+    setConfirmationsBySession(prev => {
+      const next = { ...prev };
+      delete next[sessionId];
+      confirmationsBySessionRef.current = next;
+      return next;
+    });
   }, []);
 
   const handleDeleteAllSessions = useCallback(() => {
     vscode.postMessage({ type: 'clearAllSessions' });
     setMessages([]);
     setActiveSessionId(null);
+    activeSessionIdRef.current = null;
+    setConfirmationsBySession({});
+    confirmationsBySessionRef.current = {};
   }, []);
 
   // ── Kebab menu actions ───────────────────────────────────────
@@ -963,10 +1066,20 @@ function App() {
         <ConfirmationCard
           request={confirmation}
           onRespond={handleConfirmationResponse}
+          onDismiss={handleConfirmationDismiss}
+          onToggleMinimize={handleConfirmationToggleMinimize}
           onExpired={(requestId) => {
             // Timeout auto-cancel: the host already resolved the wait as
             // cancelled — just remove the card (never fabricate a value).
-            if (confirmation?.requestId === requestId) setConfirmation(null);
+            setConfirmationsBySession(prev => {
+              const curKey = activeSessionIdRef.current || 'default';
+              if (prev[curKey]?.requestId === requestId) {
+                const next = { ...prev, [curKey]: null };
+                confirmationsBySessionRef.current = next;
+                return next;
+              }
+              return prev;
+            });
           }}
         />
       )}
@@ -983,6 +1096,13 @@ function App() {
         onStop={() => {
           vscode.postMessage({ type: 'stopGeneration' });
           setLoading(false);
+          setConsent(null);
+          setConfirmationsBySession(prev => {
+            const curKey = activeSessionIdRef.current || 'default';
+            const next = { ...prev, [curKey]: null };
+            confirmationsBySessionRef.current = next;
+            return next;
+          });
         }}
         onClear={handleClear}
         onModeSelect={handleModeSelect}

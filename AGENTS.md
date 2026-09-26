@@ -39,7 +39,7 @@ Composition: src/services.ts createServices() builds: ado, git, changelog, agent
 
 ### LLM Layer
 client.ts — streaming chat, tool-calling
-agentic.ts — multi-iteration tool loop (parallel batch execution + consent-aware batching); DEFAULT_MAX_ITERATIONS lives in src/shared/agenticLimits.ts
+agentic.ts — multi-iteration tool loop (parallel batch execution + consent-aware batching; ToolLoopDetector with identical call and overlapping read loop prevention and circuit breaker); DEFAULT_MAX_ITERATIONS lives in src/shared/agenticLimits.ts
 tools.ts — mode-gated dispatch (inline/plan/act/yolo); single home for all tool implementations
 tools/ — types.ts only (tool names/params/groups)
 providers/ — BaseProvider, openai, anthropic
@@ -110,11 +110,12 @@ concurrently, with a per-file mutation queue for same-file edits and a
 truncated-response guard
 (stopReason length/max_tokens ⇒ fail the batch, never execute partial args).
 Tool names: get_work_items, get_work_item (single `id` OR batch `ids` array),
-read_file, edit_file (multi-edit `edits` array), write_to_file,
-search_files (grep with per-line 500-char truncation), apply_diff,
+read_file (single `path` OR batch `paths` array, 400-line default window, in-turn cache),
+edit_file (multi-edit `edits` array), write_to_file, delete_file,
+search_files (grep with per-line 500-char truncation, regex parsing with inline flag sanitization and explicit flags), apply_diff,
 run_terminal_command (single `command` OR batch `commands` array),
 delegate_to_agent, restore_checkpoint, set_memory,
-execute_skill (loads skill instructions, read-only), read/write/list_workspace_memory,
+execute_skill (loads skill instructions, read-only), list_workspace (glob + `details: true` file sizes), read/write/list_workspace_memory,
 commit_worktree, push_worktree, create_pull_request, resolve_pr_conflicts,
 mcp__<server>__<tool>
 

@@ -11,7 +11,7 @@ import { AgentProgressPanel, agentDisplayName } from './webview/AgentProgressPan
 import { AgentDetailPanel } from './webview/AgentDetailPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
-import { selectActiveOrganization, getSettings, getActiveOrg, llmConfigFromSettings } from './config/settings';
+import { selectActiveOrganization, getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from './config/settings';
 import { LlmClient } from './llm/client';
 import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { GitService } from './git/GitService';
@@ -776,7 +776,7 @@ Generate ONLY the commit message, nothing else.`;
       });
       if (picked) {
         const config = vscode.workspace.getConfiguration('adoCode');
-        await config.update('mode', picked.value, vscode.ConfigurationTarget.Global);
+        await updateSettingRespectingScope(config, 'mode', picked.value);
         vscode.window.showInformationMessage(`Mode set to ${picked.label}`);
       }
     })
@@ -790,7 +790,7 @@ Generate ONLY the commit message, nothing else.`;
       const idx = cycle.indexOf(current as typeof cycle[number]);
       const next = cycle[(idx + 1) % cycle.length];
       const config = vscode.workspace.getConfiguration('adoCode');
-      await config.update('mode', next, vscode.ConfigurationTarget.Global);
+      await updateSettingRespectingScope(config, 'mode', next);
       vscode.window.showInformationMessage(`Mode: ${next}`);
       statusProvider.refreshLight();
     })
@@ -878,7 +878,7 @@ Generate ONLY the commit message, nothing else.`;
     vscode.commands.registerCommand('adoCode.changeWorkItemState', async (node?: WorkItemNode) => {
       if (!node) return;
       const active = getActiveOrg(context, getSettings());
-      if (!active.name || !active.project || !getSettings().adoPat) {
+      if (!active.name || !active.project || !active.pat) {
         vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
         return;
       }
@@ -928,7 +928,7 @@ Generate ONLY the commit message, nothing else.`;
     vscode.commands.registerCommand('adoCode.takeOwnership', async (node?: WorkItemNode) => {
       if (!node) return;
       const active = getActiveOrg(context, getSettings());
-      if (!active.name || !active.project || !getSettings().adoPat) {
+      if (!active.name || !active.project || !active.pat) {
         vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
         return;
       }
@@ -950,7 +950,7 @@ Generate ONLY the commit message, nothing else.`;
     vscode.commands.registerCommand('adoCode.reassignWorkItem', async (node?: WorkItemNode) => {
       if (!node) return;
       const active = getActiveOrg(context, getSettings());
-      if (!active.name || !active.project || !getSettings().adoPat) {
+      if (!active.name || !active.project || !active.pat) {
         vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
         return;
       }
@@ -1111,7 +1111,8 @@ Generate ONLY the commit message, nothing else.`;
 
   // Auto-fetch work items on activation if already configured
   const settings = getSettings();
-  if (settings.adoOrganization && settings.adoProject && settings.adoPat) {
+  const active = getActiveOrg(context, settings);
+  if (active.name && active.project && active.pat) {
     chatProvider.refreshWorkItems();
   }
 
@@ -1548,6 +1549,7 @@ Generate ONLY the commit message, nothing else.`;
         // Only rebuild services (and re-detect agents) when ADO/org/PAT
         // or agent-relevant config changes. Mode-only changes are debounced.
         const rebuildKeys = [
+          'adoCode.organizations',
           'adoCode.adoOrganization',
           'adoCode.adoProject',
           'adoCode.adoPat',
@@ -1567,6 +1569,8 @@ Generate ONLY the commit message, nothing else.`;
         } else {
           statusProvider.debouncedRefresh();
         }
+        // Recommendation 2: Always broadcast updated configuration to webview
+        chatProvider?.postConfig();
       }
     })
   );

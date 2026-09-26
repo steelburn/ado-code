@@ -149,8 +149,14 @@ export class OpenAiProvider implements LlmProvider {
    * a (tiny) model call, the HOST throttles it and uses it only for display /
    * periodic calibration — never on hot paths.
    */
-  async countTokens(messages: LlmMessage[], config: LlmConfig): Promise<number | undefined> {
+  async countTokens(messages: LlmMessage[], config: LlmConfig, tools?: LlmTool[]): Promise<number | undefined> {
     try {
+      // Reasoning models (o1, o3, etc.) reject max_tokens: 1 and require large reasoning token minimums.
+      // Degrade gracefully to local heuristic.
+      if (/^(o1|o3|o4)/i.test(config.model)) {
+        return undefined;
+      }
+
       const nativeMessages = messages.map(m => {
         if (m.role === 'tool' && m.toolCallId) {
           return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
@@ -169,16 +175,25 @@ export class OpenAiProvider implements LlmProvider {
         return { role: m.role, content: convertContent(m.content) };
       });
 
+      const body: Record<string, any> = {
+        model: config.model,
+        messages: nativeMessages,
+        max_tokens: 1,
+        // Non-streaming so the completion returns synchronous usage.
+        stream: false,
+      };
+
+      if (tools && tools.length > 0) {
+        body.tools = tools.map(t => ({
+          type: 'function',
+          function: { name: t.name, description: t.description, parameters: t.parameters },
+        }));
+      }
+
       const response = await fetch(`${config.apiUrl}/chat/completions`, {
         method: 'POST',
         headers: baseHeaders(config),
-        body: JSON.stringify({
-          model: config.model,
-          messages: nativeMessages,
-          max_tokens: 1,
-          // Non-streaming so the completion returns synchronous usage.
-          stream: false,
-        }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) return undefined;
       const parsed = (await response.json()) as any;

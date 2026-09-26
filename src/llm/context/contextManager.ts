@@ -167,9 +167,12 @@ export class ContextManager {
    * Returns the new (possibly shorter) message array.
    */
   truncateMessages(messages: LlmMessage[]): LlmMessage[] {
-    // Fast path — already fits
+    // Effective message budget accounts for overhead (system prompt + tools)
+    const messageBudget = Math.max(0, this.maxTokens - this.overheadTokens);
+
+    // Fast path — already fits within available budget
     const totalTokens = countMessageTokens(messages);
-    if (totalTokens <= this.maxTokens) {
+    if (totalTokens <= messageBudget) {
       return messages;
     }
 
@@ -201,7 +204,7 @@ export class ContextManager {
     let tokensBudget = totalTokens;
 
     for (const idx of removableIndices) {
-      if (tokensBudget <= this.maxTokens) {
+      if (tokensBudget <= messageBudget) {
         break;
       }
       tokensBudget -= countMessageTokens([body[idx]]);
@@ -210,12 +213,12 @@ export class ContextManager {
 
     // If we still overflow after dropping all removable messages, also drop
     // some recent messages (still respecting priority).
-    if (tokensBudget > this.maxTokens) {
+    if (tokensBudget > messageBudget) {
       const recentArray = Array.from(recentIndices).sort((a, b) => a - b);
       // Drop from the oldest recent pair first
       for (let i = 0; i < recentArray.length; i++) {
         const idx = recentArray[i];
-        if (tokensBudget <= this.maxTokens) {
+        if (tokensBudget <= messageBudget) {
           break;
         }
         tokensBudget -= countMessageTokens([body[idx]]);

@@ -57,4 +57,44 @@ suite('Token counter (0.6.5: tool + image aware)', () => {
     const base = countMessageTokens([{ role: 'user', content: 'hi' }]);
     assert.strictEqual(base, countTokens('hi') + 4, 'role overhead applied');
   });
+
+  test('CJK characters are weighted realistically (~1.5 tokens/char) rather than 3.5 chars/token', () => {
+    const cjk = '你好世界'; // 4 CJK chars
+    const tokens = countTokens(cjk);
+    // 4 CJK chars in BPE should be ~6 tokens, not ceil(4/3.5) = 2
+    assert.strictEqual(tokens, 6);
+  });
+
+  test('estimateContextWindow: o1-mini matches 128k, not o1 (200k), and demo1 does not match o1', () => {
+    const { estimateContextWindow } = require('../../../llm/context/tokenCounter');
+    assert.strictEqual(estimateContextWindow({ apiModelId: 'o1-mini' }), 128_000, 'o1-mini must match o1-mini 128k');
+    assert.strictEqual(estimateContextWindow({ apiModelId: 'o1' }), 200_000, 'o1 matches 200k');
+    assert.strictEqual(estimateContextWindow({ apiModelId: 'demo1' }), 128_000, 'demo1 should not match o1');
+    assert.strictEqual(estimateContextWindow({ apiModelId: 'claude-3-5-sonnet' }), 200_000);
+  });
+
+  test('ContextManager: truncateMessages respects overheadTokens and truncates properly', () => {
+    const { ContextManager } = require('../../../llm/context/contextManager');
+    // maxTokens: 1000, overheadTokens: 400 => available message budget: 600
+    const cm = new ContextManager(1000);
+    cm.setOverheadTokens(400);
+
+    // Messages with ~700 tokens
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'a'.repeat(800) }, // ~200 tokens
+      { role: 'assistant', content: 'b'.repeat(800) }, // ~200 tokens
+      { role: 'user', content: 'c'.repeat(800) }, // ~200 tokens
+      { role: 'assistant', content: 'd'.repeat(800) }, // ~200 tokens
+    ];
+
+    cm.trackMessages(messages);
+    assert.strictEqual(cm.shouldTruncate(), true, 'shouldTruncate returns true');
+
+    const truncated = cm.truncateMessages(messages);
+    // Truncated messages plus overhead must fit within 1000 tokens
+    const newMsgTokens = countMessageTokens(truncated);
+    assert.ok(newMsgTokens + 400 <= 1000, `newMsgTokens (${newMsgTokens}) + 400 <= 1000`);
+    assert.ok(truncated.some((m: any) => m.content.includes('[Context truncated:')), 'summary message inserted');
+  });
 });

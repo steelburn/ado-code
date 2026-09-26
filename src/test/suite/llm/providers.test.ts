@@ -173,6 +173,37 @@ suite('provider native token counting', () => {
     assert.strictEqual(tokens, undefined);
   });
 
+  test('Anthropic count_tokens translates tool calls and results without emitting role: tool', async () => {
+    let capturedBody: any = null;
+    const fetchStub = async (_url: any, init: any) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ input_tokens: 1500 }) };
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const provider = new AnthropicProvider();
+    const messages: LlmMessage[] = [
+      { role: 'user', content: 'read a file' },
+      { role: 'assistant', content: 'reading', toolCalls: [{ id: 'tc1', name: 'read_file', arguments: '{"path":"a.ts"}' }] },
+      { role: 'tool', content: 'file contents', toolCallId: 'tc1' },
+    ];
+    const tokens = await provider.countTokens!(messages, { ...config, provider: 'anthropic', apiUrl: 'https://api.anthropic.com' }, [
+      { name: 'read_file', description: 'read', parameters: { type: 'object' } }
+    ]);
+    assert.strictEqual(tokens, 1500);
+    // Anthropic API requires roles to be user or assistant only — never 'tool'
+    assert.ok(capturedBody.messages.every((m: any) => m.role === 'user' || m.role === 'assistant'), 'no role: tool emitted');
+    // Assistant message contains tool_use block
+    const asstMsg = capturedBody.messages.find((m: any) => m.role === 'assistant');
+    assert.ok(asstMsg.content.some((b: any) => b.type === 'tool_use' && b.id === 'tc1'), 'tool_use block present');
+    // Tool result is packed as tool_result block in user turn
+    const userResultMsg = capturedBody.messages[capturedBody.messages.length - 1];
+    assert.strictEqual(userResultMsg.role, 'user');
+    assert.ok(userResultMsg.content.some((b: any) => b.type === 'tool_result' && b.tool_use_id === 'tc1'), 'tool_result block present');
+    // Tools schema is passed
+    assert.ok(Array.isArray(capturedBody.tools) && capturedBody.tools.length === 1);
+  });
+
   test('OpenAI reads usage.prompt_tokens from a minimal completion', async () => {
     let capturedBody: any = null;
     const fetchStub = async (_url: any, init: any) => {
@@ -202,5 +233,17 @@ suite('provider native token counting', () => {
     const provider = new OpenAiProvider();
     const tokens = await provider.countTokens!([{ role: 'user', content: 'hi' }], config);
     assert.strictEqual(tokens, undefined);
+  });
+
+  test('OpenAI count degrades to undefined for reasoning models without issuing HTTP requests', async () => {
+    let called = false;
+    (globalThis as any).fetch = async () => {
+      called = true;
+      return { ok: true, json: async () => ({}) };
+    };
+    const provider = new OpenAiProvider();
+    const tokens = await provider.countTokens!([{ role: 'user', content: 'hi' }], { ...config, model: 'o1-mini' });
+    assert.strictEqual(tokens, undefined);
+    assert.strictEqual(called, false, 'no HTTP request should be dispatched for reasoning model');
   });
 });

@@ -5,6 +5,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { ProjectCreationService } from '../../../webview/ProjectCreationService';
 import { PROJECT_TEMPLATES, ProjectCreationRequest } from '../../../webview-ui/src/components/ProjectCreationWizard/types';
+import { cleanTempDir } from '../utils/cleanTempDir';
 
 // ProjectCreationService is vscode-free — this suite runs under plain mocha
 // (npx mocha --ui tdd out/test/suite/services/projectCreation.test.js) AND
@@ -73,10 +74,10 @@ suite('ProjectCreationService', () => {
   });
 
   teardown(() => {
-    // clean any leftover temp dirs from this run
+    // clean any leftover temp dirs from this run using cleanTempDir helper
     for (const entry of fs.readdirSync(os.tmpdir())) {
       if (entry.startsWith('ado-project-test-') || entry.startsWith('ado-blank-dir-')) {
-        fs.rmSync(path.join(os.tmpdir(), entry), { recursive: true, force: true });
+        cleanTempDir(path.join(os.tmpdir(), entry));
       }
     }
   });

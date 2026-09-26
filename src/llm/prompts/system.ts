@@ -92,13 +92,14 @@ function buildToolGuidelines(mode: ModeConfig): string {
     '- When making several disjoint changes to the SAME file, batch them into ONE `edit_file` call using the `edits` array instead of separate calls.',
     '- To fetch details of SEVERAL work items, pass all their ids in ONE `get_work_item` call via the `ids` array instead of repeated calls.',
     '- To run several quick terminal commands, pass them as the `commands` array in ONE `run_terminal_command` call instead of repeated calls (each command still runs separately, in order; outputs are concatenated).',
+    '- To read SEVERAL files at once, pass all their paths in ONE `read_file` call via the `paths` array instead of repeated calls (max 10 files).',
     '',
   );
 
   const guidelines: Partial<Record<string, string[]>> = {
     read: [
       'When studying an unfamiliar codebase or feature area, orient on directory structure and documentation FIRST, then drill into code: use `list_workspace` to map the layout and read the doc/entry files (README.md, AGENTS.md, docs/, package.json scripts) before individual source files. The cached `Repository Understanding` section in your prompt (when present) already summarizes the layout — start from it instead of re-listing everything.',
-      'Read files lazily and narrowly: prefer `search_files` and targeted `read_file` ranges (startLine/endLine) over whole-file reads, and avoid reading many files up front — everything you read stays in the conversation for the whole session, so read only what the current step actually needs.',
+      'Read files lazily and appropriately: for small or medium files (< 400 lines), read the whole file in ONE call — avoid slicing it into tiny range reads. Use targeted `read_file` ranges (startLine/endLine) only for large files (> 400 lines) where you need a specific section, and avoid reading many files up front — read only what the current step actually needs.',
       'Always check existing patterns and conventions before editing.',
       'When searching, prefer `search_files` over reading files one by one.',
     ],

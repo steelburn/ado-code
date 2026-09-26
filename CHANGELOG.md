@@ -5,6 +5,54 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.6.6] - 2026-09-26
 
 ### Improvements
+- **Per-org PAT support**: `adoCode.organizations` entries now accept an optional `pat?` field — a per-organization Personal Access Token that overrides the global `adoCode.adoPat` for that org. Documented in README settings table and in the `adoCode.organizations` schema.
+- **Windows-safe temp-directory cleanup (`cleanTempDir`)**: New test utility `src/test/suite/utils/cleanTempDir.ts` replaces bare `fs.rmSync` calls in four test suites (`gitService`, `mergeCleanup`, `mergeConflicts`, `projectCreation`). On Windows it first runs `git gc --prune=now` to release Git object locks, then clears read-only attributes via `attrib -R /S /D`, and finally deletes recursively — eliminating the EPERM failures that caused intermittent test teardown errors on Windows.
+- **Claude adapter Windows shim resolution**: Added `resolveBin(name)` helper to `ClaudeAdapter` that walks `PATH` and prefers `claude.cmd` (npm shim) over `claude.exe` over the bare name on Windows, matching the behaviour of the agent registry's detection. `runTask` and `resumeTask` now call `run.bin ?? resolveBin('claude')` instead of hard-coding the bare name, so delegation no longer fails with ENOENT on Windows npm installations.
+- **Release notes moved out of README**: The `## Release Notes` section in `README.md` has been replaced with a link to `CHANGELOG.md` — all version history now lives exclusively in this file.
+
+- **Token counting & context budgeting overhaul**:
+  - **Overhead-aware context truncation**: Fixed `ContextManager.truncateMessages` to budget against `maxTokens - overheadTokens` rather than `maxTokens` alone. Prevents context window overflow crashes when large system prompts, Repository Understanding, or tool schemas push the total request beyond the model's limit.
+  - **Anthropic native token counting fix**: Extracted and unified `formatAnthropicMessages` to translate `role: 'tool'` into native `tool_result` blocks inside user turns and assistant tool calls into `tool_use` blocks. Eliminates silent HTTP 400 Bad Request failures on `/v1/messages/count_tokens` during agentic turns with tool results, and passes tool schemas directly for exact API counting.
+  - **OpenAI reasoning model protection**: Added a guard in `OpenAiProvider.countTokens` to gracefully bypass reasoning models (`o1`, `o3-mini`, `o1-mini`) without issuing synchronous `max_tokens: 1` completion requests, preventing API errors and avoiding wasted inference quota.
+  - **Longest-prefix & delimiter boundary model matching**: `estimateContextWindow` now sorts known models by length descending and checks word boundaries, eliminating prefix collision bugs (e.g. `o1-mini` incorrectly assigned 200k tokens instead of 128k, or unrelated models containing `o1` falsely matching).
+  - **Accurate CJK & dense code token weighting**: Separated ASCII punctuation from non-Latin scripts in heuristic counting. CJK characters are now weighted at ~1.5 tokens/char instead of being misclassified as code symbols at 3.5 chars/token (eliminating 400-500% undercounts), and dense code/JSON symbols use an updated ~2.8 chars/token ratio.
+  - **Dynamic token-density ratio in tool output truncation**: `capToolResult` now calculates character boundaries from the content's actual chars-per-token ratio instead of assuming a flat 4 chars/token, ensuring capped tool outputs do not overshoot the 4,000-token limit.
+- **Dedicated workspace `delete_file` tool**:
+  - Added native, cross-platform `delete_file` mutating tool with workspace path confinement (`resolveWorkspacePath`), recursive directory deletion support, automatic pre-mutation checkpointing (`__auto__`), and in-turn read cache invalidation.
+  - Allows AI models to cleanly remove temporary files and scratch directories without relying on shell scripts or terminal command workarounds.
+- **Quote-aware shell operator sanitization**:
+  - Enhanced terminal command operator check (`hasUnquotedShellOperators`) to strip single- and double-quoted string literals before inspecting for dangerous shell operators (`&`, `|`, `;`, `` ` ``, `$`, `<`, `>`, `(`, `)`, `\r`, `\n`).
+  - Allows commands with legitimate parentheses, semicolons, and symbols inside quoted literals (such as `git commit -m "feat(scope): msg (comment); more"` and `node -e "..."`) to run without being falsely blocked.
+- **Windows `cmd.exe` builtin command routing**:
+  - Added automatic routing for Windows `cmd.exe` builtins (`del`, `erase`, `dir`, `rmdir`, `rd`, `copy`, `move`, `type`, `cls`) to spawn via `process.env.ComSpec || 'cmd.exe'` with `/d /s /c` and `windowsVerbatimArguments: true`.
+  - Fixes `spawn del ENOENT` errors on Windows where internal shell commands lack standalone executables in `PATH`.
+- **Degenerate tool loop detection & circuit breaker**:
+  - Added `ToolLoopDetector` to prevent agentic chat turns from getting trapped in repetitive or infinite tool execution loops that waste context tokens and iteration budgets.
+  - Identical tool call detection:
+    - Normal execution on 1st and 2nd calls with identical signatures.
+    - Warns on 3rd repetition with an in-context warning (`[loop warning]`) instructing the model to synthesize findings.
+    - Blocks execution on 4th+ repetition (`[loop detected — call blocked]`), returning a guidance message to conclude or take an alternative step using context already available.
+  - Overlapping `read_file` detection: tracks sequential line ranges read on the same file, issuing a warning after 2 overlapping reads and blocking after 3.
+  - Circuit breaker: when consecutive iterations have all tool calls blocked by the loop detector, execution terminates early with a forced concluding reply explaining that a repetitive tool loop was detected.
+- **Regex parsing with inline flags & `flags` parameter in `search_files`**:
+  - Added `parseSearchRegex` to sanitize and handle regex search patterns emitted by LLMs.
+  - Automatically detects, strips, and translates inline regex flags (e.g. `(?i)`, `(?m)`, `(?s)`, `(?ims)`) into valid JavaScript `RegExp` flags.
+  - Supports unwrapping inline flag groups such as `(?i:pattern)` without breaking pattern compilation.
+  - Added optional `flags` parameter to `search_files` tool schema for explicit flag passing (e.g. `"i"`).
+  - Provides helpful error feedback indicating that the JavaScript RegExp engine is used if an invalid pattern is provided.
+- **Collapsible, dismissible, and session-isolated confirmation cards**:
+  - **Session isolation**: Confirmation requests are stored per session (`confirmationsBySession`), ensuring pending confirmation cards remain strictly isolated to their originating session and do not leak or misroute when switching sessions.
+  - **Minimize / expand**: Added a toggle button (`−` / `+`) to confirmation card headers showing an option count badge (`(N options)`). Clicking the header expands the options back to full view.
+  - **Dismiss / Close button**: Added a close button (`✕`) to confirmation card headers allowing prompt dismissal or cancellation.
+- **Batch `read_file` via `paths` & elevated 400-line window**:
+  - `read_file` now supports reading up to 10 files in a single tool call via the `paths` array, returning demarcated sections (`=== <path> (<N> lines) ===`) with per-file error resilience so invalid paths don't fail the rest of the batch.
+  - Increased default read window from 200 to 400 lines (`MAX_READ_FILE_LINES = 400`). Files with 400 lines or fewer are returned in full without truncation banners; larger files return the first 400 lines with clear line-range guidance.
+  - Dynamic system prompts and tool guidelines updated to instruct the AI to read small/medium files (< 400 lines) in a single whole-file call rather than slicing into micro-ranges, and to batch multi-file reads via `paths`.
+- **Turn-scoped file read cache**:
+  - Tool executor introduces `turnFileCache` to cache file reads in memory during a turn, eliminating repeated filesystem I/O when the model references the same files across iterations.
+  - Automatically invalidated on file mutations (`write_to_file`, `edit_file`, `apply_diff`, `restore_checkpoint`) and reset at the beginning of each turn (`beginTurn()`).
+- **`list_workspace` file size details**:
+  - Added optional `details: boolean` parameter to `list_workspace` returning an array of `{ path, bytes }` objects for up to 150 files to assist codebase layout understanding.
 - **Header menus and commands**:
   - Added dedicated VS Code commands `adoCode.rerunWizard` and `adoCode.openSettings` accessible via the Command Palette.
   - Added a "Refresh Work Items" action (`$(refresh)`) to the Work Items tab view title toolbar for direct access alongside work item actions.

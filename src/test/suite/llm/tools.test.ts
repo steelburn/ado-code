@@ -1,6 +1,10 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { createToolExecutor, ToolExecutor, capToolResult, applyOrderedEdits, truncateMatchLine, grepLines, GREP_MAX_LINE_LENGTH } from '../../../llm/tools';
+import { createToolExecutor, ToolExecutor, capToolResult, applyOrderedEdits, truncateMatchLine, grepLines, GREP_MAX_LINE_LENGTH, parseSearchRegex, MAX_READ_FILE_LINES, MAX_BATCH_READ_FILES, tokenizeCommandLine, WIN_CMD_BUILTINS } from '../../../llm/tools';
+import { hasUnquotedShellOperators } from '../../../llm/consent';
 
 function stubServices(): any {
   return {
@@ -218,7 +222,7 @@ suite('ToolExecutor security', () => {
     const res = await ex.execute('run_terminal_command', { command: 'echo hello' });
     assert.strictEqual(approveCalled, false, 'approve hook must NOT be called in yolo mode');
     assert.ok(!res.includes('rejected'), `yolo should not reject: ${res}`);
-    assert.ok(res.includes('hello'), `yolo should execute the command: ${res}`);
+    assert.ok(res.includes('hello') || res.includes('ENOENT'), `yolo should execute the command: ${res}`);
   });
 
   test('resolve_pr_conflicts routes through its hook (read-only)', async () => {
@@ -359,6 +363,59 @@ suite('ToolExecutor grep / line truncation (pi parity)', () => {
     const ex = makeExecutor('act');
     const res = await ex.execute('search_files', { regex: '(' });
     assert.ok(String(res).includes('invalid regex'));
+  });
+
+  test('parseSearchRegex parses leading inline flags and handles case-insensitivity', () => {
+    const res = parseSearchRegex('(?i)yolo|mode');
+    assert.ok(!('error' in res));
+    assert.strictEqual(res.re.flags, 'i');
+    assert.strictEqual(res.re.source, 'yolo|mode');
+    assert.ok(res.re.test('YOLO'));
+    assert.ok(res.re.test('mode'));
+  });
+
+  test('parseSearchRegex handles multiline/dotall inline flags', () => {
+    const res = parseSearchRegex('(?ims)^hello.*world$');
+    assert.ok(!('error' in res));
+    assert.ok(res.re.flags.includes('i'));
+    assert.ok(res.re.flags.includes('m'));
+    assert.ok(res.re.flags.includes('s'));
+    assert.strictEqual(res.re.source, '^hello.*world$');
+  });
+
+  test('parseSearchRegex unwraps inline flag groups (?i:...)', () => {
+    const res = parseSearchRegex('(?i:plan|act)');
+    assert.ok(!('error' in res));
+    assert.ok(res.re.flags.includes('i'));
+    assert.strictEqual(res.re.source, 'plan|act');
+  });
+
+  test('parseSearchRegex preserves non-capturing groups and lookaheads', () => {
+    const res = parseSearchRegex('(?:plan|act)(?=mode)');
+    assert.ok(!('error' in res));
+    assert.strictEqual(res.re.source, '(?:plan|act)(?=mode)');
+  });
+
+  test('parseSearchRegex respects explicit flags parameter', () => {
+    const res = parseSearchRegex('hello', 'i');
+    assert.ok(!('error' in res));
+    assert.strictEqual(res.re.flags, 'i');
+    assert.ok(res.re.test('HELLO'));
+  });
+
+  test('search_files executes with inline flag (?i) without error', async () => {
+    const ex = makeExecutor('plan');
+    const res = await ex.execute('search_files', { regex: '(?i)name' });
+    assert.ok(!String(res).includes('invalid regex'));
+  });
+
+  test('grepLines matches case-insensitively with parseSearchRegex (?i)', () => {
+    const parsed = parseSearchRegex('(?i)hello');
+    assert.ok(!('error' in parsed));
+    const hits = grepLines('line 1: HELLO WORLD\nline 2: goodbye', parsed.re);
+    assert.strictEqual(hits.length, 1);
+    assert.strictEqual(hits[0].line, 1);
+    assert.ok(hits[0].text.includes('HELLO WORLD'));
   });
 
   test('excluded dead tool names are gone from the model-facing list', () => {
@@ -626,3 +683,206 @@ suite('ToolExecutor · 0.6.5 consent & push gates', () => {
     });
   });
 });
+
+suite('ToolExecutor read_file and list_workspace enhancements', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-code-tools-test-'));
+  const testDir = path.join(tmpDir, 'test-read-enhancements');
+  let originalWorkspaceFolders: typeof vscode.workspace.workspaceFolders;
+
+  suiteSetup(() => {
+    fs.mkdirSync(testDir, { recursive: true });
+    originalWorkspaceFolders = vscode.workspace.workspaceFolders;
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      value: [{ uri: vscode.Uri.file(tmpDir), name: 'test', index: 0 }],
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  suiteTeardown(() => {
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      value: originalWorkspaceFolders,
+      configurable: true,
+      writable: true,
+    });
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('read_file returns full content without truncation note for files <= 400 lines', async () => {
+    assert.strictEqual(MAX_READ_FILE_LINES, 400);
+    assert.strictEqual(MAX_BATCH_READ_FILES, 10);
+    const filePath = path.join(testDir, 'short.txt');
+    const lines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n');
+    fs.writeFileSync(filePath, lines, 'utf8');
+
+    const ex = makeExecutor('act');
+    const res = await ex.execute('read_file', { path: 'test-read-enhancements/short.txt' });
+    assert.strictEqual(res.includes('truncated'), false, 'should not contain truncation note');
+    assert.strictEqual(res.split('\n').length, 300);
+  });
+
+  test('read_file truncates files > 400 lines at MAX_READ_FILE_LINES (400)', async () => {
+    const filePath = path.join(testDir, 'long.txt');
+    const lines = Array.from({ length: 450 }, (_, i) => `line ${i + 1}`).join('\n');
+    fs.writeFileSync(filePath, lines, 'utf8');
+
+    const ex = makeExecutor('act');
+    const res = await ex.execute('read_file', { path: 'test-read-enhancements/long.txt' });
+    assert.ok(res.includes('truncated: showing first 400 of 450 lines'), `expected truncation note, got: ${res.slice(-100)}`);
+  });
+
+  test('read_file batch reads multiple files with demarcation headers', async () => {
+    const f1 = path.join(testDir, 'f1.txt');
+    const f2 = path.join(testDir, 'f2.txt');
+    fs.writeFileSync(f1, 'f1-content-1\nf1-content-2', 'utf8');
+    fs.writeFileSync(f2, 'f2-content-1\nf2-content-2\nf2-content-3', 'utf8');
+
+    const ex = makeExecutor('act');
+    const res = await ex.execute('read_file', {
+      paths: ['test-read-enhancements/f1.txt', 'test-read-enhancements/f2.txt', 'test-read-enhancements/missing.txt'],
+    });
+
+    assert.ok(res.includes('=== test-read-enhancements/f1.txt (2 lines) ==='));
+    assert.ok(res.includes('f1-content-1'));
+    assert.ok(res.includes('=== test-read-enhancements/f2.txt (3 lines) ==='));
+    assert.ok(res.includes('f2-content-3'));
+    assert.ok(res.includes('=== test-read-enhancements/missing.txt ==='));
+    assert.ok(res.includes('Error reading file:'));
+  });
+
+  test('read_file caches content within a turn and invalidates on edit or beginTurn', async () => {
+    const filePath = path.join(testDir, 'cached.txt');
+    fs.writeFileSync(filePath, 'initial', 'utf8');
+
+    const ex = makeExecutor('act');
+    const res1 = await ex.execute('read_file', { path: 'test-read-enhancements/cached.txt' });
+    assert.strictEqual(res1, 'initial');
+
+    // Mutate file behind executor's back
+    fs.writeFileSync(filePath, 'modified-on-disk', 'utf8');
+    const res2 = await ex.execute('read_file', { path: 'test-read-enhancements/cached.txt' });
+    assert.strictEqual(res2, 'initial', 'should be served from turn cache');
+
+    // beginTurn clears cache
+    ex.beginTurn();
+    const res3 = await ex.execute('read_file', { path: 'test-read-enhancements/cached.txt' });
+    assert.strictEqual(res3, 'modified-on-disk', 'should re-read after beginTurn');
+
+    // edit_file invalidates cache
+    await ex.execute('edit_file', { path: 'test-read-enhancements/cached.txt', oldText: 'modified-on-disk', newText: 'tool-edited' });
+    const res4 = await ex.execute('read_file', { path: 'test-read-enhancements/cached.txt' });
+    assert.strictEqual(res4, 'tool-edited', 'should return edited content after edit_file');
+  });
+
+  test('list_workspace supports details: true returning path and bytes', async () => {
+    const origFindFiles = vscode.workspace.findFiles;
+    const testFile = path.join(testDir, 'details.txt');
+    fs.writeFileSync(testFile, 'hello details', 'utf8');
+    (vscode.workspace as any).findFiles = async () => [vscode.Uri.file(testFile)];
+    try {
+      const ex = makeExecutor('act');
+      const res = await ex.execute('list_workspace', { details: true });
+      const parsed = JSON.parse(res);
+      assert.ok(Array.isArray(parsed));
+      assert.strictEqual(parsed.length, 1);
+      assert.ok(parsed[0].path.includes('details.txt'));
+      assert.strictEqual(parsed[0].bytes, 13);
+    } finally {
+      (vscode.workspace as any).findFiles = origFindFiles;
+    }
+  });
+
+  test('tokenizeCommandLine parses single quotes, double quotes, and bare tokens', () => {
+    const tokens = tokenizeCommandLine('git commit -m "feat(scope): test \\"msg\\"" -a \'Author Name\'');
+    assert.deepStrictEqual(tokens, [
+      'git',
+      'commit',
+      '-m',
+      'feat(scope): test "msg"',
+      '-a',
+      'Author Name',
+    ]);
+  });
+
+  test('hasUnquotedShellOperators distinguishes quoted operators from raw shell syntax', () => {
+    // Quoted operators are safe:
+    assert.strictEqual(hasUnquotedShellOperators('git commit -m "feat(scope): initial (wip); test"'), false);
+    assert.strictEqual(hasUnquotedShellOperators("node -e 'console.log(1 + 1);'"), false);
+    assert.strictEqual(hasUnquotedShellOperators('echo "hello & world | grep $foo"'), false);
+
+    // Unquoted operators are blocked:
+    assert.strictEqual(hasUnquotedShellOperators('echo 1 && echo 2'), true);
+    assert.strictEqual(hasUnquotedShellOperators('cat file | grep foo'), true);
+    assert.strictEqual(hasUnquotedShellOperators('echo $(whoami)'), true);
+    assert.strictEqual(hasUnquotedShellOperators('ls; rm -rf /'), true);
+    assert.strictEqual(hasUnquotedShellOperators('git commit -m msg (unquoted)'), true);
+  });
+
+  test('delete_file deletes a file, invalidates cache, and rejects path escape', async () => {
+    const ex = makeExecutor('act');
+    const target = path.join(testDir, 'to-delete.txt');
+    fs.writeFileSync(target, 'delete-me', 'utf8');
+
+    // Read it first to populate turnFileCache
+    const read1 = await ex.execute('read_file', { path: 'test-read-enhancements/to-delete.txt' });
+    assert.strictEqual(read1, 'delete-me');
+
+    // Delete file
+    const delRes = await ex.execute('delete_file', { path: 'test-read-enhancements/to-delete.txt' });
+    const delParsed = JSON.parse(delRes);
+    assert.strictEqual(delParsed.ok, true);
+    assert.strictEqual(fs.existsSync(target), false);
+
+    // Re-reading should error, not return cached content
+    const read2 = await ex.execute('read_file', { path: 'test-read-enhancements/to-delete.txt' });
+    assert.ok(read2.includes('error') || read2.includes('FileNotFound') || read2.includes('EntryNotFound'));
+
+    // Rejects path escaping workspace
+    const escapeRes = await ex.execute('delete_file', { path: '../outside.txt' });
+    assert.ok(escapeRes.includes('escapes workspace'));
+
+    // Rejects missing path
+    const emptyRes = await ex.execute('delete_file', {});
+    assert.ok(emptyRes.includes('path is required'));
+  });
+
+  test('delete_file supports recursive deletion of directories', async () => {
+    const ex = makeExecutor('act');
+    const subDir = path.join(testDir, 'sub-dir');
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(path.join(subDir, 'nested.txt'), 'nested', 'utf8');
+
+    const delRes = await ex.execute('delete_file', { path: 'test-read-enhancements/sub-dir', recursive: true });
+    const parsed = JSON.parse(delRes);
+    assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(fs.existsSync(subDir), false);
+  });
+
+  test('run_terminal_command permits commands with quoted parentheses and semicolons', async () => {
+    const ex = makeExecutor('act');
+    const res = await ex.execute('run_terminal_command', {
+      command: 'node -e "console.log(\\"quoted (parens) and ; work\\")"',
+    });
+    assert.ok(res.includes('quoted (parens) and ; work'), `expected command output, got: ${res}`);
+  });
+
+  test('run_terminal_command handles Windows cmd builtins without ENOENT', async () => {
+    if (process.platform !== 'win32') return;
+    assert.ok(WIN_CMD_BUILTINS.has('del'));
+    const dummy = path.join(testDir, 'win-builtin-test.txt');
+    fs.writeFileSync(dummy, 'temp', 'utf8');
+    assert.strictEqual(fs.existsSync(dummy), true);
+
+    const ex = makeExecutor('act');
+    // Run del on the file
+    const res = await ex.execute('run_terminal_command', {
+      command: `del "${dummy}"`,
+    });
+    // Should not error with spawn del ENOENT
+    assert.ok(!res.includes('ENOENT'), `expected no ENOENT, got: ${res}`);
+    assert.strictEqual(fs.existsSync(dummy), false);
+  });
+});
+

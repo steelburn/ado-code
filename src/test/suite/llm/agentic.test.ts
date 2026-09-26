@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { LlmClient } from '../../../llm/client';
 import { LlmConfig, LlmMessage, LlmTool } from '../../../llm/types';
-import { runAgenticChat } from '../../../llm/agentic';
+import { runAgenticChat, compactOldToolResults, COMPACT_RETAIN_THRESHOLD, ToolLoopDetector } from '../../../llm/agentic';
 
 function jsonResponse(body: any) {
   return {
@@ -503,4 +503,138 @@ suite('agentic loop token compaction', () => {
       'most recent tool result still full'
     );
   });
+
+  test('compactOldToolResults retains full content for short outputs (<= threshold)', () => {
+    assert.strictEqual(COMPACT_RETAIN_THRESHOLD, 800);
+    const shortContent = 'line 1\nline 2\nline 3';
+    const msgs: LlmMessage[] = [
+      { role: 'user', content: 'read' },
+      { role: 'tool', content: shortContent, toolCallId: 'c1' },
+      { role: 'assistant', content: 'next' },
+    ];
+    const stubbed = compactOldToolResults(msgs, 2);
+    assert.strictEqual(stubbed, 1);
+    assert.ok(String(msgs[1].content).startsWith('[tool result truncated'));
+    assert.ok(String(msgs[1].content).includes(shortContent));
+  });
+
+  test('compactOldToolResults preserves head and tail previews for long outputs', () => {
+    const head = 'START_OF_FILE_'.padEnd(500, 'X');
+    const tail = 'END_OF_FILE_'.padStart(150, 'Y');
+    const longContent = head + 'MIDDLE_OMITTED_'.repeat(100) + tail;
+    const msgs: LlmMessage[] = [
+      { role: 'user', content: 'read' },
+      { role: 'tool', content: longContent, toolCallId: 'c1' },
+      { role: 'assistant', content: 'next' },
+    ];
+    const stubbed = compactOldToolResults(msgs, 2);
+    assert.strictEqual(stubbed, 1);
+    const content = String(msgs[1].content);
+    assert.ok(content.startsWith('[tool result truncated'));
+    assert.ok(content.includes('START_OF_FILE_'));
+    assert.ok(content.includes('END_OF_FILE_'));
+    assert.ok(content.includes('characters omitted'));
+  });
 });
+
+suite('agentic loop duplicate & loop detection', () => {
+  test('ToolLoopDetector detects exact identical calls: warns at 3rd, blocks at 4th+', () => {
+    const detector = new ToolLoopDetector();
+    const args = { path: 'src/index.ts', startLine: 1, endLine: 20 };
+
+    assert.strictEqual(detector.checkCall('read_file', args, 1).action, 'allow');
+    assert.strictEqual(detector.checkCall('read_file', args, 2).action, 'allow');
+
+    const third = detector.checkCall('read_file', args, 3);
+    assert.strictEqual(third.action, 'warn');
+    assert.ok(third.warning?.includes('loop warning'));
+
+    const fourth = detector.checkCall('read_file', args, 4);
+    assert.strictEqual(fourth.action, 'block');
+    assert.ok(fourth.message?.includes('loop detected — call blocked'));
+  });
+
+  test('ToolLoopDetector detects repeated overlapping read_file calls', () => {
+    const detector = new ToolLoopDetector();
+    assert.strictEqual(detector.checkCall('read_file', { path: 'a.md', startLine: 10, endLine: 30 }, 1).action, 'allow');
+    assert.strictEqual(detector.checkCall('read_file', { path: 'a.md', startLine: 15, endLine: 35 }, 2).action, 'allow');
+    const third = detector.checkCall('read_file', { path: 'a.md', startLine: 12, endLine: 28 }, 3);
+    assert.strictEqual(third.action, 'warn');
+    const fourth = detector.checkCall('read_file', { path: 'a.md', startLine: 11, endLine: 29 }, 4);
+    assert.strictEqual(fourth.action, 'block');
+    assert.ok(fourth.message?.includes('repeated read blocked'));
+  });
+
+  test('ToolLoopDetector circuit breaker trips after consecutive all-blocked iterations', () => {
+    const detector = new ToolLoopDetector();
+    assert.strictEqual(detector.recordIterationResult(false), false);
+    assert.strictEqual(detector.recordIterationResult(true), false); // 1st blocked iteration
+    assert.strictEqual(detector.recordIterationResult(true), true);  // 2nd blocked iteration -> trip
+  });
+
+  test('ToolLoopDetector tracks exploration and triggers synthesis nudge after 5 consecutive read iterations', () => {
+    const detector = new ToolLoopDetector();
+    for (let i = 1; i <= 4; i++) {
+      assert.strictEqual(detector.recordReadIteration(true), undefined, `iteration ${i} should not nudge`);
+    }
+    const nudge5 = detector.recordReadIteration(true);
+    assert.ok(nudge5?.includes('exploration notice'), 'iteration 5 should trigger nudge');
+    assert.ok(nudge5?.includes('5 consecutive read/search steps'));
+
+    const nudge6 = detector.recordReadIteration(true);
+    assert.ok(nudge6?.includes('6 consecutive read/search steps'));
+
+    // Reset on action
+    assert.strictEqual(detector.recordReadIteration(false), undefined);
+    assert.strictEqual(detector.recordReadIteration(true), undefined);
+  });
+
+  test('runAgenticChat breaks degenerate loop and concludes without hitting max iterations', async () => {
+    const bodies: any[] = [];
+    let round = 0;
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      round += 1;
+      const lastMsg = body.messages[body.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'user' && typeof lastMsg.content === 'string' && lastMsg.content.includes('loop detected')) {
+        // Concluding wrap-up reply
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: 'Stopped loop and summarized: done.' } }],
+        });
+      }
+      // Keep requesting the same tool call repeatedly
+      return jsonResponse({
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [{
+              id: `call_${round}`,
+              type: 'function',
+              function: { name: 'echo', arguments: '{"value":"looping"}' },
+            }],
+          },
+        }],
+      });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const exec = stubExecutor();
+    exec.canAutoExecute = () => true;
+    exec.execute = async (_name: string, args: Record<string, any>) => `echo: ${args.value}`;
+
+    const client = new LlmClient(config);
+    // Request with maxIterations = 20
+    const result = await runAgenticChat(client, exec, [
+      { role: 'user', content: 'test loop' },
+    ], undefined, 20);
+
+    assert.strictEqual(result.reachedIterationLimit, true);
+    assert.strictEqual(result.loopDetected, true);
+    // Verified that it stopped early due to circuit breaker instead of reaching 20 iterations
+    assert.ok(result.iterations < 10, `expected iterations < 10, got ${result.iterations}`);
+    assert.ok(result.text.includes('Stopped loop'), `expected final summary, got: ${result.text}`);
+  });
+});
+

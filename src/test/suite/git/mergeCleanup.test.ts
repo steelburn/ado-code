@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { cleanupMergedRun, hasMergedPullRequest, MergeCleanupDeps } from '../../../git/mergeCleanup';
 import { GitService } from '../../../git/GitService';
+import { cleanTempDir } from '../utils/cleanTempDir';
 
 function makeDeps(overrides?: Partial<MergeCleanupDeps>): {
   deps: MergeCleanupDeps;
@@ -149,7 +150,7 @@ suite('mergeCleanup', () => {
       const branchExists = cp.execSync('git branch --list feature/ado-42', { cwd: tmp }).toString().trim();
       assert.strictEqual(branchExists, '', 'branch deleted');
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      cleanTempDir(tmp);
     }
   });
 
@@ -181,7 +182,7 @@ suite('mergeCleanup', () => {
       const branchExists = cp.execSync('git branch --list feature/ado-43', { cwd: tmp }).toString().trim();
       assert.strictEqual(branchExists, 'feature/ado-43', 'unmerged branch survived');
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      cleanTempDir(tmp);
     }
   });
 });

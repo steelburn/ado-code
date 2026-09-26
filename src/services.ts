@@ -58,7 +58,7 @@ export function createServices(context: vscode.ExtensionContext): Services {
   const ado: AdoClient = new Proxy({} as AdoClient, {
     get(_t, prop) {
       if (!adoClient) {
-        adoClient = new AdoClient(active.name, settings.adoPat, active.url);
+        adoClient = new AdoClient(active.name, active.pat, active.url);
       }
       return (adoClient as any)[prop];
     },

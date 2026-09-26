@@ -109,10 +109,20 @@ const HARMLESS_SUBCMD_MAP: Record<string, Set<string>> = {
 }
 
 /**
+ * Test whether a command string contains unquoted shell operators.
+ * Double- and single-quoted strings are stripped before testing, allowing
+ * parentheses, semicolons, dollar signs, etc. inside literal arguments (e.g. commit messages).
+ */
+export function hasUnquotedShellOperators(command: string): boolean {
+  const unquoted = command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, ' ');
+  return /[&|;`$<>()\r\n]/.test(unquoted);
+}
+
+/**
  * Determine whether a terminal command is harmless (read-only) and safe to
  * auto-approve after a timer. A command is harmless when:
  *
- * 1. It contains no shell operators (`&`, `|`, `;`, backtick, `$`, `<`, `>`,
+ * 1. It contains no unquoted shell operators (`&`, `|`, `;`, backtick, `$`, `<`, `>`,
  *    `(`, `)`, newlines).
  * 2. Its base command + optional subcommand match a known read-only pattern.
  *
@@ -124,9 +134,10 @@ export function isHarmlessCommand(command: string): boolean {
   const trimmed = command.trim()
   if (!trimmed) return false
 
-  // Reject shell operators — multi-word commands are fine (e.g. "npm test"),
-  // but operators enable injection.
-  if (!/^[^&|;`$<>()\r\n]*$/.test(trimmed)) return false
+  // Reject unquoted shell operators — multi-word commands are fine (e.g. "npm test"),
+  // and quoted arguments (e.g. commit messages) can contain parentheses or semicolons,
+  // but unquoted operators enable injection or chaining.
+  if (hasUnquotedShellOperators(trimmed)) return false
 
   const tokens = trimmed.match(/"[^"]*"|\S+/g) ?? []
   if (tokens.length === 0) return false

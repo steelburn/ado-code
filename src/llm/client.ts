@@ -35,10 +35,10 @@ export class LlmClient {
    * when the provider has no native counting (caller falls back to the local
    * heuristic). Failures degrade gracefully to `undefined`.
    */
-  async countTokens(messages: LlmMessage[]): Promise<number | undefined> {
+  async countTokens(messages: LlmMessage[], tools?: import('./types').LlmTool[]): Promise<number | undefined> {
     if (!this.provider.countTokens) return undefined;
     try {
-      const n = await this.provider.countTokens(messages, this.config);
+      const n = await this.provider.countTokens(messages, this.config, tools);
       return typeof n === 'number' && n >= 0 ? n : undefined;
     } catch {
       return undefined;

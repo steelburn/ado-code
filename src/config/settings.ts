@@ -4,7 +4,7 @@ import { DEFAULT_MAX_ITERATIONS } from '../shared/agenticLimits';
 export type LlmProvider = 'openai' | 'anthropic';
 
 export interface AdoCodeSettings {
-  organizations: Array<{ name: string; url: string; project: string }>;
+  organizations: Array<{ name: string; url: string; project: string; pat?: string }>;
   adoOrganization: string;
   adoProject: string;
   adoServerUrl: string;
@@ -63,7 +63,7 @@ export function getSettings(): AdoCodeSettings {
   const config = vscode.workspace.getConfiguration('adoCode');
   const llmProvider = config.get<LlmProvider>('llmProvider', 'openai');
   return {
-    organizations: config.get<Array<{ name: string; url: string; project: string }>>('organizations', []),
+    organizations: config.get<Array<{ name: string; url: string; project: string; pat?: string }>>('organizations', []),
     adoOrganization: config.get<string>('adoOrganization', ''),
     adoProject: config.get<string>('adoProject', ''),
     adoServerUrl: config.get<string>('adoServerUrl', ''),
@@ -133,7 +133,7 @@ export async function selectActiveOrganization(context: vscode.ExtensionContext)
  * the Configuration page / setup wizard just wrote — otherwise PAT/org/project
  * updates silently stop taking effect and ADO gates fail with "configure
  * organization, project and PAT first". */
-export function getActiveOrg(context: vscode.ExtensionContext, settings: AdoCodeSettings): { name: string; project: string; url: string } {
+export function getActiveOrg(context: vscode.ExtensionContext, settings: AdoCodeSettings): { name: string; project: string; url: string; pat: string } {
   // Defensive: workspaceState may be undefined in test environments.
   const ws = context.workspaceState;
   const storedName = ws?.get<string>('adoCode.activeOrgName') || '';
@@ -148,6 +148,7 @@ export function getActiveOrg(context: vscode.ExtensionContext, settings: AdoCode
     // H-4 fix: the cloud fallback MUST use the ACTIVE org name, not the
     // settings default — getActiveOrgBaseUrl(settings, name).
     url: configured?.url || getActiveOrgBaseUrl(settings, name),
+    pat: configured?.pat || settings.adoPat,
   };
 }
 
@@ -179,3 +180,33 @@ export function llmConfigFromSettings(mode?: string): any {
     reasoningEffort,
   };
 }
+
+/**
+ * Determine the configuration target (WorkspaceFolder, Workspace, or Global) for a setting.
+ * If the setting is currently set in workspace folder settings or workspace settings,
+ * the matching scope is chosen so that updates are not shadowed.
+ */
+export function targetForSetting(cfg: vscode.WorkspaceConfiguration, key: string): vscode.ConfigurationTarget {
+  const inspected = typeof cfg.inspect === 'function' ? cfg.inspect(key) : undefined;
+  if (inspected?.workspaceFolderValue !== undefined) {
+    return vscode.ConfigurationTarget.WorkspaceFolder;
+  }
+  if (inspected?.workspaceValue !== undefined) {
+    return vscode.ConfigurationTarget.Workspace;
+  }
+  return vscode.ConfigurationTarget.Global;
+}
+
+/**
+ * Update a setting at the scope where it is currently defined (Workspace/Folder),
+ * defaulting to Global if not overridden at workspace level.
+ */
+export async function updateSettingRespectingScope(
+  cfg: vscode.WorkspaceConfiguration,
+  key: string,
+  value: any
+): Promise<void> {
+  const target = targetForSetting(cfg, key);
+  await cfg.update(key, value, target);
+}
+

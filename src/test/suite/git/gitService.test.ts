@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { GitService } from '../../../git/GitService';
+import { cleanTempDir } from '../utils/cleanTempDir';
 
 suite('GitService', () => {
   let tmpDir: string;
@@ -19,7 +20,7 @@ suite('GitService', () => {
   });
 
   teardown(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    cleanTempDir(tmpDir);
   });
 
   test('detects a git repository', async () => {
@@ -33,7 +34,7 @@ suite('GitService', () => {
       const service = new GitService(plainDir);
       assert.strictEqual(await service.isGitRepo(), false);
     } finally {
-      fs.rmSync(plainDir, { recursive: true, force: true });
+      cleanTempDir(plainDir);
     }
   });
 
@@ -81,7 +82,7 @@ suite('GitService', () => {
       const info = await service.getWorktreeInfo(plainDir);
       assert.deepStrictEqual(info, { dirty: false, changedFiles: 0, ahead: 0, behind: 0, lastCommit: null });
     } finally {
-      fs.rmSync(plainDir, { recursive: true, force: true });
+      cleanTempDir(plainDir);
     }
   });
 

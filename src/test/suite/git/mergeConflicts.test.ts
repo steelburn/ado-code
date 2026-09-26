@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
+import { cleanTempDir } from '../utils/cleanTempDir';
 import { parseMergeTreeOutput, getMergeConflicts } from '../../../git/mergeConflicts';
 
 // Real output captured from git 2.34.1 `git merge-tree <base^{tree}> main feature`
@@ -81,7 +82,7 @@ suite('mergeConflicts', () => {
       assert.strictEqual(conflicts[0].base, 'line1\nline2\nline3\n');
       assert.ok(!conflicts[0].truncated);
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      cleanTempDir(tmp);
     }
   });
 
@@ -104,7 +105,7 @@ suite('mergeConflicts', () => {
       const conflicts = await getMergeConflicts(tmp, 'main', 'feature');
       assert.deepStrictEqual(conflicts, []);
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      cleanTempDir(tmp);
     }
   });
 });

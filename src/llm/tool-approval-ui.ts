@@ -17,6 +17,7 @@
 
 import * as vscode from 'vscode'
 import { matchesToolPattern, matchesCommandPattern } from './consent'
+import { updateSettingRespectingScope } from '../config/settings'
 
 // Re-export pure utilities for convenience
 // (the legacy approval-decision family — shouldAutoApprove, formatApprovalPrompt,
@@ -111,10 +112,10 @@ export async function addToTerminalAllowlist(command: string): Promise<void> {
   ])
   const trimmed = command.trim()
   if (!current.includes(trimmed)) {
-    await cfg.update(
+    await updateSettingRespectingScope(
+      cfg,
       'act.terminalAllowlist',
       [...current, trimmed],
-      vscode.ConfigurationTarget.Global,
     )
   }
 }

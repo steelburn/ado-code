@@ -13,6 +13,70 @@ function anthropicHeaders(config: LlmConfig): Record<string, string> {
   };
 }
 
+/**
+ * Translate generic messages → Anthropic native shapes:
+ * - role:'tool' + toolCallId → a `user` message with a tool_result block
+ * - role:'assistant' + toolCalls → text + tool_use blocks
+ * - Merges consecutive same-role turns (Anthropic 400s on consecutive same-role messages)
+ * - Drops a leading assistant-only turn if present (Anthropic requires the first message to be `user`)
+ */
+export function formatAnthropicMessages(messages: LlmMessage[]): Array<{ role: 'user' | 'assistant'; content: any }> {
+  const nonSystemMessages = messages.filter(m => m.role !== 'system');
+  const anthropicMessages: Array<{ role: 'user' | 'assistant'; content: any }> = [];
+  for (const m of nonSystemMessages) {
+    if (m.role === 'tool' && m.toolCallId) {
+      const block = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
+      const last = anthropicMessages[anthropicMessages.length - 1];
+      if (last && last.role === 'user') {
+        const existing = typeof last.content === 'string'
+          ? [{ type: 'text' as const, text: last.content }]
+          : (Array.isArray(last.content) ? last.content : [last.content]);
+        last.content = existing.concat([block]);
+      } else {
+        anthropicMessages.push({ role: 'user', content: [block] });
+      }
+      continue;
+    }
+    const role = m.role as 'user' | 'assistant';
+    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+      const content: any[] = typeof m.content === 'string' && m.content
+        ? [{ type: 'text', text: m.content }]
+        : (Array.isArray(m.content) ? [...m.content] : []);
+      for (const tc of m.toolCalls) {
+        let input: any = {};
+        if (typeof tc.arguments === 'string' && tc.arguments.trim() !== '') {
+          try { input = JSON.parse(tc.arguments); } catch { input = {}; }
+        }
+        content.push({ type: 'tool_use', id: tc.id, name: tc.name, input });
+      }
+      anthropicMessages.push({ role, content });
+      continue;
+    }
+    const last = anthropicMessages[anthropicMessages.length - 1];
+    if (last && last.role === role) {
+      if (typeof last.content === 'string' && typeof m.content === 'string') {
+        last.content += '\n\n' + m.content;
+      } else {
+        const lastBlocks = typeof last.content === 'string'
+          ? [{ type: 'text' as const, text: last.content }]
+          : (Array.isArray(last.content) ? last.content : [last.content]);
+        const newBlocks = typeof m.content === 'string'
+          ? [{ type: 'text' as const, text: m.content }]
+          : (Array.isArray(m.content) ? m.content : [m.content]);
+        last.content = [...lastBlocks, ...newBlocks];
+      }
+    } else {
+      anthropicMessages.push({ role, content: m.content });
+    }
+  }
+
+  while (anthropicMessages.length > 0 && anthropicMessages[0].role === 'assistant') {
+    anthropicMessages.shift();
+  }
+
+  return anthropicMessages;
+}
+
 export class AnthropicProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
     // Anthropic uses a separate system prompt, not in messages array
@@ -128,64 +192,7 @@ export class AnthropicProvider implements LlmProvider {
   /** C1: tool-calling round-trip (non-streaming). C-7: merge consecutive tool_result messages. */
   async chatWithTools(messages: LlmMessage[], config: LlmConfig, tools: LlmTool[], signal?: AbortSignal): Promise<{ text: string; toolCalls: ToolCall[]; stopReason?: string }> {
     const systemMessage = messages.find(m => m.role === 'system');
-    const nonSystemMessages = messages.filter(m => m.role !== 'system');
-
-    // Translate generic messages → Anthropic native shapes:
-    // - role:'tool' + toolCallId → a `user` message with a tool_result block
-    // - role:'assistant' + toolCalls → text + tool_use blocks
-    // C-7: merge CONSECUTIVE translated user/tool_result messages into ONE user
-    // message whose content array holds all blocks (Anthropic 400s on
-    // consecutive same-role messages; never string-concat the blocks).
-    const anthropicMessages: Array<{ role: 'user' | 'assistant'; content: any }> = [];
-    for (const m of nonSystemMessages) {
-      if (m.role === 'tool' && m.toolCallId) {
-        const block = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
-        const last = anthropicMessages[anthropicMessages.length - 1];
-        if (last && last.role === 'user') {
-          last.content = last.content.concat([block]);
-        } else {
-          anthropicMessages.push({ role: 'user', content: [block] });
-        }
-        continue;
-      }
-      const role = m.role as 'user' | 'assistant';
-      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-        const content: any[] = [{ type: 'text', text: m.content }];
-        for (const tc of m.toolCalls) {
-          // Defensive: toolCalls.arguments is a JSON string; empty/unparseable
-          // must not throw (some gateways emit "" at the token limit).
-          let input: any = {};
-          if (typeof tc.arguments === 'string' && tc.arguments.trim() !== '') {
-            try { input = JSON.parse(tc.arguments); } catch { input = {}; }
-          }
-          content.push({ type: 'tool_use', id: tc.id, name: tc.name, input });
-        }
-        anthropicMessages.push({ role, content });
-        continue;
-      }
-      const last = anthropicMessages[anthropicMessages.length - 1];
-      if (last && last.role === role) {
-        if (typeof last.content === 'string' && typeof m.content === 'string') {
-          last.content += '\n\n' + m.content;
-        } else {
-          const lastBlocks = typeof last.content === 'string'
-            ? [{ type: 'text' as const, text: last.content }]
-            : (Array.isArray(last.content) ? last.content : [last.content]);
-          const newBlocks = typeof m.content === 'string'
-            ? [{ type: 'text' as const, text: m.content }]
-            : (Array.isArray(m.content) ? m.content : [m.content]);
-          last.content = [...lastBlocks, ...newBlocks];
-        }
-      } else {
-        anthropicMessages.push({ role, content: m.content });
-      }
-    }
-
-    // Anthropic requires the first message to be `user` — drop a leading
-    // assistant-only turn if present.
-    while (anthropicMessages.length > 0 && anthropicMessages[0].role === 'assistant') {
-      anthropicMessages.shift();
-    }
+    const anthropicMessages = formatAnthropicMessages(messages);
 
     const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
     const body: Record<string, any> = {
@@ -229,37 +236,19 @@ export class AnthropicProvider implements LlmProvider {
    * Native token count via Anthropic's /v1/messages/count_tokens endpoint
    * (free, first-class). Returns `undefined` on any failure so callers fall
    * back to the local heuristic. Counts the system prompt + messages exactly
-   * as the API would bill them.
+   * as the API would bill them, including tool calls and results.
    */
-  async countTokens(messages: LlmMessage[], config: LlmConfig): Promise<number | undefined> {
+  async countTokens(messages: LlmMessage[], config: LlmConfig, tools?: LlmTool[]): Promise<number | undefined> {
     try {
       const systemMessage = messages.find(m => m.role === 'system');
-      const nonSystem = messages.filter(m => m.role !== 'system');
-      // Merge consecutive same-role messages — same shape the API requires
-      // (and that streamChat sends).
-      const convo: Array<{ role: 'user' | 'assistant'; content: string | ContentBlockParam[] }> = [];
-      for (const m of nonSystem) {
-        const role = m.role as 'user' | 'assistant';
-        const last = convo[convo.length - 1];
-        if (last && last.role === role) {
-          if (typeof last.content === 'string' && typeof m.content === 'string') {
-            last.content += '\n\n' + m.content;
-          } else {
-            const lastBlocks = typeof last.content === 'string'
-              ? [{ type: 'text' as const, text: last.content }] : last.content;
-            const newBlocks = typeof m.content === 'string'
-              ? [{ type: 'text' as const, text: m.content }] : m.content;
-            last.content = [...lastBlocks, ...newBlocks];
-          }
-        } else {
-          convo.push({ role, content: m.content });
-        }
-      }
-      while (convo.length > 0 && convo[0].role === 'assistant') convo.shift();
+      const convo = formatAnthropicMessages(messages);
 
       const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
       const body: Record<string, any> = { model: config.model, messages: convo };
       if (systemMessage) body.system = systemMessage.content;
+      if (tools && tools.length > 0) {
+        body.tools = tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+      }
 
       const response = await fetch(`${baseUrl}/v1/messages/count_tokens`, {
         method: 'POST',

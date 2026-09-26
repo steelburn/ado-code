@@ -1531,11 +1531,20 @@ code {
   flex-shrink: 0;
 }
 
+.consent-card--minimized {
+  padding: 6px 12px;
+}
+
 .consent-card-header {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.consent-card--minimized .consent-card-header {
+  margin-bottom: 0;
+  cursor: pointer;
 }
 
 .consent-card-icon {
@@ -1547,6 +1556,7 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1;
 }
 
 .consent-card-heading {
@@ -1554,9 +1564,44 @@ code {
   font-size: var(--vscode-font-size);
 }
 
+.consent-card-minimized-badge {
+  margin-left: 6px;
+  font-size: 0.85em;
+  font-weight: normal;
+  opacity: 0.75;
+}
+
 .consent-card-sub {
   font-size: 0.85em;
   opacity: 0.8;
+}
+
+.consent-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.consent-card-btn-icon {
+  background: none;
+  border: none;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  padding: 2px 5px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.7;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.consent-card-btn-icon:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
 }
 
 .consent-card-body {

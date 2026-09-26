@@ -82,23 +82,34 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
+ * Regex matching CJK ideographs, Hangul, Hiragana, and Katakana characters.
+ * Non-Latin scripts tokenize at ~1 to 2.5 tokens per character in modern BPE tokenizers
+ * (~0.6 chars/token) rather than the Latin/English ~4 chars/token.
+ */
+const CJK_REGEX = /[\u2E80-\u2EFF\u2F00-\u2FDF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3100-\u312F\u3200-\u32FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF]/g;
+
+/**
  * Heuristic characters-per-token ratio based on content type.
  *
- * Code uses more symbols and shorter words (lower ratio ≈ 3.5), while prose
- * has longer words and fewer symbols (higher ratio ≈ 4.5).  Mixed content
+ * Code uses more symbols and shorter words (lower ratio ≈ 2.8 - 3.5), while prose
+ * has longer words and fewer symbols (higher ratio ≈ 4.5). Mixed content
  * falls back to the default of 4.
  */
 function charsPerToken(text: string): number {
   if (!text) return CHARS_PER_TOKEN;
-  const codeChars = text.match(/[^a-zA-Z0-9\s]/g)?.length ?? 0;
+  // Match standard ASCII code symbols / punctuation, excluding non-ASCII
+  const codeChars = text.match(/[!-/:-@[-`{-~]/g)?.length ?? 0;
   const words = text.split(/\s+/).filter((w) => w.length > 0);
   const avgWordLength = words.length > 0 ? text.length / words.length : 5;
   const codeRatio = codeChars / Math.max(text.length, 1);
-  // Code: high density of non-alphanumeric symbols and short words
+  // Dense code / JSON / symbols: high density of punctuation symbols
+  if (codeRatio > 0.25) return 2.8;
+  // Code: moderate density of non-alphanumeric symbols or short words
   if (codeRatio > 0.15 || avgWordLength < 3.5) return 3.5;
   // Prose: few symbols, long words
   if (codeRatio < 0.05 && avgWordLength > 5) return 4.5;
@@ -108,13 +119,22 @@ function charsPerToken(text: string): number {
 /**
  * Heuristic token count for a plain string.
  *
- * Uses a content-aware chars-per-token ratio instead of a flat constant,
- * giving better estimates for code (~3.5) and prose (~4.5) while staying
- * zero-dependency.
+ * Uses a content-aware chars-per-token ratio for Latin/code content, and
+ * accurately weights CJK characters (~1.5 tokens/char) to prevent massive
+ * undercounting on non-Latin text.
  */
 export function countTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(text.length / charsPerToken(text));
+  const cjkMatches = text.match(CJK_REGEX);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  if (cjkCount === 0) {
+    return Math.ceil(text.length / charsPerToken(text));
+  }
+  const nonCjkText = text.replace(CJK_REGEX, '');
+  const nonCjkTokens = nonCjkText.length > 0 ? Math.ceil(nonCjkText.length / charsPerToken(nonCjkText)) : 0;
+  // In BPE tokenizers (cl100k, Claude, LLaMA), each CJK character is typically 1 to 2.5 tokens
+  const cjkTokens = Math.ceil(cjkCount * 1.5);
+  return nonCjkTokens + cjkTokens;
 }
 
 /**
@@ -243,9 +263,13 @@ export function estimateContextWindow(config: {
     return MODEL_CONTEXT_WINDOWS[lower];
   }
 
-  // Substring match — check if any known key appears inside the model id
-  for (const [key, tokens] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
-    if (lower.includes(key)) {
+  // Substring match: check longer keys first (e.g. "o1-mini" before "o1", "claude-3-5-sonnet" before "claude-3-sonnet")
+  // and ensure delimiter boundary so "demo1" doesn't falsely match "o1".
+  const sortedEntries = Object.entries(MODEL_CONTEXT_WINDOWS).sort((a, b) => b[0].length - a[0].length);
+  for (const [key, tokens] of sortedEntries) {
+    const escaped = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+    if (regex.test(lower)) {
       return tokens;
     }
   }

@@ -410,6 +410,7 @@ interface AdoOrg {
   name: string;
   url: string;
   project: string;
+  pat?: string;
 }
 
 /** Editor for the ADO organizations list — add/remove orgs with name, URL, project. */
@@ -473,6 +474,16 @@ function OrganizationsInput({ value, onChange }: { value: AdoOrg[]; onChange: (o
                 value={org.project}
                 onChange={e => updateOrg(idx, 'project', e.target.value)}
                 placeholder="MyProject"
+              />
+            </div>
+            <div className="config-mcp-row">
+              <label className="config-mcp-label">PAT (optional)</label>
+              <input
+                className="config-input"
+                type="password"
+                value={org.pat ?? ''}
+                onChange={e => updateOrg(idx, 'pat', e.target.value)}
+                placeholder="Leave blank to use global PAT"
               />
             </div>
           </div>

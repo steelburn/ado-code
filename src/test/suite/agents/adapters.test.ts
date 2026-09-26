@@ -67,14 +67,31 @@ suite('AgentAdapters', () => {
   test('claude adapter spawns the resolved bin recorded on the run (Windows .cmd/.exe parity)', async () => {
     const { spawnFn, captured } = fakeSpawn(JSON.stringify({ result: 'done' }), 0);
     const adapter = new ClaudeAdapter(spawnFn);
+
+    // .cmd shims are routed through cmd.exe by resolveSpawn (Windows only).
+    // On Windows: captured.bin = cmd.exe path, and captured.args[3] wraps the shim.
+    // On non-Windows: captured.bin = 'claude.cmd' (passed through unchanged).
     const run = { ...makeRun('claude'), bin: 'claude.cmd' };
     await adapter.runTask(run, 'hi');
-    assert.strictEqual(captured.bin, 'claude.cmd');
-    // resumeTask uses the same resolved bin.
+    if (process.platform === 'win32') {
+      assert.ok(
+        captured.bin.toLowerCase().endsWith('cmd.exe'),
+        `expected cmd.exe, got ${captured.bin}`
+      );
+      assert.ok(
+        captured.args.some((a: string) => a.includes('claude.cmd')),
+        `claude.cmd should appear in cmd.exe args, got: ${JSON.stringify(captured.args)}`
+      );
+    } else {
+      assert.strictEqual(captured.bin, 'claude.cmd');
+    }
+
+    // .exe is not a cmd shim — passes through directly on all platforms.
     const run2 = { ...makeRun('claude'), bin: 'claude.exe', sessionId: 'sess-9' };
     await adapter.resumeTask!(run2, 'more');
     assert.strictEqual(captured.bin, 'claude.exe');
   });
+
 
   test('claude resumeTask requires a session id', async () => {
     const { spawnFn } = fakeSpawn('', 0);

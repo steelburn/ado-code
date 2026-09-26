@@ -742,7 +742,17 @@
         "adoCode.organizations": {
           "type": "array",
           "default": [],
-          "description": "ADO organizations the developer works with: [{ \"name\": \"mycompany\", \"url\": \"https://dev.azure.com/mycompany\", \"project\": \"MyProject\" }]. The ACTIVE org is picked per workspace (workspaceState), see adoCode.adoOrganization/adoCode.adoProject (Q1 resolution)."
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "Organization name" },
+              "url": { "type": "string", "description": "Organization URL" },
+              "project": { "type": "string", "description": "Default project name" },
+              "pat": { "type": "string", "description": "Personal Access Token for this organization (optional, falls back to global adoPat)" }
+            },
+            "required": ["name", "url", "project"]
+          },
+          "description": "ADO organizations the developer works with: [{ \"name\": \"mycompany\", \"url\": \"https://dev.azure.com/mycompany\", \"project\": \"MyProject\", \"pat\": \"...\" }]. The ACTIVE org is picked per workspace (workspaceState), see adoCode.adoOrganization/adoCode.adoProject (Q1 resolution)."
         },
         "adoCode.adoOrganization": {
           "type": "string",

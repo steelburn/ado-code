@@ -40,7 +40,7 @@ export class WorkItemDetailPanel {
   ): Promise<void> {
     const settings = getSettings();
     const active = getActiveOrg(context, settings);
-    if (!active.name || !active.project || !settings.adoPat) {
+    if (!active.name || !active.project || !active.pat) {
       panel.webview.html = WorkItemDetailPanel.errorHtml('Configure organization, project and PAT first.');
       return;
     }

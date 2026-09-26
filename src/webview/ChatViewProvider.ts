@@ -8,7 +8,7 @@ import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
 import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
-import { getSettings, getActiveOrg, llmConfigFromSettings } from '../config/settings';
+import { getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
 import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem } from '../llm/prompts';
@@ -180,7 +180,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // ── Session persistence (Task 2) ──────────────────────────────────
   private get sessionKey(): string {
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
-    const project = getSettings().adoProject || 'default';
+    const project = this.activeProject() || 'default';
     return `${folder}:${project}`;
   }
 
@@ -1505,7 +1505,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const currentDefault = cfg.get<string>('agents.autoSelect', '');
         if (installed.length === 1 && !currentDefault) {
           // Only one agent installed — auto-select it
-          await cfg.update('agents.autoSelect', installed[0].name, vscode.ConfigurationTarget.Global);
+          await updateSettingRespectingScope(cfg, 'agents.autoSelect', installed[0].name);
         } else if (installed.length > 1 && !currentDefault) {
           // Multiple agents, no default set — prompt user
           const pick = await this.requestConfirmation(
@@ -1517,7 +1517,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ]
           );
           if (pick) {
-            await cfg.update('agents.autoSelect', pick, vscode.ConfigurationTarget.Global);
+            await updateSettingRespectingScope(cfg, 'agents.autoSelect', pick);
           }
         }
         break;
@@ -1642,7 +1642,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = setInterval(() => {
       const s = getSettings();
-      if (!s.adoOrganization || !s.adoProject || !s.adoPat) return;
+      const active = getActiveOrg(this._context, s);
+      if (!active.name || !active.project || !active.pat) return;
       if (!this._dirty) return;
       if (!vscode.window.state.focused) return;
       if (Date.now() - this._lastUserInteraction < ChatViewProvider.IDLE_THRESHOLD_MS) return;
@@ -1706,7 +1707,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               // Never persist derived values back into settings.
               if (key === 'modelCapabilities') continue;
               try {
-                await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+                await updateSettingRespectingScope(cfg, key, value);
               } catch (err) {
                 saveError = `"${key}": ${err instanceof Error ? err.message : String(err)}`;
                 break;
@@ -1859,7 +1860,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const current = getSettings().mode;
             const next = modes[(modes.indexOf(current) + 1) % modes.length];
             if (next === 'yolo' && !await this.confirmYoloMode()) break;
-            await vscode.workspace.getConfiguration('adoCode').update('mode', next, vscode.ConfigurationTarget.Global);
+            await updateSettingRespectingScope(vscode.workspace.getConfiguration('adoCode'), 'mode', next);
             this.executor?.setMode(next);
             this.postMessage({ type: 'modeChanged', mode: next });
             break;
@@ -1867,7 +1868,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'selectMode': {
             const selected = message.mode;
             if (selected === 'yolo' && !await this.confirmYoloMode()) break;
-            await vscode.workspace.getConfiguration('adoCode').update('mode', selected, vscode.ConfigurationTarget.Global);
+            await updateSettingRespectingScope(vscode.workspace.getConfiguration('adoCode'), 'mode', selected);
             this.executor?.setMode(selected);
             this.postMessage({ type: 'modeChanged', mode: selected });
             this.markDirty();
@@ -1895,7 +1896,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'selectProject': {
-            await vscode.workspace.getConfiguration('adoCode').update('adoProject', message.projectName, vscode.ConfigurationTarget.Global);
+            await updateSettingRespectingScope(vscode.workspace.getConfiguration('adoCode'), 'adoProject', message.projectName);
             // Keep workspaceState in sync: getActiveOrg (used by
             // refreshWorkItems) reads 'adoCode.activeProject' from
             // workspaceState FIRST — after the org-switcher command has run,
@@ -2398,7 +2399,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (projectResult.success && request.adoIntegration) {
               try {
                 const active = getActiveOrg(this._context, getSettings());
-                if (active.name && active.project && getSettings().adoPat) {
+                if (active.name && active.project && active.pat) {
                   const wi = await this.services.ado.createWorkItem(
                     active.project,
                     request.adoWorkItemType || 'Task',
@@ -2489,7 +2490,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const s = getSettings();
     const active = getActiveOrg(this._context, s);
-    if (!active.name || !s.adoPat) {
+    if (!active.name || !active.pat) {
       return [];
     }
     return this.services.ado.getProjects();
@@ -2525,9 +2526,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Task 19: never send adoPat/llmApiKey to the webview — secrets stay in the host. */
   private _sanitizedConfig(isEditor: boolean = false) {
     const s = getSettings();
+    const active = getActiveOrg(this._context, s);
     return {
-      adoOrganization: s.adoOrganization,
-      adoProject: s.adoProject,
+      adoOrganization: active.name,
+      adoProject: active.project,
       llmProvider: s.llmProvider,
       llmApiUrl: s.llmApiUrl,
       llmModel: s.llmModel,
@@ -2535,8 +2537,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       configured: Boolean(s.llmApiKey),
       // ADO is optional: `configured` (LLM) gates the welcome wizard, but ADO
       // features only activate once the org + project + PAT are present.
-      adoConfigured: Boolean(s.adoOrganization && s.adoProject && s.adoPat),
-      adoConnectionConfigured: Boolean(s.adoOrganization && s.adoPat),
+      adoConfigured: Boolean(active.name && active.project && active.pat),
+      adoConnectionConfigured: Boolean(active.name && active.pat),
       // Capabilities of the ACTIVE model — the webview gates image pasting
       // (vision) and warns when tool calling is unavailable. Precedence:
       // user override > LIVE gateway hints (cached from the last /models
@@ -2648,15 +2650,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const [settingKey, prop] of keys) {
       const value = (config as any)[prop];
       if (value !== undefined) {
-        await cfg.update(settingKey, value, vscode.ConfigurationTarget.Global);
+        await updateSettingRespectingScope(cfg, settingKey, value);
       }
     }
     // Wizard saves must also write workspaceState so getActiveOrg (workspaceState
-    // first) resolves the same project the wizard just chose. Only non-empty
-    // values are stored — an empty adoProject (ADO skipped / project not picked)
-    // must CLEAR any stale binding instead of freezing "" as the active project,
-    // which would shadow later Configuration-page saves ("PAT update doesn't
-    // take effect" symptom: refresh bails with "configure ... PAT first").
+    // first) resolves the same org and project the wizard just chose. Only non-empty
+    // values are stored — an empty value clears any stale binding instead of freezing "".
+    if ((config as any).adoOrganization !== undefined) {
+      const org = (config as any).adoOrganization as string;
+      await this._context.workspaceState.update('adoCode.activeOrgName', org || undefined);
+    }
     if ((config as any).adoProject !== undefined) {
       const proj = (config as any).adoProject as string;
       await this._context.workspaceState.update('adoCode.activeProject', proj || undefined);
@@ -2669,8 +2672,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   async refreshWorkItems(): Promise<void> {
     // C10 fix: resolve the ACTIVE org from workspaceState (getActiveOrg), not raw settings.
     const active = getActiveOrg(this._context, getSettings());
-    if (!active.name || !getSettings().adoPat || !active.project) {
-      if (!active.project && active.name && getSettings().adoPat) {
+    if (!active.name || !active.pat || !active.project) {
+      if (!active.project && active.name && active.pat) {
         this.postMessage({ type: 'workItems', items: [] });
         this.onItemsFetched?.([], '');
         return;
@@ -2800,8 +2803,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async checkProjectBinding(root: string): Promise<void> {
     const settings = getSettings();
-    const currentProject = settings.adoProject;
-    const currentOrg = settings.adoOrganization;
+    const active = getActiveOrg(this._context, settings);
+    const currentProject = active.project;
+    const currentOrg = active.name;
     if (!currentProject || !currentOrg) return;
 
     const stored = this.readWorkspaceConfig(root);
@@ -4017,11 +4021,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const counted: LlmMessage[] = this.lastSystemPrompt
       ? [{ role: 'system', content: this.lastSystemPrompt }, ...this.conversation]
       : this.conversation;
-    void this.llmClient().countTokens(counted).then((native) => {
+    const tools = this.executor?.tools;
+    void this.llmClient().countTokens(counted, tools).then((native) => {
       if (typeof native !== 'number' || native < 0) return; // provider has no native counting
       this.nativeTokenCount.tokens = native;
-      if (this.tokenStatusBar) this.renderTokenStatus(native + toolTokens);
-      logger.debug(`native token count: ${native.toLocaleString()} (heuristic ~${heuristic.toLocaleString()}), +${toolTokens.toLocaleString()} tool schema tokens`);
+      const totalUsed = tools && tools.length > 0 ? native : native + toolTokens;
+      if (this.tokenStatusBar) this.renderTokenStatus(totalUsed);
+      logger.debug(`native token count: ${native.toLocaleString()} (heuristic ~${heuristic.toLocaleString()})`);
     }).catch(() => {
       // Ignore — status bar keeps the heuristic value.
     });
@@ -4277,8 +4283,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
       // Token optimization diagnostics: log how much this turn actually cost
       // (iterations, tool calls, and request payload tokens incl. system+tools).
+      const limitReason = result.loopDetected
+        ? ' (loop detected — forced conclusion)'
+        : result.reachedIterationLimit
+          ? ' (iteration limit reached — forced conclusion)'
+          : '';
       logger.debug(
-        `Chat turn cost — iterations: ${result.iterations}${result.reachedIterationLimit ? ' (iteration limit reached — forced conclusion)' : ''}, ` +
+        `Chat turn cost — iterations: ${result.iterations}${limitReason}, ` +
         `tools: ${result.toolCalls.length}, ` +
         `conversation: ${countMessageTokens(turnConversation).toLocaleString()} tokens, ` +
         `per-request overhead (system+tools): ${this.contextOverhead().toLocaleString()} tokens`
@@ -4295,7 +4306,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // A turn stopped by the iteration budget gets a limit-specific message
       // (agentic.ts normally supplies one, but guard the empty case too).
       if (!cleanText.trim()) {
-        if (result.reachedIterationLimit) {
+        if (result.loopDetected) {
+          cleanText = `A repetitive tool loop was detected, so I stopped execution to prevent wasting steps. Reply to continue with different instructions.`;
+        } else if (result.reachedIterationLimit) {
           cleanText = `I've reached the maximum number of iterations for this turn before finishing. Reply to continue, or raise the Iteration budget (\`adoCode.act.toolBudget\`) and ask again.`;
         } else {
           const tools = result.toolCalls.length;
@@ -4741,7 +4754,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const target = args.trim().toLowerCase();
         if (target && modes.includes(target as any)) {
           if (target === 'yolo' && !await this.confirmYoloMode()) break;
-          await vscode.workspace.getConfiguration('adoCode').update('mode', target, vscode.ConfigurationTarget.Global);
+          await updateSettingRespectingScope(vscode.workspace.getConfiguration('adoCode'), 'mode', target);
           this.executor?.setMode(target as any);
           this.postMessage({ type: 'modeChanged', mode: target as any });
           vscode.window.showInformationMessage(`ADO Code: mode set to "${target}".`);
@@ -4937,7 +4950,7 @@ First analyze the user story and explain your breakdown reasoning, then output t
     );
     if (pick) {
       if (pick === 'yolo' && !await this.confirmYoloMode()) return;
-      await vscode.workspace.getConfiguration('adoCode').update('mode', pick, vscode.ConfigurationTarget.Global);
+      await updateSettingRespectingScope(vscode.workspace.getConfiguration('adoCode'), 'mode', pick);
       this.executor?.setMode(pick as any); // executor wired in Task 24; optional here
       this.postMessage({ type: 'modeChanged', mode: pick as any });
     }

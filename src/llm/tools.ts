@@ -5,7 +5,7 @@ import { LlmTool } from './types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
 import { isCommandSessionApproved, terminalCommandKey, terminalCommandList } from './tool-approval-ui';
-import { matchesToolPattern, matchesCommandPattern, isHarmlessCommand } from './consent';
+import { matchesToolPattern, matchesCommandPattern, isHarmlessCommand, hasUnquotedShellOperators } from './consent';
 import { countTokens } from './context/tokenCounter';
 import type { AdoWorkItem, AdoComment } from '../ado/types';
 
@@ -34,9 +34,10 @@ export function capToolResult(content: string, budgetWidth: number = TOOL_RESULT
   if (tokens <= budgetWidth) return content;
   const headToks = Math.floor(budgetWidth * TOOL_RESULT_HEAD_RATIO);
   const tailToks = budgetWidth - headToks;
-  // Convert token budget back to an approximate char budget (chars/token ≈ 4).
-  const headChars = headToks * 4;
-  const tailChars = tailToks * 4;
+  // Convert token budget back to a char budget using the content's actual chars/token ratio.
+  const ratio = Math.max(1, Math.min(4, Math.floor(content.length / Math.max(tokens, 1))));
+  const headChars = headToks * ratio;
+  const tailChars = tailToks * ratio;
   const head = content.slice(0, headChars);
   const tail = content.length - tailChars > headChars ? content.slice(-tailChars) : '';
   const omitted = content.length - head.length - tail.length;
@@ -59,6 +60,10 @@ export const MAX_SEARCH_RESULTS = 200;
 export const MAX_SEARCH_FILES = 400;
 /** Default exclusion glob for search_files (mirrors list_workspace). */
 export const SEARCH_EXCLUDE_GLOB = '**/{node_modules,.git,dist,.vscode,out}/**';
+/** Max lines returned by read_file before truncation note is applied. */
+export const MAX_READ_FILE_LINES = 400;
+/** Max files read in a single batch read_file call. */
+export const MAX_BATCH_READ_FILES = 10;
 
 /**
  * Truncate a single match line to fit within `maxChars`, adding an explicit
@@ -74,6 +79,62 @@ export interface GrepLineHit {
   path: string;
   line: number;
   text: string;
+}
+
+/**
+ * Parse and sanitize a regex query string for search_files.
+ * Supports inline flags commonly emitted by LLMs (e.g. `(?i)`, `(?m)`, `(?s)`, `(?ims)`),
+ * stripping them from the pattern and applying them as JS RegExp flags.
+ * Also handles inline flag groups like `(?i:pattern)` by unwrapping the inner pattern.
+ */
+export function parseSearchRegex(raw: string, explicitFlags?: string): { re: RegExp } | { error: string } {
+  let pattern = raw;
+  const flagSet = new Set<string>(explicitFlags ? explicitFlags.split('') : []);
+
+  // 1. Detect and strip leading inline flags like (?i), (?im), (?ims), etc.
+  const leadingInlineMatch = pattern.match(/^\(\?([-a-zA-Z]+)\)/);
+  if (leadingInlineMatch) {
+    for (const char of leadingInlineMatch[1]) {
+      if ('imsuy'.includes(char)) {
+        flagSet.add(char);
+      }
+    }
+    pattern = pattern.slice(leadingInlineMatch[0].length);
+  }
+
+  // 2. Unwrap inline flag groups like (?i:pattern) or (?-i:pattern)
+  if (pattern.includes('(?')) {
+    pattern = pattern.replace(/\(\?([-a-zA-Z]+):([^)]*)\)/g, (_match, flags, inner) => {
+      for (const char of flags) {
+        if ('imsuy'.includes(char)) {
+          flagSet.add(char);
+        }
+      }
+      return inner;
+    });
+  }
+
+  // 3. Strip any standalone embedded inline flags like (?i) or (?-i)
+  if (pattern.includes('(?')) {
+    pattern = pattern.replace(/\(\?([-a-zA-Z]+)\)/g, (_match, flags) => {
+      for (const char of flags) {
+        if ('imsuy'.includes(char)) {
+          flagSet.add(char);
+        }
+      }
+      return '';
+    });
+  }
+
+  // 4. Construct the RegExp
+  const flags = Array.from(flagSet).join('');
+  try {
+    return { re: new RegExp(pattern, flags) };
+  } catch (err) {
+    return {
+      error: `search_files: invalid regex: ${err instanceof Error ? err.message : String(err)}. Note: JS RegExp engine is used.`,
+    };
+  }
 }
 
 /**
@@ -155,7 +216,30 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
+
+/** Builtin commands in cmd.exe on Windows that have no standalone executable in PATH. */
+export const WIN_CMD_BUILTINS = new Set(['del', 'erase', 'dir', 'rmdir', 'rd', 'copy', 'move', 'type', 'cls']);
+
+/**
+ * Tokenize a command line string into argv tokens respecting single and double quotes.
+ * Quoted substrings are preserved without outer quotes and with escaped quotes resolved.
+ */
+export function tokenizeCommandLine(cmd: string): string[] {
+  const tokens: string[] = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(cmd)) !== null) {
+    if (match[1] !== undefined) {
+      tokens.push(match[1].replace(/\\"/g, '"'));
+    } else if (match[2] !== undefined) {
+      tokens.push(match[2].replace(/\\'/g, "'"));
+    } else if (match[3] !== undefined) {
+      tokens.push(match[3]);
+    }
+  }
+  return tokens;
+}
 
 // ── Consent gate (pi parity: split gating from execution) ──────────────────
 // The mode/consent decision is shared between execute() (which prompts on
@@ -307,7 +391,7 @@ function pushRequiresApproval(name: string, args: Record<string, any>): boolean 
     if (!enabled) return false;
     const commands = terminalCommandList(args);
     return commands.some(cmd => {
-      const tokens = cmd.match(/"[^"]*"|\S+/g) ?? [];
+      const tokens = tokenizeCommandLine(cmd);
       return tokens.length >= 2 && tokens[0]!.toLowerCase() === 'git' && tokens[1]!.toLowerCase() === 'push';
     });
   }
@@ -354,6 +438,9 @@ export function createToolExecutor(
   // tool still prompts: terminal commands by exact command string, other
   // mutating tools by tool name.
   const state = { mode: 'inline' as 'inline' | 'plan' | 'act' | 'yolo', deniedKeys: new Set<string>() };
+  // In-turn file read cache: repeated reads of the same file within a single turn
+  // are served from memory to eliminate redundant disk I/O and re-reads.
+  const turnFileCache = new Map<string, string>();
   const allTools: LlmTool[] = [
     {
       name: 'get_work_items',
@@ -473,15 +560,15 @@ export function createToolExecutor(
     // ── Q3 resolution: code tools ─────────────────────────────────────────
     {
       name: 'read_file',
-      description: 'Read a workspace file or a line range (startLine/endLine). Without a range, long files return only their first 200 lines with a truncation note. Prefer narrow ranges or search_files over whole files — every read stays in the conversation context for the session.',
+      description: 'Read a workspace file or batch of files (up to 10 via paths). Without a range, files up to 400 lines return in full; longer files return their first 400 lines with a truncation note. Pass startLine/endLine to read a specific range.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Workspace-relative file path' },
-          startLine: { type: 'number' },
-          endLine: { type: 'number' },
+          path: { type: 'string', description: 'Workspace-relative file path (single file)' },
+          paths: { type: 'array', items: { type: 'string' }, description: 'Batch read: multiple file paths to read in one call (up to 10 files)' },
+          startLine: { type: 'number', description: '1-based line number to start reading from' },
+          endLine: { type: 'number', description: '1-based line number to stop reading at (inclusive)' },
         },
-        required: ['path'],
       },
     },
     {
@@ -490,7 +577,8 @@ export function createToolExecutor(
       parameters: {
         type: 'object',
         properties: {
-          regex: { type: 'string', description: 'Regular expression to search for (engine: VS Code/JS regex)' },
+          regex: { type: 'string', description: 'Regular expression to search for (supports standard JS regex and inline flags like (?i) for case-insensitivity)' },
+          flags: { type: 'string', description: 'Optional RegExp flags (e.g. "i" for case-insensitive search)' },
           path: { type: 'string', description: 'Workspace-relative file or directory to restrict the search to (optional; default: whole workspace)' },
           file_pattern: { type: 'string', description: 'Glob to restrict files, e.g. "src/**/*.ts", "*.test.ts" (takes precedence over path)' },
           limit: { type: 'number', description: 'Max matches to return (default 100, max 200)' },
@@ -505,10 +593,13 @@ export function createToolExecutor(
     },
     {
       name: 'list_workspace',
-      description: 'Map the workspace structure: list files (optionally filtered by a glob like `src/**/*.ts`; capped at 500 entries). Use this to see directory layout before reading files.',
+      description: 'Map the workspace structure: list files (optionally filtered by a glob like `src/**/*.ts`; capped at 500 entries). Pass details: true to return file sizes in bytes. Use this to see directory layout before reading files.',
       parameters: {
         type: 'object',
-        properties: { glob: { type: 'string', description: 'e.g. src/**/*.ts' } },
+        properties: {
+          glob: { type: 'string', description: 'e.g. src/**/*.ts' },
+          details: { type: 'boolean', description: 'Set true to return array of { path, bytes } objects (up to 150 files)' },
+        },
       },
     },
     {
@@ -569,6 +660,18 @@ export function createToolExecutor(
           content: { type: 'string', description: 'File content to write' },
         },
         required: ['path', 'content'],
+      },
+    },
+    {
+      name: 'delete_file',
+      description: 'Delete a file or directory in the workspace (mutating)',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Workspace-relative file or directory path to delete' },
+          recursive: { type: 'boolean', description: 'If true and path is a directory, delete recursively (default false)' },
+        },
+        required: ['path'],
       },
     },
     {
@@ -653,6 +756,19 @@ export function createToolExecutor(
       ? allTools.filter(t => READ_ONLY_TOOLS.has(t.name))
       : allTools;
 
+  const normalizePath = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+
+  const readFileCached = async (relPath: string): Promise<string> => {
+    const key = normalizePath(relPath);
+    const cached = turnFileCache.get(key);
+    if (cached !== undefined) return cached;
+    const uri = resolveWorkspacePath(relPath);
+    const doc = await vscode.workspace.fs.readFile(uri);
+    const text = Buffer.from(doc).toString('utf8');
+    turnFileCache.set(key, text);
+    return text;
+  };
+
   return {
     get tools() { return filteredTools(); },
     // M-6 fix: mode lives on a mutable `state` object — the closure var would
@@ -661,8 +777,11 @@ export function createToolExecutor(
     get mode() { return state.mode; },
     setMode(m: 'inline' | 'plan' | 'act') { state.mode = m; },
     // New turn → the user can be asked again (a previous turn's denials must
-    // not lock this turn out of consent prompts).
-    beginTurn() { state.deniedKeys.clear(); },
+    // not lock this turn out of consent prompts) and in-turn read cache resets.
+    beginTurn() {
+      state.deniedKeys.clear();
+      turnFileCache.clear();
+    },
     canAutoExecute(name, args) {
       // Read-only, yolo/auto-approved, allowlisted, or block-without-consent
       // calls run without user interaction → safe to parallelize. Calls that
@@ -699,7 +818,7 @@ export function createToolExecutor(
       // it, and org switches (Q1) take effect per-execute without recreating
       // the executor.
       // Auto-checkpoint before file mutations
-      if (['edit_file', 'write_to_file', 'apply_diff'].includes(name) && args.path) {
+      if (['edit_file', 'write_to_file', 'apply_diff', 'delete_file'].includes(name) && args.path) {
         try {
           services.checkpoints.save('__auto__', [args.path]);
         } catch { /* best-effort */ }
@@ -821,21 +940,51 @@ export function createToolExecutor(
             : JSON.stringify({ error: 'conflict resolution not wired' });
         // ── Q3 code tools (implemented via VS Code APIs) ─────────────
         case 'read_file': {
-          const uri = resolveWorkspacePath(args.path); // C4: path confinement
-          const doc = await vscode.workspace.fs.readFile(uri);
-          const text = Buffer.from(doc).toString('utf8');
+          // Batch read support (up to 10 files) via `paths`
+          if (Array.isArray(args.paths) && args.paths.length > 0) {
+            const pathsToRead = (args.paths as unknown[])
+              .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+              .slice(0, MAX_BATCH_READ_FILES);
+            if (pathsToRead.length === 0) {
+              return JSON.stringify({ error: 'read_file: paths array contained no valid string paths' });
+            }
+            const sections: string[] = [];
+            for (const filePath of pathsToRead) {
+              try {
+                const text = await readFileCached(filePath);
+                const lines = text.split('\n');
+                let body: string;
+                if (lines.length > MAX_READ_FILE_LINES) {
+                  body = lines.slice(0, MAX_READ_FILE_LINES).join('\n')
+                    + `\n\n…[truncated: showing first ${MAX_READ_FILE_LINES} of ${lines.length} lines; read with startLine/endLine for specific range]`;
+                } else {
+                  body = text;
+                }
+                sections.push(`=== ${filePath} (${lines.length} lines) ===\n${body}`);
+              } catch (err) {
+                sections.push(`=== ${filePath} ===\nError reading file: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+            return capToolResult(sections.join('\n\n'));
+          }
+
+          if (!args.path || typeof args.path !== 'string') {
+            return JSON.stringify({ error: 'read_file: provide path or paths' });
+          }
+
+          const text = await readFileCached(args.path);
           const lines = text.split('\n');
           // Token optimization: reading a WHOLE file unbounded returns
           // thousands of tokens that persist across every loop iteration.
-          // Default to a bounded window (still honoring explicit ranges) and
-          // cap the returned payload to the tool-result token budget.
+          // Files <= 400 lines are returned in full without truncation.
+          // Files > 400 lines without a range return the first 400 lines with a truncation note.
           const hasStart = args.startLine != null;
           const hasEnd = args.endLine != null;
           const start = hasStart ? Math.max(0, (args.startLine - 1)) : 0;
           let end = hasEnd ? args.endLine : lines.length;
           let note = '';
-          if (!hasStart && !hasEnd && lines.length > 200) {
-            end = 200;
+          if (!hasStart && !hasEnd && lines.length > MAX_READ_FILE_LINES) {
+            end = MAX_READ_FILE_LINES;
             note = `\n\n…[read_file truncated: showing first ${end} of ${lines.length} lines; pass startLine/endLine to read a specific range]`;
           }
           return capToolResult(lines.slice(start, end).join('\n') + note);
@@ -847,12 +996,12 @@ export function createToolExecutor(
           if (!query) {
             return JSON.stringify({ error: 'search_files: missing required parameter: regex' });
           }
-          let re: RegExp;
-          try {
-            re = new RegExp(query);
-          } catch (err) {
-            return JSON.stringify({ error: `search_files: invalid regex: ${err instanceof Error ? err.message : String(err)}` });
+          const explicitFlags = typeof args.flags === 'string' ? args.flags : undefined;
+          const parsed = parseSearchRegex(query, explicitFlags);
+          if ('error' in parsed) {
+            return JSON.stringify({ error: parsed.error });
           }
+          const re = parsed.re;
           const limit = typeof args.limit === 'number'
             ? Math.min(Math.max(Math.floor(args.limit), 1), MAX_SEARCH_RESULTS)
             : DEFAULT_SEARCH_RESULTS;
@@ -901,12 +1050,24 @@ export function createToolExecutor(
         case 'list_workspace': {
           // C4/M18: exclude .git, node_modules, dist, and common secret dirs
           const files = await vscode.workspace.findFiles(args.glob ?? '**/*', '**/{node_modules,.git,dist,.vscode}/**', 500);
+          if (args.details) {
+            const detailed = await Promise.all(files.slice(0, 150).map(async f => {
+              try {
+                const stat = await vscode.workspace.fs.stat(f);
+                return { path: vscode.workspace.asRelativePath(f), bytes: stat.size };
+              } catch {
+                return { path: vscode.workspace.asRelativePath(f), bytes: -1 };
+              }
+            }));
+            return capToolResult(JSON.stringify(detailed), 4000);
+          }
           return capToolResult(JSON.stringify(files.map(f => vscode.workspace.asRelativePath(f))), 2000);
         }
         case 'write_to_file': {
           const uri = resolveWorkspacePath(args.path); // C4: path confinement
           const content = Buffer.from(args.content, 'utf8');
           await vscode.workspace.fs.writeFile(uri, content);
+          turnFileCache.delete(normalizePath(args.path));
           return JSON.stringify({ ok: true, path: args.path, bytes: content.length });
         }
         case 'apply_diff':
@@ -935,19 +1096,29 @@ export function createToolExecutor(
               updated = applyUnifiedDiff(text, args.diff);
             }
             await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
+            turnFileCache.delete(normalizePath(args.path));
             return JSON.stringify({ ok: true, path: args.path });
           });
         }
+        case 'delete_file': {
+          if (!args.path || typeof args.path !== 'string') {
+            return JSON.stringify({ error: 'delete_file: path is required' });
+          }
+          const uri = resolveWorkspacePath(args.path);
+          await vscode.workspace.fs.delete(uri, { recursive: Boolean(args.recursive), useTrash: false });
+          turnFileCache.delete(normalizePath(args.path));
+          return JSON.stringify({ ok: true, path: args.path });
+        }
         case 'restore_checkpoint': {
           const restored = services.checkpoints.restore(args.checkpointId, args.taskId);
+          turnFileCache.clear();
           return JSON.stringify({ ok: true, restored });
         }
         case 'run_terminal_command': {
           // C3 fix: execFile with arg array and NO shell — `sh -c` would give
           // full shell semantics and nullify the allowlist. Tokenize the
-          // command and reject shell operators. C-2 fix: `\s` must NOT be in
-          // the operator class (spaces are legal — allowlist entries like
-          // `npm test` are multi-word); operators are the dangerous chars.
+          // command and reject unquoted shell operators (quoted literals e.g.
+          // in commit messages are permitted).
           // Batch (`commands` array) runs each command in order — same
           // checks, one call, concatenated outputs.
           const commands = terminalCommandList(args);
@@ -955,18 +1126,36 @@ export function createToolExecutor(
             return JSON.stringify({ error: 'run_terminal_command: empty command' });
           }
           for (const cmd of commands) {
-            if (!/^[^&|;`$<>()\r\n]*$/.test(cmd)) {
+            if (hasUnquotedShellOperators(cmd)) {
               return JSON.stringify({ error: `run_terminal_command: shell operators not allowed: ${cmd}` });
             }
           }
           const outputs: string[] = [];
           for (const cmd of commands) {
-            const argv = cmd.match(/"[^"]*"|\S+/g) ?? [];
+            const argv = tokenizeCommandLine(cmd);
             if (!argv[0]) {
               return JSON.stringify({ error: 'run_terminal_command: no command to run' });
             }
+            const isWinBuiltin = process.platform === 'win32' && WIN_CMD_BUILTINS.has(argv[0].toLowerCase());
+            let file: string;
+            let fileArgs: string[];
+            const spawnOpts: { cwd?: string; timeout?: number; windowsVerbatimArguments?: boolean } = {
+              cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+              timeout: 120000,
+            };
+            if (isWinBuiltin) {
+              file = process.env.ComSpec || 'cmd.exe';
+              const inner = argv.length > 1
+                ? `${argv[0]} ${argv.slice(1).map(a => `"${a.replace(/"/g, '""')}"`).join(' ')}`
+                : argv[0];
+              fileArgs = ['/d', '/s', '/c', `"${inner}"`];
+              spawnOpts.windowsVerbatimArguments = true;
+            } else {
+              file = argv[0];
+              fileArgs = argv.slice(1);
+            }
             const result = await new Promise<string>((resolve) => {
-              execFile(argv[0]!, argv.slice(1), { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, timeout: 120000 }, (err: any, stdout: any, stderr: any) => {
+              execFile(file, fileArgs, spawnOpts, (err: any, stdout: any, stderr: any) => {
                 resolve(stdout || stderr || (err?.message ?? ''));
               });
             });
