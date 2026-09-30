@@ -1,9 +1,11 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { Tooltip } from './ui/Tooltip';
 import { Badge } from './ui/Badge';
-import { Button } from './ui/Button';
 import { processMermaidInContainer } from '../utils/mermaid';
+import type { ToolCallInfo, TraceEntry } from '../types';
+
+export type { ToolCallInfo, TraceEntry };
 
 interface Message {
   role: string;
@@ -15,28 +17,19 @@ interface Message {
   /** Ordered record of a completed agentic turn: thinking blocks interleaved
    *  with the tool calls that followed them (chronological). Rendered in flow
    *  and left VISIBLE — the turn's work is never collapsed away on completion.
-   *  Transient (never persisted to session history). */
-  trace?: TraceEntry[];
-}
-
-/** A tool call surfaced by the agentic loop — live (running → completed) or
- *  recorded in a finished turn's trace. */
-export interface ToolCallInfo {
-  id: string;
-  name: string;
-  arguments: Record<string, any>;
-  result?: string;
-  /** false when the user hid tool calls in chat — rendered as a "…" indicator. */
-  showDetails?: boolean;
-  /** Completion flag for hidden calls, which never carry result content. */
-  done?: boolean;
+   *  0.6.7: persisted into session history, so a reopened session shows the
+   *  same record (thinking collapsed — see ThinkingBlock's defaultOpen). An
+   *  array of arrays means the condenser split this turn across several
+   *  assistant messages; the segments are still one chronological record. */
+  trace?: TraceInput;
+  /** True when the persisted record was trimmed to its storage budget (only
+   *  ever set for a restored turn — a live turn is shown in full). */
+  traceTruncated?: boolean;
 }
 
 /** One segment of a turn's ordered record. `thinking` blocks sit between the
  *  tool calls they introduced — not lumped above them. */
-export type TraceEntry =
-  | { kind: 'thinking'; text: string }
-  | { kind: 'tool'; call: ToolCallInfo };
+export type TraceInput = TraceEntry[] | TraceEntry[][];
 
 /** Live variant — carries a stable key so blocks update in place while the
  *  turn streams (thinking text grows, tool cards flip running → completed). */
@@ -70,6 +63,18 @@ function relativeTime(ts: number): string {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
+}
+
+/**
+ * Flatten a message's trace into one chronological record. Restored sessions
+ * hand back an array per assistant message (the condenser can split a single
+ * turn across several), so nested arrays concatenate in order.
+ */
+function flattenTrace(trace: TraceInput | undefined): TraceEntry[] {
+  if (!trace || trace.length === 0) return [];
+  return Array.isArray(trace[0])
+    ? (trace as TraceEntry[][]).flat()
+    : (trace as TraceEntry[]);
 }
 
 /**
@@ -127,6 +132,44 @@ function isErrorResult(result: string): boolean {
   }
 }
 
+const SUMMARY_ARG_KEYS = [
+  'path', 'paths', 'file', 'file_path', 'pattern', 'query', 'command', 'commands',
+  'id', 'ids', 'url', 'name', 'title', 'agent', 'server', 'tool',
+];
+const SUMMARY_CAP = 72;
+
+/**
+ * One-line gist of what a tool call actually did, so a collapsed card is
+ * informative ("read_file · src/llm/agentic.ts") instead of just a tool name.
+ * Prefers the argument keys that carry the tool's subject; falls back to the
+ * first scalar argument so unknown / MCP tools still say something.
+ */
+function summarizeToolArgs(name: string, args: Record<string, any> | undefined): string {
+  if (!args || typeof args !== 'object') return '';
+  // The tool name is a useful hint (read_file ⇒ path / edit_file ⇒ path), but
+  // the key list is ordered by likelihood across all tools, so a generic scan
+  // is both simpler and good enough.
+  for (const key of SUMMARY_ARG_KEYS) {
+    const value = args[key];
+    const text = Array.isArray(value)
+      ? value.filter(v => typeof v === 'string').join(', ')
+      : typeof value === 'string' || typeof value === 'number'
+        ? String(value)
+        : '';
+    if (!text) continue;
+    const oneLine = text.replace(/\s+/g, ' ').trim();
+    if (!oneLine) continue;
+    return oneLine.length > SUMMARY_CAP ? `${oneLine.slice(0, SUMMARY_CAP)}…` : oneLine;
+  }
+  for (const value of Object.values(args)) {
+    if (typeof value === 'string' && value.trim()) {
+      const oneLine = value.replace(/\s+/g, ' ').trim();
+      return oneLine.length > SUMMARY_CAP ? `${oneLine.slice(0, SUMMARY_CAP)}…` : oneLine;
+    }
+  }
+  return name.startsWith('mcp__') ? name.split('__').slice(1).join(' › ') : '';
+}
+
 /**
  * Remove ```choice fences (main-model choice offers — surfaced as the
  * clickable option card, never as raw JSON in the bubble). The host strips
@@ -146,97 +189,64 @@ const ToolCallBlock: React.FC<{ tc: ToolCallInfo; defaultOpen?: boolean }> = ({ 
   // the tool's work stays visible after the loop ends. The user can always
   // override either way.
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
-  const expanded = userExpanded ?? (defaultOpen || !tc.result);
 
-  // Status: running → spinner badge; done → success; JSON error result → error
-  const statusBadge = !tc.result ? (
+  // Completion is derived from `done` FIRST, then from result presence: in the
+  // hidden mode (chat.showToolCalls=false) a call is done with no result at
+  // all, and a tool whose result is the empty string was still a success —
+  // treating "" as "not finished" pinned a "running…" spinner on a finished
+  // card forever.
+  const done = !!tc.done || tc.result !== undefined;
+  const errored = !!tc.result && isErrorResult(tc.result);
+  const expanded = userExpanded ?? (defaultOpen || !done);
+
+  const summary = summarizeToolArgs(tc.name, tc.arguments);
+
+  const statusBadge = !done ? (
     <span className="tool-status tool-status-running">
       <span className="tool-status-spinner" />
       running…
     </span>
   ) : (
-    <Badge variant={isErrorResult(tc.result) ? 'error' : 'success'}>
-      {isErrorResult(tc.result) ? 'error' : 'completed'}
+    <Badge variant={errored ? 'error' : 'success'}>
+      {errored ? 'error' : 'completed'}
     </Badge>
   );
 
   return (
-    <div
-      className="tool-block"
-      style={{
-        margin: '6px 0',
-        border: '1px solid var(--vscode-panel-border)',
-        borderRadius: 6,
-        overflow: 'hidden',
-        fontSize: '0.85em',
-      }}
-    >
+    <div className={`tool-block${done ? '' : ' tool-block-running'}`}>
       {/* Header — always visible, clickable */}
       <button
+        className="tool-block-header"
         onClick={() => setUserExpanded(!expanded)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          width: '100%',
-          padding: '6px 10px',
-          background: 'var(--vscode-sideBar-background)',
-          border: 'none',
-          cursor: 'pointer',
-          textAlign: 'left',
-          fontFamily: 'var(--vscode-font-family)',
-          color: 'var(--vscode-foreground)',
-        }}
+        aria-expanded={expanded}
+        title={`${tc.name}${summary ? ` — ${summary}` : ''}`}
       >
-        <span style={{ fontSize: '0.8em', transition: 'transform 0.15s', transform: expanded ? 'rotate(90deg)' : 'rotate(0)' }}>
+        <span
+          className="tool-block-chevron"
+          style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0)' }}
+        >
           ▶
         </span>
-        <span style={{ fontWeight: 600 }}>🔧 {tc.name}</span>
+        <span className="tool-block-name">{tc.name}</span>
+        {summary && <span className="tool-block-summary">{summary}</span>}
         {statusBadge}
       </button>
 
       {/* Collapsible details */}
       {expanded && (
-        <div style={{ padding: '8px 10px', borderTop: '1px solid var(--vscode-panel-border)' }}>
+        <div className="tool-block-details">
           {Object.keys(tc.arguments).length > 0 && (
             <div style={{ marginBottom: 6 }}>
-              <div style={{ fontWeight: 600, marginBottom: 2, color: 'var(--vscode-descriptionForeground)', fontSize: '0.8em' }}>
-                ARGUMENTS
-              </div>
-              <pre
-                style={{
-                  margin: 0,
-                  padding: '6px 8px',
-                  background: 'var(--vscode-textCodeBlock-background)',
-                  borderRadius: 4,
-                  overflow: 'auto',
-                  fontFamily: 'var(--vscode-editor-font-family)',
-                  fontSize: '0.9em',
-                }}
-              >
+              <div className="tool-block-section-label">ARGUMENTS</div>
+              <pre className="tool-block-pre arguments">
                 {JSON.stringify(tc.arguments, null, 2)}
               </pre>
             </div>
           )}
-          {tc.result && (
+          {tc.result !== undefined && (
             <div>
-              <div style={{ fontWeight: 600, marginBottom: 2, color: 'var(--vscode-descriptionForeground)', fontSize: '0.8em' }}>
-                RESULT
-              </div>
-              <pre
-                style={{
-                  margin: 0,
-                  padding: '6px 8px',
-                  background: 'var(--vscode-textCodeBlock-background)',
-                  borderRadius: 4,
-                  overflow: 'auto',
-                  maxHeight: 200,
-                  fontFamily: 'var(--vscode-editor-font-family)',
-                  fontSize: '0.9em',
-                }}
-              >
-                {tc.result}
-              </pre>
+              <div className="tool-block-section-label">RESULT</div>
+              <pre className="tool-block-pre result">{tc.result}</pre>
             </div>
           )}
         </div>
@@ -408,23 +418,30 @@ const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
 };
 
 /**
- * Thinking/reasoning block with a collapse toggle. Defaults to OPEN wherever
- * it appears (live bubble AND the finished turn record) — reasoning is never
- * hidden once produced; the user may collapse any block on demand.
- * Reasoning is transient — it never persists into session history.
+ * Thinking/reasoning block with a collapse toggle.
+ * `defaultOpen` is true in the live bubble and the just-finished turn record —
+ * reasoning is never hidden while it is being produced — and false for a trace
+ * restored from session history, where the reasoning is historical context the
+ * user explicitly opted into keeping (click to reveal). The user may override
+ * either way.
  */
-const ThinkingBlock: React.FC<{ text: string }> = ({ text }) => {
-  const [open, setOpen] = useState(true);
+const ThinkingBlock: React.FC<{ text: string; defaultOpen?: boolean }> = ({ text, defaultOpen = true }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  // A block that was collapsed by default must SAY it holds reasoning — after
+  // a reload an unlabeled collapsed box would read as an empty artifact.
+  const preview = !open && text.trim() ? text.trim().replace(/\s+/g, ' ').slice(0, 96) : '';
   return (
-    <div className="thinking-block thinking-block-live">
+    <div className={`thinking-block${defaultOpen ? ' thinking-block-live' : ' thinking-block-restored'}`}>
       <button
         className="thinking-header thinking-toggle"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
         title={open ? 'Hide reasoning' : 'Show the reasoning behind this step'}
       >
         <span className="thinking-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
         <span className="thinking-icon">💭</span>
         <span className="thinking-label">Thinking</span>
+        {preview && <span className="thinking-preview">{preview}</span>}
       </button>
       {open && <div className="thinking-content">{text}</div>}
     </div>
@@ -436,6 +453,12 @@ const ThinkingBlock: React.FC<{ text: string }> = ({ text }) => {
 export function MessageList({ messages, loading, liveTrace = [], streamText, activity }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(messages.length);
+  // Headline state: reasoning already on screen + whether any card is still
+  // running (drives "Reasoning…" / "Working…" instead of a duplicate label).
+  const hasVisibleThinking = liveTrace.some(e => e.kind === 'thinking' && !!e.text.trim());
+  const anyToolRunning = liveTrace.some(
+    e => e.kind === 'tool' && e.call.showDetails !== false && !(e.call.done || e.call.result !== undefined)
+  );
   // Signature of everything the chat area displays. Id-bubble replacements
   // that touch a MID-thread message (e.g. the run card while the user scrolls
   // older content) don't change it, so they never yank the scroll position.
@@ -512,6 +535,13 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
         const { toolCalls, textParts } = isAssistant ? parseToolCalls(displayContent) : { toolCalls: [], textParts: [displayContent] };
         const hasText = textParts.some((t) => t.trim().length > 0);
 
+        // Persisted record for this turn (one entry per assistant message; the
+        // condenser can split a single turn across several). The LAST message
+        // is the turn the user just watched, so its reasoning stays open —
+        // everything earlier is restored history and starts collapsed.
+        const traceSegs = isAssistant ? flattenTrace(m.trace) : [];
+        const isLiveTurn = isAssistant && i === messages.length - 1;
+
         // Timestamp display
         const timestampEl = m.timestamp ? (
           <Tooltip content={new Date(m.timestamp).toLocaleString()} side="top">
@@ -549,22 +579,31 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                   <p>{m.content}</p>
                 ) : (
                   <>
-                    {m.trace && m.trace.length > 0 ? (
+                    {traceSegs.length > 0 ? (
                       <>
                         {/* Ordered record of the agentic turn: each thinking
                             block stays where the model produced it — right
                             before the tool batch it introduced — and nothing is
-                            collapsed away when the turn completes. */}
+                            collapsed away when the turn completes. Restored
+                            (persisted) reasoning starts CLOSED: it is historical
+                            context, and the live view is the one that should
+                            make the model's thinking auditable. */}
                         <div className="turn-record">
-                          {m.trace.map((seg, j) =>
+                          {traceSegs.map((seg, j) =>
                             seg.kind === 'thinking' ? (
-                              <ThinkingBlock key={`th-${j}`} text={seg.text} />
+                              <ThinkingBlock key={`th-${j}`} text={seg.text} defaultOpen={isLiveTurn} />
                             ) : (
                               <ToolCallBlock key={seg.call.id || `tc-${j}`} tc={seg.call} defaultOpen />
                             )
                           )}
                         </div>
-
+                        {/* Storage cap notice — only a restored record can be
+                            trimmed; a live turn is always shown in full. */}
+                        {m.traceTruncated && !isLiveTurn && (
+                          <div className="turn-record-truncated">
+                            Earlier steps of this turn were trimmed when the record was saved.
+                          </div>
+                        )}
                         {/* Final answer — follows the record chronologically. */}
                         {hasText && textParts.filter((t) => t.trim()).map((text, j) => (
                           <MarkdownWithCodeCopy key={j} content={text} />
@@ -577,9 +616,15 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                           <MarkdownWithCodeCopy key={j} content={text} />
                         ))}
 
-                        {/* Render tool call blocks */}
+                        {/* Tool-call fences parsed out of the content. Rendered
+                            with the SAME defaults as the turn-trace path above
+                            (expanded result, one-line argument summary), so a
+                            finished turn looks identical whichever shape
+                            produced it. Parsing does not track fence position,
+                            so these follow the text — the trace path is the
+                            chronological one. */}
                         {toolCalls.map((tc) => (
-                          <ToolCallBlock key={tc.id} tc={tc} />
+                          <ToolCallBlock key={tc.id} tc={tc} defaultOpen />
                         ))}
 
                         {/* Fallback: if no text and no tool calls, render raw */}
@@ -602,11 +647,21 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
               <span className="message-author">ADO Code</span>
             </div>
             <div className="message-content">
-              {/* Headline: what the AI is doing right now */}
+              {/* Headline: what the AI is doing right now. Reasoning already
+                  renders below as its own labeled block, so the headline drops
+                  the "Thinking…" wording in that case — otherwise every turn
+                  repeated the word "Thinking" once per block plus once here.
+                  `activity` is reserved for host-driven work a turn doesn't
+                  describe on its own (skills, task generation); per-tool
+                  progress goes to the status bar, not this headline. */}
               <div className="activity-indicator">
                 <div className="activity-spinner" />
                 <span className="activity-text">
-                  {activity ? `${activity}…` : streamText ? 'Responding…' : 'Thinking…'}
+                  {activity
+                    ? `${activity}…`
+                    : hasVisibleThinking
+                      ? (streamText || anyToolRunning ? 'Working…' : 'Reasoning…')
+                      : streamText ? 'Responding…' : 'Thinking…'}
                 </span>
               </div>
 
@@ -623,6 +678,10 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                     // Hidden calls (chat.showToolCalls=false) never carry
                     // payloads — grouped into the "Working…" disclosure below.
                     if (seg.call.showDetails === false) return null;
+                    // Live cards stay compact while running (the header carries
+                    // the running badge); the expanding one is the card the user
+                    // clicks. Clicking expands either state, so this is purely
+                    // about how much a busy turn dumps into the thread.
                     return <ToolCallBlock key={seg.key} tc={seg.call} />;
                   })}
                   {liveTrace.some(seg => seg.kind === 'tool' && seg.call.showDetails === false) && (

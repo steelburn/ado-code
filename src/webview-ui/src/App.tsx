@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session, ImageAttachment } from './types';
+import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session, ImageAttachment, StoredTurnTrace } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
-import { MessageList, LiveTraceEntry, TraceEntry } from './components/MessageList';
+import { MessageList, LiveTraceEntry, TraceEntry, TraceInput } from './components/MessageList';
 import { InputBar } from './components/InputBar';
 import { KebabMenu } from './components/KebabMenu';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
@@ -61,9 +61,37 @@ function capRecord(text: string | undefined, limit: number): string | undefined 
   return text.length > limit ? text.slice(0, limit) + '\n…(truncated)' : text;
 }
 
+/** One chat message as the thread renders it: the ordered Thinking/Tools
+ *  record travels with the assistant message it belongs to. */
+interface ChatMessage {
+  role: string;
+  content: string;
+  id?: string;
+  trace?: TraceInput;
+  traceTruncated?: boolean;
+}
+
+/**
+ * Rebuild chat messages from a session record (sessionList / sessionSwitched
+ * payloads), carrying the persisted Thinking/Tools record onto the chat message.
+ * Entries are un-nested here: a stored trace is `{ entries, truncated }`, while
+ * the chat message holds just the ordered segments.
+ */
+function restoredMessages(
+  stored: Array<{ role: string; content: string; trace?: StoredTurnTrace }>
+): ChatMessage[] {
+  return stored.map(m => ({
+    role: m.role,
+    content: m.content,
+    ...(m.trace && m.trace.entries.length > 0
+      ? { trace: m.trace.entries, ...(m.trace.truncated ? { traceTruncated: true } : {}) }
+      : {}),
+  }));
+}
+
 function App() {
   // ── State ──────────────────────────────────────────────────────
-  const [messages, setMessages] = useState<Array<{ role: string; content: string; id?: string; trace?: TraceEntry[] }>>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
@@ -218,12 +246,24 @@ function App() {
               ...(segs.length > 0 ? { trace: segs } : {}),
             };
             setMessages(prev => [...prev, finalMsg]);
+            // 0.6.7: hand the turn's record back so the host can persist it —
+            // only this side knows how reasoning and tool cards interleave.
+            // `text` keys it to the answer it produced.
+            if (segs.length > 0 && text) {
+              vscode.postMessage({ type: 'recordTurnTrace', content: text, entries: segs });
+            }
             finishTurnState();
           } else {
             setLoading(true);
             // Buffer the streamed answer text; the live bubble renders it and
             // it lands as a normal message on completion.
-            if (msg.content) {
+            //
+            // Text flagged `isThinking` is an agentic iteration's PRE-TOOL
+            // reasoning. The host mirrors it as an assistant message only so
+            // this refusal keeps it out of the answer — it is displayed by its
+            // own thinking block, and buffering it here would prepend the
+            // iteration's reasoning to the final answer.
+            if (msg.content && !msg.isThinking) {
               streamTextRef.current += msg.content;
               setStreamText(streamTextRef.current);
             }
@@ -238,15 +278,17 @@ function App() {
           // mid-word — they coalesce into the current block with no glue.
           if (msg.content) {
             const next = [...traceRef.current];
-            if (msg.newBlock) {
+            // Reasoning that continues a block only while the ANSWER has not
+            // started streaming: once answer text exists, a delta without
+            // `newBlock` is a separate reasoning block, never an append to the
+            // block that preceded the answer (which used to leave the answer's
+            // opening tokens inside the Thinking block).
+            const last = next[next.length - 1];
+            const continuesLast = !!last && last.kind === 'thinking' && !streamTextRef.current;
+            if (msg.newBlock || !continuesLast) {
               next.push({ key: `th-${++thinkingSeqRef.current}`, kind: 'thinking', text: msg.content });
-            } else {
-              const last = next[next.length - 1];
-              if (last && last.kind === 'thinking') {
-                last.text += msg.content;
-              } else {
-                next.push({ key: `th-${++thinkingSeqRef.current}`, kind: 'thinking', text: msg.content });
-              }
+            } else if (last && last.kind === 'thinking') {
+              last.text += msg.content;
             }
             commitLiveTrace(next);
           }
@@ -442,7 +484,10 @@ function App() {
         }
 
         case 'historyRestored':
-          setMessages(msg.messages.map(m => ({ role: m.role, content: m.content })));
+          // 0.6.7: keep the persisted Thinking/Tools record with each message so
+          // a reopened session renders the work that produced an answer (tool
+          // cards intact, reasoning collapsed) instead of only the answer text.
+          setMessages(restoredMessages(msg.messages));
           setConsent(null);
           finishTurnState();
           break;
@@ -454,12 +499,12 @@ function App() {
           if (msg.activeId) {
             const active = msg.sessions.find(s => s.id === msg.activeId);
             if (active && Array.isArray(active.messages) && active.messages.length > 0) {
-              setMessages(prev => (prev.length === 0 ? active.messages : prev));
+              setMessages(prev => (prev.length === 0 ? restoredMessages(active.messages) : prev));
             }
           }
           break;
         case 'sessionSwitched':
-          setMessages(msg.session.messages.map(m => ({ role: m.role, content: m.content })));
+          setMessages(restoredMessages(msg.session.messages));
           setActiveSessionId(msg.session.id);
           activeSessionIdRef.current = msg.session.id;
           setConsent(null);

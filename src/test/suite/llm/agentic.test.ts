@@ -257,13 +257,25 @@ suite('AnthropicProvider chatWithTools', () => {
 
     const client = new LlmClient(config);
     const updates: string[] = [];
+    // `final` is what separates pre-tool reasoning from the terminal answer:
+    // the host renders falsy updates as thinking and relies on the final one
+    // arriving with the whole answer exactly once. Lock the contract down.
+    const finals: boolean[] = [];
     await runAgenticChat(client, stubExecutor(), [{ role: 'user', content: 'go' }], undefined, 8, (u) => {
       if (u.tool) updates.push(`tool:${u.tool.name}`);
-      else if (u.text) updates.push(`text:${u.text}`);
+      else if (u.text) {
+        updates.push(`text:${u.text}`);
+        finals.push(!!u.final);
+      }
     });
 
     assert.ok(updates.includes('text:thinking...'), 'thinking text reported');
     assert.ok(updates.includes('tool:echo'), 'tool execution reported');
+    assert.deepStrictEqual(
+      finals,
+      [false, true],
+      'pre-tool text is non-final and the terminal answer is final — the host posts only the latter as the reply'
+    );
   });
 });
 

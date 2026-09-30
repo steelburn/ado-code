@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ChatViewProvider } from '../../../webview/ChatViewProvider';
+import { ChatViewProvider, capTurnTrace, withStoredTraces } from '../../../webview/ChatViewProvider';
 import { AgentProgressPanel } from '../../../webview/AgentProgressPanel';
 import {
   isSessionAutoApproved,
@@ -927,6 +927,148 @@ suite('ChatViewProvider · one work item per session (0.6.5)', () => {
     (provider as any).confirmBroker.resolve(card.requestId, 'cancel');
     assert.strictEqual(await pending, false, 'cancel aborts');
     assert.deepStrictEqual((provider as any).getSessions().find((x: any) => x.id === (provider as any).getActiveSessionId()).workItemIds, [101], 'nothing bound');
+  });
+});
+
+// ── 0.6.7: turn trace (Thinking & Tools) persistence ────────────────────────
+suite('ChatViewProvider · turn trace persistence', () => {
+  test('capTurnTrace excerpts long reasoning and caps tool payloads', () => {
+    const stored = capTurnTrace([
+      { kind: 'thinking', text: 'x'.repeat(5000) },
+      {
+        kind: 'tool',
+        call: {
+          id: 'c1',
+          name: 'read_file',
+          arguments: { path: 'src/llm/agentic.ts' },
+          result: 'y'.repeat(4000),
+          done: true,
+        },
+      },
+    ]);
+    assert.ok(stored, 'a trace with entries is stored');
+    assert.strictEqual(stored!.truncated, true, 'trimming is flagged for the UI');
+    const [thinking, tool] = stored!.entries;
+    assert.strictEqual(thinking!.kind, 'thinking');
+    assert.ok(
+      (thinking as any).text.length < 5000 && (thinking as any).text.includes('reasoning excerpt truncated'),
+      'long reasoning is excerpted'
+    );
+    assert.strictEqual(tool!.kind, 'tool');
+    assert.deepStrictEqual((tool as any).call.arguments, { path: 'src/llm/agentic.ts' }, 'small arguments are kept verbatim');
+    assert.strictEqual((tool as any).call.done, true, 'completion flag survives, so the card cannot render as running');
+    assert.ok((tool as any).call.result.length < 4000 && (tool as any).call.result.includes('result truncated'), 'long result is capped');
+  });
+
+  test('capTurnTrace keeps tool calls when arguments carry a large payload', () => {
+    const big = 'z'.repeat(10000);
+    const stored = capTurnTrace([
+      { kind: 'tool', call: { id: 'w1', name: 'write_to_file', arguments: { path: 'a.ts', content: big }, done: true } },
+    ]);
+    const args = (stored!.entries[0] as any).call.arguments;
+    assert.strictEqual(args.path, 'a.ts', 'the summary key survives the cap');
+    assert.ok(args.content.length < big.length, 'the oversized value is reduced');
+    assert.ok(args.content.includes('truncated'), 'the reduced value says so');
+  });
+
+  test('capTurnTrace returns undefined for an empty record', () => {
+    assert.strictEqual(capTurnTrace([]), undefined);
+    assert.strictEqual(capTurnTrace(undefined as any), undefined);
+  });
+
+  test('without storing a record, a finished turn carries no trace', async () => {
+    const provider = new ChatViewProvider({} as any, {} as any, makeSessionContext());
+    (provider as any)._view = { webview: { postMessage: () => {} } };
+    await (provider as any).ensureSession('hello');
+    await (provider as any).persistConversation();
+
+    const session = (provider as any).getSessions()[0];
+    assert.ok(
+      session.messages.every((m: any) => m.trace === undefined),
+      'no phantom traces on a turn that never recorded one'
+    );
+  });
+
+  test('a recorded turn survives persist + reload and is posted back with history', async () => {
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, {} as any, context);
+    const posted: any[] = [];
+    (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
+    await (provider as any).ensureSession('hi');
+    const sessionId = (provider as any).getActiveSessionId();
+    assert.ok(sessionId, 'session created and active');
+
+    // A finished agentic turn: the user message, then the answer carrying the
+    // Thinking & Tools record the webview handed back.
+    (provider as any).conversation = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'Done.' },
+    ];
+    (provider as any).conversationBySession.set(sessionId, (provider as any).conversation);
+    await (provider as any).recordTurnTrace(
+      [
+        { kind: 'thinking', text: 'Let me check the file.' },
+        { kind: 'tool', call: { id: 'c1', name: 'read_file', arguments: { path: 'a.ts' }, result: 'contents', done: true } },
+      ],
+      'Done.'
+    );
+
+    const stored = (provider as any).getSessions()[0].messages.find((m: any) => m.role === 'assistant');
+    assert.ok(stored?.trace, 'the record is written to the session message');
+    assert.strictEqual(stored.trace.entries.length, 2);
+    assert.strictEqual(stored.trace.entries[1].call.name, 'read_file');
+
+    // Reload the session the way a panel refresh does.
+    posted.length = 0;
+    await (provider as any).loadSession(sessionId);
+    const restored = posted.find(m => m.type === 'historyRestored');
+    assert.ok(restored, 'historyRestored posted');
+    const assistant = restored.messages.find((m: any) => m.role === 'assistant');
+    assert.ok(assistant?.trace, 'the restored conversation carries the record');
+    assert.strictEqual(assistant.trace.entries.length, 2);
+    assert.strictEqual(assistant.trace.entries[1].call.result, 'contents', 'result content is restored');
+  });
+
+  test('persisting the conversation again does not drop a stored record', async () => {
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, {} as any, context);
+    (provider as any)._view = { webview: { postMessage: () => {} } };
+    const sessionId = await (provider as any).ensureSession('hi');
+    (provider as any).conversation = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'Done.' },
+    ];
+    (provider as any).conversationBySession.set(sessionId, (provider as any).conversation);
+    await (provider as any).persistConversation();
+    await (provider as any).recordTurnTrace(
+      [{ kind: 'tool', call: { id: 'c1', name: 'read_file', arguments: { path: 'a.ts' }, done: true } }],
+      'Done.'
+    );
+
+    // Any later persist (a new turn, a condense, a session save) re-writes the
+    // message list — the record must ride along.
+    await (provider as any).persistConversation();
+    const stored = (provider as any).getSessions()[0].messages.find((m: any) => m.role === 'assistant');
+    assert.ok(stored?.trace, 'record survives a re-persist of the same messages');
+    assert.strictEqual(stored.trace.entries[0].call.name, 'read_file');
+  });
+
+  test('withStoredTraces pairs records with the conversation by child order', () => {
+    const conv: any[] = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'same answer' },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'same answer' },
+    ];
+    const stored: any[] = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'same answer', trace: { entries: [{ kind: 'tool', call: { id: 'a', name: 'first', arguments: {} } }] } },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'same answer', trace: { entries: [{ kind: 'tool', call: { id: 'b', name: 'second', arguments: {} } }] } },
+    ];
+    const out = withStoredTraces(conv, stored);
+    assert.strictEqual(out[1]!.trace!.entries[0]!.kind === 'tool' && (out[1]!.trace!.entries[0] as any).call.name, 'first');
+    assert.strictEqual(out[3]!.trace!.entries[0]!.kind === 'tool' && (out[3]!.trace!.entries[0] as any).call.name, 'second', 'repeated answer text does not reuse the first record');
   });
 });
 

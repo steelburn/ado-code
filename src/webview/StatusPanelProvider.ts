@@ -3,6 +3,25 @@ import { Services } from '../services';
 import { getSettings } from '../config/settings';
 import { AgentCapability } from '../agents/types';
 import { AgentRunner } from '../agents/AgentRunner';
+import { summarizeMarkdown } from '../shared/markdownSummary';
+
+/** Maximum number of characters rendered inside a memory tree tooltip. */
+const TOOLTIP_MAX_CHARS = 4000;
+
+/**
+ * Build the hover tooltip for a memory entry: rendered markdown so the
+ * full content is readable without leaving the tree.
+ */
+function memoryTooltip(key: string, content: string, sourceLabel: string): vscode.MarkdownString {
+  const truncated = content.length > TOOLTIP_MAX_CHARS
+    ? `${content.slice(0, TOOLTIP_MAX_CHARS)}\n\n…(truncated)`
+    : content;
+  const md = new vscode.MarkdownString(
+    `**${key}** — ${sourceLabel}\n\n${truncated || '_(empty)_'}`
+  );
+  md.supportThemeIcons = true;
+  return md;
+}
 
 function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -130,21 +149,36 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
       memItem.contextValue = 'statusMemory';
       for (const entry of userMemories) {
         const child = new StatusItem(
-          `[${entry.category}] ${entry.key}: ${entry.content.substring(0, 60)}`,
+          entry.key,
           vscode.TreeItemCollapsibleState.None
         );
         child.iconPath = new vscode.ThemeIcon('person');
-        child.description = new Date(entry.timestamp).toLocaleDateString();
+        child.description = `[${entry.category}] ${summarizeMarkdown(entry.content, 48)}`;
+        child.tooltip = memoryTooltip(entry.key, entry.content, `user memory (${entry.category})`);
         child.contextValue = 'statusMemoryUser';
         child.meta = { key: entry.key, category: entry.category, content: entry.content, source: 'user' };
         memItem.children = memItem.children ?? [];
         memItem.children.push(child);
       }
       for (const key of workspaceMemories) {
+        const content = this.services.workspaceMemory.read(key) ?? '';
+        const filePath = this.services.workspaceMemory.getFilePath(key);
         const child = new StatusItem(key, vscode.TreeItemCollapsibleState.None);
-        child.iconPath = new vscode.ThemeIcon('folder');
+        child.iconPath = new vscode.ThemeIcon('markdown');
+        // Parsed preview of the `.md` document — first real line, markdown stripped.
+        child.description = summarizeMarkdown(content);
+        const tooltip = memoryTooltip(key, content, `.ado-code/memory/${key}.md`);
+        tooltip.appendMarkdown('\n\n---\n\n$(go-to-file) Click to open the `.md` file.');
+        child.tooltip = tooltip;
         child.contextValue = 'statusMemoryWorkspace';
-        child.meta = { key, source: 'workspace' };
+        const meta = { key, source: 'workspace' as const, content, filePath };
+        child.meta = meta;
+        // Single click opens the backing markdown file in an editor.
+        child.command = {
+          command: 'adoCode.openWorkspaceMemory',
+          title: 'Open Memory File',
+          arguments: [{ meta }],
+        };
         memItem.children = memItem.children ?? [];
         memItem.children.push(child);
       }

@@ -193,3 +193,61 @@ suite('generateSystemPrompt (chat system prompt)', () => {
     assert.ok(prompt.includes('read only the files you actually need'), 'lazy reads for delegated agents');
   });
 });
+
+suite('System prompt · session to-do list', () => {
+  const planMode = { slug: 'plan', name: 'Plan', role: 'Read-only planning, no edits', toolGroups: ['todo', 'read'] as const };
+  const inlineMode = { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['todo', 'read', 'write', 'execute'] as const };
+
+  test('the to-do tool is listed in both inline and plan modes', () => {
+    for (const mode of [inlineMode, planMode]) {
+      const prompt = generateSystemPrompt({
+        mode: mode as any,
+        workspacePath: '/workspace',
+        os: 'linux',
+      });
+      assert.ok(prompt.includes('update_todo_list'), `${mode.slug} must offer the to-do tool`);
+      assert.ok(prompt.includes('read_todo_list'), `${mode.slug} must offer the read tool`);
+      assert.ok(prompt.includes('set_goal'), `${mode.slug} must offer the goal tool`);
+    }
+  });
+
+  test('the goal discipline is taught (set once, keep it stable)', () => {
+    const prompt = generateSystemPrompt({
+      mode: inlineMode as any,
+      workspacePath: '/workspace',
+      os: 'linux',
+    });
+    assert.ok(prompt.includes('record it with `set_goal`'), 'recording the objective is required');
+    assert.ok(prompt.includes('stays fixed'), 'the goal must not be rewritten to restate progress');
+    assert.ok(prompt.includes('break that goal into steps'), 'the list is framed as steps toward the goal');
+  });
+
+  test('the to-do discipline is taught (create, tick immediately, one in progress)', () => {
+    const prompt = generateSystemPrompt({
+      mode: inlineMode as any,
+      workspacePath: '/workspace',
+      os: 'linux',
+    });
+    assert.ok(prompt.includes('BEFORE you start working'), 'planning before acting is required');
+    assert.ok(prompt.includes('SAME iteration you finish it'), 'completions must not be batched');
+    assert.ok(prompt.includes('ONE item should be `in_progress`'), 'single active item is stated');
+  });
+
+  test('the live list is injected only when one exists', () => {
+    const without = generateSystemPrompt({
+      mode: inlineMode as any,
+      workspacePath: '/workspace',
+      os: 'linux',
+    });
+    assert.ok(!without.includes('## Current To-do List'), 'no empty section when there is no list');
+
+    const withList = generateSystemPrompt({
+      mode: inlineMode as any,
+      workspacePath: '/workspace',
+      os: 'linux',
+      todos: '## Current To-do List (this session)\n\n- [ ] Ship it\n\nProgress: 0/1 completed.',
+    });
+    assert.ok(withList.includes('## Current To-do List (this session)'));
+    assert.ok(withList.includes('- [ ] Ship it'));
+  });
+});

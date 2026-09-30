@@ -43,10 +43,12 @@ export const TOOL_GROUPS = TOOL_GROUP_MAP;
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_MODES: ModeConfig[] = [
-  { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['read', 'write', 'execute'] },
-  { slug: 'plan', name: 'Plan', role: 'Read-only planning, no edits', toolGroups: ['read'] },
-  { slug: 'act', name: 'Act', role: 'Full auto-approve mode', toolGroups: ['read', 'write', 'execute'] },
-  { slug: 'yolo', name: 'YOLO', role: 'Full autonomy — auto-approves everything including shell commands', toolGroups: ['read', 'write', 'execute'] },
+  { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['todo', 'read', 'write', 'execute'] },
+  // Plan mode is read-only, but the session to-do list is allowed: writing the
+  // plan down as a task ledger is the point of planning.
+  { slug: 'plan', name: 'Plan', role: 'Read-only planning, no edits', toolGroups: ['todo', 'read'] },
+  { slug: 'act', name: 'Act', role: 'Full auto-approve mode', toolGroups: ['todo', 'read', 'write', 'execute'] },
+  { slug: 'yolo', name: 'YOLO', role: 'Full autonomy — auto-approves everything including shell commands', toolGroups: ['todo', 'read', 'write', 'execute'] },
 ];
 
 // ---------------------------------------------------------------------------

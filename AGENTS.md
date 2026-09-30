@@ -12,7 +12,7 @@ Communication via VS Code postMessage bridge.
 - `npm run build:webview` — Webpack bundle for React webview
 - `npm run build:all` — compile + webview
 - `npm run lint` — ESLint
-- `npx vsce package --allow-missing-repository` — build VSIX
+- `npx --yes @vscode/vsce package --allow-missing-repository --baseContentUrl https://github.com/steelburn/ado-code/blob/main --baseImagesUrl https://github.com/steelburn/ado-code/raw/main` — build VSIX. The two base URLs are required: package.json has no `repository` field, so vsce cannot rewrite the relative README links and aborts (`--allow-missing-repository` alone is not enough on current vsce)
 
 ## Project Structure
 src/ extension entry point and services composition root
@@ -26,16 +26,16 @@ src/llm/tools/ types.ts only (tool names/params/groups); ALL tool implementation
 src/llm/providers/ BaseProvider, openai, anthropic (the -v2/BaseProvider migration and handler.ts were removed — client.ts + LlmProvider interface is the live path)
 src/llm/context/ tokenCounter, contextManager, condenser
 src/memory/ UserMemory, WorkspaceMemory
-src/services/ checkpoints/, mcp/, ignoreFiles/ (keeps `.ado-code` out of .gitignore/.dockerignore), understanding/ (durable repo + work-item understanding cache)
+src/services/ checkpoints/, mcp/, ignoreFiles/ (keeps `.ado-code` out of .gitignore/.dockerignore), understanding/ (durable repo + work-item understanding cache), todo/ (per-session AI to-do lists)
 src/shared/ Message protocol types
-src/webview/ ChatViewProvider (sidebar & editor panel), StatusPanelProvider, WorktreesTreeProvider (dedicated agent-worktree view), svgExport.ts
+src/webview/ ChatViewProvider (sidebar & editor panel), StatusPanelProvider, WorktreesTreeProvider (dedicated agent-worktree view), TodoTreeProvider (per-session To-do view), svgExport.ts
 src/webview-ui/ React app (components/, styles/, Mermaid diagram renderer & SVG export)
 
 ## Architecture
 
 ### Extension Host
 Entry: src/extension.ts activate()
-Composition: src/services.ts createServices() builds: ado, git, changelog, agents, checkpoints, mcp, memory, workspaceMemory, understanding
+Composition: src/services.ts createServices() builds: ado, git, changelog, agents, checkpoints, mcp, memory, workspaceMemory, understanding, todos
 
 ### LLM Layer
 client.ts — streaming chat, tool-calling
@@ -74,6 +74,46 @@ invocation: `agent.before` executes in the run's workdir before the adapter
 starts (output streams to the run panel), `agent.after` runs on completion
 and its output is captured into the summary (AgentRunner.runPreHook +
 verifyWork).
+
+### Session To-do List + Goal (src/services/todo/)
+TodoStore.ts — per-session task ledger persisted to `.ado-code/todos/<slug>-<hash>.json`
+(one file per session; the slug keeps it readable, the hash of the FULL session id keeps
+it unique — ids are ISO timestamps and contain `:`). Owns the ACTIVE session id, so
+`setActiveSession()` is called by ChatViewProvider on load/create/delete and the store's
+`onDidChange` event is the single refresh trigger for the tree, the badge and the tools.
+`replace()` is TodoWrite semantics (the model sends the COMPLETE list each call) and
+PRESERVES the session's goal — rewriting the steps must never drop the objective;
+`setGoal()`/`clearGoal()` own the goal (a goal-only session is still stored, and the file
+is deleted only when BOTH items and goal are gone — `removeItem`/`clearGoal` both respect
+that). `setStatus`/`addItem`/`removeItem`/`rename`/`remove`/`removeAll` serve the UI and
+session lifecycle. Untrusted input is normalized (unknown status → pending, blanks
+dropped, duplicates collapse by content-hash id, count ≤ 50, label ≤ 300 chars,
+`normalizeGoalText` collapses the goal to one capped line, an unknown goal source
+degrades to `ai`) and a corrupt file reads as null instead of throwing.
+`toPromptString()` feeds `**Goal:**` + the live checklist into the system prompt (a
+goal-only session is still injected); `renderTodoChecklist()` produces the
+`- [x] / [~] / [ ]` form used by both the prompt and the tool results.
+TodoTreeProvider.ts — the `adoCode.todos` view: one root per session with items and/or a
+goal (active session first). The GOAL is the root label with the `target` icon and
+`contextValue` `todoGoalNode`; a session without a goal falls back to its chat name and
+`todoSessionNode`. Leaves are items with `checkboxState` + a status icon (pending ○ /
+in_progress `sync~spin` / completed `pass-filled`), `TreeItem.id` set from the session+item
+id so checkbox identity survives refreshes. Ticking a checkbox writes through the store;
+`setStore()` re-subscribes when services are rebuilt.
+Tools: `set_goal` (one-line objective), `update_todo_list` (full replace) and
+`read_todo_list`. All three live in the `todo` tool group (src/llm/tools/types.ts) which
+EVERY mode includes — plan mode too, since the goal and its plan ARE the planning output —
+and they are exempt from consent via TODO_TOOLS in src/llm/tools.ts (the ledger only
+touches `.ado-code/`, never user source). The executor resolves the target session through
+the `getSessionId`/`getSessionName` hooks wired by ChatViewProvider; `update_todo_list`
+and `read_todo_list` echo the current goal back so the model re-anchors on it.
+Slash command: `/goal <objective>` sets the goal (user source), bare `/goal` opens the
+current value for editing, `/goal --clear` removes it (handled in
+executeSlashCommand; listed under AI in `/help`).
+UI: view title = Set Goal / Add Item / Refresh (+ Clear in the overflow); item context =
+Mark Completed / Mark Pending / Remove; session context = Set Goal / Add Item /
+Clear Goal / Clear. Deleting a chat session deletes its list, renaming one updates the
+stored name, and wiping all sessions calls `removeAll()`.
 
 ### Repository Understanding (src/services/understanding/)
 UnderstandingService.ts — durable, fingerprinted cache of the repo + selected
@@ -116,6 +156,8 @@ search_files (grep with per-line 500-char truncation, regex parsing with inline 
 run_terminal_command (single `command` OR batch `commands` array),
 delegate_to_agent, restore_checkpoint, set_memory,
 execute_skill (loads skill instructions, read-only), list_workspace (glob + `details: true` file sizes), read/write/list_workspace_memory,
+set_goal (one-line session objective; no consent, allowed in every mode),
+update_todo_list (full-replace session to-do ledger, preserves the goal, no consent, allowed in every mode), read_todo_list (returns items + goal),
 commit_worktree, push_worktree, create_pull_request, resolve_pr_conflicts,
 mcp__<server>__<tool>
 

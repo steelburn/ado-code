@@ -9,6 +9,7 @@ import { SkillManager } from './services/SkillManager';
 import { SkillRegistryService } from './services/SkillRegistryService';
 import { ProjectCreationService } from './webview/ProjectCreationService';
 import { WorkspaceMemory } from './memory/WorkspaceMemory';
+import { TodoStore } from './services/todo/TodoStore';
 import { UnderstandingService } from './services/understanding/UnderstandingService';
 import { getSettings, getActiveOrg } from './config/settings';
 import { UserMemory } from './memory/UserMemory';
@@ -30,6 +31,8 @@ export interface Services {
   projectCreation: ProjectCreationService;
   workspaceMemory: WorkspaceMemory;
   memory: UserMemory;
+  /** Per-session AI to-do lists (`.ado-code/todos/`) behind the To-do view. */
+  todos: TodoStore;
   /** Durable, fingerprinted cache of repository + work-item understanding. */
   understanding: UnderstandingService;
   logger: typeof logger;
@@ -81,6 +84,7 @@ export function createServices(context: vscode.ExtensionContext): Services {
     projectCreation: new ProjectCreationService(),
     workspaceMemory,
     memory: new UserMemory(context),
+    todos: new TodoStore(workspaceRoot),
     understanding: new UnderstandingService(workspaceRoot, git, workspaceMemory),
     logger,
   };

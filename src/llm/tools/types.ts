@@ -44,6 +44,9 @@ export type ToolName =
   | 'set_memory'
   | 'execute_skill'
   | 'delete_file'
+  | 'update_todo_list'
+  | 'read_todo_list'
+  | 'set_goal'
 
 /**
  * Type map defining the native (typed) argument structure for each tool.
@@ -66,6 +69,9 @@ export interface NativeToolArgs {
   delegate_to_agent: { prompt: string; agent?: string }
   create_work_item: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; parentWorkItemId?: number; assignedTo?: string; tags?: string }
   execute_skill: { skillId: string; input: string }
+  update_todo_list: { todos: Array<{ content: string; status?: string; activeForm?: string }> }
+  read_todo_list: Record<string, never>
+  set_goal: { goal: string }
 }
 
 /**
@@ -88,7 +94,7 @@ export interface ToolUse<TName extends ToolName = ToolName> {
 // ---------------------------------------------------------------------------
 
 /** Logical groupings of tools for UI and mode-gating. */
-export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado' | 'memory'
+export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado' | 'memory' | 'todo'
 
 /** Maps each ToolGroup to its member ToolNames. */
 export interface ToolGroupMap {
@@ -98,6 +104,11 @@ export interface ToolGroupMap {
   mcp: never[]
   ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment' | 'create_work_item')[]
   memory: ('read_workspace_memory' | 'write_workspace_memory' | 'list_workspace_memory' | 'set_memory')[]
+  // The session goal + to-do list are the model's OWN task ledger, not
+  // workspace source: they are available in every mode (plan included) so the
+  // objective and its plan can be written down while planning and ticked off
+  // while acting.
+  todo: ('set_goal' | 'update_todo_list' | 'read_todo_list')[]
 }
 
 /** Default group-to-tools mapping. */
@@ -108,6 +119,7 @@ export const TOOL_GROUP_MAP: ToolGroupMap = {
   mcp: [],
   ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment', 'create_work_item'],
   memory: ['read_workspace_memory', 'write_workspace_memory', 'list_workspace_memory', 'set_memory'],
+  todo: ['set_goal', 'update_todo_list', 'read_todo_list'],
 }
 
 /** Human-readable display names for each tool. */
@@ -132,6 +144,9 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   list_workspace_memory: 'List workspace memory',
   set_memory: 'Set user memory',
   execute_skill: 'Execute skill',
+  update_todo_list: 'Update to-do list',
+  read_todo_list: 'Read to-do list',
+  set_goal: 'Set session goal',
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
  * constant exists so host code — e.g. the User-Agent — can reference the
  * version without importing package.json from compiled output).
  */
-export const EXTENSION_VERSION = '0.6.6';
+export const EXTENSION_VERSION = '0.6.7';
 
 /**
  * User-Agent header sent with every LLM API request so gateway/provider logs

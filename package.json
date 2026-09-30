@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "publisher": "steelburn",
   "icon": "resources/icon.png",
   "engines": {
@@ -55,7 +55,16 @@
     "onCommand:adoCode.rerunWizard",
     "onCommand:adoCode.openSettings",
     "onCommand:adoCode.moveChatToEditor",
-    "onCommand:adoCode.moveChatToSidebar"
+    "onCommand:adoCode.moveChatToSidebar",
+    "onView:adoCode.todos",
+    "onCommand:adoCode.todos.refresh",
+    "onCommand:adoCode.todos.addItem",
+    "onCommand:adoCode.todos.setGoal",
+    "onCommand:adoCode.todos.clearGoal",
+    "onCommand:adoCode.todos.clear",
+    "onCommand:adoCode.todos.removeItem",
+    "onCommand:adoCode.todos.markPending",
+    "onCommand:adoCode.todos.markCompleted"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -288,6 +297,24 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.openWorkspaceMemory",
+        "title": "Open Memory File",
+        "icon": "$(go-to-file)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.previewWorkspaceMemory",
+        "title": "Preview Memory (Markdown)",
+        "icon": "$(open-preview)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.copyWorkspaceMemory",
+        "title": "Copy Memory Content",
+        "icon": "$(clippy)",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.memoryExport",
         "title": "Export Memories",
         "icon": "$(export)",
@@ -400,6 +427,54 @@
         "title": "ADO Code: Send File to Chat",
         "icon": "$(comment-discussion)",
         "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.setGoal",
+        "title": "Set Session Goal",
+        "icon": "$(target)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.clearGoal",
+        "title": "Clear Session Goal",
+        "icon": "$(circle-slash)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.refresh",
+        "title": "Refresh To-do List",
+        "icon": "$(refresh)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.addItem",
+        "title": "Add To-do Item",
+        "icon": "$(add)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.clear",
+        "title": "Clear To-do List",
+        "icon": "$(trash)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.removeItem",
+        "title": "Remove To-do Item",
+        "icon": "$(close)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.markPending",
+        "title": "Mark as Pending",
+        "icon": "$(circle-large-outline)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.markCompleted",
+        "title": "Mark as Completed",
+        "icon": "$(check)",
+        "category": "ADO Code"
       }
     ],
     "keybindings": [
@@ -449,6 +524,26 @@
       ],
       "view/title": [
         {
+          "command": "adoCode.todos.setGoal",
+          "when": "view == adoCode.todos",
+          "group": "navigation@1"
+        },
+        {
+          "command": "adoCode.todos.addItem",
+          "when": "view == adoCode.todos",
+          "group": "navigation@2"
+        },
+        {
+          "command": "adoCode.todos.refresh",
+          "when": "view == adoCode.todos",
+          "group": "navigation@3"
+        },
+        {
+          "command": "adoCode.todos.clear",
+          "when": "view == adoCode.todos",
+          "group": "1_clear@1"
+        },
+        {
           "command": "adoCode.moveChatToEditor",
           "when": "view == adoCode.chat && !adoCode.chatInEditor",
           "group": "navigation"
@@ -485,6 +580,56 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "adoCode.todos.markCompleted",
+          "when": "viewItem == todoItemNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.todos.markPending",
+          "when": "viewItem == todoItemDoneNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.todos.addItem",
+          "when": "viewItem == todoSessionNode || viewItem == todoGoalNode",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.todos.markCompleted",
+          "when": "viewItem == todoItemNode",
+          "group": "1_status@1"
+        },
+        {
+          "command": "adoCode.todos.markPending",
+          "when": "viewItem == todoItemDoneNode",
+          "group": "1_status@1"
+        },
+        {
+          "command": "adoCode.todos.removeItem",
+          "when": "viewItem == todoItemNode || viewItem == todoItemDoneNode",
+          "group": "2_item@1"
+        },
+        {
+          "command": "adoCode.todos.setGoal",
+          "when": "viewItem == todoSessionNode || viewItem == todoGoalNode",
+          "group": "1_session@1"
+        },
+        {
+          "command": "adoCode.todos.addItem",
+          "when": "viewItem == todoSessionNode || viewItem == todoGoalNode",
+          "group": "1_session@2"
+        },
+        {
+          "command": "adoCode.todos.clearGoal",
+          "when": "viewItem == todoGoalNode",
+          "group": "2_session@1"
+        },
+        {
+          "command": "adoCode.todos.clear",
+          "when": "viewItem == todoSessionNode || viewItem == todoGoalNode",
+          "group": "2_session@2"
+        },
         {
           "command": "adoCode.startTask",
           "when": "viewItem == workItemNode",
@@ -553,7 +698,27 @@
         {
           "command": "adoCode.deleteMemory",
           "when": "viewItem == statusMemoryUser || viewItem == statusMemoryWorkspace",
+          "group": "2_memory@1"
+        },
+        {
+          "command": "adoCode.openWorkspaceMemory",
+          "when": "viewItem == statusMemoryWorkspace",
           "group": "1_memory@1"
+        },
+        {
+          "command": "adoCode.openWorkspaceMemory",
+          "when": "viewItem == statusMemoryWorkspace",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.previewWorkspaceMemory",
+          "when": "viewItem == statusMemoryWorkspace",
+          "group": "1_memory@2"
+        },
+        {
+          "command": "adoCode.copyWorkspaceMemory",
+          "when": "viewItem == statusMemoryWorkspace",
+          "group": "1_memory@3"
         },
         {
           "command": "adoCode.moveToWorkspaceMemory",
@@ -718,6 +883,11 @@
           "type": "webview",
           "id": "adoCode.chat",
           "name": "Chat"
+        },
+        {
+          "id": "adoCode.todos",
+          "name": "To-do",
+          "type": "tree"
         },
         {
           "id": "adoCode.workItems",

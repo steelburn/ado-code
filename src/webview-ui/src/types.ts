@@ -28,6 +28,36 @@ export interface AgentRun {
 
 import { ProjectCreationRequest } from './components/ProjectCreationWizard/types';
 
+// ── Turn trace (Thinking & Tools record) ────────────────────────────
+// Mirrored from src/shared/messages.ts (the webview project cannot resolve
+// cross-project imports). Keep the two copies in sync.
+
+/** A tool call surfaced by the agentic loop — live (running → completed) or
+ *  recorded in a finished turn's trace. */
+export interface ToolCallInfo {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+  result?: string;
+  /** false when the user hid tool calls in chat — rendered as a "…" indicator. */
+  showDetails?: boolean;
+  /** Completion flag for hidden calls, which never carry result content. */
+  done?: boolean;
+}
+
+/** One segment of a turn's ordered record. `thinking` blocks sit between the
+ *  tool calls they introduced — not lumped above them. */
+export type TraceEntry =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool'; call: ToolCallInfo };
+
+/** A turn's Thinking/Tools record as persisted in session history. */
+export interface StoredTurnTrace {
+  entries: TraceEntry[];
+  /** True when the record was trimmed to fit the per-turn character cap. */
+  truncated?: boolean;
+}
+
 /** An image pasted into the chat, carried as a base64 data URL. */
 export interface ImageAttachment {
   id: string;
@@ -84,6 +114,12 @@ export type WebviewToExtensionMessage =
   | { type: 'consentResponse'; requestId: string; approved: boolean; scope?: 'once' | 'session' | 'permanent' }
   // Stop generation: user clicks stop while LLM is streaming
   | { type: 'stopGeneration' }
+  // A finished turn's Thinking/Tools record, handed back by the webview so the
+  // host can persist it (the host never sees the reasoning blocks itself — it
+  // only emits flat tool/progress events). `content` is the turn's final answer
+  // text, which keys the record to the message it belongs to. Sent once per
+  // completed turn; the host caps and stores it with that assistant message.
+  | { type: 'recordTurnTrace'; content: string; entries: TraceEntry[] }
   // Session history
   | { type: 'listSessions' }
   | { type: 'switchSession'; sessionId: string }
@@ -104,7 +140,10 @@ export type ExtensionToWebviewMessage =
   // done:true message with the SAME id REPLACES that bubble's content instead
   // of appending a new one (live delegation card in the thread). `replace`
   // forces replacement semantics; id'd messages without it append (streams).
-  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean }
+  // `isThinking` marks streamed text that is an agentic iteration's PRE-TOOL
+  // reasoning (also surfaced as a thinking block) — never buffered into the
+  // answer, which would merge reasoning into the reply and duplicate it.
+  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean; isThinking?: boolean }
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended
   // thinking). `newBlock` marks the start of a DISTINCT reasoning step — the
   // agentic loop posts one complete pre-tool message per iteration — so the
@@ -135,7 +174,7 @@ export type ExtensionToWebviewMessage =
   // AI choice prompt: detected question + options from AI response
   | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }> }
   // Task 26: history restore (Q4)
-  | { type: 'historyRestored'; messages: { role: string; content: string }[] }
+  | { type: 'historyRestored'; messages: { role: string; content: string; trace?: StoredTurnTrace }[] }
   // Task 28: task detail review + clarification
   | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
   // Project selection
@@ -257,7 +296,7 @@ export interface Session {
   id: string;
   name: string;
   createdAt: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; trace?: StoredTurnTrace }>;
 }
 
 // ── Skill System Types ──────────────────────────────────────────────

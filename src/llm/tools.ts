@@ -7,6 +7,8 @@ import { getSettings, getActiveOrg } from '../config/settings';
 import { isCommandSessionApproved, terminalCommandKey, terminalCommandList } from './tool-approval-ui';
 import { matchesToolPattern, matchesCommandPattern, isHarmlessCommand, hasUnquotedShellOperators } from './consent';
 import { countTokens } from './context/tokenCounter';
+import { renderTodoChecklist } from '../services/todo/TodoStore';
+import { logger } from '../services/logger';
 import type { AdoWorkItem, AdoComment } from '../ado/types';
 
 // ── Tool-result size guard ────────────────────────────────────────────────
@@ -217,6 +219,13 @@ const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file',
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
 const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
+// The session goal + to-do list are the MODEL'S OWN task ledger, persisted
+// under `.ado-code/todos/` — they never touch workspace source. They are
+// therefore allowed in EVERY mode (plan included: the goal and its plan are
+// what planning produces) and never raise a consent prompt; gating every
+// status tick would make the ledger useless. Not listed in MUTATING_TOOLS, so
+// gateTool() runs them untouched.
+const TODO_TOOLS = new Set(['set_goal', 'update_todo_list', 'read_todo_list']);
 
 /** Builtin commands in cmd.exe on Windows that have no standalone executable in PATH. */
 export const WIN_CMD_BUILTINS = new Set(['del', 'erase', 'dir', 'rmdir', 'rd', 'copy', 'move', 'type', 'cls']);
@@ -264,7 +273,7 @@ function gateTool(
   hooks: { onApprove?: (name: string, args: Record<string, any>) => Promise<boolean> },
 ): GateAction {
   // ── Q8 mode gating ────────────────────────────────────────────────
-  if (state.mode === 'plan' && !READ_ONLY_TOOLS.has(name)) {
+  if (state.mode === 'plan' && !READ_ONLY_TOOLS.has(name) && !TODO_TOOLS.has(name)) {
     return { action: 'block', error: `tool '${name}' is not read-only and not allowed in plan mode` };
   }
   if (!MUTATING_TOOLS.has(name)) {
@@ -431,6 +440,13 @@ export function createToolExecutor(
     onResolvePrConflicts?: (runId: string) => Promise<Array<{ path: string; worktreePath: string; base?: string; ours?: string; theirs?: string; truncated?: boolean }>>;
     /** Create work item with editor-tab preview + confirmation before ADO write. */
     onCreateWorkItem?: (args: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; assignedTo?: string; tags?: string; parentWorkItemId?: number }) => Promise<{ id: number; url: string } | null>;
+    /**
+     * Chat session that owns the to-do list. Read lazily per call so the tool
+     * always writes the CURRENT session's list, even after the user switches.
+     */
+    getSessionId?: () => string | null;
+    /** Display name of the current chat session (shown in the To-do view). */
+    getSessionName?: () => string | undefined;
   }
 ): ToolExecutor {
   // M-6 fix: mode lives on `state` (mutated by setMode) — no closure var.
@@ -738,6 +754,46 @@ export function createToolExecutor(
       description: 'List all workspace memory keys',
       parameters: { type: 'object', properties: {} },
     },
+    // ── Session goal + to-do list ───────────────────────────────────
+    {
+      name: 'set_goal',
+      description: 'Record the GOAL of this chat session — the objective the work is meant to achieve, shown at the top of the ADO Code "To-do" view. Set it once, as soon as the objective is clear (a user request that implies more than a trivial edit, or an active work item). Keep it short and outcome-shaped (one line). Do NOT rewrite it to restate progress: the to-do list tracks progress, the goal stays stable. Pass an empty string only if the goal genuinely no longer applies.',
+      parameters: {
+        type: 'object',
+        properties: {
+          goal: { type: 'string', description: 'The one-line objective for this session (empty string clears it)' },
+        },
+        required: ['goal'],
+      },
+    },
+    {
+      name: 'update_todo_list',
+      description: 'Create or update the to-do list for THIS chat session (shown in the ADO Code "To-do" view). Send the COMPLETE list on every call — items already finished must be included with status "completed". Keep exactly ONE item "in_progress" while you work on it and flip it to "completed" the moment it is actually done; never batch completions to the end of the turn. Use it for any task with 3+ distinct steps.',
+      parameters: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            description: 'The complete to-do list, in execution order',
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', description: 'Imperative one-line task (e.g. "Add the TodoStore service")' },
+                status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: 'Current state of this item' },
+                activeForm: { type: 'string', description: 'Present-participle label shown while the item is in progress (e.g. "Adding the TodoStore service")' },
+              },
+              required: ['content', 'status'],
+            },
+          },
+        },
+        required: ['todos'],
+      },
+    },
+    {
+      name: 'read_todo_list',
+      description: 'Read the current to-do list for THIS chat session. Returns an empty list when no to-do list has been created yet.',
+      parameters: { type: 'object', properties: {} },
+    },
   ];
 
   const settings = getSettings();
@@ -753,7 +809,7 @@ export function createToolExecutor(
    */
   const filteredTools = (): LlmTool[] =>
     state.mode === 'plan'
-      ? allTools.filter(t => READ_ONLY_TOOLS.has(t.name))
+      ? allTools.filter(t => READ_ONLY_TOOLS.has(t.name) || TODO_TOOLS.has(t.name))
       : allTools;
 
   const normalizePath = (p: string) => p.replace(/\\/g, '/').toLowerCase();
@@ -1195,6 +1251,70 @@ export function createToolExecutor(
         case 'list_workspace_memory': {
           const keys = services.workspaceMemory.list();
           return JSON.stringify(keys);
+        }
+        // ── Session goal + to-do list ─────────────────────────────────
+        case 'set_goal': {
+          const goalSession = hooks?.getSessionId?.() ?? null;
+          if (!goalSession) {
+            return JSON.stringify({ error: 'no active chat session — the goal is scoped to a session' });
+          }
+          const updated = services.todos.setGoal(
+            goalSession,
+            args.goal,
+            'ai',
+            hooks?.getSessionName?.()
+          );
+          if (!updated?.goal) {
+            logger.info('Todos: session goal cleared');
+            return JSON.stringify({ ok: true, goal: null, cleared: true });
+          }
+          logger.info(`Todos: session goal set (${updated.goal.text})`);
+          return JSON.stringify({ ok: true, goal: updated.goal.text });
+        }
+        case 'update_todo_list': {
+          const todoSession = hooks?.getSessionId?.() ?? null;
+          // The ledger is per chat session; without one there is nowhere to
+          // write, and silently using a global list would leak tasks between
+          // unrelated chats.
+          if (!todoSession) {
+            return JSON.stringify({ error: 'no active chat session — the to-do list is scoped to a session' });
+          }
+          if (!Array.isArray(args.todos)) {
+            return JSON.stringify({ error: "parameter 'todos' must be an array of { content, status } objects" });
+          }
+          const list = services.todos.replace(todoSession, args.todos, hooks?.getSessionName?.());
+          const done = list.items.filter(i => i.status === 'completed').length;
+          const running = list.items.filter(i => i.status === 'in_progress').length;
+          logger.info(`Todos: session list updated (${done}/${list.items.length} completed, ${running} in progress)`);
+          return JSON.stringify({
+            ok: true,
+            // The goal rides along so the model re-anchors on the objective on
+            // every list rewrite instead of drifting into busywork.
+            goal: list.goal?.text ?? null,
+            items: list.items.length,
+            completed: done,
+            inProgress: running,
+            remaining: list.items.length - done,
+            checklist: renderTodoChecklist(list),
+          });
+        }
+        case 'read_todo_list': {
+          const readSession = hooks?.getSessionId?.() ?? null;
+          if (!readSession) {
+            return JSON.stringify({ error: 'no active chat session — the to-do list is scoped to a session' });
+          }
+          const list = services.todos.read(readSession);
+          if (!list || (list.items.length === 0 && !list.goal)) {
+            return JSON.stringify({ goal: null, items: [], checklist: '(the to-do list is empty)' });
+          }
+          const done = list.items.filter(i => i.status === 'completed').length;
+          return JSON.stringify({
+            goal: list.goal?.text ?? null,
+            items: list.items.map(i => ({ content: i.content, status: i.status })),
+            completed: done,
+            remaining: list.items.length - done,
+            checklist: renderTodoChecklist(list),
+          });
         }
         default:
           // MCP tools use the mcp__<server>__<tool> prefix convention

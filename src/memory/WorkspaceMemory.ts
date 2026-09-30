@@ -110,9 +110,10 @@ export class WorkspaceMemory {
 
   /**
    * Compute the filesystem path for a given key. Keys are sanitized to
-   * prevent path traversal.
+   * prevent path traversal. Public so UI surfaces (status panel) can open
+   * the backing `.md` file in an editor.
    */
-  private getFilePath(key: string): string {
+  getFilePath(key: string): string {
     // Strip any directory separators to prevent path traversal
     const sanitized = key.replace(/[/\\]/g, '_');
     return path.join(this.memoryDir, `${sanitized}.md`);

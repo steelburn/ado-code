@@ -31,6 +31,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'generate-tasks', description: 'Generate child tasks for the active user story (review in editor before saving)', usage: '/generate-tasks', requiresArgs: false },
   { name: 'resume',    description: 'Switch to a previous chat session to continue where you left off',  usage: '/resume',             requiresArgs: false },
   { name: 'remember',  description: 'Store a preference or instruction the AI will remember across sessions',  usage: '/remember <text>',    requiresArgs: true },
+  { name: 'goal',      description: 'Set this chat session\'s goal, shown at the top of the To-do view (no arguments = edit the current one, --clear = remove it)',  usage: '/goal <objective>',  requiresArgs: false },
   { name: 'forget',    description: 'Remove all saved notes and preferences',                     usage: '/forget',             requiresArgs: false },
   { name: 'new-project', description: 'Open the project creation wizard',                         usage: '/new-project',         requiresArgs: false },
   { name: 'clear-sessions', description: 'Delete all chat sessions and start completely fresh', usage: '/clear-sessions', requiresArgs: false },

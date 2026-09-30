@@ -22,6 +22,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'delegate',  description: 'Hand off task to agent (claude, codex, hermes…)',  usage: '/delegate [agent] <prompt>' },
   { name: 'resume',    description: 'Switch to a previous chat session',                 usage: '/resume' },
   { name: 'remember',  description: 'Store a preference the AI remembers across chats',  usage: '/remember <text>' },
+  { name: 'goal',      description: 'Set this session\'s goal (heads the To-do view)',   usage: '/goal <objective>' },
   { name: 'forget',    description: 'Remove all saved notes and preferences',            usage: '/forget' },
   { name: 'generate-tasks', description: 'Generate child tasks for the active user story', usage: '/generate-tasks' },
   { name: 'new-project', description: 'Open the project creation wizard', usage: '/new-project' },

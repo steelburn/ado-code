@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment } from '../shared/messages';
+import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment, TraceEntry, StoredTurnTrace } from '../shared/messages';
 import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
 import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
@@ -77,6 +77,173 @@ function trimConversationToPairs(msgs: LlmMessage[], maxPairs: number): LlmMessa
     pairs++;
   }
   return head === 1 ? [msgs[0], ...tail] : tail;
+}
+
+// ── Turn trace persistence (0.6.7) ──────────────────────────────────────────
+// A finished turn's Thinking/Tools record is persisted with the session so a
+// reopened chat shows the work that produced an answer, not just the answer.
+// Budgets keep workspaceState small: reasoning is the expensive part, so it is
+// excerpted hard, while tool payloads stay large enough to be useful.
+/** Max characters kept from one reasoning block. */
+const TRACE_THINKING_CAP = 1200;
+/** Max characters kept from one tool call's serialized arguments. */
+const TRACE_ARG_CAP = 600;
+/** Max characters kept from one tool result. */
+const TRACE_RESULT_CAP = 1200;
+/** Max characters for a WHOLE turn's trace (all blocks + calls). */
+const TRACE_TURN_CAP = 32000;
+
+/** Largest single argument value kept in a stored trace before it is reduced to
+ *  a marker (the live card always has the full value). */
+const TRACE_ARG_VALUE_CAP = 400;
+
+/** Serialize a tool call's arguments for storage, capped so a large inline
+ *  payload (a whole file body, a long command) cannot bloat the session. Every
+ *  key is kept and values are capped in place, so restored cards render the
+ *  same arguments (and the same one-line card summary) as a live card. */
+export function capTraceArgs(args: Record<string, any> | undefined): Record<string, any> {
+  if (!args) return {};
+  const keys = Object.keys(args);
+  if (keys.length === 0) return {};
+  let full: string;
+  try {
+    full = JSON.stringify(args);
+  } catch {
+    return {};
+  }
+  if (full.length <= TRACE_ARG_CAP) return args;
+
+  const capped: Record<string, any> = {};
+  let used = 0;
+  for (const key of keys) {
+    const value = args[key];
+    let valueText: string;
+    try {
+      valueText = JSON.stringify(value);
+    } catch {
+      valueText = '""';
+    }
+    let keptValue = value;
+    if (typeof value === 'string' && value.length > TRACE_ARG_VALUE_CAP) {
+      keptValue = `${value.slice(0, TRACE_ARG_VALUE_CAP)}…(truncated)`;
+      valueText = JSON.stringify(keptValue);
+    }
+    const cost = key.length + (valueText?.length ?? 0) + 4;
+    if (used + cost > TRACE_ARG_CAP) continue;
+    capped[key] = keptValue;
+    used += cost;
+  }
+  // A single argument larger than the whole budget must still yield a
+  // recognizable card rather than an empty argument list.
+  if (Object.keys(capped).length === 0 && typeof args[keys[0]!] === 'string') {
+    capped[keys[0]!] = `${String(args[keys[0]!]).slice(0, TRACE_ARG_VALUE_CAP)}…(truncated)`;
+  }
+  return capped;
+}
+
+/**
+ * Cap a finished turn's trace for storage. Thinking becomes an excerpt; tool
+ * cards keep name/status plus capped arguments and result. When the whole turn
+ * exceeds TRACE_TURN_CAP the OLDEST segments are dropped first (the most recent
+ * tool work is what the user is most likely to look back at) and the trace is
+ * flagged so the UI can say it was trimmed.
+ */
+export function capTurnTrace(entries: TraceEntry[]): StoredTurnTrace | undefined {
+  if (!entries || entries.length === 0) return undefined;
+  let truncated = false;
+
+  const capped: TraceEntry[] = entries.map(entry => {
+    if (entry.kind === 'thinking') {
+      const text = entry.text ?? '';
+      if (text.length > TRACE_THINKING_CAP) {
+        truncated = true;
+        return { kind: 'thinking' as const, text: `${text.slice(0, TRACE_THINKING_CAP)}\n…(reasoning excerpt truncated)` };
+      }
+      return { kind: 'thinking' as const, text };
+    }
+    const call = entry.call;
+    const args = capTraceArgs(call.arguments);
+    const result = call.result;
+    if (result !== undefined && result.length > TRACE_RESULT_CAP) truncated = true;
+    return {
+      kind: 'tool' as const,
+      call: {
+        id: call.id,
+        name: call.name,
+        arguments: args,
+        result: result === undefined
+          ? undefined
+          : result.length > TRACE_RESULT_CAP
+            ? `${result.slice(0, TRACE_RESULT_CAP)}\n…(result truncated)`
+            : result,
+        showDetails: call.showDetails,
+        done: call.done,
+      },
+    };
+  });
+
+  // Whole-turn budget: walk newest → oldest and keep what fits. The newest
+  // segment is kept even if it alone exceeds the budget — an empty record
+  // restores nothing, while one over-budget card still shows what happened.
+  const kept: TraceEntry[] = [];
+  let budget = TRACE_TURN_CAP;
+  for (let i = capped.length - 1; i >= 0; i--) {
+    const size = traceEntrySize(capped[i]!);
+    if (size > budget) {
+      truncated = true;
+      if (kept.length === 0) kept.unshift(capped[i]!);
+      break;
+    }
+    budget -= size;
+    kept.unshift(capped[i]!);
+  }
+
+  return { entries: kept, ...(truncated ? { truncated: true } : {}) };
+}
+
+/** Approximate stored size of one trace entry, in characters. */
+function traceEntrySize(entry: TraceEntry): number {
+  if (entry.kind === 'thinking') return entry.text?.length ?? 0;
+  let args = '';
+  try {
+    args = JSON.stringify(entry.call.arguments ?? {});
+  } catch {
+    args = '';
+  }
+  return entry.call.name.length + args.length + (entry.call.result?.length ?? 0) + 64;
+}
+
+/**
+ * Pair a live conversation with the Thinking/Tools records stored for it, by
+ * assistant content. The conversation buffer itself is provider-shaped
+ * (LlmMessage) and deliberately carries no display-only trace, so the stored
+ * session record is the source of truth for what the user sees on reopen.
+ */
+export function withStoredTraces(
+  conversation: LlmMessage[],
+  stored: Array<{ role: string; content: string; trace?: StoredTurnTrace }>
+): Array<{ role: string; content: string; trace?: StoredTurnTrace }> {
+  if (stored.length === 0) {
+    return conversation.map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content : '',
+    }));
+  }
+  // Consume stored traces oldest-first so a repeated answer text reuses them in
+  // order rather than every copy resolving to the newest record.
+  const byContent = new Map<string, StoredTurnTrace[]>();
+  for (const m of stored) {
+    if (m.role !== 'assistant' || !m.trace) continue;
+    const list = byContent.get(m.content);
+    if (list) list.push(m.trace);
+    else byContent.set(m.content, [m.trace]);
+  }
+  return conversation.map(m => {
+    const content = typeof m.content === 'string' ? m.content : '';
+    const queue = m.role === 'assistant' ? byContent.get(content) : undefined;
+    const trace = queue && queue.length > 0 ? queue.shift() : undefined;
+    return { role: m.role, content, ...(trace ? { trace } : {}) };
+  });
 }
 
 // ── Wizard focus (sidebar space maximization) ───────────────────────────────
@@ -265,6 +432,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     (this as any).services = services;
     // H-5 fix: rebuild the executor too — it captured the OLD services closure.
     if (this.agentRunner) this.setAgentRunner(this.agentRunner);
+    // The new bundle carries a fresh TodoStore — re-point it at the open chat.
+    this.syncTodoSession();
+  }
+
+  // ── Session to-do list ────────────────────────────────────────────
+
+  /**
+   * Point the To-do view at the session whose chat is on screen. The store
+   * owns "which list is live", so every surface (tree, badge, AI tool) reads
+   * the same answer; the tree re-renders from the store's change event.
+   */
+  private syncTodoSession(): void {
+    const id = this.getActiveSessionId();
+    this.services.todos.setActiveSession(id || null, id ? this.activeSessionName() : undefined);
+  }
+
+  /** Display name of the active chat session (used for the to-do file record). */
+  private activeSessionName(): string | undefined {
+    const id = this.getActiveSessionId();
+    if (!id) return undefined;
+    return this.getSessions().find(s => s.id === id)?.name;
   }
 
   /** Task 4.1: wire the token-usage status bar after creation in extension.ts. */
@@ -370,6 +558,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       // Create work item: open editor tab for review, then create on confirm.
       onCreateWorkItem: async (args) => this.showTaskDraftInEditor(args),
+      // Session to-do list: the AI's ledger is scoped to the chat session the
+      // turn belongs to, resolved lazily so a mid-session switch cannot write
+      // the previous session's list.
+      getSessionId: () => this.getActiveSessionId(),
+      getSessionName: () => this.activeSessionName(),
     });
     this.executor.setMode(getSettings().mode);
   }
@@ -1791,6 +1984,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.postMessage({ type: 'loading', loading: false });
             logger.info('Chat: generation stopped by user');
             break;
+          case 'recordTurnTrace':
+            // The turn finished; the webview hands back the Thinking/Tools
+            // record it rendered (only the webview knows the chronological
+            // interleaving). Capped on entry so a verbose turn can never bloat
+            // workspaceState.
+            await this.recordTurnTrace(message.entries, message.content);
+            break;
           case 'reviewTaskDetail':
             await this.reviewTaskDetail(message.workItemId);
             break;
@@ -1973,6 +2173,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (target) {
               target.name = message.name;
               await this.saveSessions(allSessions);
+              // Keep the to-do list's stored session name in step with the chat.
+              this.services.todos.rename(message.sessionId, message.name);
               this.sendSessionList();
             }
             break;
@@ -1997,6 +2199,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.conversationBySession.delete(message.sessionId);
             const updatedSessions = this.getSessions().filter(s => s.id !== message.sessionId);
             await this.saveSessions(updatedSessions);
+            // The session is gone — its to-do list goes with it.
+            this.services.todos.remove(message.sessionId);
             // If we deleted the active session, switch to the last remaining one
             if (this.getActiveSessionId() === message.sessionId) {
               const fallback = updatedSessions[updatedSessions.length - 1];
@@ -2005,6 +2209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               } else {
                 await this.setActiveSessionId('');
                 this.conversation = [];
+                this.syncTodoSession();
                 this.postMessage({ type: 'historyRestored', messages: [] });
               }
             }
@@ -2033,6 +2238,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.setActiveSessionId('');
             this.conversation = [];
             this.conversationBySession.clear();
+            // …and every to-do list, which belongs to a session.
+            this.services.todos.removeAll();
+            this.syncTodoSession();
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
             this.sendSessionList();
@@ -3599,6 +3807,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // IN ITS OWN session; these fields identify whose turn it is for that stop.
   private runningTurnSession?: string;
   private runningTurnAbort?: AbortController;
+  /**
+   * 0.6.7: Thinking/Tools records that arrived before their answer was written
+   * to the session message list, keyed `${sessionId}\n${answerText}`. Typically
+   * empty — recordTurnTrace attaches directly when the answer is already
+   * persisted — and drained on the next persistConversation pass. In-memory
+   * only: a record that never lands is simply not restored.
+   */
+  private pendingTurnTraces = new Map<string, StoredTurnTrace>();
 
   /**
    * Return the in-memory conversation buffer for a session, seeding it from
@@ -3641,8 +3857,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sessions = this.getSessions();
     const session = sessions.find(s => s.id === targetId);
     if (!session) return;
+    // 0.6.7: a turn's Thinking/Tools record (recordTurnTrace) lives OUTSIDE the
+    // LLM message path — the provider never stores it on LlmMessage. Carry the
+    // already-stored traces over, matched by assistant content, so rewriting
+    // the message list never drops them.
+    const priorTraces = new Map<string, StoredTurnTrace>();
+    for (const m of session.messages) {
+      if (m.role === 'assistant' && m.trace) priorTraces.set(m.content, m.trace);
+    }
     session.messages = trimConversationToPairs(target, ChatViewProvider.MAX_PERSISTED_PAIRS)
-      .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)' }));
+      .map(m => {
+        const content = typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)';
+        let trace = m.role === 'assistant' ? priorTraces.get(content) : undefined;
+        // A record that arrived before its answer was written to the session.
+        if (!trace && m.role === 'assistant') {
+          const pendingKey = `${targetId}\n${content}`;
+          const pending = this.pendingTurnTraces.get(pendingKey);
+          if (pending) {
+            trace = pending;
+            this.pendingTurnTraces.delete(pendingKey);
+          }
+        }
+        return { role: m.role, content, ...(trace ? { trace } : {}) };
+      });
     // Auto-name from first user message if still default
     if (session.name === 'New Session') {
       const firstUser = session.messages.find(m => m.role === 'user');
@@ -3667,7 +3904,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Task 2: load a session's messages into the conversation and post to webview. */
+  /**
+   * 0.6.7: store a finished turn's Thinking/Tools record against the session's
+   * last assistant message. The webview renders the chronological interleaving
+   * (the host only sees flat tool/progress events), so it hands the record back
+   * once the turn completes. Entries are capped on entry; a trace with nothing
+   * left after capping is dropped rather than written empty.
+   */
+  private async recordTurnTrace(entries: TraceEntry[], content: string): Promise<void> {
+    const sessionId = this.getActiveSessionId();
+    if (!sessionId) return;
+    const stored = capTurnTrace(entries ?? []);
+    if (!stored || stored.entries.length === 0) return;
+    const sessions = this.getSessions();
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) return;
+    // Match by the turn's final answer text: the record is keyed to the answer
+    // it produced, so it survives re-persisting/re-trimming the message list
+    // (and the condenser). A not-yet-written answer is remembered and attached
+    // by persistConversation on its next pass — which is also what this call
+    // triggers, since the record arriving is the moment the turn's session
+    // record is final.
+    const target = content
+      ? [...session.messages].reverse().find(m => m.role === 'assistant' && m.content === content)
+      : undefined;
+    if (target) {
+      target.trace = stored;
+    } else if (content) {
+      // Bound the pending map: an answer the host rewrote (e.g. the forced
+      // empty-response notice) never matches, and must not grow unbounded.
+      if (this.pendingTurnTraces.size >= 50) {
+        const oldest = this.pendingTurnTraces.keys().next().value;
+        if (oldest !== undefined) this.pendingTurnTraces.delete(oldest);
+      }
+      this.pendingTurnTraces.set(`${sessionId}\n${content}`, stored);
+    }
+    // Persist the answer + record. NEVER persist an EMPTY conversation here:
+    // persistConversation rewrites the session message list from what it is
+    // given, so an empty buffer would erase the session's history (it can be
+    // empty when the turn's messages normally arrive as an LlmMessage push).
+    const conversation = this.sessionConversationFor(sessionId);
+    if (conversation.length > 0) await this.persistConversation(sessionId, conversation);
+  }
+
+  /**
+   * Task 2: load a session's messages into the conversation and post to webview.
+   */
   private async loadSession(sessionId: string): Promise<void> {
     const sessions = this.getSessions();
     const session = sessions.find(s => s.id === sessionId);
@@ -3675,7 +3957,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.conversation = this.sessionConversationFor(sessionId);
     this.resetConversationCaches();
     await this.setActiveSessionId(sessionId);
-    this.postMessage({ type: 'historyRestored', messages: this.conversation });
+    // The To-do view follows the session on screen.
+    this.syncTodoSession();
+    this.postMessage({ type: 'historyRestored', messages: withStoredTraces(this.conversation, session.messages) });
   }
 
   /** Backward-compatible wrapper for extension.ts / tests that pass raw history. */
@@ -3711,6 +3995,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     clearSessionAutoApprovals();
     this.postMessage({ type: 'historyRestored', messages: [] });
     this.sendSessionList();
+    // A brand-new session starts with an empty to-do list.
+    this.syncTodoSession();
   }
 
   /**
@@ -3734,6 +4020,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.setActiveSessionId(session.id);
     this.conversationBySession.set(session.id, this.conversation);
     this.sendSessionList();
+    this.syncTodoSession();
   }
 
   /** Task 2: post the full session list + active ID to the webview. */
@@ -4200,6 +4487,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       memoryPrompt: this.services.memory.toPromptString(),
       workspaceMemoryPrompt: this.services.workspaceMemory.toPromptString(),
       understanding: understandingPrompt,
+      // The session's live to-do list — keeps the model's own plan visible
+      // across iterations and condensation.
+      todos: this.services.todos.toPromptString(turnSessionId),
       customInstructions: this.activeWorkItem
         ? [
             `Current work item: #${this.activeWorkItem.id} - ${this.activeWorkItem.title}`,
@@ -4277,6 +4567,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // separates consecutive steps instead of gluing them into one
             // run-on blob ("…the structure.Let me read…").
             this.postMessage({ type: 'thinkingMessage', content: update.text, done: false, newBlock: true });
+            // Mirror it as ASSISTANT text flagged `isThinking`. This is NOT a
+            // second copy for display: the webview refuses to buffer flagged
+            // text, and that refusal is the ONLY thing keeping this iteration's
+            // reasoning out of the reply. Without the flag it accumulates into
+            // the webview's answer buffer (which every non-done assistant
+            // message feeds) and is prepended to the final answer — so a
+            // 3-iteration turn would open its answer with two runs of
+            // reasoning text. The thinking block above is what the user sees.
+            this.postMessage({ type: 'assistantMessage', content: update.text, done: false, isThinking: true });
           }
           this.setWorkingDetail('thinking…');
         }
@@ -4789,7 +5088,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'help': {
         const workItemCmds = SLASH_COMMANDS.filter(c => ['status', 'comment', 'pick', 'assign', 'undo', 'generate-tasks'].includes(c.name));
         const chatCmds = SLASH_COMMANDS.filter(c => ['clear', 'clear-sessions', 'resume', 'mode'].includes(c.name));
-        const aiCmds = SLASH_COMMANDS.filter(c => ['delegate', 'remember', 'forget'].includes(c.name));
+        const aiCmds = SLASH_COMMANDS.filter(c => ['delegate', 'remember', 'forget', 'goal'].includes(c.name));
         const otherCmds = SLASH_COMMANDS.filter(c => ['help', 'new-project', 'skills'].includes(c.name));
 
         const fmt = (cmds: typeof SLASH_COMMANDS) =>
@@ -4894,6 +5193,48 @@ First analyze the user story and explain your breakdown reasoning, then output t
         existing.push(args);
         await this._context.workspaceState.update(`adoCode.notes:${key}`, existing);
         vscode.window.showInformationMessage(`ADO Code: note saved (${existing.length} total).`);
+        break;
+      }
+      case 'goal': {
+        // Session goal: heads the To-do view, with the to-do list as the steps
+        // toward it. `/goal <text>` sets it, `/goal --clear` removes it and a
+        // bare `/goal` opens the current value for editing.
+        const goalSessionId = this.getActiveSessionId();
+        if (!goalSessionId) {
+          vscode.window.showWarningMessage('ADO Code: no active chat session — send a message first, then set a goal.');
+          return;
+        }
+        const current = this.services.todos.summary(goalSessionId)?.goal?.text ?? '';
+        const raw = args.trim();
+        if (raw === '--clear' || raw === 'clear') {
+          if (!current) {
+            vscode.window.showInformationMessage('ADO Code: this session has no goal.');
+            return;
+          }
+          this.services.todos.clearGoal(goalSessionId);
+          vscode.window.showInformationMessage('ADO Code: session goal cleared.');
+          return;
+        }
+        if (raw) {
+          this.services.todos.setGoal(goalSessionId, raw, 'user', this.activeSessionName());
+          vscode.window.showInformationMessage(`ADO Code: goal set — ${raw}`);
+          return;
+        }
+        // No arguments: show what is set and let the user edit it in place.
+        const edited = await vscode.window.showInputBox({
+          prompt: 'Goal for this chat session',
+          value: current,
+          placeHolder: 'e.g. Ship the session to-do list feature',
+          ignoreFocusOut: true,
+        });
+        if (edited === undefined) return; // cancelled
+        if (!edited.trim()) {
+          this.services.todos.clearGoal(goalSessionId);
+          vscode.window.showInformationMessage('ADO Code: session goal cleared.');
+          return;
+        }
+        this.services.todos.setGoal(goalSessionId, edited, 'user', this.activeSessionName());
+        vscode.window.showInformationMessage(`ADO Code: goal set — ${edited.trim()}`);
         break;
       }
       case 'forget': {

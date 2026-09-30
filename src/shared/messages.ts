@@ -3,6 +3,25 @@ import { AgentRun, AgentCapability } from '../agents/types';
 import { ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
 import { Skill, SkillExecutionRequest, SkillExecutionResult } from './skillTypes';
 
+/** A tool call surfaced by the agentic loop — live (running → completed) or
+ *  recorded in a finished turn's trace. */
+export interface ToolCallInfo {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+  result?: string;
+  /** false when the user hid tool calls in chat — rendered as a "…" indicator. */
+  showDetails?: boolean;
+  /** Completion flag for hidden calls, which never carry result content. */
+  done?: boolean;
+}
+
+/** One segment of a turn's ordered record. `thinking` blocks sit between the
+ *  tool calls they introduced — not lumped above them. */
+export type TraceEntry =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool'; call: ToolCallInfo };
+
 /** An image pasted into the chat, carried as a base64 data URL. */
 export interface ImageAttachment {
   id: string;
@@ -36,6 +55,12 @@ export type WebviewToExtensionMessage =
   | { type: 'listAgents' }
   | { type: 'clearConversation' }
   | { type: 'stopGeneration' }
+  // A finished turn's Thinking/Tools record, handed back by the webview so the
+  // host can persist it (the host never sees the reasoning blocks itself — it
+  // only emits flat tool/progress events). `content` is the turn's final answer
+  // text, which keys the record to the message it belongs to. Sent once per
+  // completed turn; the host caps and stores it with that assistant message.
+  | { type: 'recordTurnTrace'; content: string; entries: TraceEntry[] }
   // Task 28: task detail review + clarification
   | { type: 'reviewTaskDetail'; workItemId: number }
   | { type: 'requestClarification'; workItemId: number; question: string; mentionCreator: boolean }
@@ -104,7 +129,11 @@ export type ExtensionToWebviewMessage =
   // `replace` (only meaningful with `id`) forces replacement semantics;
   // without it, id'd messages APPEND to the bubble (self-contained streams
   // such as auto-review that must not fuse with the active turn).
-  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean }
+  // `isThinking` marks streamed text that is an agentic iteration's PRE-TOOL
+  // reasoning (also surfaced as a thinking block). The webview must not buffer
+  // it into the answer: doing so merges reasoning into the reply and duplicates
+  // it when the terminal answer arrives.
+  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean; isThinking?: boolean }
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended
   // thinking). `newBlock` marks the start of a DISTINCT reasoning step — the
   // agentic loop posts one complete pre-tool message per iteration — so the
@@ -133,8 +162,10 @@ export type ExtensionToWebviewMessage =
   | { type: 'agentRunsList'; runs: AgentRun[] }
   // AI choice prompt: detected question + options from AI response
   | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }> }
-  // Task 26: history restore (Q4)
-  | { type: 'historyRestored'; messages: { role: string; content: string }[] }
+  // Task 26: history restore (Q4). `trace` carries the turn's persisted
+  // Thinking/Tools record so a reopened session renders like the turn the user
+  // watched (reasoning collapsed, tool cards intact).
+  | { type: 'historyRestored'; messages: { role: string; content: string; trace?: StoredTurnTrace }[] }
   // Task 28: task detail review + clarification
   | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
   // Project selection
@@ -268,6 +299,17 @@ export interface ExtensionConfig {
 }
 
 // ── Session History ─────────────────────────────────────────────────
+/** 0.6.7: a turn's Thinking/Tools record as stored in session history. The
+ *  host caps reasoning excerpts (TRACE_THINKING_CAP), tool arguments and
+ *  results (TRACE_ARG_CAP / TRACE_RESULT_CAP) and keeps the whole turn under
+ *  TRACE_TURN_CAP characters before writing it here. Restored traces render
+ *  with thinking collapsed — they are historical context, not live reasoning. */
+export interface StoredTurnTrace {
+  entries: TraceEntry[];
+  /** True when the record was trimmed to fit the per-turn character cap. */
+  truncated?: boolean;
+}
+
 export interface Session {
   /** ISO timestamp used as unique ID */
   id: string;
@@ -275,7 +317,7 @@ export interface Session {
   name: string;
   /** ISO date string */
   createdAt: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; trace?: StoredTurnTrace }>;
   /** 0.6.5: ADO work item ids this session has processed (drives the
    *  one-work-item-per-session alert + session-history chips). */
   workItemIds?: number[];

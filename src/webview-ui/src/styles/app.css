@@ -1036,8 +1036,95 @@ code {
   flex-shrink: 0;
 }
 
+/* ── Tool call card ────────────────────────────────────────────── */
+.tool-block {
+  margin: 6px 0;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 0.85em;
+}
+
+.tool-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--vscode-sideBar-background);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--vscode-font-family);
+  font-size: inherit;
+  color: var(--vscode-foreground);
+}
+
+.tool-block-header:hover {
+  background: var(--vscode-list-hoverBackground, var(--vscode-sideBar-background));
+}
+
+.tool-block-header:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.tool-block-chevron {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.tool-block-name {
+  font-weight: 600;
+  font-family: var(--vscode-editor-font-family, monospace);
+  flex-shrink: 0;
+}
+
+/* One-line gist of the call (path / query / command) so a collapsed card is
+   still informative. Truncates rather than wrapping — the header is a row. */
+.tool-block-summary {
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tool-block-details {
+  padding: 8px 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.tool-block-section-label {
+  font-weight: 600;
+  margin-bottom: 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+}
+
+.tool-block-pre {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+}
+
+.tool-block-pre.result {
+  max-height: 200px;
+}
+
 /* Running tool cards get a subtle attention border so the user notices
-   progress without clicking. */
+   progress without clicking. Both selectors are kept: `.tool-block-running` is
+   set explicitly by the card, and the `:has()` form still covers any markup
+   that only carries the spinner. */
+.tool-block-running,
 .tool-block:has(.tool-status-running) {
   border-color: var(--vscode-inputValidation-infoBorder, #3794ff);
   border-left: 3px solid var(--vscode-inputValidation-infoBorder, #3794ff);
@@ -1714,6 +1801,31 @@ code {
   overflow: visible;
 }
 
+/* 0.6.7: reasoning restored from session history. It is historical context, so
+   the block carries no accent border (it should not compete with live work) and
+   stays within the base scroll box. */
+.thinking-block-restored {
+  border-color: var(--vscode-panel-border);
+  border-left-color: var(--vscode-panel-border);
+  background: var(--vscode-textBlockQuote-background, var(--vscode-editorWidget-background));
+}
+
+.thinking-block-restored .thinking-label {
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Collapsed reasoning still says what it holds — one line, ellipsized. */
+.thinking-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85em;
+  font-weight: 400;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Ordered record of an agentic turn (thinking blocks + tool cards, in the
    order the loop produced them). Children keep their own margins so spacing
    matches the legacy card flow. */
@@ -1721,6 +1833,14 @@ code {
   display: flex;
   flex-direction: column;
   margin: 4px 0;
+}
+
+/* Storage-cap notice under a restored turn's record (never shown live). */
+.turn-record-truncated {
+  margin: 2px 0 6px;
+  font-size: 0.78em;
+  font-style: italic;
+  color: var(--vscode-descriptionForeground);
 }
 
 /* Thinking block toggle — open by default in the live bubble AND the finished

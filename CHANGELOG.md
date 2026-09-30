@@ -2,6 +2,43 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.6.7] - 2026-09-30
+
+### New Features
+- **Session To-do list and goal** (`To-do` view + `set_goal` / `update_todo_list` tools):
+  - New **To-do** view in the ADO Code activity bar: one collapsible group per chat session that has a list (the active session sorts first and is marked `active`), each item rendered as a **checkbox** with a status icon. Groups show `completed/total` progress, and the view carries a badge counting the active session's outstanding items.
+  - **Session goal.** Each session carries one objective — rendered as the **top node** of the To-do view (`$(target)` icon) with its to-do items nested underneath, so progress reads as "steps toward this goal". The AI records it with a new `set_goal` tool as soon as the objective is clear, and you can set, edit or clear it yourself with `/goal <objective>` in the chat (bare `/goal` opens the current value for editing, `/goal --clear` removes it) or via **Set Session Goal** / **Clear Session Goal** in the view toolbar and item context menu. The goal is deliberately stable: rewriting the steps never drops it (`update_todo_list` preserves it, `removeItem` keeps the file while a goal remains), and the tooltip records whether it was set by you or by the AI. The live goal is injected into the system prompt and returned with every list rewrite, so the model re-anchors on the objective instead of drifting into busywork.
+  - The AI maintains the list itself through a new `update_todo_list` tool (TodoWrite semantics: the model sends the COMPLETE list every call, marking one item `in_progress` while it works and flipping it to `completed` the moment the step is actually done). `read_todo_list` returns the current list and goal. All three tools are available in **every** mode — including plan mode, where the goal and its plan *are* the planning output — and never raise a consent prompt, because the ledger only touches the extension's own metadata.
+  - Lists are per session and persisted under `.ado-code/todos/<session>.json` (session ids are ISO timestamps, so the file name is a readable slug plus a short hash of the full id — unique and filesystem-safe). Deleting a session deletes its list; renaming one updates it; a session's file is deleted once its last item *and* its goal are gone — losing the last step never loses the objective it belonged to.
+  - The user can also tick items by hand (the checkbox writes through the same store), add items from the view toolbar, mark items pending/completed, remove single items, and clear a session's list — all from the view title and item context menus.
+  - Untrusted model input is normalized: unknown statuses degrade to `pending`, blank entries are dropped, duplicates collapse, both the item count (50) and each label (300 chars) are capped, and the goal is collapsed to one capped line. A corrupt or partially written file is skipped rather than breaking the tree.
+  - New: `src/services/todo/TodoStore.ts` (persistence, normalization, rendering), `src/webview/TodoTreeProvider.ts` (the tree), and the `todo` tool group in `src/llm/modes.ts` / `src/llm/tools/types.ts`.
+
+### Improvements
+- **Workspace memory entries are readable and openable from the status panel**:
+  - Memory keys under `.ado-code/memory/` previously rendered as opaque folder-like rows with no way to see their contents.
+  - Each row now shows a parsed preview — the first content-bearing line of the `.md` file, with markdown syntax (headings, bullets, quotes, emphasis, links, YAML frontmatter) stripped.
+  - Hovering a row renders the full document as markdown in the tooltip (capped at 4000 characters).
+  - Clicking a row opens the backing `.md` file in an editor; the context menu adds **Open Memory File**, **Preview Memory (Markdown)** and **Copy Memory Content** (the open action is also an inline icon).
+  - User memory rows get the same treatment: key label with `[category]` and a parsed preview in the description, full content in the markdown tooltip.
+  - New pure helper `src/shared/markdownSummary.ts` (`summarizeMarkdown` / `stripMarkdown`) with unit tests.
+- **Thinking & Tools record now survives a session reload**:
+  - A finished turn's Thinking/Tools record (reasoning blocks interleaved with the tool cards they introduced) is now persisted with the session instead of living only in the open chat. Reopening a session — or restarting VS Code — renders the same record that produced each answer, instead of just the answer text.
+  - Reasoning is stored as a capped excerpt (1200 chars per block), tool arguments and results are capped in place (600 / 1200 chars, every argument key preserved so a restored card shows the same one-line summary as a live card), and a whole turn is bounded at 32 KB — oldest segments are dropped first and the record is flagged as trimmed.
+  - Restored reasoning renders **collapsed** with a one-line preview and a neutral border (historical context, not live reasoning); tool cards render intact with their completed/error state. Reasoning from the turn you just watched stays expanded.
+  - The record is handed back to the host once per completed turn (`recordTurnTrace`) because only the webview knows the chronological interleaving; the host caps it, keys it to the answer it produced, and re-attaches it across re-persists, trims, and condensation.
+- **Tool cards: completed calls never render as "running"**:
+  - Card status now derives from the completion flag first, then result presence. A tool whose result is the empty string (a silent delete, a command with no output) previously kept a "running…" spinner and stayed expanded forever — the completion flag was populated but only consulted by the hidden-tools disclosure.
+  - Argument summaries are shown in the collapsed card header (`read_file · src/llm/agentic.ts`), so a collapsed card is informative without expanding it; the tool card's inline styles moved to `app.css` and use the shared `Badge` component.
+- **Reasoning can no longer be prepended to an answer**:
+  - Every agentic iteration reports its text through the same progress callback, and the webview buffers every non-done assistant message into the reply. An iteration's pre-tool reasoning was therefore accumulated into the answer as a prefix (a three-iteration turn opened its answer with two runs of "Let me check…" text) whenever `chat.showThinking` was on.
+  - The host now mirrors each pre-tool iteration text as `assistantMessage` with `isThinking: true`; the webview refuses to buffer flagged text. The text is still displayed by its own thinking block — the flag exists only to keep it out of the reply.
+  - New assertion locks the `final` flag contract on the agentic progress callback: pre-tool text is non-final, the terminal answer is final, so intent is never inferred from event order.
+  - `assistantMessage` gained the `isThinking` flag for text that is pre-tool reasoning and must never be buffered into the reply.
+- **A streamed reasoning delta can no longer absorb the start of an answer**: reasoning that arrives after answer text has started now opens a new reasoning block instead of appending to the block that preceded the answer, which previously pulled the answer's opening tokens into the Thinking block.
+- **Live turn header no longer repeats the block label**: when reasoning is already on screen the activity headline reads "Reasoning…" / "Working…" instead of a second "Thinking…" above a `Thinking` block.
+- **Tests**: new suite for turn-trace persistence (capping, re-persist stability, restore round-trip, repeated-answer pairing).
+
 ## [0.6.6] - 2026-09-26
 
 ### Improvements

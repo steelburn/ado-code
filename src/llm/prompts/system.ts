@@ -33,6 +33,8 @@ export interface SystemPromptOptions {
   workspaceMemoryPrompt?: string;
   /** Optional cached repository + work-item understanding block (from UnderstandingService.toPromptString()). */
   understanding?: string;
+  /** Optional live session to-do list (from TodoStore.toPromptString()). */
+  todos?: string;
   /** Optional enabled skills for the execute_skill tool. */
   enabledSkills?: Skill[];
 }
@@ -97,6 +99,15 @@ function buildToolGuidelines(mode: ModeConfig): string {
   );
 
   const guidelines: Partial<Record<string, string[]>> = {
+    todo: [
+      'FIRST, when the objective of the request is clear and it is more than a trivial one-step change, record it with `set_goal` — ONE short outcome-shaped line. It heads the session\'s To-do view and stays fixed; do NOT rewrite it to describe progress or to restate individual steps.',
+      'Then break that goal into steps with `update_todo_list`. For any task that needs 3 or more distinct steps — and ALWAYS when the user asks for a plan, a multi-file change, or a migration — write the plan down BEFORE you start working, then keep it current as you go.',
+      'Send the COMPLETE list on every `update_todo_list` call. Items you already finished must be included with status `completed`, so the list never silently loses work.',
+      'Exactly ONE item should be `in_progress` at a time (the one you are working on right now); everything not yet started stays `pending`.',
+      'Flip an item to `completed` in the SAME iteration you finish it — never batch completions to the end of the turn. The user watches this list tick over in the To-do view; a stale list is worse than no list.',
+      'If new work appears mid-task, add it as a new item instead of silently doing it. If an item turns out to be unnecessary, drop it from the list and say why.',
+      'Skip the goal and the list entirely for trivial single-step requests (a question, one small edit) — do not create ceremony.',
+    ],
     read: [
       'When studying an unfamiliar codebase or feature area, orient on directory structure and documentation FIRST, then drill into code: use `list_workspace` to map the layout and read the doc/entry files (README.md, AGENTS.md, docs/, package.json scripts) before individual source files. The cached `Repository Understanding` section in your prompt (when present) already summarizes the layout — start from it instead of re-listing everything.',
       'Read files lazily and appropriately: for small or medium files (< 400 lines), read the whole file in ONE call — avoid slicing it into tiny range reads. Use targeted `read_file` ranges (startLine/endLine) only for large files (> 400 lines) where you need a specific section, and avoid reading many files up front — read only what the current step actually needs.',
@@ -214,6 +225,18 @@ function buildUnderstandingSection(understanding?: string): string {
   return understanding.trim();
 }
 
+/**
+ * The live session to-do list. It carries its own header (todo discipline is
+ * in the tool guidelines above), so it is embedded verbatim — this is what
+ * keeps the model's plan visible across iterations and condensation.
+ */
+function buildTodoSection(todos?: string): string {
+  if (!todos || todos.trim().length === 0) {
+    return '';
+  }
+  return todos.trim();
+}
+
 /** Available skills — list enabled skills and the execute_skill tool. */
 function buildSkillsSection(enabledSkills?: Skill[]): string {
   if (!enabledSkills || enabledSkills.length === 0) {
@@ -270,13 +293,14 @@ function formatOsName(osId: string): string {
  * and extend without touching a single monolithic template string.
  */
 export function generateSystemPrompt(options: SystemPromptOptions): string {
-  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, understanding, enabledSkills } =
+  const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, understanding, todos, enabledSkills } =
     options;
 
   const sections: string[] = [
     buildRoleSection(mode),
     buildToolsSection(mode, availableTools),
     buildToolGuidelines(mode),
+    buildTodoSection(todos),
     buildSkillsSection(enabledSkills),
     buildMemorySection(memoryPrompt),
     buildWorkspaceMemorySection(workspaceMemoryPrompt),

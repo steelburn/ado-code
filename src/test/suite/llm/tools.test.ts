@@ -5,6 +5,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { createToolExecutor, ToolExecutor, capToolResult, applyOrderedEdits, truncateMatchLine, grepLines, GREP_MAX_LINE_LENGTH, parseSearchRegex, MAX_READ_FILE_LINES, MAX_BATCH_READ_FILES, tokenizeCommandLine, WIN_CMD_BUILTINS } from '../../../llm/tools';
 import { hasUnquotedShellOperators } from '../../../llm/consent';
+import { TodoStore } from '../../../services/todo/TodoStore';
 
 function stubServices(): any {
   return {
@@ -883,6 +884,235 @@ suite('ToolExecutor read_file and list_workspace enhancements', () => {
     // Should not error with spawn del ENOENT
     assert.ok(!res.includes('ENOENT'), `expected no ENOENT, got: ${res}`);
     assert.strictEqual(fs.existsSync(dummy), false);
+  });
+});
+
+suite('ToolExecutor · session to-do list', () => {
+  let tmpDir: string;
+  let todos: TodoStore;
+
+  setup(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-todotool-'));
+    todos = new TodoStore(tmpDir);
+  });
+
+  teardown(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort on Windows */
+    }
+  });
+
+  /** Executor whose to-do tools are pointed at `sessionId` (null = no session). */
+  function makeTodoExecutor(
+    mode: 'inline' | 'plan' | 'act' | 'yolo' = 'inline',
+    sessionId: string | null = 'session-1'
+  ): ToolExecutor {
+    const ex = createToolExecutor(
+      { ...stubServices(), todos } as any,
+      {} as any,
+      {
+        onApprove: async () => true,
+        getSessionId: () => sessionId,
+        getSessionName: () => (sessionId ? 'Test Session' : undefined),
+      }
+    );
+    ex.setMode(mode);
+    return ex;
+  }
+
+  test('creates the session list and reports progress', async () => {
+    const ex = makeTodoExecutor('act');
+    const res = JSON.parse(await ex.execute('update_todo_list', {
+      todos: [
+        { content: 'Write the store', status: 'completed' },
+        { content: 'Write the view', status: 'in_progress', activeForm: 'Writing the view' },
+        { content: 'Write the tests', status: 'pending' },
+      ],
+    }));
+
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.items, 3);
+    assert.strictEqual(res.completed, 1);
+    assert.strictEqual(res.inProgress, 1);
+    assert.strictEqual(res.remaining, 2);
+
+    const stored = todos.read('session-1');
+    assert.ok(stored, 'the list must be persisted');
+    assert.strictEqual(stored!.sessionName, 'Test Session');
+    assert.deepStrictEqual(stored!.items.map(i => i.status), ['completed', 'in_progress', 'pending']);
+  });
+
+  test('is a FULL REPLACE — ticking an item off is sent as the whole list', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('update_todo_list', {
+      todos: [
+        { content: 'Step one', status: 'in_progress' },
+        { content: 'Step two', status: 'pending' },
+      ],
+    });
+    // The model marks step one done — same two items, one status flipped.
+    const res = JSON.parse(await ex.execute('update_todo_list', {
+      todos: [
+        { content: 'Step one', status: 'completed' },
+        { content: 'Step two', status: 'in_progress' },
+      ],
+    }));
+
+    assert.strictEqual(res.items, 2, 'the replacement must not accumulate duplicates');
+    assert.strictEqual(res.completed, 1);
+    assert.deepStrictEqual(todos.read('session-1')!.items.map(i => i.status), ['completed', 'in_progress']);
+  });
+
+  test('the tool result carries a rendered checklist for the model', async () => {
+    const ex = makeTodoExecutor('act');
+    const res = JSON.parse(await ex.execute('update_todo_list', {
+      todos: [{ content: 'Visible item', status: 'pending' }],
+    }));
+    assert.ok(res.checklist.includes('- [ ] Visible item'));
+  });
+
+  test('rejects a non-array todos parameter', async () => {
+    const ex = makeTodoExecutor('act');
+    const res = JSON.parse(await ex.execute('update_todo_list', { todos: 'nope' }));
+    assert.ok(String(res.error).includes('must be an array'));
+  });
+
+  test('writes nothing when there is no active session', async () => {
+    const ex = makeTodoExecutor('act', null);
+    const res = JSON.parse(await ex.execute('update_todo_list', {
+      todos: [{ content: 'Orphan', status: 'pending' }],
+    }));
+    assert.ok(String(res.error).includes('no active chat session'));
+    assert.deepStrictEqual(todos.list(), []);
+  });
+
+  test('read_todo_list reports an empty list before anything is planned', async () => {
+    const ex = makeTodoExecutor('act');
+    const res = JSON.parse(await ex.execute('read_todo_list', {}));
+    assert.deepStrictEqual(res.items, []);
+    assert.ok(res.checklist.includes('empty'));
+  });
+
+  test('read_todo_list returns the current items and counts', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('update_todo_list', {
+      todos: [
+        { content: 'Done', status: 'completed' },
+        { content: 'Open', status: 'pending' },
+      ],
+    });
+
+    const res = JSON.parse(await ex.execute('read_todo_list', {}));
+    assert.deepStrictEqual(res.items.map((i: any) => i.content), ['Done', 'Open']);
+    assert.strictEqual(res.completed, 1);
+    assert.strictEqual(res.remaining, 1);
+  });
+
+  test('each session gets its own list', async () => {
+    const exA = makeTodoExecutor('act', 'session-a');
+    const exB = makeTodoExecutor('act', 'session-b');
+    await exA.execute('update_todo_list', { todos: [{ content: 'A task', status: 'pending' }] });
+    await exB.execute('update_todo_list', { todos: [{ content: 'B task', status: 'pending' }] });
+
+    assert.strictEqual(todos.read('session-a')!.items[0]!.content, 'A task');
+    assert.strictEqual(todos.read('session-b')!.items[0]!.content, 'B task');
+  });
+
+  test('the to-do tools are offered in plan mode — the list IS the plan', async () => {
+    const ex = makeTodoExecutor('plan');
+    const names = ex.tools.map(t => t.name);
+    assert.ok(names.includes('update_todo_list'));
+    assert.ok(names.includes('read_todo_list'));
+  });
+
+  test('plan mode allows the to-do tools instead of blocking them as mutations', async () => {
+    const ex = makeTodoExecutor('plan');
+    const res = JSON.parse(await ex.execute('update_todo_list', {
+      todos: [{ content: 'Planned in plan mode', status: 'pending' }],
+    }));
+    assert.strictEqual(res.ok, true, 'plan mode must be able to record the plan');
+    assert.ok(todos.read('session-1'), 'the plan must actually be written');
+  });
+
+  test('the to-do tools never require consent', async () => {
+    const ex = makeTodoExecutor('inline');
+    assert.strictEqual(ex.canAutoExecute('update_todo_list', { todos: [] }), true);
+    assert.strictEqual(ex.canAutoExecute('read_todo_list', {}), true);
+  });
+
+  // ── Goal ──────────────────────────────────────────────────────────
+
+  test('set_goal records the objective and offers no consent', async () => {
+    const ex = makeTodoExecutor('act');
+    assert.strictEqual(ex.canAutoExecute('set_goal', { goal: 'x' }), true);
+    assert.ok(ex.tools.some(t => t.name === 'set_goal'));
+
+    const res = JSON.parse(await ex.execute('set_goal', { goal: 'Ship the to-do feature' }));
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.goal, 'Ship the to-do feature');
+
+    const stored = todos.read('session-1');
+    assert.strictEqual(stored!.goal!.text, 'Ship the to-do feature');
+    assert.strictEqual(stored!.goal!.source, 'ai');
+  });
+
+  test('set_goal is offered in plan mode too — the goal IS what planning produces', async () => {
+    const ex = makeTodoExecutor('plan');
+    assert.ok(ex.tools.some(t => t.name === 'set_goal'));
+    const res = JSON.parse(await ex.execute('set_goal', { goal: 'Planned objective' }));
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(todos.read('session-1')!.goal!.text, 'Planned objective');
+  });
+
+  test('set_goal with an empty string clears the goal', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('set_goal', { goal: 'Temporary' });
+    const res = JSON.parse(await ex.execute('set_goal', { goal: '' }));
+    assert.strictEqual(res.cleared, true);
+    assert.strictEqual(res.goal, null);
+    assert.strictEqual(todos.read('session-1'), null);
+  });
+
+  test('set_goal writes nothing without an active session', async () => {
+    const ex = makeTodoExecutor('act', null);
+    const res = JSON.parse(await ex.execute('set_goal', { goal: 'Orphan' }));
+    assert.ok(String(res.error).includes('no active chat session'));
+    assert.deepStrictEqual(todos.list(), []);
+  });
+
+  test('the goal survives a to-do list rewrite and rides along in the result', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('set_goal', { goal: 'Ship the feature' });
+    const res = JSON.parse(await ex.execute('update_todo_list', {
+      todos: [{ content: 'Step one', status: 'pending' }],
+    }));
+    assert.strictEqual(res.goal, 'Ship the feature', 'the model re-anchors on the objective');
+    assert.strictEqual(todos.read('session-1')!.goal!.text, 'Ship the feature');
+  });
+
+  test('read_todo_list reports the current goal', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('set_goal', { goal: 'Ship the feature' });
+    const res = JSON.parse(await ex.execute('read_todo_list', {}));
+    assert.strictEqual(res.goal, 'Ship the feature');
+    assert.deepStrictEqual(res.items, []);
+  });
+
+  test('read_todo_list reports a null goal when none is set', async () => {
+    const ex = makeTodoExecutor('act');
+    const res = JSON.parse(await ex.execute('read_todo_list', {}));
+    assert.strictEqual(res.goal, null);
+  });
+
+  test('goals are scoped per session', async () => {
+    const exA = makeTodoExecutor('act', 'session-a');
+    const exB = makeTodoExecutor('act', 'session-b');
+    await exA.execute('set_goal', { goal: 'Goal A' });
+    await exB.execute('set_goal', { goal: 'Goal B' });
+    assert.strictEqual(todos.read('session-a')!.goal!.text, 'Goal A');
+    assert.strictEqual(todos.read('session-b')!.goal!.text, 'Goal B');
   });
 });
 

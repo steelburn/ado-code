@@ -5,6 +5,7 @@ import { ChatViewProvider } from './webview/ChatViewProvider';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
+import { TodoTreeProvider, TodoItemNode, TodoSessionNode } from './webview/TodoTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
 import { AgentSummaryPanel } from './webview/AgentSummaryPanel';
 import { AgentProgressPanel, agentDisplayName } from './webview/AgentProgressPanel';
@@ -122,6 +123,110 @@ export async function activate(context: vscode.ExtensionContext) {
       } else {
         vscode.window.showInformationMessage(`ADO Code: removed ${removed} completed worktree(s).`);
       }
+    })
+  );
+
+  // To-do Panel: the AI-generated task ledger for each chat session. Items
+  // arrive from the `update_todo_list` tool and are ticked off as the harness
+  // completes them; the user can also tick, add and remove items by hand.
+  const todoProvider = new TodoTreeProvider(services.todos);
+  const todoView = vscode.window.createTreeView('adoCode.todos', {
+    treeDataProvider: todoProvider,
+    showCollapseAll: true,
+  });
+  /** Outstanding-item badge on the activity bar, for the ACTIVE chat session. */
+  const updateTodoBadge = () => {
+    const activeId = services.todos.getActiveSessionId();
+    const summary = activeId ? services.todos.summary(activeId) : null;
+    const remaining = summary ? summary.total - summary.completed : 0;
+    todoView.badge = remaining > 0
+      ? { value: remaining, tooltip: `${remaining} to-do item(s) remaining in this session` }
+      : undefined;
+  };
+  services.todos.onDidChange(updateTodoBadge);
+  updateTodoBadge();
+  context.subscriptions.push(
+    todoView,
+    todoProvider,
+    todoView.onDidChangeCheckboxState(e => todoProvider.handleCheckboxChange(e.items)),
+    vscode.commands.registerCommand('adoCode.todos.refresh', () => todoProvider.refresh()),
+    vscode.commands.registerCommand('adoCode.todos.addItem', async (node?: TodoSessionNode) => {
+      const sessionId = node?.sessionId ?? services.todos.getActiveSessionId();
+      if (!sessionId) {
+        vscode.window.showInformationMessage('ADO Code: open a chat session first — to-do lists are per session.');
+        return;
+      }
+      const content = await vscode.window.showInputBox({
+        prompt: 'New to-do item',
+        placeHolder: 'e.g. Add the TodoStore service',
+        ignoreFocusOut: true,
+      });
+      if (!content || !content.trim()) return;
+      services.todos.addItem(sessionId, content, node?.summary.sessionName);
+    }),
+    vscode.commands.registerCommand('adoCode.todos.removeItem', (node: TodoItemNode) => {
+      if (!(node instanceof TodoItemNode)) return;
+      todoProvider.removeItem(node);
+    }),
+    vscode.commands.registerCommand('adoCode.todos.markPending', (node: TodoItemNode) => {
+      if (!(node instanceof TodoItemNode)) return;
+      todoProvider.setStatus(node, 'pending');
+    }),
+    vscode.commands.registerCommand('adoCode.todos.markCompleted', (node: TodoItemNode) => {
+      if (!(node instanceof TodoItemNode)) return;
+      todoProvider.setStatus(node, 'completed');
+    }),
+    vscode.commands.registerCommand('adoCode.todos.setGoal', async (node?: TodoSessionNode) => {
+      const sessionId = node?.sessionId ?? services.todos.getActiveSessionId();
+      if (!sessionId) {
+        vscode.window.showInformationMessage('ADO Code: open a chat session first — goals are per session.');
+        return;
+      }
+      const current = services.todos.summary(sessionId)?.goal?.text ?? '';
+      const edited = await vscode.window.showInputBox({
+        prompt: 'Goal for this chat session',
+        value: current,
+        placeHolder: 'e.g. Ship the session to-do list feature',
+        ignoreFocusOut: true,
+      });
+      if (edited === undefined) return; // cancelled
+      const sessionName = node?.summary.sessionName;
+      if (!edited.trim()) {
+        services.todos.clearGoal(sessionId);
+        vscode.window.showInformationMessage('ADO Code: session goal cleared.');
+        return;
+      }
+      services.todos.setGoal(sessionId, edited, 'user', sessionName);
+      vscode.window.showInformationMessage(`ADO Code: goal set — ${edited.trim()}`);
+    }),
+    vscode.commands.registerCommand('adoCode.todos.clearGoal', (node?: TodoSessionNode) => {
+      const sessionId = node?.sessionId ?? services.todos.getActiveSessionId();
+      if (!sessionId) return;
+      if (!services.todos.summary(sessionId)?.goal) {
+        vscode.window.showInformationMessage('ADO Code: this session has no goal.');
+        return;
+      }
+      services.todos.clearGoal(sessionId);
+      vscode.window.showInformationMessage('ADO Code: session goal cleared.');
+    }),
+    vscode.commands.registerCommand('adoCode.todos.clear', async (node?: TodoSessionNode) => {
+      const sessionId = node?.sessionId ?? services.todos.getActiveSessionId();
+      if (!sessionId) {
+        vscode.window.showInformationMessage('ADO Code: nothing to clear for this session.');
+        return;
+      }
+      const summary = services.todos.summary(sessionId);
+      if (!summary) {
+        vscode.window.showInformationMessage('ADO Code: nothing to clear for this session.');
+        return;
+      }
+      const pick = await vscode.window.showWarningMessage(
+        `Delete the goal and to-do list for "${summary.sessionName}"?`,
+        { modal: true },
+        'Delete'
+      );
+      if (pick !== 'Delete') return;
+      services.todos.remove(sessionId);
     })
   );
 
@@ -417,6 +522,9 @@ First analyze the user story and explain your breakdown reasoning, then output t
       // fresh (empty) cache.
       wireUnderstanding(services);
       chatProvider.setServices(services);
+      // The rebuilt bundle carries a fresh to-do store — re-point the view.
+      todoProvider.setStore(services.todos);
+      updateTodoBadge();
       statesCache.clearAll();
       await chatProvider.refreshWorkItems();
       vscode.window.showInformationMessage('ADO Code: switched organization.');
@@ -1150,6 +1258,36 @@ Generate ONLY the commit message, nothing else.`;
         vscode.window.showInformationMessage(`ADO Code: moved "${meta.key}" to user memory.`);
         statusProvider.refreshLight();
       }
+    }),
+    vscode.commands.registerCommand('adoCode.openWorkspaceMemory', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta || meta.source !== 'workspace') return;
+      const filePath: string = meta.filePath ?? services.workspaceMemory.getFilePath(meta.key);
+      if (!fs.existsSync(filePath)) {
+        vscode.window.showWarningMessage(`ADO Code: workspace memory "${meta.key}" file is missing.`);
+        statusProvider.refreshLight();
+        return;
+      }
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(doc, { preview: false });
+    }),
+    vscode.commands.registerCommand('adoCode.previewWorkspaceMemory', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta || meta.source !== 'workspace') return;
+      const filePath: string = meta.filePath ?? services.workspaceMemory.getFilePath(meta.key);
+      if (!fs.existsSync(filePath)) {
+        vscode.window.showWarningMessage(`ADO Code: workspace memory "${meta.key}" file is missing.`);
+        statusProvider.refreshLight();
+        return;
+      }
+      await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(filePath));
+    }),
+    vscode.commands.registerCommand('adoCode.copyWorkspaceMemory', (item: any) => {
+      const meta = item?.meta;
+      if (!meta || meta.source !== 'workspace') return;
+      const content = meta.content ?? services.workspaceMemory.read(meta.key) ?? '';
+      void vscode.env.clipboard.writeText(content);
+      vscode.window.showInformationMessage(`ADO Code: copied workspace memory "${meta.key}".`);
     })
   );
 
@@ -1563,6 +1701,9 @@ Generate ONLY the commit message, nothing else.`;
           // Re-wire the understanding summarizer for the new services bundle.
           wireUnderstanding(services);
           chatProvider.setServices(services);
+          // The rebuilt bundle carries a fresh to-do store — re-point the view.
+          todoProvider.setStore(services.todos);
+          updateTodoBadge();
           // Re-subscribe memory events to the new service instances
           wireMemoryEvents(services);
           statusProvider.refresh();
