@@ -160,6 +160,10 @@ export interface AgenticProgressUpdate {
    *  the host renders it as the reply, not as thinking. */
   text?: string;
   final?: boolean;
+  /** A user steering message injected into this iteration. The user typed it
+   *  while the run was in flight and chose "steer", so it is appended as a
+   *  `user` turn for the NEXT round-trip instead of aborting the run. */
+  steering?: string;
   /** A tool is about to execute — hosts show a "running" tool card. */
   tool?: { id: string; name: string; args: Record<string, any> };
   /** A previously-started tool finished — hosts flip its card to completed. */
@@ -350,7 +354,10 @@ export async function runAgenticChat(
   initialMessages: LlmMessage[],
   signal?: AbortSignal,
   maxIterations: number = DEFAULT_MAX_ITERATIONS,
-  onProgress?: (update: AgenticProgressUpdate) => void
+  onProgress?: (update: AgenticProgressUpdate) => void,
+  // Optional: drains user messages typed while the run is in flight, to be
+  // injected as `user` turns on the next iteration (see the steer behavior).
+  options?: { drainSteering?: () => string[] }
 ): Promise<LlmAgenticResult> {
   const messages = [...initialMessages];
   const allToolCalls: ToolCall[] = [];
@@ -361,6 +368,15 @@ export async function runAgenticChat(
   let protectFrom = initialMessages.length;
 
   for (let i = 0; i < maxIterations; i++) {
+    // Steering: user messages typed while this run was in flight are drained
+    // at the top of every iteration and appended as a `user` turn, so the
+    // model sees them on its NEXT round-trip. This deliberately does NOT abort
+    // the in-flight request — "steer" nudges the running turn rather than
+    // cancelling it.
+    for (const steerText of options?.drainSteering?.() ?? []) {
+      messages.push({ role: 'user', content: steerText });
+      onProgress?.({ steering: steerText });
+    }
     // Token optimization: stub tool results older than the last iteration
     // (they've already been consumed by the model) before sending this request.
     const stubbed = compactOldToolResults(messages, protectFrom);

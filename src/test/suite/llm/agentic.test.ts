@@ -650,3 +650,104 @@ suite('agentic loop duplicate & loop detection', () => {
   });
 });
 
+suite('runAgenticChat steering (mid-run user input)', () => {
+  test('drainSteering injects the user text into the NEXT iteration, not the current one', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'echo', arguments: '{"value":"hi"}' } }] } }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'steered done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    let drains = 0;
+    const progress: string[] = [];
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      stubExecutor(),
+      [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'echo hi' },
+      ],
+      undefined,
+      undefined,
+      (u) => { if (u.steering) progress.push(u.steering); },
+      {
+        // No steer before the first round-trip; steer after the first tool batch.
+        drainSteering: () => (++drains === 2 ? ['also verify X'] : []),
+      }
+    );
+
+    // The turn completed normally — the steer did NOT abort it.
+    assert.strictEqual(result.text, 'steered done');
+    assert.strictEqual(result.iterations, 2);
+
+    // Absent from the first request...
+    assert.ok(!bodies[0].messages.some((m: any) => m.content === 'also verify X'), 'steer absent from iteration 1');
+    // ...and present as a `user` turn in the NEXT request.
+    const injected = bodies[1].messages.find((m: any) => m.role === 'user' && m.content === 'also verify X');
+    assert.ok(injected, 'steer injected into iteration 2 as a user message');
+
+    // The loop surfaced the steering so the host can badge the bubble.
+    assert.deepStrictEqual(progress, ['also verify X']);
+  });
+
+  test('no drainSteering callback leaves the loop behavior unchanged', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'echo', arguments: '{"value":"hi"}' } }] } }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(client, stubExecutor(), [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'echo hi' },
+    ]);
+
+    assert.strictEqual(result.text, 'done');
+    assert.strictEqual(result.iterations, 2);
+    // Nothing injected: the second request has no stray user message.
+    assert.strictEqual(bodies[1].messages.filter((m: any) => m.role === 'user').length, 1);
+  });
+
+  test('steering injected before the first round-trip is honored immediately', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'ok' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      stubExecutor(),
+      [{ role: 'user', content: 'start' }],
+      undefined,
+      undefined,
+      undefined,
+      { drainSteering: () => ['do it differently'] }
+    );
+
+    assert.strictEqual(result.text, 'ok');
+    assert.strictEqual(result.iterations, 1);
+    const injected = bodies[0].messages.find((m: any) => m.role === 'user' && m.content === 'do it differently');
+    assert.ok(injected, 'steer present in the very first request');
+  });
+});
+

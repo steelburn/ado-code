@@ -1,6 +1,8 @@
 // Messages from Webview → Extension Host
 import { AgentRun, AgentCapability } from '../agents/types';
 import { ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
+import { ChatDensity } from './chatDensity';
+import { SessionRunInfo } from './sessionRun';
 import { Skill, SkillExecutionRequest, SkillExecutionResult } from './skillTypes';
 
 /** A tool call surfaced by the agentic loop — live (running → completed) or
@@ -36,6 +38,9 @@ export type WebviewToExtensionMessage =
   // Choice-card answers: the user picked an option on an AI-posed question.
   // Routed to the same turn path as userMessage (host must handle BOTH).
   | { type: 'sendMessage'; content: string }
+  // Steer mode: typed while a turn is running. The host buffers it and the
+  // active agentic loop injects it on its NEXT iteration (never aborts).
+  | { type: 'steerMessage'; content: string; images?: ImageAttachment[] }
   | { type: 'fetchWorkItems' }
   | { type: 'selectWorkItem'; workItemId: number }
   | { type: 'startTask'; workItemId: number; title: string }
@@ -93,11 +98,10 @@ export type WebviewToExtensionMessage =
   | { type: 'clearAllSessions' }
   // Configuration page
   | { type: 'getFullConfig' }
-  | { type: 'saveConfig'; config: Record<string, any> }
+  | { type: 'saveConfig'; config: Record<string, unknown> }
   // Agent runs: request list of active/recent runs for multi-run display
   | { type: 'listAgentRuns' }
   // Project creation wizard
-  | { type: 'openProjectWizard' }
   | { type: 'projectWizardCreate'; request: ProjectCreationRequest }
   // Wizard focus: a full-page wizard (Configuration page / project creation)
   // opened or closed in the chat webview — the host collapses the sibling
@@ -191,14 +195,23 @@ export type ExtensionToWebviewMessage =
   // File search results for @ mentions
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history
-  | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
+  | { type: 'sessionList'; sessions: Session[]; activeId: string | null; running?: SessionRunInfo | null }
   | { type: 'sessionSwitched'; session: Session }
   // Configuration page: full settings snapshot
-  | { type: 'fullConfig'; config: Record<string, any> }
+  | { type: 'fullConfig'; config: Record<string, unknown> }
   // Proposed tasks created in ADO after user review
   | { type: 'proposedTasksCreated'; count: number; parentId: number }
   // Project creation wizard result
   | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
+  // Open the project-creation wizard in the webview (host-initiated)
+  | { type: 'openProjectWizard' }
+  // Steering while the AI is processing (chat.inputWhileBusy): queued + applied
+  | { type: 'steeringQueued'; content: string }
+  | { type: 'steeringApplied'; content: string }
+  // Delegation suggestion surfaced to the user (chat.suggestDelegation)
+  | { type: 'delegationSuggestion'; suggestions: Array<{ agent: string; reason: string; prompt: string }> }
+  // Session-list running badge, computed on the host (see src/shared/sessionRun.ts)
+  | { type: 'sessionRunState'; running: SessionRunInfo | null }
   // Skill catalog
   | { type: 'openSkillCatalog' }
   // Task 9: skill system
@@ -282,6 +295,12 @@ export interface ExtensionConfig {
   llmApiKey: string;
   llmModel: string;
   mode: 'inline' | 'plan' | 'act' | 'yolo';
+  /** Default behavior when the user sends a message while the AI is processing ('chat.inputWhileBusy'). */
+  chatInputWhileBusy?: 'steer' | 'queue';
+  /** Whether the assistant may suggest delegating work to an external agent ('chat.suggestDelegation'). */
+  chatSuggestDelegation?: boolean;
+  /** Chat transcript density ('chat.density'). */
+  chatDensity?: ChatDensity;
   agentsEnabled: string[];
   /** Max agentic loop iterations per chat turn (config key 'act.toolBudget' — legacy name kept). */
   actMaxIterations: number;

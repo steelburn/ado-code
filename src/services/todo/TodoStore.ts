@@ -62,6 +62,19 @@ export interface TodoListSummary extends TodoList {
   inProgress: number;
 }
 
+/**
+ * A goal that a NEWER goal superseded — moved out of the live list into the
+ * session's archive file so a session's finished work stays traceable instead
+ * of being silently overwritten when the work moves on.
+ */
+export interface TodoArchiveEntry {
+  /** When the goal was archived (a newer goal replaced it). */
+  archivedAt: string;
+  goal: TodoGoal;
+  /** The steps the archived goal had, with the statuses they ended on. */
+  items: TodoItem[];
+}
+
 /** Upper bound on items kept per list — a runaway model cannot flood the tree. */
 export const MAX_TODO_ITEMS = 50;
 /** Upper bound on one item's label, so a pasted paragraph can't become a row. */
@@ -129,6 +142,33 @@ export function normalizeTodoItems(raw: unknown): TodoItem[] {
   return out;
 }
 
+/**
+ * True when a list's goal is DONE: it has a goal, at least one step, and every
+ * step is completed. A goal on its own (no steps) is never "completed" — there
+ * is nothing to have finished.
+ */
+export function isGoalCompleted(list: TodoList): boolean {
+  return !!list.goal && list.items.length > 0 && list.items.every(i => i.status === 'completed');
+}
+
+/** Coerce a partial/hand-edited archive record into a clean entry, or null. */
+function normalizeArchiveEntry(raw: unknown): TodoArchiveEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rec = raw as Record<string, unknown>;
+  const goalRec = (rec.goal ?? {}) as Partial<TodoGoal>;
+  const text = normalizeGoalText(goalRec.text);
+  if (!text) return null;
+  return {
+    archivedAt: typeof rec.archivedAt === 'string' ? rec.archivedAt : new Date(0).toISOString(),
+    goal: {
+      text,
+      source: goalRec.source === 'user' ? 'user' : 'ai',
+      setAt: typeof goalRec.setAt === 'string' ? goalRec.setAt : new Date(0).toISOString(),
+    },
+    items: normalizeTodoItems(rec.items),
+  };
+}
+
 /** Count completed / in-progress items for a list. */
 export function summarizeTodoList(list: TodoList): TodoListSummary {
   let completed = 0;
@@ -156,6 +196,8 @@ export function renderTodoChecklist(list: TodoList): string {
 
 export class TodoStore {
   private readonly dir: string;
+  /** Finished goals superseded by a newer one, kept per session (traceability). */
+  private readonly archiveDir: string;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   /** Fires after any mutation — or when the active session changes. */
   readonly onDidChange = this._onDidChange.event;
@@ -169,6 +211,7 @@ export class TodoStore {
 
   constructor(workspaceRoot: string) {
     this.dir = path.join(workspaceRoot, '.ado-code', 'todos');
+    this.archiveDir = path.join(this.dir, 'archive');
   }
 
   /** Create the to-do directory. Idempotent. */
@@ -179,6 +222,11 @@ export class TodoStore {
   /** Absolute path of the backing directory (surfaced in tree tooltips). */
   getDir(): string {
     return this.dir;
+  }
+
+  /** Absolute path of the archive directory (superseded goals, per session). */
+  getArchiveDir(): string {
+    return this.archiveDir;
   }
 
   // ── Active session ────────────────────────────────────────────────
@@ -318,10 +366,19 @@ export class TodoStore {
       updatedAt: new Date().toISOString(),
       items: [],
     };
+    // A NEW goal that supersedes a COMPLETED one is archived rather than
+    // overwritten, so the session's finished work stays traceable. Its steps
+    // leave the live list too — the successor goal starts from a clean slate
+    // and its steps arrive through `update_todo_list`.
+    const supersedes = !!previous.goal
+      && previous.goal.text !== goalText
+      && isGoalCompleted(previous);
+    if (supersedes) this.archiveCompletedGoal(sessionId);
     const list: TodoList = {
       ...previous,
       sessionName: sessionName || previous.sessionName,
       updatedAt: new Date().toISOString(),
+      items: supersedes ? [] : previous.items,
       goal: { text: goalText, source, setAt: new Date().toISOString() },
     };
     this.write(list);
@@ -397,7 +454,10 @@ export class TodoStore {
     this.write({ ...list, sessionName });
   }
 
-  /** Delete a session's list entirely (session deleted, or "Clear"). */
+  /**
+   * Delete a session's LIVE list only. A plain to-do "Clear" leaves the
+   * session's archive intact so its history stays traceable.
+   */
   remove(sessionId: string): boolean {
     const file = this.fileFor(sessionId);
     if (!fs.existsSync(file)) return false;
@@ -411,8 +471,19 @@ export class TodoStore {
     return true;
   }
 
-  /** Delete EVERY session's list (all chat sessions wiped). Returns how many. */
+  /**
+   * Delete a session entirely — its live list AND its archive. Used when the
+   * chat session itself is deleted (not a plain to-do "Clear").
+   */
+  removeSession(sessionId: string): boolean {
+    const removed = this.remove(sessionId);
+    this.removeArchive(sessionId);
+    return removed;
+  }
+
+  /** Delete EVERY session's list AND archive (all chat sessions wiped). */
   removeAll(): number {
+    this.clearArchiveDir();
     if (!fs.existsSync(this.dir)) return 0;
     let removed = 0;
     try {
@@ -426,6 +497,89 @@ export class TodoStore {
     }
     if (removed > 0) this._onDidChange.fire();
     return removed;
+  }
+
+  // ── Archive (superseded goals, per session) ───────────────────────
+
+  /** Archived (superseded) goals for a session, most recent first. */
+  readArchive(sessionId: string): TodoArchiveEntry[] {
+    const file = this.archiveFileFor(sessionId);
+    if (!fs.existsSync(file)) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      logger.error(`TodoStore: failed to read archive ${file}`, err);
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+    const out: TodoArchiveEntry[] = [];
+    for (const raw of parsed) {
+      const entry = normalizeArchiveEntry(raw);
+      if (entry) out.push(entry);
+    }
+    return out;
+  }
+
+  /**
+   * Move the session's current goal AND its steps into the session's archive
+   * file, then clear the live list. Returns the archived entry, or null when
+   * there is no goal to archive. The caller is responsible for writing the
+   * successor list (e.g. `setGoal` writes the new goal right after).
+   */
+  archiveCompletedGoal(sessionId: string): TodoArchiveEntry | null {
+    const list = this.read(sessionId);
+    if (!list || !list.goal) return null;
+    const entry: TodoArchiveEntry = {
+      archivedAt: new Date().toISOString(),
+      goal: list.goal,
+      items: list.items,
+    };
+    const existing = this.readArchive(sessionId);
+    this.writeArchive(sessionId, [entry, ...existing]);
+    const file = this.fileFor(sessionId);
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch (err) {
+      logger.error(`TodoStore: failed to clear archived live list ${file}`, err);
+    }
+    return entry;
+  }
+
+  private writeArchive(sessionId: string, entries: TodoArchiveEntry[]): void {
+    try {
+      fs.mkdirSync(this.archiveDir, { recursive: true });
+      fs.writeFileSync(this.archiveFileFor(sessionId), JSON.stringify(entries, null, 2), 'utf8');
+    } catch (err) {
+      logger.error(`TodoStore: failed to write archive for session ${sessionId}`, err);
+    }
+  }
+
+  private removeArchive(sessionId: string): void {
+    const file = this.archiveFileFor(sessionId);
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch (err) {
+      logger.error(`TodoStore: failed to delete archive ${file}`, err);
+    }
+  }
+
+  private clearArchiveDir(): void {
+    if (!fs.existsSync(this.archiveDir)) return;
+    try {
+      for (const name of fs.readdirSync(this.archiveDir)) {
+        if (!name.endsWith('.json')) continue;
+        fs.unlinkSync(path.join(this.archiveDir, name));
+      }
+    } catch (err) {
+      logger.error('TodoStore: failed to clear archive directory', err);
+    }
+  }
+
+  private archiveFileFor(sessionId: string): string {
+    const slug = sessionId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 48);
+    const digest = crypto.createHash('sha1').update(sessionId).digest('hex').slice(0, 8);
+    return path.join(this.archiveDir, `${slug}-${digest}.json`);
   }
 
   // ── Prompt / rendering ────────────────────────────────────────────

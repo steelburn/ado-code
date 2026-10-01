@@ -205,3 +205,45 @@ Be concise, helpful, and focused on code.`;
 
   return prompt;
 }
+
+/** A single delegation suggestion emitted by the model. */
+export interface DelegationSuggestion {
+  agent: string;
+  reason: string;
+  prompt: string;
+}
+
+/**
+ * Extract an optional `## SUGGEST_DELEGATION` fenced JSON block from an
+ * assistant message. Returns the message with the block removed plus any
+ * parsed suggestions. Best-effort: a malformed block is left untouched so
+ * nothing is silently swallowed.
+ */
+export function extractDelegationSuggestion(
+  text: string
+): { cleaned: string; suggestions: DelegationSuggestion[] } {
+  if (!text || !text.includes('SUGGEST_DELEGATION')) return { cleaned: text, suggestions: [] };
+  const re = /##\s*SUGGEST_DELEGATION\s*\r?\n```(?:json)?\s*\r?\n([\s\S]*?)```/i;
+  const m = text.match(re);
+  if (!m) return { cleaned: text, suggestions: [] };
+  let suggestions: DelegationSuggestion[] = [];
+  try {
+    const parsed: unknown = JSON.parse(m[1].trim());
+    const arr: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null;
+    suggestions = arr
+      .filter(isRecord)
+      .filter((x) => typeof x.agent === 'string' && typeof x.prompt === 'string')
+      .map((x) => ({
+        agent: String(x.agent),
+        reason: typeof x.reason === 'string' ? x.reason : '',
+        prompt: String(x.prompt),
+      }));
+  } catch {
+    return { cleaned: text, suggestions: [] };
+  }
+  if (suggestions.length === 0) return { cleaned: text, suggestions: [] };
+  const cleaned = text.replace(re, '').replace(/\n{3,}/g, '\n\n').trimEnd();
+  return { cleaned, suggestions };
+}

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { DEFAULT_MAX_ITERATIONS } from '../shared/agenticLimits';
+import { DEFAULT_CHAT_DENSITY, normalizeDensity, type ChatDensity } from '../shared/chatDensity';
 
 export type LlmProvider = 'openai' | 'anthropic';
 
@@ -49,6 +50,12 @@ export interface AdoCodeSettings {
   chatShowThinking: boolean;
   /** Hide the live tool-call cards in the chat (running/completed cards still execute normally). */
   chatShowToolCalls: boolean;
+  /** Chat density — how much per-turn chrome (tool activity, reasoning, summary) to render. */
+  chatDensity: ChatDensity;
+  /** Default behavior when the user sends a message while the AI is processing: 'steer' redirects the current turn, 'queue' holds it until the turn finishes. */
+  chatInputWhileBusy: 'steer' | 'queue';
+  /** Whether the AI may propose delegating work to an external coding agent. */
+  chatSuggestDelegation: boolean;
   /** Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) for status-bar accuracy. */
   useNativeTokenCounting: boolean;
   /** Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat + agent handoffs. */
@@ -96,7 +103,10 @@ export function getSettings(): AdoCodeSettings {
     consentAutoApproveTools: config.get<string[]>('consent.autoApproveTools', []),
     yoloPushApproval: config.get<boolean>('yolo.pushApproval', true),
     chatShowThinking: config.get<boolean>('chat.showThinking', true),
+    chatDensity: normalizeDensity(config.get<string>('chat.density', DEFAULT_CHAT_DENSITY)),
     chatShowToolCalls: config.get<boolean>('chat.showToolCalls', true),
+    chatInputWhileBusy: config.get<'steer' | 'queue'>('chat.inputWhileBusy', 'steer'),
+    chatSuggestDelegation: config.get<boolean>('chat.suggestDelegation', true),
     // A1: the DECLARED default is false; the host additionally forces native
     // counting ON for Anthropic (its /count_tokens endpoint is free), so this
     // setting only matters as an explicit opt-in for OpenAI-compatible

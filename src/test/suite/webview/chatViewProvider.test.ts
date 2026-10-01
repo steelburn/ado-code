@@ -1053,6 +1053,35 @@ suite('ChatViewProvider · turn trace persistence', () => {
     assert.strictEqual(stored.trace.entries[0].call.name, 'read_file');
   });
 
+  test('auto-names a "New Session" and pushes the refreshed list to the webview', async () => {
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, {} as any, context);
+    const posted: any[] = [];
+    (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
+    await (provider as any).createNewSession();
+    const sessionId = (provider as any).getActiveSessionId();
+    // Simulate the first turn landing in the brand-new session.
+    (provider as any).conversation = [
+      { role: 'user', content: 'Explain the Azure DevOps work item hierarchy in detail and how the tree view renders it' },
+      { role: 'assistant', content: 'Sure.' },
+    ];
+    (provider as any).conversationBySession.set(sessionId, (provider as any).conversation);
+    posted.length = 0; // ignore setup messages posted by createNewSession
+
+    await (provider as any).persistConversation();
+
+    const pushed = posted.find(m => m.type === 'sessionList');
+    assert.ok(pushed, 'persisting the first turn pushes a sessionList to the webview');
+    const session = pushed.sessions.find((s: any) => s.id === sessionId);
+    assert.ok(session, 'the active session is present in the pushed list');
+    assert.notStrictEqual(session.name, 'New Session', 'the default name is replaced');
+    assert.ok(
+      session.name.startsWith('Explain the Azure DevOps work item hierarchy'),
+      'the name is derived from the first user message',
+    );
+    assert.ok(session.name.length <= 61, 'the name is capped to 60 chars plus an ellipsis');
+  });
+
   test('withStoredTraces pairs records with the conversation by child order', () => {
     const conv: any[] = [
       { role: 'user', content: 'q' },

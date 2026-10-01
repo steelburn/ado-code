@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session, ImageAttachment, StoredTurnTrace } from './types';
+import { ExtensionToWebviewMessage, WebviewToExtensionMessage, Session, SessionRunInfo, ImageAttachment, StoredTurnTrace } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { TaskDetailPanel } from './components/TaskDetailPanel';
 import { MessageList, LiveTraceEntry, TraceEntry, TraceInput } from './components/MessageList';
 import { InputBar } from './components/InputBar';
+import { StatusLine } from './components/StatusLine';
 import { KebabMenu } from './components/KebabMenu';
+import { collapseAllActionLabel } from '../../shared/chatNavigation';
+import { normalizeDensity, cycleDensity, densityLabel } from '../../shared/chatDensity';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
 import { ConsentCard, ConsentRequest } from './components/ConsentCard';
@@ -14,7 +17,7 @@ import { ConfigurationPage } from './components/ConfigurationPage';
 import { ProjectCreationWizard } from './components/ProjectCreationWizard';
 import { SkillCatalog } from './components/SkillCatalog';
 import { vscode } from './vscode';
-import { ERROR_AUTO_DISMISS_MS } from './utils/errorBanner';
+import { ErrorBanner } from './components/common/ErrorBanner';
 import './styles/app.css';
 import './styles/markdown.css';
 
@@ -31,6 +34,10 @@ interface SanitizedConfig {
   adoConnectionConfigured?: boolean;
   modelCapabilities?: { vision: boolean; tools: boolean };
   isEditor?: boolean;
+  /** Default behavior when the user sends a message while the AI is processing. */
+  chatInputWhileBusy?: 'steer' | 'queue';
+  /** Item 5: chat density mirrored from the host setting (comfortable | compact | answers-only). */
+  chatDensity?: string;
 }
 
 interface AgentInfo {
@@ -67,6 +74,10 @@ interface ChatMessage {
   role: string;
   content: string;
   id?: string;
+  // Steer-mode messages: rendered optimistically when typed mid-run; `steered`
+  // flips true once the host confirms the loop picked the text up.
+  steering?: boolean;
+  steered?: boolean;
   trace?: TraceInput;
   traceTruncated?: boolean;
 }
@@ -95,6 +106,12 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
+  // Messages the user sent while the AI was still working (queue behavior).
+  const [queued, setQueued] = useState<Array<{ id: string; fullContent: string; displayContent: string; images?: ImageAttachment[] }>>([]);
+  // Whether a message sent mid-turn steers the current run or waits its turn.
+  const [inputWhileBusy, setInputWhileBusy] = useState<'steer' | 'queue'>('steer');
+  // Agent delegations the model suggested for the current answer.
+  const [delegationSuggestions, setDelegationSuggestions] = useState<Array<{ agent: string; reason: string; prompt: string }>>([]);
   const [mode, setMode] = useState('inline');
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
   const [chatMovedToEditor, setChatMovedToEditor] = useState(false);
@@ -157,6 +174,9 @@ function App() {
   // Session history
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // Which session (if any) still owns the in-flight turn — drives the running
+  // badge in the session list while its work happens in the background.
+  const [sessionRun, setSessionRun] = useState<SessionRunInfo | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
 
   const currentSessionKey = activeSessionId || 'default';
@@ -181,6 +201,25 @@ function App() {
     const handler = (event: MessageEvent<ExtensionToWebviewMessage>) => {
       const msg = event.data;
       switch (msg.type) {
+        case 'steeringApplied': {
+          // The running turn picked up a steered message — flip its marker from
+          // "steering…" to "steered into run". The bubble already exists.
+          setMessages(prev => {
+            for (let k = prev.length - 1; k >= 0; k--) {
+              const cur = prev[k];
+              if (cur && cur.steering && !cur.steered) {
+                const copy = [...prev];
+                copy[k] = { ...cur, steered: true };
+                return copy;
+              }
+            }
+            return prev;
+          });
+          break;
+        }
+        case 'steeringQueued':
+          // Ack only — the bubble is already rendered optimistically.
+          break;
         case 'assistantMessage':
           // ── ID-stamped bubbles (evolving run card) ─────────────────────
           // A done message carrying `id` updates an EXISTING bubble in place
@@ -342,6 +381,10 @@ function App() {
           setLoading(msg.loading);
           break;
 
+        case 'delegationSuggestion':
+          setDelegationSuggestions(msg.suggestions);
+          break;
+
         case 'error': {
           setError(msg.message);
           setLoading(false);
@@ -444,6 +487,8 @@ function App() {
 
         case 'config': {
           const cfg = msg.config as unknown as SanitizedConfig;
+          // Persisted default for what happens when you send while busy.
+          if (cfg.chatInputWhileBusy) setInputWhileBusy(cfg.chatInputWhileBusy);
           setConfig(cfg);
           // Sync the Chat|Plan|Act toggle with the persisted setting (the
           // webview reloads fresh, but the host kept the stored mode).
@@ -494,6 +539,7 @@ function App() {
 
         case 'sessionList':
           setSessions(msg.sessions);
+          setSessionRun(msg.running ?? null);
           setActiveSessionId(msg.activeId);
           activeSessionIdRef.current = msg.activeId;
           if (msg.activeId) {
@@ -509,6 +555,10 @@ function App() {
           activeSessionIdRef.current = msg.session.id;
           setConsent(null);
           finishTurnState();
+          break;
+
+        case 'sessionRunState':
+          setSessionRun(msg.running ?? null);
           break;
 
         case 'workItemDetail':
@@ -669,16 +719,6 @@ function App() {
     });
   }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles, confirmationsBySession, activeSessionId]);
 
-  // Top error banner auto-dismiss: every host error funnels into the single
-  // `error` state, so one timer covers them all. Restarted whenever a new
-  // error replaces an old one; cancelled on manual ✕ or unmount (effect
-  // cleanup).
-  useEffect(() => {
-    if (!error) return;
-    const timer = setTimeout(() => setError(null), ERROR_AUTO_DISMISS_MS);
-    return () => clearTimeout(timer);
-  }, [error]);
-
   // Wizard focus: while a full-page wizard is open (first-run setup,
   // Configuration page, project creation) ask the host to collapse the
   // sibling sidebar views so this webview gets the whole container height.
@@ -688,15 +728,8 @@ function App() {
   }, [wizardOpen]);
 
   // ── Actions ────────────────────────────────────────────────────
-  const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
-    // Prepend attached file contents to the message so the LLM sees them
-    const fileBlocks = attachedFiles.map(f => `[File: ${f.name}]\n${f.content}\n[/file]`);
-    const fullContent = fileBlocks.length > 0
-      ? (content ? fileBlocks.join('\n\n') + '\n\n' + content : fileBlocks.join('\n\n'))
-      : content;
-    const displayContent = images?.length
-      ? (fullContent ? `${fullContent}\n\n${images.map(i => `[Image: ${i.name}]`).join(' ')}` : images.map(i => `[Image: ${i.name}]`).join(' '))
-      : fullContent;
+  // Post a fully-built message to the host and flip into the working state.
+  const sendNow = useCallback((fullContent: string, displayContent: string, images?: ImageAttachment[]) => {
     setMessages(prev => [...prev, { role: 'user', content: displayContent }]);
     vscode.postMessage({ type: 'userMessage', content: fullContent, images });
     setDraft('');
@@ -713,10 +746,60 @@ function App() {
     });
     finishTurnState();
     // Activity indicator for specific commands
-    if (content.trim().toLowerCase().startsWith('/generate-tasks')) {
+    if (fullContent.trim().toLowerCase().startsWith('/generate-tasks')) {
       setActiveActivity('Generating tasks');
     }
-  }, [attachedFiles, finishTurnState]);
+  }, [finishTurnState]);
+
+  // Steer mode: post the text to the host so it is injected into the ACTIVE
+  // run's next iteration. The bubble is rendered immediately ("⚡ steering")
+  // but the run keeps going — no abort.
+  const steerNow = useCallback((fullContent: string, displayContent: string, images?: ImageAttachment[]) => {
+    setMessages(prev => [...prev, { role: 'user', content: displayContent, steering: true }]);
+    vscode.postMessage({ type: 'steerMessage', content: fullContent, images });
+    setDraft('');
+    setAttachedFiles([]);
+    // Deliberately keep loading=true — the current turn is still running.
+  }, []);
+
+  const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
+    // Prepend attached file contents to the message so the LLM sees them
+    const fileBlocks = attachedFiles.map(f => `[File: ${f.name}]\n${f.content}\n[/file]`);
+    const fullContent = fileBlocks.length > 0
+      ? (content ? fileBlocks.join('\n\n') + '\n\n' + content : fileBlocks.join('\n\n'))
+      : content;
+    // The user bubble shows compact attachment markers, not the file bodies —
+    // the bodies already ride along in `fullContent` for the model (declutter
+    // item 3); MessageList folds the markers into chips.
+    const attachmentMarkers = attachedFiles.map(f => `[Attached: ${f.name}]`).join(' ');
+    const imageMarkers = images?.length ? images.map(i => `[Image: ${i.name}]`).join(' ') : '';
+    const displayContent = [content, attachmentMarkers, imageMarkers].filter(Boolean).join('\n\n');
+    // While the AI is still working, honor the queue/steer default:
+    //  - queue → hold the message (shown as a pending chip) and run it next
+    //  - steer → post it to the host, which injects it into the RUNNING turn's
+    //            next iteration (it does NOT abort the run)
+    if (loading && inputWhileBusy === 'queue') {
+      if (!fullContent.trim() && !(images && images.length)) return;
+      setQueued(prev => [...prev, { id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, fullContent, displayContent, images }]);
+      setDraft('');
+      setAttachedFiles([]);
+      return;
+    }
+    if (loading && inputWhileBusy === 'steer') {
+      if (!fullContent.trim() && !(images && images.length)) return;
+      steerNow(fullContent, displayContent, images);
+      return;
+    }
+    sendNow(fullContent, displayContent, images);
+  }, [attachedFiles, loading, inputWhileBusy, sendNow, steerNow]);
+
+  // Drain the queue: once the current turn finishes, send the next held message.
+  useEffect(() => {
+    if (loading || queued.length === 0) return;
+    const [next, ...rest] = queued;
+    setQueued(rest);
+    sendNow(next.fullContent, next.displayContent, next.images);
+  }, [loading, queued, sendNow]);
 
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
     setConsent(null);
@@ -853,9 +936,21 @@ function App() {
     confirmationsBySessionRef.current = {};
   }, []);
 
+  // Item 6: collapse/expand-all override fed to MessageList. `null` = no
+  // override (each turn keeps its default); `true`/`false` forces every row.
+  const [activityOverride, setActivityOverride] = useState<boolean | null>(null);
+
+  // Item 5: chat density. The host owns the persisted setting; the webview
+  // mirrors it (via the 'config' message) and asks for the next mode when the
+  // kebab “Chat density” action fires.
+  const density = normalizeDensity(config?.chatDensity);
+
   // ── Kebab menu actions ───────────────────────────────────────
   const handleKebabAction = useCallback((action: string) => {
     switch (action) {
+      case 'toggleAllTurns':
+        setActivityOverride(prev => (prev === false ? true : false));
+        break;
       case 'refreshWorkItems':
         vscode.postMessage({ type: 'fetchWorkItems' });
         break;
@@ -871,11 +966,17 @@ function App() {
       case 'moveChatToSidebar':
         vscode.postMessage({ type: 'moveChatToSidebar' });
         break;
+      case 'cycleChatDensity': {
+        const next = cycleDensity(density);
+        setConfig((prev) => (prev ? { ...prev, chatDensity: next } : prev));
+        vscode.postMessage({ type: 'updateConfig', config: { chatDensity: next } });
+        break;
+      }
       case 'clearAllSessions':
         handleDeleteAllSessions();
         break;
     }
-  }, [handleDeleteAllSessions]);
+  }, [handleDeleteAllSessions, density]);
 
   const handleFetchProjects = useCallback((organization?: string, pat?: string) => {
     setProjectsLoading(true);
@@ -1024,12 +1125,7 @@ function App() {
       )}
 
       {/* Error banner */}
-      {error && (
-        <div className="error-banner">
-          <span className="error-banner-text">{error}</span>
-          <button className="error-banner-dismiss" onClick={() => setError(null)}>✕</button>
-        </div>
-      )}
+      <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
       {/* Chat header with session history, project switcher + kebab menu */}
       <div className="chat-header">
@@ -1037,6 +1133,7 @@ function App() {
         <SessionHistory
           sessions={sessions}
           activeId={activeSessionId}
+          running={sessionRun}
           onSwitch={handleSwitchSession}
           onNew={handleNewSession}
           onRename={handleRenameSession}
@@ -1060,8 +1157,10 @@ function App() {
             { label: 'Refresh Work Items', icon: '↻', action: 'refreshWorkItems' },
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
             { label: 'Configuration…', icon: '⚙', action: 'openSettings' },
+            { label: `Chat density: ${densityLabel(density)}`, icon: '📐', action: 'cycleChatDensity' },
             { label: '', action: '', separator: true },
-            { label: 'Clear Chat History', icon: '🗑️', action: 'clearAllSessions' },
+            { label: collapseAllActionLabel(activityOverride), icon: '≡', action: 'toggleAllTurns' },
+              { label: 'Clear Chat History', icon: '🗑️', action: 'clearAllSessions' },
           ]}
           onSelect={handleKebabAction}
         />
@@ -1099,6 +1198,8 @@ function App() {
         liveTrace={liveTrace}
         streamText={streamText}
         activity={activeActivity}
+          activityOverride={activityOverride}
+            density={density}
       />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}
@@ -1133,6 +1234,58 @@ function App() {
       {/* Active-model capability gating: no vision → image attach/paste is
           disabled; no tool calling → agentic modes degrade to plain chat,
           surfaced as a persistent warning. */}
+      {/* Delegation suggestions proposed by the AI (chat.suggestDelegation) */}
+      {delegationSuggestions.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 12px', margin: '4px 12px', borderRadius: 6, background: 'var(--vscode-editorWidget-background, rgba(128,128,128,0.1))', border: '1px solid var(--vscode-widget-border, rgba(128,128,128,0.3))', fontSize: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <strong>Suggested delegation</strong>
+            <button type="button" title="Dismiss" onClick={() => setDelegationSuggestions([])} style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', fontSize: 14, lineHeight: 1 }}>×</button>
+          </div>
+          {delegationSuggestions.map((s, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ opacity: 0.85 }}><code>{s.agent}</code>{s.reason ? ` — ${s.reason}` : ''}</span>
+              <button type="button" onClick={() => { vscode.postMessage({ type: 'delegateToAgent', prompt: s.prompt, agent: s.agent }); setDelegationSuggestions([]); }} style={{ cursor: 'pointer', marginLeft: 'auto', padding: '2px 10px', borderRadius: 3, border: 'none', background: 'var(--vscode-button-background)', color: 'var(--vscode-button-foreground)' }}>Delegate</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Queue/steer control: what happens if you send while the AI is busy */}
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '4px 12px', fontSize: 11, borderTop: '1px solid var(--vscode-panel-border, rgba(128,128,128,0.25))' }}>
+        <span style={{ opacity: 0.7 }}>While busy:</span>
+        <button
+          type="button"
+          onClick={() => setInputWhileBusy('steer')}
+          title="Interrupt the current response and apply your message now"
+          style={{ cursor: 'pointer', padding: '1px 8px', borderRadius: 10, fontSize: 11, border: '1px solid var(--vscode-button-border, transparent)', background: inputWhileBusy === 'steer' ? 'var(--vscode-button-background)' : 'transparent', color: inputWhileBusy === 'steer' ? 'var(--vscode-button-foreground)' : 'var(--vscode-foreground)' }}
+        >Steer</button>
+        <button
+          type="button"
+          onClick={() => setInputWhileBusy('queue')}
+          title="Hold your message and send it automatically when the AI finishes"
+          style={{ cursor: 'pointer', padding: '1px 8px', borderRadius: 10, fontSize: 11, border: '1px solid var(--vscode-button-border, transparent)', background: inputWhileBusy === 'queue' ? 'var(--vscode-button-background)' : 'transparent', color: inputWhileBusy === 'queue' ? 'var(--vscode-button-foreground)' : 'var(--vscode-foreground)' }}
+        >Queue</button>
+        {queued.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginLeft: 4 }}>
+            <span style={{ opacity: 0.7 }}>{queued.length} queued:</span>
+            {queued.map((q, i) => (
+              <span key={q.id} title={q.displayContent} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: 260, padding: '1px 6px', borderRadius: 10, background: 'var(--vscode-badge-background, rgba(128,128,128,0.2))', color: 'var(--vscode-badge-foreground, inherit)' }}>
+                <span style={{ opacity: 0.7 }}>{i + 1}.</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.displayContent.replace(/\s+/g, ' ').slice(0, 60)}</span>
+                <button type="button" title="Remove from queue" onClick={() => setQueued(prev => prev.filter(x => x.id !== q.id))} style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', padding: 0, fontSize: 13, lineHeight: 1 }}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <StatusLine
+        loading={loading}
+        activity={activeActivity}
+        streamText={streamText}
+        trace={liveTrace}
+      />
+
       <InputBar
         mode={mode}
         value={draft}
@@ -1140,6 +1293,7 @@ function App() {
         onSend={handleSend}
         onStop={() => {
           vscode.postMessage({ type: 'stopGeneration' });
+          setQueued([]); // stopping the turn cancels anything held in the queue
           setLoading(false);
           setConsent(null);
           setConfirmationsBySession(prev => {

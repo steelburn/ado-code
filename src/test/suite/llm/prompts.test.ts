@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { buildSystemPrompt, buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, extractDeliveryReport } from '../../../llm/prompts';
+import { buildSystemPrompt, buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, extractDeliveryReport, extractDelegationSuggestion } from '../../../llm/prompts';
 import { generateSystemPrompt } from '../../../llm/prompts/system';
 import { getDefaultMode } from '../../../llm/modes';
 import { WorkItemContext } from '../../../shared/messages';
@@ -249,5 +249,75 @@ suite('System prompt · session to-do list', () => {
     });
     assert.ok(withList.includes('## Current To-do List (this session)'));
     assert.ok(withList.includes('- [ ] Ship it'));
+  });
+});
+
+suite('generateSystemPrompt - delegation suggestions', () => {
+  test('omits the delegation section by default', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+    });
+    assert.ok(!prompt.includes('SUGGEST_DELEGATION'));
+    assert.ok(!prompt.includes('Delegating to external agents'));
+  });
+
+  test('includes the delegation section when enabled', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+      suggestDelegation: true,
+    });
+    assert.ok(prompt.includes('## Delegating to external agents'));
+    assert.ok(prompt.includes('SUGGEST_DELEGATION'));
+  });
+});
+
+suite('extractDelegationSuggestion', () => {
+  test('returns text unchanged when no block is present', () => {
+    const input = 'Here is my answer.';
+    const { cleaned, suggestions } = extractDelegationSuggestion(input);
+    assert.strictEqual(cleaned, input);
+    assert.deepStrictEqual(suggestions, []);
+  });
+
+  test('parses a valid block and strips it from the text', () => {
+    const input = [
+      'This is a big refactor, so I suggest delegating.',
+      '',
+      '## SUGGEST_DELEGATION',
+      '```json',
+      '[{ "agent": "codex", "reason": "long refactor", "prompt": "Refactor the module" }]',
+      '```',
+    ].join('\n');
+    const { cleaned, suggestions } = extractDelegationSuggestion(input);
+    assert.strictEqual(suggestions.length, 1);
+    assert.strictEqual(suggestions[0].agent, 'codex');
+    assert.strictEqual(suggestions[0].prompt, 'Refactor the module');
+    assert.ok(!cleaned.includes('SUGGEST_DELEGATION'));
+    assert.ok(cleaned.includes('delegating'));
+  });
+
+  test('leaves malformed JSON untouched (nothing silently swallowed)', () => {
+    const input = '## SUGGEST_DELEGATION\n```json\n{ not json }\n```';
+    const { cleaned, suggestions } = extractDelegationSuggestion(input);
+    assert.deepStrictEqual(suggestions, []);
+    assert.strictEqual(cleaned, input);
+  });
+
+  test('accepts a single object as well as an array', () => {
+    const input = '## SUGGEST_DELEGATION\n```json\n{ "agent": "claude", "prompt": "do it" }\n```';
+    const { suggestions } = extractDelegationSuggestion(input);
+    assert.strictEqual(suggestions.length, 1);
+    assert.strictEqual(suggestions[0].agent, 'claude');
+  });
+
+  test('ignores entries missing agent/prompt', () => {
+    const input = '## SUGGEST_DELEGATION\n```json\n[{ "reason": "no agent" }]\n```';
+    const { cleaned, suggestions } = extractDelegationSuggestion(input);
+    assert.deepStrictEqual(suggestions, []);
+    assert.strictEqual(cleaned, input);
   });
 });

@@ -2,8 +2,12 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.6.7",
+  "version": "0.7.0",
   "publisher": "steelburn",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/steelburn/ado-code.git"
+  },
   "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.85.0"
@@ -64,7 +68,9 @@
     "onCommand:adoCode.todos.clear",
     "onCommand:adoCode.todos.removeItem",
     "onCommand:adoCode.todos.markPending",
-    "onCommand:adoCode.todos.markCompleted"
+    "onCommand:adoCode.todos.markCompleted",
+    "onCommand:adoCode.todos.showArchive",
+    "onCommand:adoCode.todos.hideArchive"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -447,6 +453,18 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.todos.showArchive",
+        "title": "View Archived Goals",
+        "icon": "$(archive)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.todos.hideArchive",
+        "title": "Show To-do List",
+        "icon": "$(checklist)",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.todos.addItem",
         "title": "Add To-do Item",
         "icon": "$(add)",
@@ -537,6 +555,16 @@
           "command": "adoCode.todos.refresh",
           "when": "view == adoCode.todos",
           "group": "navigation@3"
+        },
+        {
+          "command": "adoCode.todos.showArchive",
+          "when": "view == adoCode.todos && !adoCode.todos.archiveMode",
+          "group": "navigation@4"
+        },
+        {
+          "command": "adoCode.todos.hideArchive",
+          "when": "view == adoCode.todos && adoCode.todos.archiveMode",
+          "group": "navigation@4"
         },
         {
           "command": "adoCode.todos.clear",
@@ -1216,10 +1244,36 @@
           "default": [],
           "description": "Tool names or glob patterns that run WITHOUT a consent prompt (e.g. \"read_*\", \"get_*\", \"edit_file\"). Matching tools skip the consent card in inline and act modes; plan mode stays read-only."
         },
+        "adoCode.chat.inputWhileBusy": {
+          "type": "string",
+          "enum": ["steer", "queue"],
+          "enumDescriptions": [
+            "Steer: interrupt the AI's current response so your new message is applied immediately.",
+            "Queue: hold your message and send it automatically once the AI finishes."
+          ],
+          "default": "steer",
+          "description": "What happens when you send a message while the AI is still processing. Steer redirects the current turn now; Queue holds your message and runs it next. You can override this per message from the input bar."
+        },
+        "adoCode.chat.suggestDelegation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let the AI suggest handing work off to an installed external coding agent (Claude, Codex, ...). When off, the AI never proposes delegations and any suggestion it emits is ignored."
+        },
         "adoCode.chat.showThinking": {
           "type": "boolean",
           "default": true,
           "description": "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)."
+        },
+        "adoCode.chat.density": {
+          "type": "string",
+          "enum": ["comfortable", "compact", "answers-only"],
+          "enumDescriptions": [
+            "Full detail: tool activity rows, reasoning text and per-turn summaries are shown.",
+            "Same detail as Comfortable, with tighter spacing.",
+            "Answers only: tool activity, reasoning and turn summaries are hidden (expand a turn to reveal its details)."
+          ],
+          "default": "comfortable",
+          "description": "How much per-turn detail the chat shows: Comfortable (default) shows everything, Compact tightens spacing, Answers only hides tool/reasoning chrome."
         },
         "adoCode.chat.showToolCalls": {
           "type": "boolean",

@@ -17,6 +17,8 @@ import type { Skill } from '../../shared/skillTypes';
 
 /** Options for generating a system prompt. */
 export interface SystemPromptOptions {
+  /** Allow the AI to suggest delegating work to an external coding agent. */
+  suggestDelegation?: boolean;
   /** The active mode configuration. */
   mode: ModeConfig;
   /** Absolute path to the workspace root. */
@@ -292,6 +294,33 @@ function formatOsName(osId: string): string {
  * The prompt is assembled from discrete sections so it's easy to test
  * and extend without touching a single monolithic template string.
  */
+/**
+ * Delegation-suggestion section - opt-in via `chat.suggestDelegation`.
+ * Teaches the model to propose handing a task to an external coding agent by
+ * emitting a fenced `SUGGEST_DELEGATION` block that the webview renders as an
+ * action card. Returns '' when disabled so the capability is never advertised.
+ */
+function buildDelegationSuggestionSection(enabled?: boolean): string {
+  if (!enabled) return '';
+  return [
+    '## Delegating to external agents',
+    '',
+    'You may optionally suggest handing part of the work to an installed',
+    'external coding agent (e.g. claude, codex, opencode, gemini). Only do this',
+    'when the task is a good fit for a separate agent run - a large self-contained',
+    'implementation, a long refactor, or work better suited to another agent.',
+    'Emit the suggestion as a fenced block so the UI can render an action card:',
+    '',
+    '## SUGGEST_DELEGATION',
+    '```json',
+    '[{ "agent": "codex", "reason": "why this agent", "prompt": "full task instructions" }]',
+    '```',
+    '',
+    'Keep the explanation in normal prose; the block is only for the machine-readable',
+    'suggestion. Do not emit the block when you can complete the task yourself.',
+  ].join('\n');
+}
+
 export function generateSystemPrompt(options: SystemPromptOptions): string {
   const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, understanding, todos, enabledSkills } =
     options;
@@ -308,6 +337,7 @@ export function generateSystemPrompt(options: SystemPromptOptions): string {
     buildEnvironmentSection(workspacePath, os),
     buildOutputFormatSection(),
     buildCustomInstructionsSection(customInstructions),
+    buildDelegationSuggestionSection(options.suggestDelegation),
   ].filter((s) => s.length > 0);
 
   return sections.join('\n\n');

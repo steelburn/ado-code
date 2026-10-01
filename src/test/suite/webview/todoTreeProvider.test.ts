@@ -9,6 +9,9 @@ import {
   TodoSessionNode,
   TodoItemNode,
   TodoEmptyNode,
+  TodoArchiveNode,
+  TodoArchivedItemNode,
+  TodoArchiveEmptyNode,
 } from '../../../webview/TodoTreeProvider';
 
 suite('TodoTreeProvider', () => {
@@ -49,24 +52,40 @@ suite('TodoTreeProvider', () => {
     assert.strictEqual((nodes[0] as TodoEmptyNode).contextValue, 'todoEmptyNode');
   });
 
-  test('one root node per session that has a list', () => {
+  test('shows only the active session, not every stored list', () => {
     store.replace('a', [{ content: 'A1', status: 'pending' }], 'Alpha');
     store.replace('b', [{ content: 'B1', status: 'pending' }], 'Beta');
 
-    const nodes = roots();
-    assert.strictEqual(nodes.length, 2);
-    assert.deepStrictEqual(nodes.map(n => (n as TodoSessionNode).summary.sessionName).sort(), ['Alpha', 'Beta']);
+    // With no active session the view falls back to a single (most recent) list.
+    assert.strictEqual(roots().length, 1, 'only one session may render at a time');
+
+    // Once a session is active it is the ONLY thing rendered.
+    store.setActiveSession('b', 'Beta');
+    const nodes = roots() as TodoSessionNode[];
+    assert.strictEqual(nodes.length, 1);
+    assert.strictEqual(nodes[0]!.summary.sessionName, 'Beta');
   });
 
-  test('the active session sorts first and is marked active', () => {
+  test('switching sessions resets the view to the active session', () => {
     store.replace('a', [{ content: 'A1', status: 'pending' }], 'Alpha');
     store.replace('b', [{ content: 'B1', status: 'pending' }], 'Beta');
     store.setActiveSession('b', 'Beta');
 
     const nodes = roots() as TodoSessionNode[];
+    assert.strictEqual(nodes.length, 1, 'only the active session renders');
     assert.strictEqual(nodes[0]!.sessionId, 'b');
     assert.ok(nodes[0]!.description!.toString().includes('active'));
-    assert.ok(!nodes[1]!.description!.toString().includes('active'));
+
+    // Switching the active session swaps the visible list.
+    store.setActiveSession('a', 'Alpha');
+    const after = roots() as TodoSessionNode[];
+    assert.strictEqual(after.length, 1);
+    assert.strictEqual(after[0]!.sessionId, 'a');
+    assert.ok(after[0]!.description!.toString().includes('active'));
+
+    // A list-less active session shows the empty state, not another session.
+    store.setActiveSession('none', 'None');
+    assert.ok(roots()[0] instanceof TodoEmptyNode, 'a list-less active session shows the placeholder');
   });
 
   test('a session group reports its progress', () => {
@@ -192,7 +211,11 @@ suite('TodoTreeProvider', () => {
     assert.strictEqual(roots().length, 1);
     // …and it now reflects the NEW instance, not the stale one.
     rebuilt.replace('b', [{ content: 'New store task', status: 'pending' }], 'Beta');
-    assert.strictEqual(roots().length, 2);
+    rebuilt.setActiveSession('b', 'Beta');
+    const nodes = roots() as TodoSessionNode[];
+    assert.strictEqual(nodes.length, 1, 'only the active session renders');
+    assert.strictEqual(nodes[0]!.summary.sessionName, 'Beta', 'the tree follows the rebuilt store');
+    assert.strictEqual(nodes[0]!.summary.items[0]!.content, 'New store task');
   });
 
   test('leaf nodes have no children', () => {
@@ -287,5 +310,119 @@ suite('TodoTreeProvider', () => {
     provider.onDidChangeTreeData(() => { fires++; });
     store.setGoal('a', 'New objective', 'ai', 'Alpha');
     assert.ok(fires > 0, 'setting a goal must refresh the view');
+  });
+
+  test('falls back to the most recent list when no session is active', () => {
+    store.replace('a', [{ content: 'A1', status: 'pending' }], 'Alpha');
+    const nodes = roots() as TodoSessionNode[];
+    assert.strictEqual(nodes.length, 1);
+    assert.strictEqual(nodes[0]!.sessionId, 'a');
+    assert.ok(!nodes[0]!.description!.toString().includes('active'), 'the fallback session is not marked active');
+  });
+
+  test('switching the active session refreshes the view to that session', () => {
+    store.replace('a', [{ content: 'A1', status: 'pending' }], 'Alpha');
+    store.replace('b', [{ content: 'B1', status: 'pending' }], 'Beta');
+    let fires = 0;
+    provider.onDidChangeTreeData(() => { fires++; });
+    store.setActiveSession('a', 'Alpha');
+    assert.ok(fires > 0, 'switching the active session must refresh the view');
+    assert.strictEqual((roots()[0] as TodoSessionNode).sessionId, 'a');
+  });
+
+  // ── Archived goals (superseded completed goals) ────────────────────
+
+  /** Shortcut: the current archive-view root nodes. */
+  const archiveRoots = () =>
+    provider.getChildren() as Array<TodoArchiveNode | TodoArchiveEmptyNode>;
+  /** Shortcut: one archived goal's step nodes. */
+  const archivedItemsOf = (node: TodoArchiveNode) =>
+    provider.getChildren(node) as TodoArchivedItemNode[];
+
+  /**
+   * Seed session `s` with a COMPLETED goal ("First goal") that a newer goal
+   * supersedes — the store archives the old one and starts the new one fresh.
+   */
+  const seedArchivedGoal = (session = 's', sessionName = 'S') => {
+    store.setActiveSession(session, sessionName);
+    store.replace(session, [{ content: 'Done step', status: 'completed' }], sessionName);
+    store.setGoal(session, 'First goal', 'ai', sessionName);
+    store.setGoal(session, 'Second goal', 'ai', sessionName);
+  };
+
+  test('archive view is OFF by default and the live list renders', () => {
+    store.setActiveSession('a', 'Alpha');
+    store.replace('a', [{ content: 'Step', status: 'pending' }], 'Alpha');
+    assert.strictEqual(provider.isArchiveView(), false, 'the view starts on the live list');
+    assert.ok(roots()[0] instanceof TodoSessionNode);
+  });
+
+  test('archive view renders a superseded goal as a read-only root', () => {
+    seedArchivedGoal();
+    provider.setArchiveView(true);
+
+    const nodes = archiveRoots();
+    assert.strictEqual(nodes.length, 1);
+    const node = nodes[0] as TodoArchiveNode;
+    assert.ok(node instanceof TodoArchiveNode, 'an archived goal is its own root');
+    assert.strictEqual(node.label, 'First goal');
+    assert.strictEqual(node.contextValue, 'todoArchiveNode');
+    assert.strictEqual((node.iconPath as vscode.ThemeIcon).id, 'archive');
+  });
+
+  test('archived steps nest read-only under the archived goal', () => {
+    seedArchivedGoal();
+    provider.setArchiveView(true);
+
+    const items = archivedItemsOf(archiveRoots()[0] as TodoArchiveNode);
+    assert.strictEqual(items.length, 1);
+    const item = items[0]!;
+    assert.ok(item instanceof TodoArchivedItemNode);
+    assert.strictEqual(item.label, 'Done step');
+    assert.strictEqual(item.contextValue, 'todoArchivedItemNode');
+    assert.strictEqual(item.checkboxState, undefined, 'archived steps cannot be ticked');
+  });
+
+  test('archive view shows a placeholder when the session has no archive', () => {
+    store.setActiveSession('a', 'Alpha');
+    store.replace('a', [{ content: 'Step', status: 'pending' }], 'Alpha');
+    provider.setArchiveView(true);
+
+    const nodes = archiveRoots();
+    assert.strictEqual(nodes.length, 1);
+    assert.ok(nodes[0] instanceof TodoArchiveEmptyNode);
+    assert.strictEqual((nodes[0] as TodoArchiveEmptyNode).contextValue, 'todoArchiveEmptyNode');
+  });
+
+  test('archive view follows the active session', () => {
+    seedArchivedGoal('a', 'A');
+    provider.setArchiveView(true);
+    store.setActiveSession('a', 'A');
+    assert.strictEqual((archiveRoots()[0] as TodoArchiveNode).label, 'First goal');
+
+    // A different session has no archive of its own — the view must not leak
+    // the other session's history into it.
+    store.setActiveSession('b', 'B');
+    assert.ok(archiveRoots()[0] instanceof TodoArchiveEmptyNode);
+  });
+
+  test('toggling archive view refreshes the tree', () => {
+    let fired = 0;
+    const sub = provider.onDidChangeTreeData(() => fired++);
+    provider.setArchiveView(true);
+    provider.setArchiveView(false);
+    sub.dispose();
+    assert.ok(fired > 0, 'each toggle must refresh the view');
+  });
+
+  test('turning archive view off restores the live list', () => {
+    seedArchivedGoal();
+    provider.setArchiveView(true);
+    assert.ok(archiveRoots()[0] instanceof TodoArchiveNode);
+
+    provider.setArchiveView(false);
+    const node = roots()[0] as TodoSessionNode;
+    assert.ok(node instanceof TodoSessionNode);
+    assert.strictEqual(node.goal!.text, 'Second goal', 'the live goal is the successor');
   });
 });

@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "../../webview-ui-dist",
-    "rootDir": "src"
+    "rootDir": "../.."
   },
   "include": ["src/**/*"]
 }

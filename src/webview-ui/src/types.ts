@@ -1,383 +1,44 @@
-// Messages from Webview → Extension Host
-// Task 24: webview copy of AgentRun/AgentCapability (host imports from
-// src/agents/types; the webview project can't resolve that path).
-export type AgentName = 'claude' | 'codex' | 'opencode' | 'hermes' | 'pi' | 'openclaw' | 'aider' | 'gemini' | 'cursor-agent' | 'dsh';
+// Webview-facing type surface.
+//
+// The webview and the extension host share ONE message contract, declared in
+// src/shared/messages.ts (and src/shared/sessionRun.ts). This module re-exports
+// it rather than duplicating it: the webview project sets `rootDir` to the
+// repository root, so the repo-relative paths below resolve and webpack bundles
+// them.
 
-export interface AgentCapability {
-  name: AgentName;
-  displayName: string;
-  installed: boolean;
-  version?: string;
-  modes: ('one-shot' | 'session')[];
-}
+// Message contract.
+export type {
+  WebviewToExtensionMessage,
+  ExtensionToWebviewMessage,
+  // Turn trace (Thinking & Tools record)
+  ToolCallInfo,
+  TraceEntry,
+  StoredTurnTrace,
+  // Attachments / editor context
+  ImageAttachment,
+  MessageContext,
+  // Azure DevOps work items
+  WorkItemSummary,
+  WorkItemDetail,
+  WorkItemComment,
+  WorkItemContext,
+  // Configuration snapshot + chat sessions
+  ExtensionConfig,
+  Session,
+} from '../../shared/messages';
 
-export interface AgentRun {
-  id: string;
-  workItemId?: number;
-  agent: AgentName;
-  sessionId?: string;
-  workdir: string;
-  branch?: string;
-  worktreePath?: string;
-  status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
-  startedAt: string;
-  finishedAt?: string;
-  outputFile?: string;
-  summary?: string;
-}
+// Session-list running badge (host-computed; see src/shared/sessionRun.ts).
+export type { SessionRunInfo } from '../../shared/sessionRun';
 
-import { ProjectCreationRequest } from './components/ProjectCreationWizard/types';
+// Agent orchestration types (host-owned).
+export type { AgentName, AgentCapability, AgentRun } from '../../agents/types';
 
-// ── Turn trace (Thinking & Tools record) ────────────────────────────
-// Mirrored from src/shared/messages.ts (the webview project cannot resolve
-// cross-project imports). Keep the two copies in sync.
-
-/** A tool call surfaced by the agentic loop — live (running → completed) or
- *  recorded in a finished turn's trace. */
-export interface ToolCallInfo {
-  id: string;
-  name: string;
-  arguments: Record<string, any>;
-  result?: string;
-  /** false when the user hid tool calls in chat — rendered as a "…" indicator. */
-  showDetails?: boolean;
-  /** Completion flag for hidden calls, which never carry result content. */
-  done?: boolean;
-}
-
-/** One segment of a turn's ordered record. `thinking` blocks sit between the
- *  tool calls they introduced — not lumped above them. */
-export type TraceEntry =
-  | { kind: 'thinking'; text: string }
-  | { kind: 'tool'; call: ToolCallInfo };
-
-/** A turn's Thinking/Tools record as persisted in session history. */
-export interface StoredTurnTrace {
-  entries: TraceEntry[];
-  /** True when the record was trimmed to fit the per-turn character cap. */
-  truncated?: boolean;
-}
-
-/** An image pasted into the chat, carried as a base64 data URL. */
-export interface ImageAttachment {
-  id: string;
-  /** data:image/png;base64,<encoded> or data:image/jpeg;base64,<encoded> */
-  dataUrl: string;
-  /** Original filename or auto-generated name */
-  name: string;
-}
-
-export type WebviewToExtensionMessage =
-  | { type: 'userMessage'; content: string; context?: MessageContext; images?: ImageAttachment[] }
-  // Choice-card answers: the user picked an option on an AI-posed question.
-  // Routed to the same turn path as userMessage (host must handle BOTH).
-  | { type: 'sendMessage'; content: string }
-  | { type: 'fetchWorkItems' }
-  | { type: 'selectWorkItem'; workItemId: number }
-  | { type: 'startTask'; workItemId: number; title: string }
-  | { type: 'updateWorkItem'; workItemId: number; fields: Record<string, any> }
-  | { type: 'addComment'; workItemId: number; text: string }
-  | { type: 'getConfig' }
-  | { type: 'getFullConfig' }
-  | { type: 'saveConfig'; config: Record<string, any> }
-  | { type: 'updateConfig'; config: Partial<ExtensionConfig> }
-  // Task 24: agent delegation protocol
-  | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
-  | { type: 'agentFollowUp'; runId: string; prompt: string }
-  | { type: 'agentCancel'; runId: string }
-  | { type: 'dismissAgentRun'; runId: string }
-  | { type: 'reopenAgentOutput'; runId: string }
-  | { type: 'openAgentProgress'; runId: string }
-  | { type: 'listAgents' }
-  | { type: 'listAgentRuns' }
-  | { type: 'clearConversation' }
-  // Task 28: task detail review + clarification
-  | { type: 'reviewTaskDetail'; workItemId: number }
-  | { type: 'requestClarification'; workItemId: number; question: string; mentionCreator: boolean }
-  | { type: 'checkTaskReplies'; workItemId: number }
-  | { type: 'pickMode' }
-  | { type: 'rerunWizard' }
-  | { type: 'openSettings' }
-  | { type: 'moveChatToEditor' }
-  | { type: 'moveChatToSidebar' }
-  | { type: 'cycleMode' }
-  | { type: 'selectMode'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
-  | { type: 'fetchProjects'; organization?: string; pat?: string }
-  | { type: 'fetchModels'; provider?: string; apiUrl?: string; apiKey?: string }
-  | { type: 'selectProject'; projectName: string }
-  // Input-bar tools: inject active-editor context / attach a file into the draft
-  | { type: 'getEditorContext' }
-  | { type: 'pickFiles' }
-  // File search for @ mentions
-  | { type: 'searchFiles'; query: string }
-  // Consent: user answer to an agent consent request (inline mode mutating tool)
-  | { type: 'consentResponse'; requestId: string; approved: boolean; scope?: 'once' | 'session' | 'permanent' }
-  // Stop generation: user clicks stop while LLM is streaming
-  | { type: 'stopGeneration' }
-  // A finished turn's Thinking/Tools record, handed back by the webview so the
-  // host can persist it (the host never sees the reasoning blocks itself — it
-  // only emits flat tool/progress events). `content` is the turn's final answer
-  // text, which keys the record to the message it belongs to. Sent once per
-  // completed turn; the host caps and stores it with that assistant message.
-  | { type: 'recordTurnTrace'; content: string; entries: TraceEntry[] }
-  // Session history
-  | { type: 'listSessions' }
-  | { type: 'switchSession'; sessionId: string }
-  | { type: 'newSession' }
-  | { type: 'renameSession'; sessionId: string; name: string }
-  | { type: 'deleteSession'; sessionId: string }
-  | { type: 'clearAllSessions' }
-  // Project creation wizard
-  | { type: 'projectWizardCreate'; request: ProjectCreationRequest }
-  // Wizard focus: a full-page wizard (Configuration page / project creation)
-  // opened or closed in the chat webview — the host collapses the sibling
-  // sidebar views so the wizard gets the whole view container.
-  | { type: 'maximizeWizard'; active: boolean };
-
-// Messages from Extension Host → Webview
-export type ExtensionToWebviewMessage =
-  // Optional `id` stamps an assistant bubble with a stable identity so a later
-  // done:true message with the SAME id REPLACES that bubble's content instead
-  // of appending a new one (live delegation card in the thread). `replace`
-  // forces replacement semantics; id'd messages without it append (streams).
-  // `isThinking` marks streamed text that is an agentic iteration's PRE-TOOL
-  // reasoning (also surfaced as a thinking block) — never buffered into the
-  // answer, which would merge reasoning into the reply and duplicate it.
-  | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean; isThinking?: boolean }
-  // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended
-  // thinking). `newBlock` marks the start of a DISTINCT reasoning step — the
-  // agentic loop posts one complete pre-tool message per iteration — so the
-  // webview separates it from earlier reasoning with a blank line. Streamed
-  // deltas omit it: fragments of one continuous reasoning stream glue raw.
-  | { type: 'thinkingMessage'; content: string; done: boolean; newBlock?: boolean }
-  | { type: 'workItems'; items: WorkItemSummary[] }
-  | { type: 'workItemDetail'; item: WorkItemDetail }
-  | { type: 'gitStatus'; isGitRepo: boolean; currentBranch: string | null; branchCreated: string | null }
-  | { type: 'changelogUpdated'; filePath: string }
-  | { type: 'modeChanged'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
-  // H9: tool-call cards for the webview (agentic loop streaming)
-  | { type: 'toolCall'; call: { id: string; name: string; arguments: Record<string, any>; showDetails?: boolean } }
-  | { type: 'toolResult'; callId: string; content: string }
-  // Bare completion tick for hidden tool calls (chat.showToolCalls=false): no
-  // payload — just flips the disclosure row from "running" to "completed".
-  | { type: 'toolCallDone'; callId: string }
-  | { type: 'planReady'; plan: string } // plan mode: "Begin implementation" button
-  | { type: 'config'; config: ExtensionConfig }
-  | { type: 'fullConfig'; config: Record<string, any> }
-  | { type: 'error'; message: string }
-  | { type: 'loading'; loading: boolean }
-  // Task 24: agent delegation protocol
-  | { type: 'agentStatus'; run: AgentRun; delta: string }
-  | { type: 'agentResult'; run: AgentRun; summary: string }
-  | { type: 'agentList'; agents: AgentCapability[] }
-  | { type: 'agentRunsList'; runs: AgentRun[] }
-  // AI choice prompt: detected question + options from AI response
-  | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }> }
-  // Task 26: history restore (Q4)
-  | { type: 'historyRestored'; messages: { role: string; content: string; trace?: StoredTurnTrace }[] }
-  // Task 28: task detail review + clarification
-  | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
-  // Project selection
-  | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> }
-  // Open the in-webview Configuration page (host-side trigger, e.g. from the
-  // chat kebab "Configuration…" menu item).
-  | { type: 'openSettings' }
-  // Wizard model picker — model ids plus OPTIONAL live capability hints from
-  // gateways that expose them (OpenRouter/Ollama). Undefined = use heuristic.
-  | { type: 'modelList'; models: Array<{ id: string; vision?: boolean; tools?: boolean }> }
-  // Input-bar tools: active-editor context block / attached file contents
-  | { type: 'editorContext'; text: string }
-  | { type: 'attachedFiles'; files: Array<{ name: string; content: string }> }
-  // Consent: the agent requires user approval for a mutating tool (inline mode)
-  | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number; expiresAt?: number }
-  // Generic confirmation: in-chat card replacing native VS Code dialogs
-  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }>; expiresAt?: number }
-  // A consent/confirmation request resolved by its timeout — the webview
-  // clears the matching card (see shared/messages.ts for the host side).
-  | { type: 'promptExpired'; requestId: string; action: 'approve' | 'deny' | 'cancel' }
-  // File search results for @ mentions
-  | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
-  // Session history
-  | { type: 'sessionList'; sessions: Session[]; activeId: string | null }
-  | { type: 'sessionSwitched'; session: Session }
-  // Project creation wizard
-  | { type: 'openProjectWizard' }
-  | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
-  // Skill catalog
-  | { type: 'openSkillCatalog' }
-  // Skill import
-  | { type: 'importSkillFromDisk' }
-  // Right-click context menu: insert text into chat draft
-  | { type: 'insertText'; text: string }
-  // Chat moved to/from editor area notification for sidebar placeholder
-  | { type: 'chatMovedToEditor'; inEditor: boolean };
-
-// Shared types
-export interface MessageContext {
-  activeFile?: string;
-  selectedText?: string;
-  workItemId?: number;
-}
-
-export interface WorkItemSummary {
-  id: number;
-  title: string;
-  state: string;
-  assignedTo: string;
-  workItemType: string;
-  parentId?: number;
-  // True when the item is NOT part of the base query (assigned/unassigned)
-  // but was pulled in by hierarchy expansion (parent/child of a base item).
-  isContext?: boolean;
-}
-
-export interface WorkItemDetail extends WorkItemSummary {
-  description: string;
-  acceptanceCriteria: string;
-  tags: string;
-  areaPath: string;
-  iterationPath: string;
-  creator?: string; // Task 28: displayName of the work item creator
-  comments: WorkItemComment[];
-  reproSteps?: string;
-  systemInfo?: string;
-}
-
-export interface WorkItemComment {
-  id: number;
-  text: string;
-  createdBy: string;
-  createdDate: string;
-}
-
-// Shared work-item context used by the chat system prompt (Task 13),
-// agent handoff prompt (Task 25), and task completion hook (Task 11).
-// Defined here (Task 4) so earlier tasks can reference it without forward deps.
-export interface WorkItemContext {
-  id: number;
-  title: string;
-  state?: string;
-  description?: string;
-  acceptanceCriteria?: string;
-  tags?: string;
-  comments?: Array<{ author: string; text: string; date?: string }>;
-}
-
-export interface ExtensionConfig {
-  // M-10 fix: mirror the FULL Task 5 settings surface (no drift).
-  organizations: Array<{ name: string; url: string; project: string }>;
-  adoOrganization: string;
-  adoProject: string;
-  adoServerUrl: string;
-  adoPat: string;
-  llmProvider: string;
-  llmApiUrl: string;
-  llmApiKey: string;
-  llmModel: string;
-  mode: 'inline' | 'plan' | 'act' | 'yolo';
-  agentsEnabled: string[];
-  /** Max agentic loop iterations per chat turn (config key 'act.toolBudget' — legacy name kept). */
-  actMaxIterations: number;
-  actTerminalAllowlist: string[];
-  gitRequireGitRepo: boolean;
-  gitCreateBranchOnTaskStart: boolean;
-  gitRequireCleanTree: boolean;
-  gitPrOnCompletion: boolean;
-  changelogEnabled: boolean;
-  changelogAutoCommit: boolean;
-  changelogPostToAdo: boolean;
-  adoClarificationState: string;
-  adoWarnOnSparseTask: boolean;
-  isEditor?: boolean;
-}
-
-// Session history
-export interface Session {
-  id: string;
-  name: string;
-  createdAt: string;
-  messages: Array<{ role: string; content: string; trace?: StoredTurnTrace }>;
-}
-
-// ── Skill System Types ──────────────────────────────────────────────
-// Duplicated from src/shared/skillTypes.ts because the webview-ui project
-// cannot resolve cross-project imports (separate tsconfig + webpack).
-
-export interface Skill {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  author: string;
-  category: SkillCategory;
-  tags: string[];
-  icon: string;
-  prompt?: string;
-  toolChain?: ToolChainStep[];
-  knowledge?: string;
-  installed: boolean;
-  enabled: boolean;
-  builtin: boolean;
-  source: 'builtin' | 'marketplace' | 'local' | 'registry';
-  config?: SkillConfig[];
-}
-
-export type SkillCategory =
-  // Builtin ADO Code categories
-  | 'code-review'
-  | 'documentation'
-  | 'testing'
-  | 'refactoring'
-  | 'deployment'
-  | 'database'
-  | 'security'
-  | 'performance'
-  | 'accessibility'
-  // UI Skills registry categories
-  | 'motion'
-  | 'systems'
-  | 'visual'
-  | 'interaction'
-  | 'craft'
-  | 'taste'
-  | 'typography'
-  | 'color'
-  | '3d'
-  | 'frontend'
-  | 'architecture'
-  | 'debugging'
-  | 'code-quality'
-  | 'tooling'
-  | 'video'
-  | 'frameworks'
-  // Fallback
-  | 'custom';
-
-export interface ToolChainStep {
-  tool: string;
-  args: Record<string, any>;
-  condition?: string;
-}
-
-export interface SkillConfig {
-  id: string;
-  label: string;
-  type: 'string' | 'number' | 'boolean' | 'select';
-  default: any;
-  options?: string[];
-  description?: string;
-}
-
-export interface SkillExecutionRequest {
-  skillId: string;
-  input: string;
-  context?: Record<string, any>;
-  config?: Record<string, any>;
-}
-
-export interface SkillExecutionResult {
-  success: boolean;
-  output: string;
-  toolCalls?: Array<{ tool: string; args: any; result: any }>;
-  error?: string;
-}
+// Skill types (host-owned).
+export type {
+  Skill,
+  SkillCategory,
+  ToolChainStep,
+  SkillConfig,
+  SkillExecutionRequest,
+  SkillExecutionResult,
+} from '../../shared/skillTypes';

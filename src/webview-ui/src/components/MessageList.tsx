@@ -4,6 +4,19 @@ import { Tooltip } from './ui/Tooltip';
 import { Badge } from './ui/Badge';
 import { processMermaidInContainer } from '../utils/mermaid';
 import type { ToolCallInfo, TraceEntry } from '../types';
+import {
+  groupToolActivity,
+  toolActivityLabel,
+  toolActivityPreview,
+} from '../../../shared/toolActivity';
+import { isChromeVisible, densityHidesChrome, densityContainerClass, detailsToggleLabel, type ChatDensity } from '../../../shared/chatDensity';
+import { splitAttachments, attachmentChipLabel } from '../../../shared/attachments';
+import { summarizeTurn, formatTurnSummary } from '../../../shared/turnSummary';
+import {
+  shouldShowJumpToLatest,
+  shouldAutoScroll,
+  resolveActivityExpanded,
+} from '../../../shared/chatNavigation';
 
 export type { ToolCallInfo, TraceEntry };
 
@@ -11,6 +24,10 @@ interface Message {
   role: string;
   content: string;
   timestamp?: number; // epoch ms
+  /** Steer-mode user message: sent while a run was in flight and injected into
+   *  its next iteration. `steered` flips true once the host confirms pickup. */
+  steering?: boolean;
+  steered?: boolean;
   isError?: boolean;
   /** Stable bubble id (host run card) — updates REPLACE this bubble. */
   id?: string;
@@ -18,7 +35,8 @@ interface Message {
    *  with the tool calls that followed them (chronological). Rendered in flow
    *  and left VISIBLE — the turn's work is never collapsed away on completion.
    *  0.6.7: persisted into session history, so a reopened session shows the
-   *  same record (thinking collapsed — see ThinkingBlock's defaultOpen). An
+   *  same record (tool runs folded into one activity row — see
+   *  ToolActivityRow). An
    *  array of arrays means the condenser split this turn across several
    *  assistant messages; the segments are still one chronological record. */
   trace?: TraceInput;
@@ -47,6 +65,12 @@ interface Props {
   streamText?: string;
   /** Activity indicator text (e.g., "Executing skill: Code Review") */
   activity?: string | null;
+  /** Collapse/expand-all override from the kebab menu (item 6). `null` = no
+   *  override — each turn's folded activity row keeps its per-turn default. */
+  activityOverride?: boolean | null;
+  /** Chat density (item 5) — how much per-turn chrome to render. Defaults to
+   *  'comfortable' when the host hasn't sent one. */
+  density?: ChatDensity;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -418,47 +442,97 @@ const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
 };
 
 /**
- * Thinking/reasoning block with a collapse toggle.
- * `defaultOpen` is true in the live bubble and the just-finished turn record —
- * reasoning is never hidden while it is being produced — and false for a trace
- * restored from session history, where the reasoning is historical context the
- * user explicitly opted into keeping (click to reveal). The user may override
- * either way.
+ * Reasoning text, rendered as quiet de-emphasized prose — no box, border,
+ * accent rule, glyph, or "Thinking" label, and no collapse affordance
+ * (chat-declutter item 2). The host only sends reasoning when
+ * `chat.showThinking` is on, so visibility is gated upstream.
  */
-const ThinkingBlock: React.FC<{ text: string; defaultOpen?: boolean }> = ({ text, defaultOpen = true }) => {
-  const [open, setOpen] = useState(defaultOpen);
-  // A block that was collapsed by default must SAY it holds reasoning — after
-  // a reload an unlabeled collapsed box would read as an empty artifact.
-  const preview = !open && text.trim() ? text.trim().replace(/\s+/g, ' ').slice(0, 96) : '';
+const ReasoningText: React.FC<{ text: string }> = ({ text }) => (
+  <div className="reasoning-text">{text}</div>
+);
+
+/**
+ * One run of consecutive tool calls folded into a single collapsible row
+ * ("Ran 3 tools ▸"). Expanding reveals the existing per-tool cards unchanged
+ * (chat-declutter item 1). `defaultOpen` marks the live / just-finished turn so
+ * its tools stay visible while they land; completed turns collapse to the row.
+ */
+const ToolActivityRow: React.FC<{ calls: ToolCallInfo[]; defaultOpen?: boolean; forceOpen?: boolean | null }> = ({ calls, defaultOpen = false, forceOpen = null }) => {
+  const [rawOpen, setOpen] = useState(defaultOpen);
+  // A collapse/expand-all override (kebab, item 6) wins over the per-turn
+  // default; `null` = no override, so the row's own open/closed state stands.
+  const open = resolveActivityExpanded(rawOpen, forceOpen);
+  const label = toolActivityLabel(calls.length);
+  const preview = toolActivityPreview(calls);
   return (
-    <div className={`thinking-block${defaultOpen ? ' thinking-block-live' : ' thinking-block-restored'}`}>
+    <div className={`tool-activity${open ? ' tool-activity-open' : ''}`}>
       <button
-        className="thinking-header thinking-toggle"
+        className="tool-activity-header"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        title={open ? 'Hide reasoning' : 'Show the reasoning behind this step'}
+        title={open ? 'Hide tool activity' : 'Show tool activity'}
       >
-        <span className="thinking-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
-        <span className="thinking-icon">💭</span>
-        <span className="thinking-label">Thinking</span>
-        {preview && <span className="thinking-preview">{preview}</span>}
+        <span className="tool-activity-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+        <span className="tool-activity-label">{label}</span>
+        {!open && preview && <span className="tool-activity-preview">{preview}</span>}
       </button>
-      {open && <div className="thinking-content">{text}</div>}
+      {open && (
+        <div className="tool-activity-body">
+          {calls.map((tc, i) => (
+            <ToolCallBlock key={tc.id || `tc-act-${i}`} tc={tc} defaultOpen />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Attachment chips for a user message (chat-declutter item 3): a single pill
+ * that says how many files rode along, with the file names on hover — instead
+ * of re-serializing every file body into the bubble.
+ */
+const AttachmentChips: React.FC<{ names: string[] }> = ({ names }) => {
+  if (names.length === 0) {
+    return null;
+  }
+  return (
+    <div className="attachment-chips">
+      <span className="attachment-chip" title={names.join('\n')}>
+        <span className="attachment-chip-icon" aria-hidden="true">📎</span>
+        {attachmentChipLabel(names)}
+      </span>
     </div>
   );
 };
 
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading, liveTrace = [], streamText, activity }: Props) {
+export function MessageList({ messages, loading, liveTrace = [], streamText, activity, activityOverride = null, density = 'comfortable' }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Item 6: offer "jump to latest answer" once the reader scrolls away from the
+  // newest message; the onScroll handler flips this back off at the bottom.
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  // Whether the reader is parked at the bottom of the thread. When they scroll
+  // up we stop auto-scrolling so incoming content doesn't yank them to the end.
+  const stickToBottomRef = useRef(true);
+  // Item 5: turns the reader explicitly revealed in 'answers-only' density
+  // (keyed by message index). Empty = each turn keeps its density default.
+  const [expandedTurns, setExpandedTurns] = useState<Record<number, boolean>>({});
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const show = shouldShowJumpToLatest(el.scrollTop, el.scrollHeight, el.clientHeight);
+    setShowJumpToLatest(show);
+    // Scrolled away from the bottom → stop following; back at the bottom →
+    // resume following. Read by the auto-scroll effect below.
+    stickToBottomRef.current = !show;
+  };
+  const jumpToLatest = () => {
+    stickToBottomRef.current = true;
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
   const prevCountRef = useRef(messages.length);
-  // Headline state: reasoning already on screen + whether any card is still
-  // running (drives "Reasoning…" / "Working…" instead of a duplicate label).
-  const hasVisibleThinking = liveTrace.some(e => e.kind === 'thinking' && !!e.text.trim());
-  const anyToolRunning = liveTrace.some(
-    e => e.kind === 'tool' && e.call.showDetails !== false && !(e.call.done || e.call.result !== undefined)
-  );
   // Signature of everything the chat area displays. Id-bubble replacements
   // that touch a MID-thread message (e.g. the run card while the user scrolls
   // older content) don't change it, so they never yank the scroll position.
@@ -487,6 +561,11 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
 
     const countDelta = messages.length - prevCountRef.current;
     prevCountRef.current = messages.length;
+    // Respect the reader's scroll position: if they scrolled up into history we
+    // don't yank them back down when new content arrives (unless they just sent
+    // a message - see shouldAutoScroll).
+    if (!shouldAutoScroll(stickToBottomRef.current, countDelta, last?.role)) return;
+    stickToBottomRef.current = true;
     // Bulk load (refresh, session switch) → instant scroll, no animation
     // Single message → smooth scroll
     const behavior = countDelta > 1 ? 'instant' : 'smooth';
@@ -521,7 +600,8 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
   }
 
   return (
-    <div className="messages-area">
+    <div className={`messages-wrap ${densityContainerClass(density)}`}>
+    <div className="messages-area" ref={scrollRef} onScroll={handleScroll}>
       {messages.map((m, i) => {
         const isAssistant = m.role === 'assistant';
         const isUser = m.role === 'user';
@@ -530,6 +610,7 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
         // Choice fences never render as raw JSON in the bubble (the host
         // surfaces them as the clickable option card instead).
         const displayContent = isAssistant ? stripChoiceFences(m.content) : m.content;
+        const userAttachments = isUser ? splitAttachments(m.content) : { names: [], body: '' };
 
         // Parse tool calls from assistant messages
         const { toolCalls, textParts } = isAssistant ? parseToolCalls(displayContent) : { toolCalls: [], textParts: [displayContent] };
@@ -537,10 +618,20 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
 
         // Persisted record for this turn (one entry per assistant message; the
         // condenser can split a single turn across several). The LAST message
-        // is the turn the user just watched, so its reasoning stays open —
-        // everything earlier is restored history and starts collapsed.
+        // is the turn the user just watched, so its tool activity starts open;
+        // everything earlier collapses to a single activity row.
         const traceSegs = isAssistant ? flattenTrace(m.trace) : [];
         const isLiveTurn = isAssistant && i === messages.length - 1;
+          // Item 5: density decides whether this turn's chrome (reasoning, tool
+          // activity, summary) renders. 'answers-only' folds it for completed
+          // turns; a live turn or an explicit reveal keeps it visible.
+          const showChrome = isChromeVisible(density, isLiveTurn || expandedTurns[i] === true);
+          const showDetailsToggle = densityHidesChrome(density) && !isLiveTurn;
+        // Item 4: a count-based cost line for a *completed* turn. The live turn
+        // (the one the user just watched) stays unsummarised.
+        const turnSummary = isAssistant && !isLiveTurn
+          ? formatTurnSummary(summarizeTurn(traceSegs))
+          : '';
 
         // Timestamp display
         const timestampEl = m.timestamp ? (
@@ -559,7 +650,7 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
         return (
           <div
             key={i}
-            className={`message message-${m.role}`}
+            className={`message message-${m.role}${showChrome ? '' : ' chrome-hidden'}`}
             style={errorBorder}
           >
             {/* Author label circles (AI / You) removed: the header row below
@@ -570,15 +661,42 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                   {isUser ? 'You' : 'ADO Code'}
                 </span>
                 {timestampEl}
+                {isUser && m.steering && (
+                  <span
+                    style={{ marginLeft: 6, opacity: m.steered ? 0.65 : 1, fontSize: '0.82em', fontStyle: 'italic' }}
+                    title={m.steered
+                      ? 'Injected into the running turn'
+                      : 'Wait — will be injected into the running turn'}
+                  >
+                    {m.steered ? '⚡ steered into run' : '⚡ steering…'}
+                  </span>
+                )}
                 {isError && (
                   <span style={{ marginLeft: 4 }}><Badge variant="error">error</Badge></span>
                 )}
               </div>
               <div className="message-content">
                 {isUser ? (
-                  <p>{m.content}</p>
+                  <>
+                    <AttachmentChips names={userAttachments.names} />
+                    {userAttachments.body && <p>{userAttachments.body}</p>}
+                  </>
                 ) : (
                   <>
+                    {showDetailsToggle && (
+                      <button
+                        type="button"
+                        className="turn-details-toggle"
+                        onClick={() => setExpandedTurns((prev) => ({ ...prev, [i]: !prev[i] }))}
+                        aria-expanded={showChrome}
+                        title="Show or hide this turn's tool activity, reasoning and summary"
+                      >
+                        {detailsToggleLabel(showChrome)}
+                      </button>
+                    )}
+                    {turnSummary ? (
+                      <div className="turn-summary">{turnSummary}</div>
+                    ) : null}
                     {traceSegs.length > 0 ? (
                       <>
                         {/* Ordered record of the agentic turn: each thinking
@@ -589,11 +707,11 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                             context, and the live view is the one that should
                             make the model's thinking auditable. */}
                         <div className="turn-record">
-                          {traceSegs.map((seg, j) =>
+                          {groupToolActivity(traceSegs).map((seg, j) =>
                             seg.kind === 'thinking' ? (
-                              <ThinkingBlock key={`th-${j}`} text={seg.text} defaultOpen={isLiveTurn} />
+                              <ReasoningText key={`th-${j}`} text={seg.text} />
                             ) : (
-                              <ToolCallBlock key={seg.call.id || `tc-${j}`} tc={seg.call} defaultOpen />
+                              <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen={isLiveTurn} forceOpen={activityOverride} />
                             )
                           )}
                         </div>
@@ -647,43 +765,21 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
               <span className="message-author">ADO Code</span>
             </div>
             <div className="message-content">
-              {/* Headline: what the AI is doing right now. Reasoning already
-                  renders below as its own labeled block, so the headline drops
-                  the "Thinking…" wording in that case — otherwise every turn
-                  repeated the word "Thinking" once per block plus once here.
-                  `activity` is reserved for host-driven work a turn doesn't
-                  describe on its own (skills, task generation); per-tool
-                  progress goes to the status bar, not this headline. */}
-              <div className="activity-indicator">
-                <div className="activity-spinner" />
-                <span className="activity-text">
-                  {activity
-                    ? `${activity}…`
-                    : hasVisibleThinking
-                      ? (streamText || anyToolRunning ? 'Working…' : 'Reasoning…')
-                      : streamText ? 'Responding…' : 'Thinking…'}
-                </span>
-              </div>
-
               {/* Ordered live trace: thinking blocks and tool cards render in
                   the order the loop produced them — each thinking block stays
                   between the tool batches it introduced, and as the answer
                   grows beneath it all, the trace scrolls up naturally. */}
               {liveTrace.length > 0 && (
                 <div className="turn-record">
-                  {liveTrace.map(seg => {
-                    if (seg.kind === 'thinking') {
-                      return <ThinkingBlock key={seg.key} text={seg.text} />;
-                    }
-                    // Hidden calls (chat.showToolCalls=false) never carry
-                    // payloads — grouped into the "Working…" disclosure below.
-                    if (seg.call.showDetails === false) return null;
-                    // Live cards stay compact while running (the header carries
-                    // the running badge); the expanding one is the card the user
-                    // clicks. Clicking expands either state, so this is purely
-                    // about how much a busy turn dumps into the thread.
-                    return <ToolCallBlock key={seg.key} tc={seg.call} />;
-                  })}
+                  {groupToolActivity(liveTrace.filter(seg => seg.kind === 'thinking' || seg.call.showDetails !== false)).map((seg, j) =>
+                    seg.kind === 'thinking' ? (
+                      <ReasoningText key={`th-${j}`} text={seg.text} />
+                    ) : (
+                      // Live tool runs stay expanded so the user watches work
+                      // land; hidden calls (showToolCalls off) render below.
+                      <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen forceOpen={activityOverride} />
+                    )
+                  )}
                   {liveTrace.some(seg => seg.kind === 'tool' && seg.call.showDetails === false) && (
                     <HiddenToolCalls
                       calls={liveTrace
@@ -706,6 +802,18 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
         </div>
       )}
       <div ref={bottomRef} />
+      </div>
+      {showJumpToLatest && (
+        <button
+          type="button"
+          className="jump-to-latest"
+          onClick={jumpToLatest}
+          title="Jump to the latest answer"
+          aria-label="Jump to the latest answer"
+        >
+          ↓ Latest answer
+        </button>
+      )}
     </div>
   );
 }

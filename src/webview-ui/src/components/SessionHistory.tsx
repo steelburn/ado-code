@@ -13,6 +13,8 @@ interface Session {
 interface Props {
   sessions: Session[];
   activeId: string | null;
+  /** Session still generating (host-computed) — renders the running badge. */
+  running?: { id: string; background: boolean; title: string } | null;
   onSwitch: (sessionId: string) => void;
   onNew: () => void;
   onRename: (sessionId: string, name: string) => void;
@@ -23,6 +25,7 @@ interface Props {
 export function SessionHistory({
   sessions,
   activeId,
+  running,
   onSwitch,
   onNew,
   onRename,
@@ -151,6 +154,14 @@ export function SessionHistory({
                     />
                   ) : (
                     <>
+                      {running && running.id === session.id && (
+                        <span
+                          className={`session-running-badge${running.background ? ' background' : ''}`}
+                          title={running.title}
+                        >
+                          {running.background ? 'Background run' : 'Running'}
+                        </span>
+                      )}
                       <span className="session-history-item-name">
                         {session.name}
                       </span>

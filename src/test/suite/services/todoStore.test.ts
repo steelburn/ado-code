@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   TodoStore,
+  isGoalCompleted,
   normalizeTodoItems,
   normalizeGoalText,
   renderTodoChecklist,
@@ -470,5 +471,104 @@ suite('TodoStore', () => {
     raw.goal.source = 'somebody-else';
     fs.writeFileSync(path.join(store.getDir(), stored), JSON.stringify(raw), 'utf8');
     assert.strictEqual(store.read('g')!.goal!.source, 'ai');
+  });
+
+  // --- Archiving superseded goals -----------------------------------
+
+  test('archives a completed goal when a new goal supersedes it', () => {
+    store.replace('s', [{ content: 'Step', status: 'completed' }], 'S');
+    store.setGoal('s', 'First goal', 'ai', 'S');
+    assert.ok(isGoalCompleted(store.read('s')!), 'precondition: the first goal is done');
+
+    store.setGoal('s', 'Second goal', 'ai', 'S');
+
+    // The live list carries only the new goal, with a fresh slate of steps...
+    const live = store.read('s')!;
+    assert.strictEqual(live.goal!.text, 'Second goal');
+    assert.strictEqual(live.items.length, 0, 'the finished steps moved to the archive');
+
+    // ...while the finished goal and its steps are preserved for traceability.
+    const archived = store.readArchive('s');
+    assert.strictEqual(archived.length, 1);
+    assert.strictEqual(archived[0]!.goal.text, 'First goal');
+    assert.strictEqual(archived[0]!.items.length, 1);
+    assert.strictEqual(archived[0]!.items[0]!.content, 'Step');
+  });
+
+  test('an unfinished goal is overwritten in place, not archived', () => {
+    store.replace('s', [{ content: 'Step', status: 'pending' }], 'S');
+    store.setGoal('s', 'First goal', 'ai', 'S');
+    store.setGoal('s', 'Second goal', 'ai', 'S');
+    assert.strictEqual(store.read('s')!.goal!.text, 'Second goal');
+    assert.deepStrictEqual(store.readArchive('s'), [], 'a goal that is not done is not archived');
+  });
+
+  test('archives are kept per session, identified by the session', () => {
+    store.replace('a', [{ content: 'A', status: 'completed' }], 'A');
+    store.setGoal('a', 'Goal A', 'ai', 'A');
+    store.setGoal('a', 'Goal A2', 'ai', 'A');
+    store.replace('b', [{ content: 'B', status: 'completed' }], 'B');
+    store.setGoal('b', 'Goal B', 'ai', 'B');
+    store.setGoal('b', 'Goal B2', 'ai', 'B');
+
+    assert.deepStrictEqual(store.readArchive('a').map(e => e.goal.text), ['Goal A']);
+    assert.deepStrictEqual(store.readArchive('b').map(e => e.goal.text), ['Goal B']);
+  });
+
+  test('readArchive is empty and safe when nothing was archived', () => {
+    assert.deepStrictEqual(store.readArchive('missing'), []);
+    store.replace('s', [{ content: 'Step', status: 'pending' }], 'S');
+    assert.deepStrictEqual(store.readArchive('s'), []);
+  });
+
+  test('a corrupt archive file degrades to an empty archive', () => {
+    store.replace('s', [{ content: 'Step', status: 'completed' }], 'S');
+    store.setGoal('s', 'First goal', 'ai', 'S');
+    store.setGoal('s', 'Second goal', 'ai', 'S');
+
+    const archiveDir = path.join(store.getDir(), 'archive');
+    const file = fs.readdirSync(archiveDir)[0]!;
+    fs.writeFileSync(path.join(archiveDir, file), '{ not valid json', 'utf8');
+    assert.deepStrictEqual(store.readArchive('s'), []);
+  });
+
+  test('removeSession drops the live list AND the archive', () => {
+    store.replace('s', [{ content: 'Step', status: 'completed' }], 'S');
+    store.setGoal('s', 'First goal', 'ai', 'S');
+    store.setGoal('s', 'Second goal', 'ai', 'S');
+    assert.strictEqual(store.readArchive('s').length, 1);
+
+    store.removeSession('s');
+    assert.strictEqual(store.read('s'), null);
+    assert.deepStrictEqual(store.readArchive('s'), []);
+  });
+
+  test('a plain remove keeps the archive so history stays traceable', () => {
+    store.replace('s', [{ content: 'Step', status: 'completed' }], 'S');
+    store.setGoal('s', 'First goal', 'ai', 'S');
+    store.setGoal('s', 'Second goal', 'ai', 'S');
+
+    store.remove('s');
+    assert.strictEqual(store.read('s'), null);
+    assert.strictEqual(store.readArchive('s').length, 1, 'clearing the list keeps the archive');
+  });
+
+  test('removeAll clears live lists and archives', () => {
+    store.replace('a', [{ content: 'A', status: 'completed' }], 'A');
+    store.setGoal('a', 'Goal A', 'ai', 'A');
+    store.setGoal('a', 'Goal A2', 'ai', 'A');
+
+    store.removeAll();
+    assert.deepStrictEqual(store.list(), []);
+    assert.deepStrictEqual(store.readArchive('a'), []);
+  });
+
+  test('isGoalCompleted needs a goal, at least one step, and all steps done', () => {
+    const goal = { text: 'g', source: 'ai' as const, setAt: '2020-01-01T00:00:00.000Z' };
+    const base = { sessionId: 'x', sessionName: 'X', updatedAt: '2020-01-01T00:00:00.000Z' };
+    assert.strictEqual(isGoalCompleted({ ...base, items: [] }), false, 'no goal');
+    assert.strictEqual(isGoalCompleted({ ...base, goal, items: [] }), false, 'no steps');
+    assert.strictEqual(isGoalCompleted({ ...base, goal, items: [{ id: '1', content: 'a', status: 'pending' }] }), false, 'a step is not done');
+    assert.strictEqual(isGoalCompleted({ ...base, goal, items: [{ id: '1', content: 'a', status: 'completed' }] }), true);
   });
 });

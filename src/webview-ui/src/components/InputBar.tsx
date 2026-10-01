@@ -271,8 +271,11 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed && images.length === 0) return;
-    if (loading) return;
 
+    // Do NOT bail out while a turn is running: the host routes messages sent
+    // mid-turn into the live run as a steer/queue instruction (see the
+    // `chatInputWhileBusy` setting). Blocking here is what made Enter appear to
+    // do nothing during an active run.
     onSend(trimmed, images.length > 0 ? images : undefined);
 
     // Add to history
@@ -287,7 +290,7 @@ export function InputBar({ mode, value, onValueChange, onSend, onStop, onClear, 
     setImages([]);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [value, images, loading, onSend]);
+  }, [value, images, onSend]);
 
   // ── Keyboard handling ──
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {

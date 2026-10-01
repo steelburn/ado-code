@@ -145,11 +145,24 @@ export async function activate(context: vscode.ExtensionContext) {
   };
   services.todos.onDidChange(updateTodoBadge);
   updateTodoBadge();
+  // Context key driving the archive-view toggle's label/icon in the toolbar.
+  void vscode.commands.executeCommand('setContext', 'adoCode.todos.archiveMode', false);
   context.subscriptions.push(
     todoView,
     todoProvider,
     todoView.onDidChangeCheckboxState(e => todoProvider.handleCheckboxChange(e.items)),
     vscode.commands.registerCommand('adoCode.todos.refresh', () => todoProvider.refresh()),
+    // Toggle between the live list and the session's archived (superseded) goals.
+    // Two commands, one per direction, so the toolbar can swap label + icon via
+    // the `adoCode.todos.archiveMode` context key.
+    vscode.commands.registerCommand('adoCode.todos.showArchive', () => {
+      todoProvider.setArchiveView(true);
+      void vscode.commands.executeCommand('setContext', 'adoCode.todos.archiveMode', true);
+    }),
+    vscode.commands.registerCommand('adoCode.todos.hideArchive', () => {
+      todoProvider.setArchiveView(false);
+      void vscode.commands.executeCommand('setContext', 'adoCode.todos.archiveMode', false);
+    }),
     vscode.commands.registerCommand('adoCode.todos.addItem', async (node?: TodoSessionNode) => {
       const sessionId = node?.sessionId ?? services.todos.getActiveSessionId();
       if (!sessionId) {

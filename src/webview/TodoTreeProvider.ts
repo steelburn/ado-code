@@ -1,15 +1,21 @@
 import * as vscode from 'vscode';
-import { TodoGoal, TodoItem, TodoListSummary, TodoStore, TodoStatus } from '../services/todo/TodoStore';
+import { TodoArchiveEntry, TodoGoal, TodoItem, TodoListSummary, TodoStore, TodoStatus } from '../services/todo/TodoStore';
 
 /**
- * The **To-do** view (`adoCode.todos`): the AI-generated task list for each
- * chat session, rendered as a checkbox tree.
+ * The **To-do** view (`adoCode.todos`): the AI-generated task list for the
+ * ACTIVE chat session, rendered as a checkbox tree.
  *
- * One root node per session that has a list (the active chat session first and
- * expanded); its children are the items. The AI ticks items off through the
+ * The view is SESSION-SCOPED: it renders only the active chat session's goal
+ * (as the single root node) with its steps nested below, so switching sessions
+ * resets the panel to that session's work (or to the empty state) instead of
+ * leaving a previous session's list behind. The AI ticks items off through the
  * `update_todo_list` tool as it works, and the user can tick them by hand —
  * both paths write through `TodoStore`, so the tree never holds its own copy
  * of the state and every surface stays in sync via `onDidChange`.
+ *
+ * A session's COMPLETED goal that is superseded by a newer goal is archived;
+ * `setArchiveView(true)` swaps the view to that read-only history without
+ * touching the live list.
  */
 
 /** Root node: one session's goal (or name) with its items nested below. */
@@ -137,10 +143,102 @@ export class TodoEmptyNode extends vscode.TreeItem {
   }
 }
 
-export class TodoTreeProvider implements vscode.TreeDataProvider<TodoSessionNode | TodoItemNode | TodoEmptyNode>, vscode.Disposable {
+/** Human-friendly stamp for the archive nodes' "archived" line. */
+function formatArchivedAt(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  return new Date(t).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+}
+
+/**
+ * Root node in ARCHIVE view: one superseded, COMPLETED goal. Read-only history
+ * — the live list keeps rendering from `TodoStore`.
+ */
+export class TodoArchiveNode extends vscode.TreeItem {
+  constructor(
+    public readonly sessionId: string,
+    public readonly entry: TodoArchiveEntry,
+    public readonly index: number
+  ) {
+    super(entry.goal.text, entry.items.length > 0
+      ? vscode.TreeItemCollapsibleState.Collapsed
+      : vscode.TreeItemCollapsibleState.None);
+    // Stable id so VS Code preserves expansion across refreshes.
+    this.id = `archive:${sessionId}:${index}`;
+    const done = entry.items.filter(i => i.status === 'completed').length;
+    this.description = entry.items.length > 0 ? `${done}/${entry.items.length}` : 'archived';
+    this.iconPath = new vscode.ThemeIcon('archive');
+    const md = new vscode.MarkdownString(
+      [
+        '**$(archive) Archived goal**',
+        '',
+        entry.goal.text,
+        '',
+        `- Completed ${done}/${entry.items.length}`,
+        `- Archived ${formatArchivedAt(entry.archivedAt)}`,
+        ...(entry.goal.source === 'user' ? ['', '_Set by you_'] : []),
+      ].join('\n')
+    );
+    md.supportThemeIcons = true;
+    this.tooltip = md;
+    this.contextValue = 'todoArchiveNode';
+  }
+}
+
+/**
+ * Leaf node in ARCHIVE view: a finished step. Deliberately has NO checkbox —
+ * archived history is read-only.
+ */
+export class TodoArchivedItemNode extends vscode.TreeItem {
+  constructor(
+    public readonly sessionId: string,
+    public readonly item: TodoItem,
+    public readonly archiveIndex: number
+  ) {
+    super(item.content, vscode.TreeItemCollapsibleState.None);
+    this.id = `archive:${sessionId}:${archiveIndex}:${item.id}`;
+    const done = item.status === 'completed';
+    this.iconPath = new vscode.ThemeIcon(done ? 'check' : 'circle-large-outline');
+    if (!done) this.description = 'not done';
+    this.contextValue = 'todoArchivedItemNode';
+    this.tooltip = item.content;
+  }
+}
+
+/** Placeholder in ARCHIVE view when the active session has no archived goal. */
+export class TodoArchiveEmptyNode extends vscode.TreeItem {
+  constructor() {
+    super('No archived goals', vscode.TreeItemCollapsibleState.None);
+    this.contextValue = 'todoArchiveEmptyNode';
+    const md = new vscode.MarkdownString(
+      [
+        '**No archived goals**',
+        '',
+        'When a session finishes a goal and moves on to a new one, the finished',
+        'goal is archived here so the work stays traceable. Use **Show To-do List**',
+        'in the toolbar to return to the live list.',
+      ].join('\n')
+    );
+    md.supportThemeIcons = true;
+    this.tooltip = md;
+  }
+}
+
+/** Every node the To-do tree can render. */
+export type TodoTreeNode =
+  | TodoSessionNode
+  | TodoItemNode
+  | TodoEmptyNode
+  | TodoArchiveNode
+  | TodoArchivedItemNode
+  | TodoArchiveEmptyNode;
+
+export class TodoTreeProvider implements vscode.TreeDataProvider<TodoTreeNode>, vscode.Disposable {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
   private storeSub: vscode.Disposable;
+  /** True while the view shows the session's superseded goals (archive view). */
+  private archiveView = false;
 
   constructor(private store: TodoStore) {
     // The store is the single source of truth (it also fires when the active
@@ -169,32 +267,70 @@ export class TodoTreeProvider implements vscode.TreeDataProvider<TodoSessionNode
     this._onDidChangeTreeData.fire();
   }
 
-  getTreeItem(element: TodoSessionNode | TodoItemNode | TodoEmptyNode): vscode.TreeItem {
+  getTreeItem(element: TodoTreeNode): vscode.TreeItem {
     return element;
   }
 
-  getChildren(element?: TodoSessionNode | TodoItemNode | TodoEmptyNode): Array<TodoSessionNode | TodoItemNode | TodoEmptyNode> {
+  getChildren(element?: TodoTreeNode): TodoTreeNode[] {
     if (element) {
-      // Only session groups have children; leaves are terminal.
+      // Only group nodes have children; leaves are terminal.
       if (element instanceof TodoSessionNode) {
         return element.summary.items.map(item => new TodoItemNode(element.sessionId, item));
+      }
+      if (element instanceof TodoArchiveNode) {
+        return element.entry.items.map(
+          item => new TodoArchivedItemNode(element.sessionId, item, element.index)
+        );
       }
       return [];
     }
 
-    const activeId = this.store.getActiveSessionId();
-    // Sessions whose file was emptied are not stored at all, so every entry
-    // here has items, a goal, or both.
-    const lists = this.store.list().filter(l => l.items.length > 0 || !!l.goal);
-    if (lists.length === 0) return [new TodoEmptyNode()];
+    if (this.archiveView) return this.archiveRoots();
 
-    // Active session first; the rest keep the store's recency order.
-    const ordered = [...lists].sort((a, b) => {
-      const aActive = a.sessionId === activeId ? 0 : 1;
-      const bActive = b.sessionId === activeId ? 0 : 1;
-      return aActive - bActive;
-    });
-    return ordered.map(list => new TodoSessionNode(list.sessionId, list, list.sessionId === activeId));
+    const activeId = this.store.getActiveSessionId();
+    // Session-scoped: only the ACTIVE chat session's goal + steps are shown, so
+    // switching sessions resets the panel to that session's work (or to the
+    // empty state). Other sessions stay on disk; superseded goals live in the
+    // session's archive.
+    if (activeId) {
+      const summary = this.store.summary(activeId);
+      if (summary && (summary.items.length > 0 || summary.goal)) {
+        return [new TodoSessionNode(activeId, summary, true)];
+      }
+      return [new TodoEmptyNode()];
+    }
+    // No active session yet (e.g. before the chat panel restores one): fall
+    // back to the most recently updated list so the view is not blank. The
+    // moment a session becomes active the view snaps to it.
+    const latest = this.store.list()[0];
+    return latest
+      ? [new TodoSessionNode(latest.sessionId, latest, false)]
+      : [new TodoEmptyNode()];
+  }
+
+  /**
+   * Roots for ARCHIVE view: the ACTIVE session's superseded completed goals,
+   * most recent first. Mirrors the live view's session scoping (and its
+   * fall-back to the most recent session) so switching sessions swaps the
+   * history on show rather than leaking another session's into it.
+   */
+  private archiveRoots(): TodoTreeNode[] {
+    const activeId = this.store.getActiveSessionId() ?? this.store.list()[0]?.sessionId;
+    const entries = activeId ? this.store.readArchive(activeId) : [];
+    if (!activeId || entries.length === 0) return [new TodoArchiveEmptyNode()];
+    return entries.map((entry, index) => new TodoArchiveNode(activeId, entry, index));
+  }
+
+  /** Whether the view is showing the session's archived goals (vs the live list). */
+  isArchiveView(): boolean {
+    return this.archiveView;
+  }
+
+  /** Swap the view between the live list and the session's archived goals. */
+  setArchiveView(enabled: boolean): void {
+    if (this.archiveView === enabled) return;
+    this.archiveView = enabled;
+    this.refresh();
   }
 
   /**

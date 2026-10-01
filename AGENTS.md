@@ -1,179 +1,87 @@
 # AGENTS.md — ADO Code
 
+<!-- ado-code:managed -->
 ## What This Is
-VS Code extension: AI coding assistant with Azure DevOps work item integration.
-Two-layer architecture: Extension Host (Node.js/TypeScript) handles ADO REST API,
-LLM API, editor interactions. Webview Panel (React/TypeScript) renders chat UI.
-Communication via VS Code postMessage bridge.
+AI coding assistant with Azure DevOps integration
 
 ## Build & Test
-- `npm run compile` — TypeScript compilation (must be clean before any commit)
-- `npm test` — Mocha test suite (249+ tests, runs in VS Code electron)
-- `npm run build:webview` — Webpack bundle for React webview
-- `npm run build:all` — compile + webview
-- `npm run lint` — ESLint
-- `npx --yes @vscode/vsce package --allow-missing-repository --baseContentUrl https://github.com/steelburn/ado-code/blob/main --baseImagesUrl https://github.com/steelburn/ado-code/raw/main` — build VSIX. The two base URLs are required: package.json has no `repository` field, so vsce cannot rewrite the relative README links and aborts (`--allow-missing-repository` alone is not enough on current vsce)
+- `npm run compile` — TypeScript compilation
+- `npm run build:all` — Full build
+- `npm test` — Run test suite
+- `npm run lint` — Linting
 
 ## Project Structure
-src/ extension entry point and services composition root
-src/ado/ ADO REST API client, tree view, types
-src/agents/ Agent registry, runner, adapters (Claude, Codex, OpenCode, Hermes, Pi, Gemini, Generic)
-src/changelog/ CHANGELOG.md auto-update
-src/config/ VS Code settings (getSettings/getActiveOrg; ContextProxy was removed as dead code)
-src/git/GitService.ts Git operations, gitError.ts error messages, mergeCleanup.ts post-merge cleanup, mergeConflicts.ts conflict surfacing
-src/llm/ LLM client, agentic loop, tools, providers, modes, prompts, context, consent
-src/llm/tools/ types.ts only (tool names/params/groups); ALL tool implementations live in src/llm/tools.ts createToolExecutor()
-src/llm/providers/ BaseProvider, openai, anthropic (the -v2/BaseProvider migration and handler.ts were removed — client.ts + LlmProvider interface is the live path)
-src/llm/context/ tokenCounter, contextManager, condenser
-src/memory/ UserMemory, WorkspaceMemory
-src/services/ checkpoints/, mcp/, ignoreFiles/ (keeps `.ado-code` out of .gitignore/.dockerignore), understanding/ (durable repo + work-item understanding cache), todo/ (per-session AI to-do lists)
-src/shared/ Message protocol types
-src/webview/ ChatViewProvider (sidebar & editor panel), StatusPanelProvider, WorktreesTreeProvider (dedicated agent-worktree view), TodoTreeProvider (per-session To-do view), svgExport.ts
-src/webview-ui/ React app (components/, styles/, Mermaid diagram renderer & SVG export)
+- `docs/` — documentation
+- `out/` — compiled output; tests run from out/test/runTest.js
+- `resources/` — extension resources
+- `scripts/` — repository scripts
+- `src/` — extension entry point and services composition root per AGENTS.md
+- `webview-ui-dist/` — built webview output
 
-## Architecture
+## Repository Understanding
+> Distilled from the ADO Code repository-understanding cache (`.ado-code/understanding/`).
+> Refreshed automatically as the repository changes and via "ADO Code: Refresh Repository Understanding".
+> This section and the other generated sections above are rewritten when ADO Code syncs AGENTS.md — edits anywhere else are preserved.
 
-### Extension Host
-Entry: src/extension.ts activate()
-Composition: src/services.ts createServices() builds: ado, git, changelog, agents, checkpoints, mcp, memory, workspaceMemory, understanding, todos
+# ADO Code — Repository Understanding
 
-### LLM Layer
-client.ts — streaming chat, tool-calling
-agentic.ts — multi-iteration tool loop (parallel batch execution + consent-aware batching; ToolLoopDetector with identical call and overlapping read loop prevention and circuit breaker); DEFAULT_MAX_ITERATIONS lives in src/shared/agenticLimits.ts
-tools.ts — mode-gated dispatch (inline/plan/act/yolo); single home for all tool implementations
-tools/ — types.ts only (tool names/params/groups)
-providers/ — BaseProvider, openai, anthropic
-modes.ts — inline/plan/act/yolo mode configs
-prompts/system.ts — dynamic system prompt (incl. the ```choice output-format instruction and the on-demand AGENTS.md read instruction)
-parseChoicePrompt.ts — choice detection: parseChoiceFence (main model's ```choice block — primary, zero-cost) > parseChoicePrompt (regex) > detectChoicePrompt (optional cheaper model)
-context/ — token counting, windowing, condensation (condenser prepends summaries as marker-prefixed USER messages — mid-array system messages are dropped by the Anthropic providers)
-modelCapabilities.ts — three-layer capability inference (override > live gateway > name heuristic)
-ChatViewProvider — A2: active-editor context auto-injected per turn (deduped by file URI + document version, oversized selections capped); B4: sessions persist only the last 25 complete message pairs (+ leading summary marker)
+### Layout & Docs
+Root: `d:\Development\vscode\ado-code`  
+Branch `main`, HEAD `50b27af`, remote `steelburn/ado-code`.
 
-### ADO Integration
-client.ts — REST API (all api-version=7.1); expandHierarchy() walks UP missing parents (Task → Story → Feature → Epic) and DOWN children via `[System.Parent] IN (...)` so the tree nests even when parents aren't in the base query (falls back to per-parent `= N` queries if IN is rejected); parentIdOf() tolerates `{id}` and bare-number System.Parent shapes; getDescendantWorkItems() returns the full subtree below a parent (delegation checklists); getWorkItemsByIds() batch-fetches details; isTerminalState()/terminalStateForType() drive post-run auto-completion
-WorkItemsTreeProvider.ts — ONE merged tree view with a mode header row (My / All / Unassigned; mode shared via src/shared/workItemsMode.ts); context menus gate per item (assignedTo empty ⇒ unassignedWorkItemNode); items pulled in by expansion are tagged isContext
-WorkItemStatesCache.ts — cached states
+```
+docs/ resources/ scripts/ src/
+.eslintrc.json .gitignore .vscodeignore
+AGENTS.md CHANGELOG.md README.md
+package.json package-lock.json tsconfig.json
+ado-code-0.6.7.vsix ado-code-0.6.8.vsix
+```
 
-### Agent System
-registry.ts — detects installed CLIs
-AgentRunner.ts — background execution; delegate(workItemId, prompt, agent?, title?, childIds?) creates one worktree per run and guards concurrency: one active run per work item AND no overlap between a parent run and its descendants' runs; on success it extracts the agent's `## Delivery Report` into run.deliveryReport
-adapters/ — 7 adapter implementations
+`AGENTS.md` also lists `out/` (TypeScript compile output/test runner path) and `webview-ui-dist/`.
 
-### Parent Delegation (children completion)
-Delegating a parent (Story/Feature/Epic) covers its whole descendant subtree: ChatViewProvider.fetchChildSubtree() collects every open descendant via getDescendantWorkItems(), the prompt's delivery checklist (buildChildChecklist in llm/prompts.ts) requires a `## Delivery Report` (`- #<id>: DONE | BLOCKED | INCOMPLETE`), and on run completion syncDelegatedChildren() parses it (parseDeliveryReport — tolerant of case/checkboxes/emoji) and — with `adoCode.agents.autoCompleteChildren` (default false) — comments + transitions each DONE child to its type's terminal state (Task/Bug → Closed, Story/Feature/Epic → Resolved) and closes the parent once all open children are done (routed through updateWorkItemState so the changelog flow fires). Partial success leaves the parent open with a comment; failed runs never auto-close. The run records childIds + deliveryReport (persisted via AgentRun).
+Docs live in:
+- `AGENTS.md` — authoritative build/test/structure notes
+- `README.md` — feature/workflow overview
+- `docs/` — documentation
 
-### Memory System
-UserMemory.ts — per-user preferences (VS Code globalState)
-WorkspaceMemory.ts — per-project conventions (.ado-code/memory/)
-Memory is injected into the chat system prompt AND into every external-agent
-handoff prompt (framed as "ADO Code Memory (instructions you MUST honor)";
-the hook keys below are excluded from the agent context). Workspace memory
-keys `agent.before` / `agent.after` run as shell hooks around each agent
-invocation: `agent.before` executes in the run's workdir before the adapter
-starts (output streams to the run panel), `agent.after` runs on completion
-and its output is captured into the summary (AgentRunner.runPreHook +
-verifyWork).
+Read first: `AGENTS.md`, `README.md`, `package.json`, then `src/`.
 
-### Session To-do List + Goal (src/services/todo/)
-TodoStore.ts — per-session task ledger persisted to `.ado-code/todos/<slug>-<hash>.json`
-(one file per session; the slug keeps it readable, the hash of the FULL session id keeps
-it unique — ids are ISO timestamps and contain `:`). Owns the ACTIVE session id, so
-`setActiveSession()` is called by ChatViewProvider on load/create/delete and the store's
-`onDidChange` event is the single refresh trigger for the tree, the badge and the tools.
-`replace()` is TodoWrite semantics (the model sends the COMPLETE list each call) and
-PRESERVES the session's goal — rewriting the steps must never drop the objective;
-`setGoal()`/`clearGoal()` own the goal (a goal-only session is still stored, and the file
-is deleted only when BOTH items and goal are gone — `removeItem`/`clearGoal` both respect
-that). `setStatus`/`addItem`/`removeItem`/`rename`/`remove`/`removeAll` serve the UI and
-session lifecycle. Untrusted input is normalized (unknown status → pending, blanks
-dropped, duplicates collapse by content-hash id, count ≤ 50, label ≤ 300 chars,
-`normalizeGoalText` collapses the goal to one capped line, an unknown goal source
-degrades to `ai`) and a corrupt file reads as null instead of throwing.
-`toPromptString()` feeds `**Goal:**` + the live checklist into the system prompt (a
-goal-only session is still injected); `renderTodoChecklist()` produces the
-`- [x] / [~] / [ ]` form used by both the prompt and the tool results.
-TodoTreeProvider.ts — the `adoCode.todos` view: one root per session with items and/or a
-goal (active session first). The GOAL is the root label with the `target` icon and
-`contextValue` `todoGoalNode`; a session without a goal falls back to its chat name and
-`todoSessionNode`. Leaves are items with `checkboxState` + a status icon (pending ○ /
-in_progress `sync~spin` / completed `pass-filled`), `TreeItem.id` set from the session+item
-id so checkbox identity survives refreshes. Ticking a checkbox writes through the store;
-`setStore()` re-subscribes when services are rebuilt.
-Tools: `set_goal` (one-line objective), `update_todo_list` (full replace) and
-`read_todo_list`. All three live in the `todo` tool group (src/llm/tools/types.ts) which
-EVERY mode includes — plan mode too, since the goal and its plan ARE the planning output —
-and they are exempt from consent via TODO_TOOLS in src/llm/tools.ts (the ledger only
-touches `.ado-code/`, never user source). The executor resolves the target session through
-the `getSessionId`/`getSessionName` hooks wired by ChatViewProvider; `update_todo_list`
-and `read_todo_list` echo the current goal back so the model re-anchors on it.
-Slash command: `/goal <objective>` sets the goal (user source), bare `/goal` opens the
-current value for editing, `/goal --clear` removes it (handled in
-executeSlashCommand; listed under AI in `/help`).
-UI: view title = Set Goal / Add Item / Refresh (+ Clear in the overflow); item context =
-Mark Completed / Mark Pending / Remove; session context = Set Goal / Add Item /
-Clear Goal / Clear. Deleting a chat session deletes its list, renaming one updates the
-stored name, and wiping all sessions calls `removeAll()`.
+### Key Entry Files
+- `src/` — extension entry point and services composition root per `AGENTS.md`
+- `src/webview-ui/` — webview source package; built via `npm run build:webview`
+- `out/` — compiled output; tests run from `out/test/runTest.js`
+- `package.json` — scripts, name/version, dev dependencies
+- `resources/`, `scripts/`, `docs/` — supporting assets/scripts/docs
 
-### Repository Understanding (src/services/understanding/)
-UnderstandingService.ts — durable, fingerprinted cache of the repo + selected
-work item, stored in `.ado-code/understanding/` (repo.md, workitem-<id>.md,
-knowledge.md, meta.json). Deterministic repo facts (branch/HEAD, top-level
-tree, AGENTS.md, package.json scripts, README head, memory keys) rebuild on
-fingerprint mismatch (git HEAD/branch + mtimes of watched files); the LLM
-repo summary is optional (`adoCode.understanding.autoSummarize`) and
-regenerates async — never blocks a chat turn. Conversation condensations are
-distilled into knowledge.md so learning survives session close. The block is
-injected via `toPromptString()` into BOTH the chat system prompt
-(SystemPromptOptions.understanding) and every agent handoff
-(buildAgentPrompt's `understanding` param; delegateToAgent appends it too).
-Wired in extension.ts via wireUnderstanding() (summarizer + initial refresh),
-re-wired on org switch / config rebuild. Commands: adoCode.refreshUnderstanding.
+### Architecture
+ADO Code is a VS Code AI coding assistant with Azure DevOps work item integration. The core TypeScript code lives in `src/`; `src/` is described as the extension entry point and services composition root. The webview UI is a separate package under `src/webview-ui`, built into `webview-ui-dist/`.
 
-### Webview
-ChatViewProvider.ts — message routing, commands, editor-tab panel (openChatInEditor / moveChatToSidebar)
-webview-ui/src/ — React app with components (ProjectSwitcher supports "None (no project)" for standalone / unconfigured mode; utils/mermaid.ts interactive Mermaid diagrams & SVG export)
-shared/messages.ts — typed message protocol
+README features indicate:
+- ADO work item tree view with mode toggle (My / All / Unassigned) and Epic → Feature → User Story → Task hierarchy
+- AI chat with OpenAI-compatible and Anthropic-compatible LLM support
+- Tool-calling agentic loop with Chat/Plan/Act/YOLO modes, parallel tool calls, batched edits/commands, `search_files`
+- Git-based task workflow: branch on pickup, update `CHANGELOG.md` on completion
+- External agent orchestration (README text truncated)
 
-## Key Patterns
+Repository understanding is cached in `.ado-code/understanding/` and refreshed automatically or via `ADO Code: Refresh Repository Understanding`. `AGENTS.md` contains managed sections (`<!-- ado-code:managed -->`) rewritten on sync.
 
-### Tool System
-Tools defined as OpenAI-compatible JSON Schema and implemented in the single
-createToolExecutor() switch (src/llm/tools.ts). The legacy BaseTool/ToolRegistry/
-definitions/ path was removed.
-ToolExecutor gates by mode: plan=read-only, inline=consent, act=auto-approve,
-yolo=auto-approve everything (no consent, no allowlist). gateTool() is the shared
-gate used by execute() and canAutoExecute(); the agentic loop runs batches in
-PARALLEL — consent-requiring calls within a batch run sequentially (one
-consent card at a time) while the rest of the batch still executes
-concurrently, with a per-file mutation queue for same-file edits and a
-truncated-response guard
-(stopReason length/max_tokens ⇒ fail the batch, never execute partial args).
-Tool names: get_work_items, get_work_item (single `id` OR batch `ids` array),
-read_file (single `path` OR batch `paths` array, 400-line default window, in-turn cache),
-edit_file (multi-edit `edits` array), write_to_file, delete_file,
-search_files (grep with per-line 500-char truncation, regex parsing with inline flag sanitization and explicit flags), apply_diff,
-run_terminal_command (single `command` OR batch `commands` array),
-delegate_to_agent, restore_checkpoint, set_memory,
-execute_skill (loads skill instructions, read-only), list_workspace (glob + `details: true` file sizes), read/write/list_workspace_memory,
-set_goal (one-line session objective; no consent, allowed in every mode),
-update_todo_list (full-replace session to-do ledger, preserves the goal, no consent, allowed in every mode), read_todo_list (returns items + goal),
-commit_worktree, push_worktree, create_pull_request, resolve_pr_conflicts,
-mcp__<server>__<tool>
+### Key Modules/Directories
+- `src/` — main extension logic and service composition
+- `src/webview-ui/` — separate webview frontend package
+- `out/` — compiled JS and test runner path
+- `webview-ui-dist/` — built webview output
+- `resources/` — extension resources
+- `scripts/` — repository scripts
+- `docs/` — docs
 
-### Message Protocol
-src/shared/messages.ts defines typed contract.
-WebviewToExtensionMessage: ~30 types.
-ExtensionToWebviewMessage: ~20 types.
-
-### Service Composition
-createServices() is composition root.
-AdoClient uses lazy Proxy (reconstructed on org switch).
-
-### Testing
-Mocha with suite()/test() (TDD UI).
-Test files: src/test/suite/<category>/<name>.test.ts
-Runner: @vscode/test-electron
+### Conventions
+- TypeScript project compiled with `tsc -p ./`
+- ESLint at root; lint command targets `src`
+- Tests use `@vscode/test-electron`, `mocha`, `glob`; runner is `out/test/runTest.js`
+- Webview is a nested npm package; `build:webview` runs `npm install && npm run build` inside `src/webview-ui`
+- `husky` + `lint-staged` dev deps; `prepare` runs `husky`
+- No explicit naming or error-handling conventions are visible in the
+<!-- ado-code:managed-end -->
 
 ## Conventions
 - TypeScript strict mode, ES modules → CommonJS

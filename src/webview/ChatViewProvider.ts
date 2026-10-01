@@ -4,14 +4,16 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment, TraceEntry, StoredTurnTrace } from '../shared/messages';
+import { parseSaveConfigPayload, parseWizardConfigPayload, CONFIG_SETTING_KEYS, type ConfigSettingsMap } from '../shared/configSchema';
 import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
+import { isTurnVisible, foreignRunningTurn, runningElsewhereNotice, sessionRunInfo } from '../shared/sessionRun';
 import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
-import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem } from '../llm/prompts';
+import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion } from '../llm/prompts';
 import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
@@ -1864,6 +1866,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.touchIdle();
             await this.handleUserMessage(message.content, message.images);
             break;
+          case 'steerMessage':
+            // Steer mode: the user typed while a turn was running. Do NOT start
+            // a new turn (that would abort the in-flight run); buffer the text so
+            // the active agentic loop injects it on its NEXT iteration.
+            // Steer text is only ever meant for the run on screen — a run in
+            // another session must never receive it.
+            if (foreignRunningTurn(this.runningTurnSession, this.getActiveSessionId())) {
+              break;
+            }
+            this.touchIdle();
+            this.pendingSteer.push(message.content);
+            this.postMessage({ type: 'steeringQueued', content: message.content });
+            break;
           case 'sendMessage':
             // Choice-card answers (AI asked a question, user picked an option)
             // arrive here — same turn path as a typed message. Without this
@@ -1896,9 +1911,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // differ from this workspace's deliberate per-workspace override).
             const prevSettings = getSettings();
             let saveError: string | null = null;
-            for (const [key, value] of Object.entries(message.config)) {
-              // Never persist derived values back into settings.
+            // Stage 4: validate the payload before writing. Unknown keys and
+            // non-JSON values are reported and skipped — never aborting, per the
+            // per-key rule above. `modelCapabilities` is a derived value and is
+            // dropped silently by design.
+            const parsed = parseSaveConfigPayload(message.config);
+            if (!parsed.ok) {
+              this.postMessage({ type: 'error', message: `Failed to save: ${parsed.reason}` });
+              break;
+            }
+            for (const { key, reason } of parsed.ignored) {
               if (key === 'modelCapabilities') continue;
+              console.warn(`[ado-code] saveConfig ignored "${key}" (${reason})`);
+            }
+            for (const [key, value] of parsed.entries) {
               try {
                 await updateSettingRespectingScope(cfg, key, value);
               } catch (err) {
@@ -2157,14 +2183,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'switchSession':
-            // Stop the in-flight turn (if any) IN ITS OWN SESSION first — its
-            // conclusion lands in that session's buffer/history, never in the
-            // thread we're about to display. (Agent runs continue unaffected.)
-            this.stopRunningTurn();
+            // Switching sessions DETACHES the in-flight turn instead of aborting
+            // it: the run keeps streaming into ITS OWN session buffer (the
+            // post-gate hides it while that session is off-screen) and persists
+            // when it finishes, so switching back shows the live/completed
+            // thread. Agent runs are separate and continue unaffected.
             await this.loadSession(message.sessionId);
+            // Re-arm the spinner when we switched BACK to a session whose turn
+            // is still running in the background — its live stream resumes.
+            this.postMessage({ type: 'loading', loading: this.isSessionRunning(message.sessionId) });
             break;
           case 'newSession':
-            this.stopRunningTurn();
+            // Same rule as switching: an in-flight turn keeps running in the
+            // background while the fresh session is displayed.
             await this.createNewSession();
             break;
           case 'renameSession': {
@@ -2199,8 +2230,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.conversationBySession.delete(message.sessionId);
             const updatedSessions = this.getSessions().filter(s => s.id !== message.sessionId);
             await this.saveSessions(updatedSessions);
-            // The session is gone — its to-do list goes with it.
-            this.services.todos.remove(message.sessionId);
+            // The session is gone — its to-do list AND its archived goals go
+            // with it (a plain to-do "Clear" keeps the archive).
+            this.services.todos.removeSession(message.sessionId);
             // If we deleted the active session, switch to the last remaining one
             if (this.getActiveSessionId() === message.sessionId) {
               const fallback = updatedSessions[updatedSessions.length - 1];
@@ -2742,6 +2774,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       llmApiUrl: s.llmApiUrl,
       llmModel: s.llmModel,
       mode: s.mode,
+      chatInputWhileBusy: s.chatInputWhileBusy,
+      chatSuggestDelegation: s.chatSuggestDelegation,
+      chatDensity: s.chatDensity,
       configured: Boolean(s.llmApiKey),
       // ADO is optional: `configured` (LLM) gates the welcome wizard, but ADO
       // features only activate once the org + project + PAT are present.
@@ -2805,71 +2840,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Return all VS Code settings for the Configuration page. */
-  private _allSettings(): Record<string, any> {
+  private _allSettings(): ConfigSettingsMap {
     const cfg = vscode.workspace.getConfiguration('adoCode');
-    const keys = [
-      // Every setting contributed in package.json (contributes.configuration)
-      // must appear here, or the Configuration page shows it empty and a Save
-      // would clobber the real value (mcp.servers suffered exactly this).
-      'organizations',
-      'adoOrganization', 'adoProject', 'adoPat', 'adoServerUrl',
-      'llmProvider', 'llmApiUrl', 'llmApiKey', 'llmModel', 'llm.choiceDetectionModel', 'llm.capabilityOverrides', 'llm.useNativeTokenCounting',
-      'mode',
-      'git.requireGitRepo', 'git.createBranchOnTaskStart', 'git.requireCleanTree', 'git.prOnCompletion', 'git.protectedBranches',
-      'changelog.enabled', 'changelog.autoCommit', 'changelog.postToAdo',
-      'ado.clarificationState', 'ado.warnOnSparseTask',
-      'advancedConfig',
-      'llm.modeConfigs', 'llm.modeReasoningEffort',
-      'act.toolBudget', 'act.terminalAllowlist',
-      'sessions.maxPerProject',
-      'agents.enabled', 'agents.verifyCommand', 'agents.autoSelect', 'agents.autoReview',
-      'consent.harmlessAutoApprove', 'consent.autoApproveTools', 'yolo.pushApproval',
-      'chat.showThinking', 'chat.showToolCalls',
-      'ignore.dotAdoCode',
-      'understanding.enabled', 'understanding.autoSummarize', 'understanding.agentsMdSync',
-      'mcp.servers',
-    ];
-    const result: Record<string, any> = {};
-    for (const key of keys) {
+    // Iterate the canonical key list (src/shared/configSchema) rather than a
+    // local copy: the hand-maintained duplicate silently dropped 5 settings
+    // once, so a Save would clobber their real values (mcp.servers).
+    const result: ConfigSettingsMap = {};
+    for (const key of CONFIG_SETTING_KEYS) {
       result[key] = cfg.get(key);
     }
     // NOTE: modelCapabilities is deliberately NOT included — saveConfig
     // writes every key back to settings, and a derived value must never be
-    // persisted. The page computes capabilities itself (mirror module).
+    // persisted. The page consumes the shared heuristic (src/shared/modelCapabilities.ts).
     return result;
   }
 
   /** Task 19: persist config from the welcome screen (never echo secrets back). */
-  private async applyConfigUpdate(config: any): Promise<void> {
+  private async applyConfigUpdate(config: unknown): Promise<void> {
+    const payload =
+      config && typeof config === 'object' && !Array.isArray(config)
+        ? (config as Record<string, unknown>)
+        : {};
     const cfg = vscode.workspace.getConfiguration('adoCode');
-    const keys: Array<[string, string]> = [
-      ['adoOrganization', 'adoOrganization'],
-      ['adoProject', 'adoProject'],
-      ['adoPat', 'adoPat'],
-      ['llmProvider', 'llmProvider'],
-      ['llmApiUrl', 'llmApiUrl'],
-      ['llmApiKey', 'llmApiKey'],
-      ['llmModel', 'llmModel'],
-      ['git.requireGitRepo', 'gitRequireGitRepo'],
-      ['git.createBranchOnTaskStart', 'gitCreateBranchOnTaskStart'],
-      ['changelog.enabled', 'changelogEnabled'],
-      ['changelog.postToAdo', 'changelogPostToAdo'],
-    ];
-    for (const [settingKey, prop] of keys) {
-      const value = (config as any)[prop];
-      if (value !== undefined) {
-        await updateSettingRespectingScope(cfg, settingKey, value);
-      }
+    // R7: validate the untrusted wizard payload key-by-key (unknown props are
+    // ignored, non-JSON values are dropped) instead of the old `any` passthrough.
+    const { entries, ignored } = parseWizardConfigPayload(config);
+    if (ignored.length > 0) {
+      console.warn(`[ado-code] wizard config: ignoring invalid values for ${ignored.join(', ')}`);
     }
-    // Wizard saves must also write workspaceState so getActiveOrg (workspaceState
-    // first) resolves the same org and project the wizard just chose. Only non-empty
-    // values are stored — an empty value clears any stale binding instead of freezing "".
-    if ((config as any).adoOrganization !== undefined) {
-      const org = (config as any).adoOrganization as string;
+    for (const [settingKey, value] of entries) {
+      await updateSettingRespectingScope(cfg, settingKey, value);
+    }
+    if (payload.adoOrganization !== undefined) {
+      const org = payload.adoOrganization as string;
       await this._context.workspaceState.update('adoCode.activeOrgName', org || undefined);
     }
-    if ((config as any).adoProject !== undefined) {
-      const proj = (config as any).adoProject as string;
+    if (payload.adoProject !== undefined) {
+      const proj = payload.adoProject as string;
       await this._context.workspaceState.update('adoCode.activeProject', proj || undefined);
       // Re-check workspace binding after config save
       const root = this.services.git.workspaceRoot;
@@ -3794,6 +3801,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   // ── Task 13: LLM wiring ────────────────────────────────────────────
   private llmAbort?: AbortController;
+  // Steering buffer (chat.inputWhileBusy = 'steer'): user text typed while a
+  // turn is in flight. Drained by the active agentic loop at the top of each
+  // iteration and injected as a `user` turn — the run is NOT aborted.
+  private pendingSteer: string[] = [];
   // `conversation` is extended in Task 26 (multi-turn); declared here for Task 24.
   private conversation: LlmMessage[] = [];
   // Per-session conversation buffers. A chat turn is bound to the session that
@@ -3880,7 +3891,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         return { role: m.role, content, ...(trace ? { trace } : {}) };
       });
-    // Auto-name from first user message if still default
+    // Auto-name from the first user message as soon as the topic is known. The
+    // webview is notified below so the header/dropdown update immediately —
+    // instead of leaving "New Session" until the user switches away and back.
+    const nameBefore = session.name;
     if (session.name === 'New Session') {
       const firstUser = session.messages.find(m => m.role === 'user');
       if (firstUser) {
@@ -3902,6 +3916,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } else {
       await this.saveSessions(sessions);
     }
+    // A freshly auto-assigned name must reach the UI the moment the turn's
+    // record lands — push the list rather than waiting for a session switch.
+    if (session.name !== nameBefore) this.sendSessionList();
   }
 
   /**
@@ -3986,8 +4003,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.saveSessions(sessions);
     await this.setActiveSessionId(session.id);
     // Seed the per-session buffer for the fresh chat. The previous session's
-    // buffer stays alive in the map so an in-flight turn from it (aborted on
-    // the switch) never writes into this new session's thread.
+    // buffer stays alive in the map, so a turn still running there keeps
+    // streaming into IT (background run) and never writes into this new
+    // session's thread.
     this.conversation = this.sessionConversationFor(session.id);
     this.resetConversationCaches();
     // A new session is a fresh chat — "Allow for Session" approvals from the
@@ -4027,7 +4045,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public sendSessionList(): void {
     const sessions = this.getSessions();
     const activeId = this.getActiveSessionId();
-    this.postMessage({ type: 'sessionList', sessions, activeId });
+    // `running` drives the session-list running badge: which session still owns
+    // the in-flight turn and whether it is a background run.
+    this.postMessage({
+      type: 'sessionList',
+      sessions,
+      activeId,
+      running: sessionRunInfo(this.runningTurnSession, activeId),
+    });
+  }
+
+  /**
+   * Light push so the session list can show/hide its running badge the moment a
+   * turn starts or finishes — without re-sending the whole list (and every
+   * session's messages) just to flip one flag.
+   */
+  private postSessionRunState(): void {
+    this.postMessage({
+      type: 'sessionRunState',
+      running: sessionRunInfo(this.runningTurnSession, this.getActiveSessionId()),
+    });
   }
 
   // ── 0.6.5: one work item per session ──────────────────────────────
@@ -4247,10 +4284,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.persistConversation(sessionId, conversation);
   }
 
-  /** Abort the single in-flight LLM turn (if any) so switching chats / creating
-   *  a session can never mix two sessions' threads. The stopped turn reconciles
-   *  into ITS OWN session (marker + persist — see reconcileStoppedTurn); agent
-   *  runs are separate and continue unaffected. */
+  /** True while the given session owns the (single) in-flight LLM turn — used to
+   *  re-arm the spinner when that session is displayed again. */
+  private isSessionRunning(sessionId: string): boolean {
+    return !!this.runningTurnSession && this.runningTurnSession === sessionId;
+  }
+
+  /** Abort the single in-flight LLM turn (if any). Called for EXPLICIT stops
+   *  (Stop button, deleting the owning session, a newer message in the same
+   *  session) — NOT for switching sessions, which DETACHES the run so it keeps
+   *  going in the background. The stopped turn reconciles into ITS OWN session
+   *  (marker + persist — see reconcileStoppedTurn); agent runs are separate and
+   *  continue unaffected. */
   private stopRunningTurn(): void {
     const abort = this.runningTurnAbort ?? this.llmAbort;
     abort?.abort();
@@ -4338,6 +4383,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return new LlmClient(llmConfigFromSettings(this.executor?.mode));
   }
 
+  /**
+   * Drain any buffered steer messages (chat.inputWhileBusy = 'steer') into the
+   * turn conversation and return them for injection into the next agentic
+   * iteration. Called by the loop at the top of each iteration.
+   */
+  private takePendingSteer(turnConversation: LlmMessage[]): string[] {
+    if (this.pendingSteer.length === 0) return [];
+    const drained = this.pendingSteer;
+    this.pendingSteer = [];
+    for (const text of drained) {
+      turnConversation.push({ role: 'user', content: text });
+    }
+    return drained;
+  }
+
   private async handleUserMessage(content: string, images?: ImageAttachment[]): Promise<void> {
     // Task 14: slash-command parsing BEFORE sending to the LLM.
     // Delegates to executeSlashCommand() which handles all commands.
@@ -4355,6 +4415,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // model already saw the previous context in history, so re-sending it
     // verbatim just burns tokens.
     const contextBlock = this.buildEditorContextCached();
+
+    // ── A background run must not be silently aborted ─────────────────────
+    // Only ONE LLM turn runs at a time (a single abort slot drives the loop),
+    // so sending here while a DIFFERENT session is still generating would kill
+    // that run via runChatTurn's pre-abort. Warn first — the user decides.
+    const foreignTurn = foreignRunningTurn(this.runningTurnSession, this.getActiveSessionId());
+    if (foreignTurn) {
+      const otherName = this.getSessions().find(s => s.id === foreignTurn)?.name;
+      const decision = await this.requestConfirmation(
+        'Response still running',
+        `${runningElsewhereNotice(otherName)} Sending a message here would stop that run.`,
+        [
+          { label: '⏹️ Stop it and send here', value: 'stop', isDangerous: true },
+          { label: '▶️ Keep it running (cancel)', value: 'cancel' },
+        ]
+      );
+      if (decision !== 'stop') {
+        // Roll the visible thread back: the webview added the user bubble
+        // optimistically and no turn was started for it.
+        const activeId = this.getActiveSessionId();
+        if (activeId) await this.loadSession(activeId);
+        this.postMessage({ type: 'loading', loading: false });
+        return;
+      }
+      // Explicit stop: the foreign turn reconciles + persists into its own
+      // session (reconcileStoppedTurn), then this one starts.
+      this.stopRunningTurn();
+    }
 
     // Build LLM content: string or ContentBlockParam[] if images present
     let llmContent: string | ContentBlockParam[];
@@ -4407,6 +4495,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.llmAbort?.abort();
     const abort = new AbortController();
     this.llmAbort = abort;
+    // Fresh turn → drop any steer text left over from a previous turn.
+    this.pendingSteer = [];
 
     // ── Task 24: mode-aware dispatch (Q8) ────────────────────────────
     // All three modes run the agentic loop; the EXECUTOR's mode gates what
@@ -4445,6 +4535,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.conversation = this.sessionConversationFor(turnSessionId);
     this.runningTurnSession = turnSessionId;
     this.runningTurnAbort = abort;
+    // Flag the owning session as running in the list straight away.
+    this.postSessionRunState();
     // Turn-owned posts: reach the webview only while THIS turn's session is
     // the one displayed — late chunks from a stopped turn (session switch /
     // new message) can never land in another session's thread.
@@ -4487,6 +4579,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       memoryPrompt: this.services.memory.toPromptString(),
       workspaceMemoryPrompt: this.services.workspaceMemory.toPromptString(),
       understanding: understandingPrompt,
+      suggestDelegation: getSettings().chatSuggestDelegation,
       // The session's live to-do list — keeps the model's own plan visible
       // across iterations and condensation.
       todos: this.services.todos.toPromptString(turnSessionId),
@@ -4518,7 +4611,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, maxIterations, (update) => {
         // The turn was stopped/switched away — never post its progress into a
         // session that isn't its own (late chunks from an aborted loop).
-        if (this.getActiveSessionId() !== turnSessionId) return;
+        if (!isTurnVisible(turnSessionId, this.getActiveSessionId())) return;
+        if (update.steering) {
+          // The loop picked up a steered user message on this iteration — tell
+          // the webview so it can mark that message as "in effect".
+          this.postMessage({ type: 'steeringApplied', content: update.steering });
+        }
         // Live progress → chat webview: surface the AI's reasoning AND each
         // tool call as it runs (running → completed when the result lands),
         // so the user sees activity instead of a silent "Thinking…" until
@@ -4579,6 +4677,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           this.setWorkingDetail('thinking…');
         }
+      }, {
+        // Steer mode: hand the loop any user text typed mid-run so it is
+        // injected on the next iteration instead of aborting the turn.
+        drainSteering: () => this.takePendingSteer(turnConversation),
       });
       // Token optimization diagnostics: log how much this turn actually cost
       // (iterations, tool calls, and request payload tokens incl. system+tools).
@@ -4614,6 +4716,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           cleanText = tools > 0
             ? `Done — executed ${tools} tool call${tools === 1 ? '' : 's'}. Let me know what you'd like to do next.`
             : '_The model returned an empty response — please try again._';
+        }
+      }
+      // Delegation suggestion (opt-in via chat.suggestDelegation): pull the
+      // fenced block out of the visible answer and surface it as an action card.
+      if (getSettings().chatSuggestDelegation) {
+        const del = extractDelegationSuggestion(cleanText);
+        if (del.suggestions.length > 0) {
+          cleanText = del.cleaned;
+          turnPost({ type: 'delegationSuggestion', suggestions: del.suggestions });
         }
       }
       turnPost({ type: 'assistantMessage', content: cleanText, done: true });
@@ -4704,6 +4815,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.runningTurnAbort = undefined;
         this.runningTurnSession = undefined;
       }
+      // Drop the running badge whichever session is on screen.
+      this.postSessionRunState();
       this.setWorking(false);
     }
   }
@@ -5174,10 +5287,10 @@ First analyze the user story and explain your breakdown reasoning, then output t
         );
         if (picked) {
           const session = sessions.find(s => s.id === picked);
-          // Switching sessions via /resume must stop the running turn in ITS
-          // session first (same isolation rule as the session dropdown).
-          this.stopRunningTurn();
+          // Same rule as the session dropdown: an in-flight turn keeps running
+          // in the background while we display the resumed session.
           await this.loadSession(picked);
+          this.postMessage({ type: 'loading', loading: this.isSessionRunning(picked) });
           vscode.window.showInformationMessage(`ADO Code: resumed session "${session?.name ?? picked}".`);
         }
         break;
@@ -5187,12 +5300,13 @@ First analyze the user story and explain your breakdown reasoning, then output t
           vscode.window.showWarningMessage('ADO Code: usage: /remember <note text>');
           return;
         }
-        // Store notes in workspaceState under a dedicated key
-        const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
-        const existing = this._context.workspaceState.get<string[]>(`adoCode.notes:${key}`, []);
-        existing.push(args);
-        await this._context.workspaceState.update(`adoCode.notes:${key}`, existing);
-        vscode.window.showInformationMessage(`ADO Code: note saved (${existing.length} total).`);
+        // Store the note in UserMemory - the store actually injected into the
+        // system prompt (toPromptString()). The old workspaceState
+        // "adoCode.notes:*" store was never read back, so notes never reached
+        // the model.
+        const key = 'note-' + args.slice(0, 48).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        this.services.memory.set(key, 'preference', args);
+        vscode.window.showInformationMessage(`ADO Code: remembered (${this.services.memory.getAll().length} memory entries).`);
         break;
       }
       case 'goal': {
@@ -5238,13 +5352,12 @@ First analyze the user story and explain your breakdown reasoning, then output t
         break;
       }
       case 'forget': {
-        const key = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
-        const existing = this._context.workspaceState.get<string[]>(`adoCode.notes:${key}`, []);
-        if (existing.length > 0) {
-          await this._context.workspaceState.update(`adoCode.notes:${key}`, []);
-          vscode.window.showInformationMessage(`ADO Code: ${existing.length} note(s) cleared.`);
+        const removed = this.services.memory.getAll().length;
+        if (removed > 0) {
+          this.services.memory.clear();
+          vscode.window.showInformationMessage(`ADO Code: ${removed} remembered item(s) cleared.`);
         } else {
-          vscode.window.showWarningMessage('ADO Code: no saved notes to clear.');
+          vscode.window.showWarningMessage('ADO Code: nothing remembered to forget.');
         }
         break;
       }

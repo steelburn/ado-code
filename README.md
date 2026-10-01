@@ -72,6 +72,11 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 - **Standalone / unattached project mode**: Choose `None (no project)` in the header project dropdown to work independently with the AI assistant without attaching to an Azure DevOps project, or when ADO connectivity is not configured
 - **Interactive Mermaid diagram rendering & SVG export**: Mermaid diagrams (flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, etc.) render interactively across Chat, Task Details, Work Item Details, and Agent Run Summaries — with instant `[ 📊 Diagram | </> Code ]` view switching, `📋 Copy Code`, `🖼️ Copy SVG`, and `💾 Save SVG` (native file save dialog with auto-named `.svg` file export)
 - **Move chat into editor area**: Open the chat assistant in the main editor area as a tab (`$(link-external)`) or move it back to the sidebar (`$(layout-sidebar-left)`) seamlessly without losing conversation state, session history, or task bindings
+- **Chat-area declutter**: a turn's consecutive tool calls fold into one `Ran N tools ▸` activity row (expandable to the unchanged per-tool cards), boxed "Thinking" blocks become quiet dimmed text, and a one-line turn summary (`8 tools · 1 edit · 42s · 3.1k tokens`) sits above each finished answer — with a "Show details" toggle to reveal everything on demand
+- **Chat density modes** (`adoCode.chat.density`): dial the chat from fully narrated (`comfortable`, default) through `compact` down to `answers-only` (folds activity rows, reasoning, and attachments behind "Show details") — cycle from the kebab menu (`Chat density: …`) or set it in the Configuration page
+- **Queue vs. steer for mid-run input** (`adoCode.chat.inputWhileBusy`, default `steer`): type while the AI is working and either **steer** — your text is injected into the running turn's next iteration so the agent folds it into the work in progress — or **queue** it as a numbered pending chip (per-item remove button) that is sent when the turn finishes
+- **Delegation suggestions** (`adoCode.chat.suggestDelegation`, default on): the assistant can offer to hand a large, self-contained task to an installed external agent, surfaced as a single compact action card in the chat
+- **View archived goals in the To-do view**: a toolbar toggle (`$(archive)` / `$(checklist)`) switches the session's To-do list between the live list and a read-only history of superseded completed goals
 
 ## Requirements
 
@@ -121,6 +126,9 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.yolo.pushApproval` | Require approval before pushing to the remote repo (`push_worktree` / `git push`) even in YOLO mode (default `true`) |
 | `adoCode.chat.showThinking` | Show the model's thinking/reasoning text while it processes (default `true`) |
 | `adoCode.chat.showToolCalls` | Show live tool-call cards in the chat while the AI works (default `true`; off shows only a pulsing "…" indicator) |
+| `adoCode.chat.density` | Chat rendering density: `comfortable` (default — everything shown), `compact` (tighter spacing), or `answers-only` (folds activity rows, reasoning, attachments, and chrome behind "Show details") |
+| `adoCode.chat.inputWhileBusy` | What happens when you type while the AI is working: `steer` (default — inject into the running turn's next iteration) or `queue` (hold as a numbered pending chip, sent when the turn finishes) |
+| `adoCode.chat.suggestDelegation` | Let the assistant suggest delegating suitable (large, self-contained) work to an installed external agent via a compact action card (default `true`) |
 | `adoCode.git.requireGitRepo` | Block task pickup outside a git repo |
 | `adoCode.git.createBranchOnTaskStart` | Auto-create `feature/ADO-<id>-<slug>` branch |
 | `adoCode.git.requireCleanTree` | Warn on branch switch with uncommitted changes |
@@ -138,6 +146,16 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.agents.autoCompleteChildren` | After a delegated parent run succeeds, auto-complete its children in ADO: children marked DONE in the agent's Delivery Report transition to their terminal state (Task/Bug → Closed, Story/Feature/Epic → Resolved), and the parent closes when all open children are done (default `false`; off = report + comment only) |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 | `adoCode.skillRegistryUrls` | Extra skill registry URLs to browse in the Skill Catalog (TSV format: `slug<TAB>url<TAB>description`); the built-in UI Skills registry is always included |
+
+## To-do View
+
+The **To-do** view (`adoCode.todos`) in the ADO Code activity bar is the AI's task list for the **active chat session**, rendered as a checkbox tree. It is **session-scoped**: the active session's goal is the single root node with its steps nested below, so switching chat sessions switches the list. Each session's list is persisted under `.ado-code/todos/`.
+
+- **Goal at the top**: the session objective is shown as the root node (a `$(target)` icon if set, otherwise a `$(checklist)` placeholder). Set, edit, or clear it with the `/goal` slash command, the **Set Session Goal** toolbar button, or the goal node's context menu.
+- **Steps below**: the assistant adds steps as it plans; add your own with the **Add To-do Item** toolbar button or an item's context menu. Each step carries a status icon — `$(sync~spin)` in progress, `$(pass-filled)` completed, `$(circle-large-outline)` pending — and its checkbox toggles between **Mark as Completed** and **Mark as Pending**. Remove a step with **Remove To-do Item**.
+- **Archive**: the `$(archive)` / `$(checklist)` toolbar toggle switches between the live list and a read-only **history of superseded, completed goals** for the session — useful for reviewing what earlier goals in the same chat accomplished.
+- **Badge**: the view badge shows the number of remaining (not-yet-completed) steps in the active session.
+- **Toolbar**: **Add To-do Item**, **Refresh To-do List**, **Set/Clear Session Goal**, **Clear To-do List**, and the archive toggle. Item and goal context menus expose the per-node actions above.
 
 ## Slash Commands
 
