@@ -4,6 +4,18 @@ All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
 ### Bug Fixes
+- **A chat could mint a brand-new session id on every request.** Chat sessions were
+  persisted under a key that folded in the *currently active* ADO project
+  (`adoCode.sessions:<folder>:<project>` and `adoCode.activeSessionId:<folder>:<project>`),
+  but `activeProject()` is not stable during a turn's lifetime — it is empty while the
+  extension activates and then flips once the org resolves (org switch, work-item open,
+  settings settle) — so the active-id lookup missed, `ensureSession()` saw `null`, and a
+  fresh session started on every request. Session storage is now **folder-scoped only**
+  (`ChatViewProvider.sessionKey` no longer includes the project); the project is recorded
+  per session as a `Session.project` attribute for display and grouping. A one-time
+  `migrateProjectScopedSessions()` pass folds existing project-scoped buckets into the
+  folder bucket (deduped by id, newest active id carried over) so existing histories are
+  preserved. Covered by `src/test/suite/webview/sessionScoping.test.ts`.
 - **Outbound User-Agent reported a version that never shipped.** `EXTENSION_VERSION`
   (`src/shared/version.ts`) had drifted from `package.json`, so every LLM request on
   0.7.0 still announced `ADO-Code/0.6.7`, making provider/gateway logs wrong. The

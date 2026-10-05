@@ -347,10 +347,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private taskDraftResolve?: (result: { id: number; url: string } | null) => void;
 
   // ── Session persistence (Task 2) ──────────────────────────────────
+  /** Workspace-folder key — the stable part of session scoping. */
+  private get folderKey(): string {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
+  }
+
+  /**
+   * Folder-scoped session key. Deliberately EXCLUDES the active ADO project.
+   *
+   * `activeProject()` is not stable across the lifetime of a turn: it is empty
+   * during activation and then flips once the org resolves (org switch, work-item
+   * open, settings settle). Folding it into the key made `getActiveSessionId()`
+   * read a different entry after the flip, so `ensureSession()` saw `null` and
+   * minted a brand-new session id — a fresh session on every request.
+   *
+   * The project is now recorded per session (`Session.project`) as an attribute,
+   * not baked into the storage key.
+   */
   private get sessionKey(): string {
-    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'default';
-    const project = this.activeProject() || 'default';
-    return `${folder}:${project}`;
+    return this.folderKey;
   }
 
   private get sessionsStorageKey(): string {
@@ -399,6 +414,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this._context.workspaceState.update(legacyKey, undefined);
       logger.info('Chat: migrated legacy history to session storage');
     }
+  }
+
+  /**
+   * One-time migration from the old project-scoped session keys
+   * (`adoCode.sessions:<folder>:<project>` / `adoCode.activeSessionId:<folder>:<project>`)
+   * to the folder-scoped bucket. Legacy buckets are merged (deduped by session
+   * id, oldest→newest) and the newest legacy active id wins when nothing is
+   * active yet. Legacy keys are removed once folded in. Safe to run repeatedly.
+   */
+  private async migrateProjectScopedSessions(): Promise<void> {
+    const ws = this._context.workspaceState;
+    if (typeof (ws as any).keys !== 'function') return; // Memento mock without keys()
+
+    // The legacy key appends `:<project>` to the folder, so the prefix includes
+    // the separator — which also guarantees the new folder-scoped key never matches.
+    const sessionsPrefix = 'adoCode.sessions:';
+    const activePrefix = 'adoCode.activeSessionId:';
+    const folderPrefix = `${this.folderKey}:`;
+    const keys = ws.keys();
+    const legacySessionKeys = keys.filter(
+      k => k.startsWith(sessionsPrefix) && k.slice(sessionsPrefix.length).startsWith(folderPrefix)
+    );
+    const legacyActiveKeys = keys.filter(
+      k => k.startsWith(activePrefix) && k.slice(activePrefix.length).startsWith(folderPrefix)
+    );
+    if (!legacySessionKeys.length && !legacyActiveKeys.length) return;
+
+    const merged = this.getSessions();
+    const seen = new Set(merged.map(s => s.id));
+    for (const key of legacySessionKeys) {
+      for (const s of ws.get<Session[]>(key, []) ?? []) {
+        if (s && s.id && !seen.has(s.id)) {
+          seen.add(s.id);
+          merged.push(s);
+        }
+      }
+    }
+    merged.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+    await this.saveSessions(merged);
+
+    // Only adopt a legacy active id when the folder bucket has none of its own.
+    if (!this.getActiveSessionId()) {
+      let newest: Session | null = null;
+      for (const key of legacyActiveKeys) {
+        const id = ws.get<string>(key, '');
+        const s = id ? merged.find(x => x.id === id) : undefined;
+        if (s && (!newest || s.createdAt > newest.createdAt)) newest = s;
+      }
+      if (newest) await this.setActiveSessionId(newest.id);
+    }
+
+    for (const key of [...legacySessionKeys, ...legacyActiveKeys]) {
+      await ws.update(key, undefined);
+    }
+    logger.info(`Chat: migrated ${legacySessionKeys.length} project-scoped session bucket(s) to folder scope`);
   }
 
   constructor(
@@ -1799,6 +1869,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Task 2: migrate legacy history, send session list, restore active session
     // Wrap in try-catch so a migration/session error never breaks the webview.
     try {
+      await this.migrateProjectScopedSessions();
       await this.migrateFromLegacyHistory();
       this.sendSessionList();
       const activeId = this.getActiveSessionId();
@@ -3997,6 +4068,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       name: 'New Session',
       createdAt: new Date().toISOString(),
       messages: [],
+      project: this.activeProject() || undefined,
     };
     const sessions = this.getSessions();
     sessions.push(session);
@@ -4032,6 +4104,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       name: (firstMessage || 'New Session').slice(0, 60),
       createdAt: new Date().toISOString(),
       messages: [],
+      project: this.activeProject() || undefined,
     };
     sessions.push(session);
     await this.saveSessions(sessions);

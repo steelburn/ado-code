@@ -336,6 +336,12 @@ export interface Session {
   name: string;
   /** ISO date string */
   createdAt: string;
+  /**
+   * ADO project that was active when the session was created. Display/grouping
+   * metadata only — it is deliberately NOT part of the persistence key, so a
+   * project switch never orphans the active session.
+   */
+  project?: string;
   messages: Array<{ role: string; content: string; trace?: StoredTurnTrace }>;
   /** 0.6.5: ADO work item ids this session has processed (drives the
    *  one-work-item-per-session alert + session-history chips). */
