@@ -1,0 +1,74 @@
+name: Version check
+
+# The released version is written down twice — package.json "version" and
+# src/shared/version.ts EXTENSION_VERSION. They drifted once (manifest 0.7.0,
+# constant 0.6.7), so every LLM request announced a version that never shipped.
+# This workflow is the server-side half of the guard: local hooks can be skipped
+# with --no-verify, a required PR check cannot.
+#
+# No `paths:` filter on purpose. A path-filtered workflow never reports a status
+# for PRs that miss the filter, so if this check is required by branch
+# protection the PR would wait on it forever. The gate costs seconds — run it
+# on everything.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only: the job never writes to the repo or posts comments.
+permissions:
+  contents: read
+
+# A new push supersedes the in-flight run for the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-version:
+    name: check:version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Deliberately no `npm ci` before this: scripts/check-version.js is plain
+      # Node + fs with zero dependencies, so drift fails in seconds instead of
+      # waiting on a full install.
+      - name: Assert EXTENSION_VERSION matches package.json
+        run: npm run check:version
+
+      # A gate that always exits 0 is worse than no gate — it looks like
+      # coverage. Drift the constant on purpose and require a non-zero exit.
+      # The original file is put back by an EXIT trap, so the mutation is undone
+      # whether the step passes or fails (and without depending on a clean git
+      # tree).
+      - name: Self-test — the gate must reject a simulated drift
+        run: |
+          set -euo pipefail
+          backup="$(mktemp)"
+          cp src/shared/version.ts "$backup"
+          trap 'cp "$backup" src/shared/version.ts' EXIT
+          sed -i "s/EXTENSION_VERSION = '[^']*'/EXTENSION_VERSION = '0.0.0-selftest'/" src/shared/version.ts
+          grep -q "0.0.0-selftest" src/shared/version.ts || {
+            echo "::error::self-test setup failed — could not drift EXTENSION_VERSION in src/shared/version.ts"
+            exit 1
+          }
+          # Invoked via `node` (not `npm run`) and asserted to be EXACTLY 1: a
+          # crashing or missing gate (127, 2, …) must not be scored as a pass.
+          set +e
+          output="$(node scripts/check-version.js 2>&1)"
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -ne 1 ]; then
+            echo "::error title=Version gate is not enforcing drift::expected exit 1 on a drifted EXTENSION_VERSION, got $status"
+            exit 1
+          fi
+          echo "Gate correctly rejected the simulated drift (exit 1)."

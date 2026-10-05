@@ -19,10 +19,13 @@ function run(cmd) {
 }
 
 console.log('=== ADO Code pre-commit checks ===');
+// Cheap invariant first: a stale EXTENSION_VERSION fails loudly and
+// instantly, before the expensive VS Code test boot even starts.
+const version = run('npm run check:version');
 const compile = run('npm run compile');
 const test = run('npm test');
 
-if (!compile || !test) {
+if (!version || !compile || !test) {
   console.error('\n❌ Pre-commit checks failed.');
   process.exit(1);
 }

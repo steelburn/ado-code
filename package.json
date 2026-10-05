@@ -1297,10 +1297,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run check:version && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
+    "check:version": "node scripts/check-version.js",
     "build:webview": "cd src/webview-ui && npm install && npm run build",
     "build:all": "npm run compile && npm run build:webview",
     "watch:webview": "cd src/webview-ui && npm run watch",

@@ -1,6 +1,25 @@
 # Changelog
 
 All notable changes to ADO Code will be documented in this file.
+## [Unreleased]
+
+### Bug Fixes
+- **Outbound User-Agent reported a version that never shipped.** `EXTENSION_VERSION`
+  (`src/shared/version.ts`) had drifted from `package.json`, so every LLM request on
+  0.7.0 still announced `ADO-Code/0.6.7`, making provider/gateway logs wrong. The
+  constant is now `0.7.0` and the two sources are kept in sync mechanically:
+  `src/test/suite/shared/version.test.ts` asserts the invariant in the test suite,
+  and `scripts/check-version.js` runs on `vsce package` (`vscode:prepublish`) and in
+  the pre-commit hook, so a drift can neither merge nor ship.
+
+- **Version drift is now blocked in CI, not just by local hooks.**
+  `.github/workflows/version-check.yml` runs `check:version` as a status check on
+  every PR and on pushes to `main` — a local hook can be skipped with `--no-verify`,
+  a required check cannot. The job carries no `paths:` filter (a skipped workflow
+  never reports a status, which would leave a required check pending forever) and
+  includes a self-test that drifts the constant on purpose and asserts the gate
+  exits non-zero, so a silently disabled gate cannot pass as coverage.
+
 
 ## [0.7.0] - 2026-10-01
 
