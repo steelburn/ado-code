@@ -3,6 +3,33 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+### Performance
+- **Activation no longer loads the whole extension graph, or builds services it may never
+  use.** Three changes, each measured with the interleaved A/B harness
+  (`node scripts/bench-ab.js <entryA> <entryB> --activate`):
+  - **P1 — the extension entry is bundled (esbuild).** It shipped as 156 unbundled CommonJS
+    files; it is now a single `dist/extension.js` (`scripts/build.js`; 399 KB vs 1786 KB
+    unbundled). Cold module load **129.5 ms → 41.9 ms** (median, 9 interleaved runs). `npm run compile` still
+    type-checks, `npm run bundle` emits the runtime artifact, and `scripts/build.js` fails
+    the build if the bundle ever requires anything but `vscode` + Node built-ins.
+  - **P2 — I/O and process work is off the activation path.** `src/shared/deferredStartup.ts`
+    queues the repository-understanding refresh and the MCP connect, draining them after
+    `activate()` returns. `McpManager.ensureConnected()` connects lazily, so deferring the
+    eager `connectAll()` cannot race first tool use.
+  - **P3 — services are constructed on first use.** `createServices()` used to `new` all
+    fourteen services during activation, so a session that only opened the work-item tree
+    still paid for the chat stack, MCP manager and understanding cache. It now returns a
+    lazily-materialised container built by `src/shared/lazyServices.ts`; each factory pulls
+    in only the siblings it needs (`understanding` still receives the shared `git` +
+    `workspaceMemory` instances).
+
+  Startup is also cheaper to verify now: `npm run test:unit` runs the pure/shared suites
+  headlessly (`scripts/vscode-stub.js` supplies the `vscode` API), so the laziness and
+  deferred-startup contracts are asserted without a VS Code download.
+
+  Tests: `src/test/suite/shared/lazyServices.test.ts`, `src/test/suite/services.lazy.test.ts`,
+  `src/test/suite/shared/deferredStartup.test.ts`.
+
 ### Bug Fixes
 - **A chat could mint a brand-new session id on every request.** Chat sessions were
   persisted under a key that folded in the *currently active* ADO project

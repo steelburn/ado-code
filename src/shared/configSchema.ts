@@ -1,10 +1,10 @@
 // Canonical schema for the Configuration page's `saveConfig` payload — Stage 4.
 //
 // Why this is hand-rolled instead of zod:
-//   ADO Code ships ZERO runtime dependencies (.vscodeignore excludes
-//   node_modules/**) and is compiled with plain `tsc` (no bundler). Importing
-//   zod from extension-host code would emit a runtime `require('zod')` that
-//   fails in the packaged extension. zod is therefore a TEST-ONLY oracle
+//   The shipped bundle (dist/extension.js, built by scripts/build.js) must
+//   contain no `require()` other than `vscode` and Node built-ins — the guard
+//   in scripts/build.js fails the build otherwise. A runtime zod dependency
+//   would breach that and bloat the bundle, so zod is a TEST-ONLY oracle
 //   (see src/test/suite/webview/configSchema.test.ts); this module provides the
 //   dependency-free validator that runs in both the host and the tests.
 //

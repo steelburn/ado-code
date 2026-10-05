@@ -8,5 +8,6 @@ tsconfig.json
 .hermes/**
 .gitignore
 .ado-code/**
-out/test/**
+scripts/**
+out/**
 *.vsix

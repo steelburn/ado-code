@@ -11,6 +11,8 @@ import { logger } from '../logger';
  */
 export class McpManager {
   private clients = new Map<string, McpClient>();
+  /** Shared lazy-connect attempt so on-demand callers never double-connect. */
+  private connectPromise?: Promise<void>;
 
   constructor(_context: vscode.ExtensionContext) {}
 
@@ -34,6 +36,21 @@ export class McpManager {
     logger.info('MCP: all servers connected');
   }
 
+  /**
+   * Connect lazily, once. Startup defers `connectAll()` off the activation
+   * path (see DeferredStartup); any caller that needs MCP tools before the
+   * deferred drain completes calls this, and concurrent callers share one
+   * attempt.
+   */
+  ensureConnected(): Promise<void> {
+    if (!this.connectPromise) {
+      this.connectPromise = this.connectAll().catch((err) => {
+        logger.error('MCP: connectAll failed', err);
+      });
+    }
+    return this.connectPromise;
+  }
+
   /** Disconnect all servers. */
   async disconnectAll(): Promise<void> {
     logger.info('MCP: disconnecting all servers...');
@@ -41,10 +58,12 @@ export class McpManager {
       await client.disconnect();
     }
     this.clients.clear();
+    this.connectPromise = undefined;
   }
 
   /** Get all tools from all connected MCP servers, with mcp__<server>__<tool> prefix. */
   async getAllTools(): Promise<LlmTool[]> {
+    await this.ensureConnected();
     const tools: LlmTool[] = [];
     for (const client of this.clients.values()) {
       if (client.isConnected) {
@@ -57,6 +76,7 @@ export class McpManager {
   /** Call a tool on the appropriate MCP server. Tool name format: mcp__<server>__<tool> */
   async callTool(prefixedName: string, args: Record<string, any>): Promise<string> {
     logger.debug('MCP: callTool ' + prefixedName);
+    await this.ensureConnected();
     const parts = prefixedName.split('__');
     if (parts.length < 3 || parts[0] !== 'mcp') {
       return JSON.stringify({ error: `invalid MCP tool name: ${prefixedName}` });

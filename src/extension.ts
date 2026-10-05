@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
+import { DeferredStartup } from './shared/deferredStartup';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
 import { TodoTreeProvider, TodoItemNode, TodoSessionNode } from './webview/TodoTreeProvider';
@@ -31,9 +32,9 @@ let treeProvider: WorkItemsTreeProvider;
 /**
  * Wire the LLM summarizer into the repository-understanding cache (fresh
  * client from current settings — same pattern as ChatViewProvider.llmClient)
- * and kick a background refresh so cached repo facts are ready for the first
- * chat turn. The LLM summary itself runs async inside ensureFresh, so a
- * summarizer call never blocks activation.
+ * so cached repo facts are ready for the first chat turn. The refresh itself
+ * is deferred off the activation path by the caller (see DeferredStartup), so
+ * wiring the summarizer here stays cheap.
  */
 function wireUnderstanding(services: Services): void {
   services.understanding.setSummarizer(async (text) => {
@@ -46,20 +47,33 @@ function wireUnderstanding(services: Services): void {
     }
     return result;
   });
-  void services.understanding.ensureFresh().catch((err) => {
-    logger.debug('Understanding: initial refresh failed', err);
-  });
 }
 export async function activate(context: vscode.ExtensionContext) {
   logger.activate(context);
+  const activationT0 = performance.now();
   let services = createServices(context);
-  // Repository understanding: wire the LLM summarizer + kick the initial
-  // background refresh (fingerprint-checked; facts ready for turn one).
+  const servicesMs = performance.now() - activationT0;
+  // Repository understanding: wire the LLM summarizer eagerly (cheap); the
+  // fingerprint-checked refresh runs deferred below, never on the activation
+  // critical path.
   wireUnderstanding(services);
-  // Connect MCP servers on startup (fire-and-forget; errors are logged)
-  services.mcp.connectAll().catch(err => {
-    logger.error('MCP: failed to connect servers', err);
+
+  // Deferred startup (P2): I/O and subprocess work that must not block the
+  // first render — refreshing the repository-understanding cache and spawning
+  // MCP server processes. Both drain on the next macrotask, after activate()
+  // returns; each task is isolated so one failure cannot abort the rest.
+  const deferredStartup = new DeferredStartup({
+    log: (message) => logger.info(message),
   });
+  deferredStartup.register('understanding.ensureFresh', async () => {
+    try {
+      await services.understanding.ensureFresh();
+    } catch (err) {
+      logger.debug('Understanding: initial refresh failed', err);
+    }
+  });
+  deferredStartup.register('mcp.connectAll', () => services.mcp.connectAll());
+  deferredStartup.start();
   // Per-project cache of work-item-type states — fetched once per project,
   // refreshable via the state picker's "Refresh states from ADO" entry.
   // The lazy getter re-reads `services` so an org switch picks up the new
@@ -1783,6 +1797,8 @@ Generate ONLY the commit message, nothing else.`;
   }
   // Always update the stored version
   await context.globalState.update('adoCode.lastSeenVersion', currentVersion);
+
+  logger.info(`startup(activation): services ${servicesMs.toFixed(1)}ms, ready in ${(performance.now() - activationT0).toFixed(1)}ms`);
 }
 
 export function deactivate() {}

@@ -18,9 +18,9 @@ import { CATEGORIES, ADVANCED_CATEGORY } from '../../../config/catalog';
 //              value (function/symbol/undefined), is written anyway.
 //
 // zod is used here purely as an INDEPENDENT ORACLE (test-only devDependency).
-// It cannot run in the extension host: ADO Code ships ZERO runtime dependencies
-// (.vscodeignore excludes node_modules/**) and compiles with plain tsc (no
-// bundler), so a runtime `require('zod')` in src/ would crash the host. The
+// It stays out of the extension host: the shipped bundle must contain no
+// require() other than vscode and Node built-ins (enforced by scripts/build.js),
+// so a runtime require('zod') is never emitted from src/. The
 // runtime validator therefore stays dependency-free; this suite proves it agrees
 // with a zod schema.
 

@@ -72,7 +72,7 @@
     "onCommand:adoCode.todos.showArchive",
     "onCommand:adoCode.todos.hideArchive"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
@@ -1297,15 +1297,18 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run check:version && npm run compile",
+    "vscode:prepublish": "npm run check:version && npm run compile && npm run bundle",
     "compile": "tsc -p ./",
+    "bundle": "node scripts/build.js",
+    "watch:bundle": "node scripts/build.js --watch",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "check:version": "node scripts/check-version.js",
     "build:webview": "cd src/webview-ui && npm install && npm run build",
-    "build:all": "npm run compile && npm run build:webview",
+    "build:all": "npm run compile && npm run bundle && npm run build:webview",
     "watch:webview": "cd src/webview-ui && npm run watch",
     "test": "node ./out/test/runTest.js",
+    "test:unit": "node node_modules/mocha/bin/mocha.js --ui tdd --require ./scripts/vscode-stub.js \"out/test/suite/shared/**/*.test.js\" out/test/suite/services.lazy.test.js",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -1321,6 +1324,7 @@
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "@vscode/test-electron": "^3.1.0",
+    "esbuild": "^0.24.0",
     "eslint": "^8.56.0",
     "glob": "^13.0.6",
     "husky": "^9.1.7",

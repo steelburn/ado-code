@@ -14,6 +14,7 @@ import { UnderstandingService } from './services/understanding/UnderstandingServ
 import { getSettings, getActiveOrg } from './config/settings';
 import { UserMemory } from './memory/UserMemory';
 import { logger } from './services/logger';
+import { lazyServices, ServiceFactories } from './shared/lazyServices';
 
 // ── C6 stubs (real implementations land in Tasks 9/10/11) ──────────
 // GitService + ChangelogService stubs REMOVED in Tasks 10/11 — real classes
@@ -44,6 +45,18 @@ export interface Services {
  * `onDidChangeConfiguration` / workspace change.
  */
 export function createServices(context: vscode.ExtensionContext): Services {
+  return lazyServices<Services>(createServiceFactories(context));
+}
+
+/**
+ * The factory map behind createServices. Exported so tests can prove laziness
+ * against the *real* factories, and so a single service can be swapped without
+ * touching the container wiring. Each factory receives the container, so a
+ * service pulls in its dependencies on demand (and only those).
+ */
+export function createServiceFactories(
+  context: vscode.ExtensionContext,
+): ServiceFactories<Services> {
   const settings = getSettings();
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
   // Q1: the active org is per-workspace (workspaceState), set by
@@ -67,25 +80,21 @@ export function createServices(context: vscode.ExtensionContext): Services {
     },
   });
 
-  // Services that later services depend on (git + workspaceMemory feed the
-  // understanding cache) are created first.
-  const git = new GitService(workspaceRoot);
-  const workspaceMemory = new WorkspaceMemory(workspaceRoot);
-
   return {
-    ado,
-    git,
-    changelog: new ChangelogService(workspaceRoot),
-    agents: new AgentRegistry(),
-    checkpoints: new CheckpointService(workspaceRoot),
-    mcp: new McpManager(context),
-    skills: new SkillManager(context),
-    skillRegistry: new SkillRegistryService(context),
-    projectCreation: new ProjectCreationService(),
-    workspaceMemory,
-    memory: new UserMemory(context),
-    todos: new TodoStore(workspaceRoot),
-    understanding: new UnderstandingService(workspaceRoot, git, workspaceMemory),
-    logger,
+    ado: () => ado,
+    git: () => new GitService(workspaceRoot),
+    changelog: () => new ChangelogService(workspaceRoot),
+    agents: () => new AgentRegistry(),
+    checkpoints: () => new CheckpointService(workspaceRoot),
+    mcp: () => new McpManager(context),
+    skills: () => new SkillManager(context),
+    skillRegistry: () => new SkillRegistryService(context),
+    projectCreation: () => new ProjectCreationService(),
+    workspaceMemory: () => new WorkspaceMemory(workspaceRoot),
+    memory: () => new UserMemory(context),
+    todos: () => new TodoStore(workspaceRoot),
+    understanding: (services) =>
+      new UnderstandingService(workspaceRoot, services.git, services.workspaceMemory),
+    logger: () => logger,
   };
 }
