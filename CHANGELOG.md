@@ -3,6 +3,8 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-05
+
 ### Performance
 - **Activation no longer loads the whole extension graph, or builds services it may never
   use.** Three changes, each measured with the interleaved A/B harness

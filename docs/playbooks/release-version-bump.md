@@ -47,7 +47,7 @@ If branch protection is reconfigured, keep the `check:version` job
    `src/shared/version.ts` to the same value.
 2. Move the `## [Unreleased]` CHANGELOG entries under a new
    `## [x.y.z] - <date>` heading, leaving an empty `## [Unreleased]`.
-3. `npm run compile && npm run check:version` (or just `npm test`).
+3. `npm run compile && npm run bundle && npm run check:version` (or just `npm test`).
 4. `npx vsce package --allow-missing-repository` — the prepublish gate
    re-checks the pair as part of packaging.
 5. Merge — CI runs `check:version` on the PR (see the workflow above); it must

@@ -5,14 +5,16 @@
 AI coding assistant with Azure DevOps integration
 
 ## Build & Test
-- `npm run compile` — TypeScript compilation
-- `npm run build:all` — Full build
+- `npm run compile` — TypeScript compile (`tsc -p ./`) → `out/`
+- `npm run bundle` — esbuild bundle `src/extension.ts` → `dist/extension.js` (runtime entry; `package.json` "main")
+- `npm run build:all` — Full build (compile + bundle + webview)
 - `npm test` — Run test suite
 - `npm run lint` — Linting
 
 ## Project Structure
 - `docs/` — documentation
-- `out/` — compiled output; tests run from out/test/runTest.js
+- `dist/` — bundled runtime entry (`dist/extension.js`, built by `scripts/build.js`)
+- `out/` — `tsc` output; tests run from out/test/runTest.js
 - `resources/` — extension resources
 - `scripts/` — repository scripts
 - `src/` — extension entry point and services composition root per AGENTS.md
@@ -27,17 +29,17 @@ AI coding assistant with Azure DevOps integration
 
 ### Layout & Docs
 Root: `d:\Development\vscode\ado-code`  
-Branch `main`, HEAD `50b27af`, remote `steelburn/ado-code`.
+Branch `main`, HEAD `34d10df`, remote `steelburn/ado-code`.
 
 ```
 docs/ resources/ scripts/ src/
 .eslintrc.json .gitignore .vscodeignore
 AGENTS.md CHANGELOG.md README.md
 package.json package-lock.json tsconfig.json
-ado-code-0.6.7.vsix ado-code-0.6.8.vsix
+ado-code-0.6.7.vsix ado-code-0.6.8.vsix ado-code-0.7.0.vsix
 ```
 
-`AGENTS.md` also lists `out/` (TypeScript compile output/test runner path) and `webview-ui-dist/`.
+Build output not shown above: `dist/` (esbuild-bundled runtime entry `dist/extension.js`), `out/` (`tsc` output for the test runner), and `webview-ui-dist/` (webview build).
 
 Docs live in:
 - `AGENTS.md` — authoritative build/test/structure notes
@@ -54,7 +56,7 @@ Read first: `AGENTS.md`, `README.md`, `package.json`, then `src/`.
 - `resources/`, `scripts/`, `docs/` — supporting assets/scripts/docs
 
 ### Architecture
-ADO Code is a VS Code AI coding assistant with Azure DevOps work item integration. The core TypeScript code lives in `src/`; `src/` is described as the extension entry point and services composition root. The webview UI is a separate package under `src/webview-ui`, built into `webview-ui-dist/`.
+ADO Code is a VS Code AI coding assistant with Azure DevOps work item integration. The core TypeScript code lives in `src/`; `src/` is described as the extension entry point and services composition root. The entry `src/extension.ts` is bundled by esbuild into a single runtime file `dist/extension.js` (declared as `main` in `package.json`), which also keeps activation light by deferring non-critical startup and lazily building services; `out/` is only the `tsc` output used by the test runner. The webview UI is a separate package under `src/webview-ui`, built into `webview-ui-dist/`.
 
 README features indicate:
 - ADO work item tree view with mode toggle (My / All / Unassigned) and Epic → Feature → User Story → Task hierarchy
@@ -68,6 +70,7 @@ Repository understanding is cached in `.ado-code/understanding/` and refreshed a
 ### Key Modules/Directories
 - `src/` — main extension logic and service composition
 - `src/webview-ui/` — separate webview frontend package
+- `dist/` — bundled runtime entry (`dist/extension.js`)
 - `out/` — compiled JS and test runner path
 - `webview-ui-dist/` — built webview output
 - `resources/` — extension resources
@@ -78,6 +81,7 @@ Repository understanding is cached in `.ado-code/understanding/` and refreshed a
 - TypeScript project compiled with `tsc -p ./`
 - ESLint at root; lint command targets `src`
 - Tests use `@vscode/test-electron`, `mocha`, `glob`; runner is `out/test/runTest.js`
+- Bundling: esbuild via `scripts/build.js`; `vscode:prepublish` runs `check:version` → `compile` → `bundle`, so the packaged VSIX ships `dist/extension.js` (see `.vscodeignore`)
 - Webview is a nested npm package; `build:webview` runs `npm install && npm run build` inside `src/webview-ui`
 - `husky` + `lint-staged` dev deps; `prepare` runs `husky`
 - No explicit naming or error-handling conventions are visible in the
