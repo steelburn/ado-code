@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import { runTests } from '@vscode/test-electron';
+import { buildLaunchArgs, sanitizeLaunchEnv } from './launchConfig';
 
 async function main() {
   try {
@@ -10,11 +11,14 @@ async function main() {
     // Extra VS Code launch args (space-separated) for sandboxed/container
     // environments, e.g. ADO_CODE_TEST_EXTRA_ARGS="--no-sandbox --disable-dev-shm-usage".
     const extraArgs = (process.env.ADO_CODE_TEST_EXTRA_ARGS ?? '').split(' ').filter(Boolean);
+    // The downloaded VS Code must start as Electron, not as Node: an inherited
+    // ELECTRON_RUN_AS_NODE makes Code.exe reject our CLI flags ("bad option").
+    sanitizeLaunchEnv(process.env);
     await runTests({
       vscodeExecutablePath,
       extensionDevelopmentPath,
       extensionTestsPath,
-      launchArgs: ['--disable-extensions', path.join(os.tmpdir(), 'ado-code-test-workspace'), ...extraArgs],
+      launchArgs: buildLaunchArgs(path.join(os.tmpdir(), 'ado-code-test-workspace'), extraArgs),
     });
   } catch (err) {
     console.error('Failed to run tests:', err);

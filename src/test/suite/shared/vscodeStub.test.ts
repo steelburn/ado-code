@@ -56,7 +56,11 @@ suite('shared/vscodeStub', () => {
     md.appendText(' with steps.');
     md.appendMarkdown(' __done__');
 
-    assert.strictEqual(md.value, 'Each session can carry a **goal**. with steps. __done__');
+    // Real VS Code escapes the spaces introduced by appendText() to `&nbsp;`;
+    // the headless stub leaves them literal. Normalise so this guard pins the
+    // *accumulation* contract in both environments rather than the escaping.
+    const value = (md.value as string).replace(/&nbsp;/g, ' ');
+    assert.strictEqual(value, 'Each session can carry a **goal**. with steps. __done__');
   });
 
   test('EventEmitter delivers to registered listeners and stops after dispose', () => {

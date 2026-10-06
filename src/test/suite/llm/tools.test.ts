@@ -569,6 +569,51 @@ suite('ToolExecutor batch tool calls (fewer round-trips)', () => {
 
 // ── 0.6.5: consent & YOLO-push regressions ─────────────────────────────────
 suite('ToolExecutor · 0.6.5 consent & push gates', () => {
+  // Commands that clear the consent gate are executed for real (execFile) with
+  // cwd = workspaceFolders[0]. That must NEVER be the extension's own checkout:
+  // a real `git commit`/`git push` from a test mutates the developer's repo, and
+  // `git commit` additionally re-enters the pre-commit hook (compile + npm test),
+  // which hangs the suite until mocha's 20s timeout whenever the index is dirty.
+  // Run these commands in a throwaway dir so they fail fast with no side effects.
+  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-code-consent-cwd-'));
+  let originalWorkspaceFolders: typeof vscode.workspace.workspaceFolders;
+
+  suiteSetup(() => {
+    originalWorkspaceFolders = vscode.workspace.workspaceFolders;
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      value: [{ uri: vscode.Uri.file(scratchDir), name: 'consent-scratch', index: 0 }],
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  suiteTeardown(() => {
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      value: originalWorkspaceFolders,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+
+  test('guard: consent-gate commands execute outside the repo (scratch cwd)', () => {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    assert.ok(cwd, 'a workspace folder must be set for command execution');
+    assert.ok(
+      !fs.existsSync(path.join(cwd!, '.git')),
+      `terminal-execution cwd must not be a git repository (was ${cwd})`
+    );
+    const rel = path.relative(path.resolve(os.tmpdir()), path.resolve(cwd!));
+    assert.ok(
+      rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel),
+      `terminal-execution cwd must live under the OS temp dir (was ${cwd})`
+    );
+  });
+
   const cfg = () => vscode.workspace.getConfiguration('adoCode');
 
   async function withSetting(key: string, value: any, fn: () => Promise<void>): Promise<void> {

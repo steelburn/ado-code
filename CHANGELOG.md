@@ -28,6 +28,33 @@ All notable changes to ADO Code will be documented in this file.
   silently regress. Full webview suite 178 → 211 passing, 33 → 0 failures.
 - **`createNewSession()` can no longer mint two sessions with the same id.** Session ids came straight from `new Date().toISOString()` (millisecond resolution), so a rapid "New Session" — or any flow that opens a fresh session per work item — could create two sessions within the same millisecond. Because the id is also the active-session key, the second session silently failed to become active. A new `newSessionId()` helper suffixes a counter until the id is unique among the sessions already stored.
 
+- **`npm test` no longer dies before it starts when the shell already lives inside Electron.**
+  `@vscode/test-electron` launches the downloaded VS Code by copying the parent environment
+  verbatim (`Object.assign({}, process.env, ...)`), so an inherited `ELECTRON_RUN_AS_NODE=1`
+  — present in a VS Code integrated terminal, the extension host, and agent runners — made the
+  child `Code.exe` boot as a plain Node process. Node then rejected the harness's own CLI flags
+  (`Code.exe: bad option: --disable-extensions`, exit 9) and not a single test executed. The
+  variable is now scrubbed before launch. `--disable-extensions` itself is valid and stays; the
+  launch args and env are extracted into `src/test/launchConfig.ts` so the contract is covered by
+  the headless `src/test/suite/shared/launchConfig.test.ts` guard.
+
+- **The Electron harness's Windows temp-directory cleanup no longer stalls or leaks.** `cleanTempDir()`
+  ran `git gc --prune=now` before deleting each temp directory "to release Git locks", but gc runs
+  synchronously (seconds per repo) and auto-detaches, so it could itself *hold* the directory open and
+  make the delete fail with EPERM. `projectCreation`'s `afterEach` sweeps every leftover temp dir, so
+  the cost compounded until the suite's 20 s hook timeout tripped and the undeletable directories piled
+  up across runs. The gc step is removed (the `attrib -R` pass already clears the read-only git
+  objects) and the recursive delete now retries transient Windows handle locks. Guarded by
+  `src/test/suite/shared/cleanTempDir.test.ts`; the full `npm test` now runs end-to-end
+  (927 passing, 0 failing, exit 0).
+- **The consent-gate suite no longer runs real `git` mutations against the repository.** The
+  `ToolExecutor · 0.6.5 consent & push gates` tests execute approved commands for real via
+  `execFile` with `cwd` = `workspaceFolders[0]`, which pointed `git commit -m x` / `git push
+  origin main` at the extension's own checkout. A real `git commit` re-entered the pre-commit
+  hook (compile + `npm test`) and hung the suite until mocha's 20 s timeout whenever the index
+  was dirty; a real `git push` could reach `origin`. Those commands now run in a throwaway temp
+  directory, pinned by a guard test that fails if the execution cwd is the repository.
+
 ### Maintenance
 - **Removed two redundant config tests.** `configCanonicalKeys.test.ts` re-asserted two invariants already covered by `configSchema.test.ts` (`every catalog key is a canonical setting key` and `the host derives _allSettings from the canonical key list`); the duplicates were dropped and the `> 40 keys` full-catalog sanity check was folded into `configSchema.test.ts`.
 - **Licensing metadata added — the project is now MIT.** It was publicly distributed
