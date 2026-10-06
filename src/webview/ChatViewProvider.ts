@@ -23,7 +23,7 @@ import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupT
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals, terminalCommandKey, terminalCommandList } from '../llm/tool-approval-ui';
-import type { ContentBlockParam } from '../llm/providers/BaseProvider';
+import type { ContentBlockParam } from '../llm/types';
 import { AgentRunner } from '../agents/AgentRunner';
 import type { AgentRun } from '../agents/types';
 import { getMergeConflicts } from '../git/mergeConflicts';
@@ -297,6 +297,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private viewHidden = false;
   private wizardOpen = false;
   private promptsPaused = false;
+  // True while the editor-area chat panel exists AND its tab is the visible
+  // one. Prompt cards render in whichever webview hosts the conversation, so
+  // a hidden sidebar must not freeze a card the user is looking at in the
+  // editor (and vice versa).
+  private editorPanelVisible = false;
   // Auto-refresh timer for work items
   private refreshTimer?: ReturnType<typeof setInterval>;
   /** True when chat content has changed since last refresh cycle. */
@@ -382,6 +387,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async saveSessions(sessions: Session[]): Promise<void> {
     await this._context.workspaceState.update(this.sessionsStorageKey, sessions);
+  }
+
+  /**
+   * Mint a unique session id.  `new Date().toISOString()` has only millisecond
+   * resolution, so two sessions created within the same millisecond (a rapid
+   * "New Session", or a wizard that opens a fresh session per work item) would
+   * otherwise collide — and because the id is the active-session key, the
+   * second session would never become active. Suffix a counter until the id is
+   * unique among the sessions already stored.
+   */
+  private newSessionId(): string {
+    const base = new Date().toISOString();
+    const taken = new Set(this.getSessions().map(s => s.id));
+    let id = base;
+    let n = 1;
+    while (taken.has(id)) {
+      id = `${base}-${n++}`;
+    }
+    return id;
   }
 
   private getActiveSessionId(): string | null {
@@ -1275,7 +1299,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * the webview countdown continues from the true remaining time.
    */
   private updatePromptPause(): void {
-    const shouldPause = this.viewHidden || this.wizardOpen;
+    // The conversation may live in the sidebar view OR in the editor-area
+    // panel. Only freeze prompt countdowns when NEITHER chat surface is
+    // visible (or a full-page wizard covers them).
+    const shouldPause = this.wizardOpen || (this.viewHidden && !this.editorPanelVisible);
     if (shouldPause === this.promptsPaused) return;
     this.promptsPaused = shouldPause;
     if (shouldPause) {
@@ -4064,7 +4091,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Task 2: create a new empty session, set it active, and clear the conversation. */
   public async createNewSession(): Promise<void> {
     const session: Session = {
-      id: new Date().toISOString(),
+      id: this.newSessionId(),
       name: 'New Session',
       createdAt: new Date().toISOString(),
       messages: [],
@@ -4100,7 +4127,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.getActiveSessionId()) return;
     const sessions = this.getSessions();
     const session: Session = {
-      id: new Date().toISOString(),
+      id: this.newSessionId(),
       name: (firstMessage || 'New Session').slice(0, 60),
       createdAt: new Date().toISOString(),
       messages: [],
@@ -5037,16 +5064,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void vscode.commands.executeCommand('setContext', 'adoCode.chatInEditor', true);
     this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: true });
 
-    const panel = vscode.window.createWebviewPanel(
-      'adoCode.chatEditor',
-      'ADO Code Chat',
-      vscode.ViewColumn.Active,
-      {
-        enableScripts: true,
-        localResourceRoots: [this._extensionUri],
-        retainContextWhenHidden: true,
-      }
-    );
+    const panel = this.createChatEditorPanel();
 
     panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'activitybar-icon.svg');
 
@@ -5068,7 +5086,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    // The editor tab can be backgrounded (another editor tab focused) while
+    // the sidebar stays hidden — freeze prompts only when neither surface
+    // shows the conversation.
+    panel.onDidChangeViewState((e) => {
+      this.editorPanelVisible = e.webviewPanel.visible;
+      this.updatePromptPause();
+    });
+
     this._editorPanel = panel;
+    // A freshly created panel is the visible tab.
+    this.editorPanelVisible = true;
 
     // Ensure the active session has the latest conversation persisted
     const activeId = this.getActiveSessionId();
@@ -5079,6 +5107,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Send initial config
     this.postConfig();
+
+    // A prompt card (tool consent / confirmation) that was showing in the
+    // sidebar chat has to follow the conversation into the editor webview:
+    // this panel starts with empty prompt state. Re-post the pending requests
+    // — the same thing resolveWebviewView does when the sidebar view comes
+    // back. Re-posting is idempotent (the webview keys cards by requestId),
+    // and updatePromptPause() re-bases the deadlines first if they were
+    // frozen while the sidebar was hidden.
+    this.updatePromptPause();
+    this.repostPendingPrompts();
+  }
+
+  /**
+   * Create the editor-area chat panel. Extracted from openChatInEditor so
+   * tests can substitute a fake panel — the real createWebviewPanel opens a
+   * real editor tab, which a headless test cannot inspect.
+   */
+  protected createChatEditorPanel(): vscode.WebviewPanel {
+    return vscode.window.createWebviewPanel(
+      'adoCode.chatEditor',
+      'ADO Code Chat',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri],
+        retainContextWhenHidden: true,
+      }
+    );
   }
 
   /** Move the chat back to the sidebar and close the editor tab. */
@@ -5092,6 +5148,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // already disposed
       }
     }
+
+    // The conversation is back in the sidebar: resume (and re-post) any card
+    // that was frozen while no chat surface was visible.
+    this.editorPanelVisible = false;
+    this.updatePromptPause();
 
     void vscode.commands.executeCommand('setContext', 'adoCode.chatInEditor', false);
     this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: false });

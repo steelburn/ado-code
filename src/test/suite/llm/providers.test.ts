@@ -1,7 +1,9 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { OpenAiProvider, listModelsOpenAi } from '../../../llm/providers/openai';
 import { AnthropicProvider } from '../../../llm/providers/anthropic';
-import { LlmConfig, LlmMessage } from '../../../llm/types';
+import { LlmConfig, LlmMessage, LlmTool, LlmToolParameter } from '../../../llm/types';
 
 function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -245,5 +247,176 @@ suite('provider native token counting', () => {
     const tokens = await provider.countTokens!([{ role: 'user', content: 'hi' }], { ...config, model: 'o1-mini' });
     assert.strictEqual(tokens, undefined);
     assert.strictEqual(called, false, 'no HTTP request should be dispatched for reasoning model');
+  });
+});
+
+suite('LlmProvider tool payload contract', () => {
+  const toolConfig = {
+    baseUrl: 'https://example.test/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+  } as unknown as LlmConfig;
+
+  let captured: { body?: string } | undefined;
+
+  function captureFetch(payload: unknown) {
+    captured = {};
+    (globalThis as any).fetch = async (_url: string, init: any) => {
+      captured!.body = init.body;
+      return { ok: true, json: async () => payload, text: async () => JSON.stringify(payload) };
+    };
+  }
+
+  function sentTools(): any[] {
+    return JSON.parse(captured!.body!).tools;
+  }
+
+  test('chatWithTools sends function payloads with name, description and parameters', async () => {
+    captureFetch({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] });
+    const tools: LlmTool[] = [
+      {
+        name: 'get_work_items',
+        description: 'Fetch work items',
+        parameters: {
+          type: 'object',
+          properties: { id: { type: 'number', description: 'Work item id' } },
+          required: ['id'],
+        },
+      },
+    ];
+
+    await new OpenAiProvider().chatWithTools([{ role: 'user', content: 'hi' }], toolConfig, tools);
+
+    assert.deepStrictEqual(sentTools(), [
+      {
+        type: 'function',
+        function: {
+          name: 'get_work_items',
+          description: 'Fetch work items',
+          parameters: {
+            type: 'object',
+            properties: { id: { type: 'number', description: 'Work item id' } },
+            required: ['id'],
+          },
+        },
+      },
+    ]);
+  });
+
+  test('passes tool schemas through verbatim - no OpenAI strict-mode rewriting', async () => {
+    captureFetch({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] });
+    const parameters = {
+      type: 'object',
+      properties: {
+        filter: { type: ['string', 'null'] },
+        nested: { type: 'object', properties: { deep: { type: 'string' } } },
+        list: { type: 'array', items: { type: 'object', properties: { x: { type: 'number' } } } },
+      },
+      required: [],
+    } as unknown as LlmToolParameter;
+
+    await new OpenAiProvider().chatWithTools([{ role: 'user', content: 'hi' }], toolConfig, [
+      { name: 'search', description: 'Search', parameters },
+    ]);
+
+    const fn = sentTools()[0].function;
+    assert.deepStrictEqual(fn.parameters, parameters);
+    assert.strictEqual(fn.strict, undefined, 'strict must not be injected');
+  });
+
+  test('does not mutate the caller tool definitions', async () => {
+    captureFetch({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] });
+    const tools = [
+      {
+        name: 'search',
+        description: 'Search',
+        parameters: { type: 'object', properties: { filter: { type: ['string', 'null'] } } },
+      },
+    ] as unknown as LlmTool[];
+    const snapshot = JSON.parse(JSON.stringify(tools));
+
+    await new OpenAiProvider().chatWithTools([{ role: 'user', content: 'hi' }], toolConfig, tools);
+
+    assert.deepStrictEqual(tools, snapshot);
+  });
+});
+
+suite('Source hygiene - no derived Roo-Code helpers in src/', () => {
+  const DERIVED_MARKERS = ['convertToolsForOpenAI', 'convertToolSchemaForOpenAI'];
+
+  function findSrcDir(): string {
+    let dir = __dirname;
+    for (let i = 0; i < 8; i++) {
+      if (fs.existsSync(path.join(dir, 'src', 'llm', 'types.ts'))) {
+        return path.join(dir, 'src');
+      }
+      dir = path.dirname(dir);
+    }
+    throw new Error('could not locate src/ from ' + __dirname);
+  }
+
+  function productionSources(root: string): string[] {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === 'test') {
+            continue;
+          }
+          walk(full);
+        } else {
+          files.push(full);
+        }
+      }
+    };
+    walk(root);
+    return files;
+  }
+
+  test('no derived strict-mode schema helpers exist anywhere in src/', () => {
+    const srcDir = findSrcDir();
+    const offenders: string[] = [];
+    for (const file of productionSources(srcDir)) {
+      const text = fs.readFileSync(file, 'utf8');
+      for (const marker of DERIVED_MARKERS) {
+        if (text.includes(marker)) {
+          offenders.push(path.relative(srcDir, file).split(path.sep).join('/') + ': ' + marker);
+        }
+      }
+    }
+    assert.deepStrictEqual(offenders, [], 'derived helpers found - check upstream licence obligations');
+  });
+
+  test('no Roo-Code / Cline attribution remains in src/', () => {
+    const srcDir = findSrcDir();
+    // Matches the upstream project names only - "declined"/"declines" and
+    // "root"/"room" cannot match because of the word boundaries.
+    const ATTRIBUTION = /\bRoo\b|\bCline\b/i;
+    const offenders: string[] = [];
+    for (const file of productionSources(srcDir)) {
+      const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (ATTRIBUTION.test(line)) {
+          offenders.push(
+            path.relative(srcDir, file).split(path.sep).join('/') + ':' + (index + 1) + ' ' + line.trim(),
+          );
+        }
+      });
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      'Roo-Code/Cline attribution found in src/ - describe the pattern, not a named source',
+    );
+  });
+
+  test('the unused BaseProvider module is gone', () => {
+    const srcDir = findSrcDir();
+    assert.strictEqual(
+      fs.existsSync(path.join(srcDir, 'llm', 'providers', 'BaseProvider.ts')),
+      false,
+      'BaseProvider.ts is unused and carried the derived helpers',
+    );
   });
 });

@@ -23,15 +23,36 @@ function makeSessionContext(): any {
   };
 }
 
+/**
+ * Minimal Services bundle for ChatViewProvider unit tests. Session bookkeeping
+ * (syncTodoSession and the rename/remove message handlers) talks to
+ * `services.todos`, so every construction needs at least a no-op to-do store;
+ * `overrides` layers the collaborators a specific test cares about
+ * (ado, git, understanding, …).
+ */
+function makeServices(overrides: Record<string, any> = {}): any {
+  return {
+    todos: {
+      setActiveSession() { /* noop */ },
+      rename() { /* noop */ },
+      removeSession() { /* noop */ },
+      removeAll() { /* noop */ },
+      setGoal() { /* noop */ },
+    },
+    ...overrides,
+  };
+}
+
+
 suite('ChatViewProvider', () => {
   test('can be instantiated', () => {
     // C-6 fix: Task 8 changed the signature to (extensionUri, services, context, onItemsFetched?).
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     assert.ok(provider);
   });
 
   test('requestConsent posts a consentRequest card and resolves on approval', async () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
     const args = { path: 'a.ts', oldText: 'a', newText: 'b' };
@@ -49,7 +70,7 @@ suite('ChatViewProvider', () => {
   });
 
   test('requestConsent denies when the webview rejects', async () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
     const decision = provider.requestConsent('add_comment', { id: 5, text: 'hi' });
@@ -59,7 +80,7 @@ suite('ChatViewProvider', () => {
   });
 
   test('setWorking tracks depth and shows/hides the status-bar indicator', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     let shown = 0;
     let hidden = 0;
     const bar: any = { show: () => shown++, hide: () => hidden++, text: '', tooltip: '' };
@@ -78,7 +99,7 @@ suite('ChatViewProvider', () => {
   });
 
   test('setWorking shows a spinner text while active and clears it when idle', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const bar: any = { show: () => {}, hide: () => {}, text: '', tooltip: '' };
     provider.setWorkingStatusBar(bar);
 
@@ -89,7 +110,7 @@ suite('ChatViewProvider', () => {
   });
 
   test('first user message auto-creates a session named from the message', async () => {
-    const provider = new ChatViewProvider({} as any, {} as any, makeSessionContext());
+    const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
 
@@ -110,7 +131,7 @@ suite('ChatViewProvider', () => {
   });
 
   test('ensureSession is a no-op when an active session already exists', async () => {
-    const provider = new ChatViewProvider({} as any, {} as any, makeSessionContext());
+    const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     await provider.createNewSession();
     await (provider as any).ensureSession('hello');
     assert.strictEqual((provider as any).getSessions().length, 1);
@@ -120,7 +141,7 @@ suite('ChatViewProvider', () => {
   test('requestConsent skips the prompt for a session-approved tool', async () => {
     clearSessionAutoApprovals();
     addSessionToolApproval('edit_file');
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
 
@@ -132,7 +153,7 @@ suite('ChatViewProvider', () => {
   test('requestConsent skips the prompt for a session-approved terminal command (inline mode)', async () => {
     clearSessionAutoApprovals();
     addSessionCommandApproval('npm test');
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
 
@@ -146,7 +167,7 @@ suite('ChatViewProvider', () => {
     // an option on an AI-posed question. The host switch had no such case, so
     // the answer was silently dropped and the chat went stale (spinner on, no
     // LLM turn). Drive the REAL message switch and assert routing.
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const handlers: Array<(msg: any) => void> = [];
     const webviewView: any = {
       onDidDispose: () => {},
@@ -171,7 +192,7 @@ suite('ChatViewProvider', () => {
   });
 
   test('userMessage still routes content + images to handleUserMessage', async () => {
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const handlers: Array<(msg: any) => void> = [];
     const webviewView: any = {
       onDidDispose: () => {},
@@ -198,7 +219,7 @@ suite('ChatViewProvider', () => {
   test('createNewSession clears session approvals (no leak into the new chat)', async () => {
     clearSessionAutoApprovals();
     addSessionToolApproval('edit_file');
-    const provider = new ChatViewProvider({} as any, {} as any, makeSessionContext());
+    const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
 
     await provider.createNewSession();
     assert.strictEqual(isSessionAutoApproved('edit_file'), false, 'approvals reset on new session');
@@ -209,7 +230,7 @@ suite('ChatViewProvider', () => {
     const services: any = {
       git: { commitWorktreeChanges: async () => { committed++; return { committed: true, hash: 'abc1234' }; } },
     };
-    const provider = new ChatViewProvider({} as any, services, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(services), {} as any);
     (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', workItemId: 42, title: 'Fix login', status: 'failed' }] };
     provider.setAgentRunner((provider as any).agentRunner);
     (provider as any).executor.setMode('act');
@@ -229,7 +250,7 @@ suite('ChatViewProvider', () => {
     const services: any = {
       git: { commitWorktreeChanges: async () => ({ committed: true, hash: 'abc' }) },
     };
-    const provider = new ChatViewProvider({} as any, services, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(services), {} as any);
     (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', status: 'running' }] };
     provider.setAgentRunner((provider as any).agentRunner);
     (provider as any).executor.setMode('act');
@@ -248,7 +269,7 @@ suite('ChatViewProvider', () => {
         git: { workspaceRoot: '/tmp/repo', getBaseBranch: async () => 'main' },
         ado: { createPullRequest: async () => { prCalled = true; return { pullRequestId: 1, url: 'x' }; } },
       };
-      const provider = new ChatViewProvider({} as any, services, {} as any);
+      const provider = new ChatViewProvider({} as any, makeServices(services), {} as any);
       (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', branch: 'feature/ado-42', workItemId: 42, title: 'Fix', status: 'succeeded' }] };
       provider.setAgentRunner((provider as any).agentRunner);
       (provider as any).executor.setMode('act');
@@ -266,7 +287,7 @@ suite('ChatViewProvider', () => {
       git: { workspaceRoot: '/tmp/repo', getBaseBranch: async () => 'develop' },
       ado: { createPullRequest: async () => ({ pullRequestId: 7, url: 'https://dev.azure.com/x' }) },
     };
-    const provider = new ChatViewProvider({} as any, services, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(services), {} as any);
     (provider as any).agentRunner = { listRuns: () => [{ id: 'run-1', branch: 'feature/ado-42', workItemId: 42, title: 'Fix', status: 'succeeded' }] };
     provider.setAgentRunner((provider as any).agentRunner);
     (provider as any).executor.setMode('act');
@@ -294,7 +315,7 @@ function makeRefreshProvider(services: any) {
   const posts: any[] = [];
   const provider = new ChatViewProvider(
     {} as any,
-    services,
+    makeServices(services),
     { workspaceState: { get: () => undefined, update: async () => {} } } as any,
     (items: any[]) => treeItems.push(...items)
   );
@@ -439,7 +460,7 @@ suite('ChatViewProvider refreshWorkItems', () => {
   });
 
   test('openAgentProgress opens the live progress panel for a run', async () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const fakeRunner: any = {
       listRuns: () => [{
         id: 'run-1-42', workItemId: 42, agent: 'claude', workdir: '/tmp',
@@ -473,7 +494,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   };
 
   test('parseProposedTasks extracts tasks from the exact JSON fence', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const text = 'Breakdown reasoning here.\n## PROPOSED_TASKS\n```json\n' +
       JSON.stringify([JSON_TASK]) + '\n```';
     const r = (provider as any).parseProposedTasks(text);
@@ -484,7 +505,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test('parseProposedTasks falls back to a numbered list when the model skips JSON', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const text = '## PROPOSED_TASKS\n' +
       '1. **Set up CI** — add pipeline\n' +
       '2. Write tests\n' +
@@ -498,7 +519,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test('parseProposedTasks tolerates fence casing, bare fences, and missing fences', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const json = JSON.stringify([JSON_TASK]);
     for (const block of [
       '```JSON\n' + json + '\n```',
@@ -512,13 +533,13 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test('parseProposedTasks returns null without a heading or with no tasks', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     assert.strictEqual((provider as any).parseProposedTasks('1. foo\n2. bar'), null);
     assert.strictEqual((provider as any).parseProposedTasks('## PROPOSED_TASKS\n(nothing here)'), null);
   });
 
   test('parseCheckedTasks preserves multi-line fields with numbered items and skips unchecked', () => {
-    const provider = new ChatViewProvider({} as any, {} as any, {} as any);
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
     const content = [
       '# Proposed Tasks for #1: Story',
       '',
@@ -551,7 +572,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test('maximizeWizard hides sibling sidebar views on wizard open and restores them on close', async () => {
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const handlers: Array<(msg: any) => void> = [];
     const webviewView: any = {
       onDidDispose: () => {},
@@ -610,7 +631,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   }
 
   test('prompt timeouts pause while the chat view is hidden and resume when it returns', async () => {
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const { webviewView, visibilityHandlers, posted } = makeTrackedWebview();
     await (provider as any).resolveWebviewView(webviewView, {}, {});
 
@@ -636,7 +657,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test('pending confirmations pause while the chat view is hidden and re-post on return', async () => {
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const { webviewView, visibilityHandlers, posted } = makeTrackedWebview();
     await (provider as any).resolveWebviewView(webviewView, {}, {});
 
@@ -660,7 +681,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test('opening a full-page wizard pauses pending prompts; closing it resumes and re-posts', async () => {
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const { webviewView, handlers, posted } = makeTrackedWebview();
     await (provider as any).resolveWebviewView(webviewView, {}, {});
 
@@ -683,7 +704,7 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
   });
 
   test("kebab 'Configuration…' routes to the in-webview Configuration page", async () => {
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
     const handlers: Array<(msg: any) => void> = [];
     const posted: any[] = [];
     const webviewView: any = {
@@ -701,6 +722,183 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
     await handlers[0]({ type: 'openSettings' });
     const openMsg = posted.find(m => m.type === 'openSettings');
     assert.ok(openMsg, 'host posts openSettings back to the webview (in-app Configuration page)');
+  });
+});
+
+// ── Moving the chat between the sidebar and the editor area ────────────────
+// Prompt cards (tool consent / confirmation) render in whichever webview
+// hosts the conversation. Moving the chat into the editor creates a fresh
+// webview, so pending cards must be re-posted there — otherwise the popup the
+// user was looking at in the sidebar silently disappears.
+
+suite('ChatViewProvider · chat in the editor area', () => {
+  /** Fake editor panel: records posts, exposes dispose / view-state hooks. */
+  function makeFakePanel() {
+    const posted: any[] = [];
+    const disposeHandlers: Array<() => void> = [];
+    const viewStateHandlers: Array<(e: any) => void> = [];
+    let disposed = false;
+    const panel: any = {
+      iconPath: undefined,
+      webview: {
+        options: {},
+        html: '',
+        cspSource: 'test-csp',
+        postMessage: (m: any) => posted.push(m),
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (_h: (msg: any) => void) => { /* noop */ },
+      },
+      onDidDispose: (h: () => void) => disposeHandlers.push(h),
+      onDidChangeViewState: (h: (e: any) => void) => viewStateHandlers.push(h),
+      reveal: () => { /* noop */ },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        disposeHandlers.forEach(h => h());
+      },
+    };
+    return { panel, posted, viewStateHandlers };
+  }
+
+  /** Sidebar webview view stub: records posts + visibility changes. */
+  function makeSidebarView() {
+    const handlers: Array<(msg: any) => void> = [];
+    const visibilityHandlers: Array<() => void> = [];
+    const posted: any[] = [];
+    const webviewView: any = {
+      visible: true,
+      show: () => { /* noop */ },
+      onDidDispose: () => { /* noop */ },
+      onDidChangeVisibility: (h: () => void) => visibilityHandlers.push(h),
+      webview: {
+        options: {},
+        html: '',
+        cspSource: 'test-csp',
+        postMessage: (m: any) => posted.push(m),
+        asWebviewUri: (u: any) => u,
+        onDidReceiveMessage: (h: (msg: any) => void) => handlers.push(h),
+      },
+    };
+    return { webviewView, handlers, visibilityHandlers, posted };
+  }
+
+  /** Provider whose editor panel is a fake — no real editor tab in tests. */
+  class EditorAreaProvider extends ChatViewProvider {
+    public fakePanel: any = undefined;
+    protected createChatEditorPanel(): vscode.WebviewPanel {
+      return this.fakePanel;
+    }
+  }
+
+  function makeProvider() {
+    const provider = new EditorAreaProvider(vscode.Uri.file('/tmp/ext'), {} as any, makeSessionContext());
+    const fake = makeFakePanel();
+    provider.fakePanel = fake.panel;
+    return { provider, fake };
+  }
+
+  test('a pending tool-consent card follows the chat into the editor area', async () => {
+    const { provider, fake } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const inSidebar = sidebar.posted.filter((m: any) => m.type === 'consentRequest').pop();
+    assert.ok(inSidebar, 'consent card requested while the chat is in the sidebar');
+
+    await provider.openChatInEditor();
+
+    const inEditor = fake.posted.filter((m: any) => m.type === 'consentRequest').pop();
+    assert.ok(inEditor, 'pending consent card is re-posted into the editor webview');
+    assert.strictEqual(inEditor.requestId, inSidebar.requestId, 'same pending request');
+    assert.strictEqual(inEditor.tool, 'edit_file');
+    assert.ok(inEditor.expiresAt > Date.now(), 'card keeps a live countdown deadline');
+
+    (provider as any).consentBroker.resolve(inEditor.requestId, true);
+    assert.strictEqual(await decision, true);
+  });
+
+  test('a pending confirmation card follows the chat into the editor area', async () => {
+    const { provider, fake } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const decision = provider.requestConfirmation('Start task?', 'Task is underspecified', [
+      { label: 'Start anyway', value: 'start' },
+      { label: 'Cancel', value: 'cancel' },
+    ]);
+    const inSidebar = sidebar.posted.filter((m: any) => m.type === 'confirmationRequest').pop();
+    assert.ok(inSidebar, 'confirmation card requested while the chat is in the sidebar');
+
+    await provider.openChatInEditor();
+
+    const inEditor = fake.posted.filter((m: any) => m.type === 'confirmationRequest').pop();
+    assert.ok(inEditor, 'pending confirmation card is re-posted into the editor webview');
+    assert.strictEqual(inEditor.requestId, inSidebar.requestId, 'same pending request');
+    assert.strictEqual(inEditor.title, 'Start task?');
+    assert.ok(inEditor.expiresAt > Date.now(), 'card keeps a live countdown deadline');
+
+    (provider as any).confirmBroker.resolve(inEditor.requestId, 'start');
+    assert.strictEqual(await decision, 'start');
+  });
+
+  test('prompts stay live while the chat is in the editor even if the sidebar view is hidden', async () => {
+    const { provider, fake } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const consentBroker = (provider as any).consentBroker;
+    const requestId = consentBroker.pending.requestId;
+
+    await provider.openChatInEditor();
+
+    // The user closes / collapses the sidebar while the chat lives in the editor.
+    sidebar.webviewView.visible = false;
+    await sidebar.visibilityHandlers[0]();
+    assert.strictEqual(consentBroker.paused, false, 'a hidden sidebar must not freeze a card shown in the editor');
+
+    // Editor tab goes to the background too — nothing shows the chat.
+    fake.viewStateHandlers[0]({ webviewPanel: { visible: false } });
+    assert.strictEqual(consentBroker.paused, true, 'both surfaces hidden freezes prompts');
+
+    // Editor tab comes back to the front.
+    fake.viewStateHandlers[0]({ webviewPanel: { visible: true } });
+    assert.strictEqual(consentBroker.paused, false, 'prompts resume with the editor chat visible');
+
+    consentBroker.resolve(requestId, false);
+    assert.strictEqual(await decision, false);
+  });
+
+  test('closing the editor chat hands the conversation (and its prompts) back to the sidebar', async () => {
+    const { provider, fake } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    await provider.openChatInEditor();
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const consentBroker = (provider as any).consentBroker;
+    const requestId = consentBroker.pending.requestId;
+
+    // Nothing shows the chat: editor tab backgrounded + sidebar hidden.
+    fake.viewStateHandlers[0]({ webviewPanel: { visible: false } });
+    sidebar.webviewView.visible = false;
+    await sidebar.visibilityHandlers[0]();
+    assert.strictEqual(consentBroker.paused, true, 'no chat surface visible freezes prompts');
+
+    // User closes the editor tab → the extension reveals the sidebar again.
+    fake.panel.dispose();
+    assert.strictEqual((provider as any)._editorPanel, undefined, 'editor panel released');
+    sidebar.webviewView.visible = true;
+    await sidebar.visibilityHandlers[0]();
+
+    assert.strictEqual(consentBroker.paused, false, 'prompts resume once the chat is back in the sidebar');
+    const repost = sidebar.posted.filter((m: any) => m.type === 'consentRequest').pop();
+    assert.strictEqual(repost.requestId, requestId, 'card re-posted to the sidebar');
+    assert.ok(repost.expiresAt > Date.now(), 're-posted with a fresh countdown deadline');
+
+    consentBroker.resolve(requestId, true);
+    assert.strictEqual(await decision, true);
   });
 });
 
@@ -730,10 +928,10 @@ suite('ChatViewProvider · AGENTS.md sync', () => {
     const posted: any[] = [];
     const provider = new ChatViewProvider(
       vscode.Uri.file(root),
-      {
+      makeServices({
         git: { workspaceRoot: root },
         understanding: { ensureFresh: async () => true, getRepoSummary: () => '', getKnowledge: () => '' },
-      } as any,
+      }),
       context ?? makeSessionContext()
     );
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
@@ -842,7 +1040,7 @@ suite('ChatViewProvider · one work item per session (0.6.5)', () => {
   function makeHarness(): { provider: ChatViewProvider; posted: any[] } {
     const posted: any[] = [];
     const context = makeSessionContext();
-    const provider = new ChatViewProvider({} as any, {} as any, context as any, () => {});
+    const provider = new ChatViewProvider({} as any, makeServices(), context as any, () => {});
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
     return { provider, posted };
   }
@@ -914,6 +1112,25 @@ suite('ChatViewProvider · one work item per session (0.6.5)', () => {
     assert.deepStrictEqual(all.find((x: any) => x.id === newId).workItemIds, [202], 'new session bound to the second item');
   });
 
+  test('createNewSession() mints a unique id even when two sessions land in the same millisecond', async () => {
+    const { provider } = makeHarness();
+    const realToISOString = Date.prototype.toISOString;
+    // Freeze the clock so both sessions resolve to a byte-identical timestamp;
+    // without the guard the second session would reuse the first's id and never
+    // become active (the id doubles as the active-session key).
+    Date.prototype.toISOString = () => '2026-01-01T00:00:00.000Z';
+    try {
+      await (provider as any).createNewSession();
+      const firstId = (provider as any).getActiveSessionId();
+      await (provider as any).createNewSession();
+      const secondId = (provider as any).getActiveSessionId();
+      assert.notStrictEqual(secondId, firstId, 'second session must not reuse the first id');
+      assert.strictEqual((provider as any).getSessions().filter((s: any) => s.id === firstId).length, 1, 'first session preserved');
+    } finally {
+      Date.prototype.toISOString = realToISOString;
+    }
+  });
+
   test('cancelling the multi-WI card aborts the action (returns false, no binding)', async () => {
     const { provider, posted } = makeHarness();
     await (provider as any).createNewSession();
@@ -977,7 +1194,7 @@ suite('ChatViewProvider · turn trace persistence', () => {
   });
 
   test('without storing a record, a finished turn carries no trace', async () => {
-    const provider = new ChatViewProvider({} as any, {} as any, makeSessionContext());
+    const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     (provider as any)._view = { webview: { postMessage: () => {} } };
     await (provider as any).ensureSession('hello');
     await (provider as any).persistConversation();
@@ -991,7 +1208,7 @@ suite('ChatViewProvider · turn trace persistence', () => {
 
   test('a recorded turn survives persist + reload and is posted back with history', async () => {
     const context = makeSessionContext();
-    const provider = new ChatViewProvider({} as any, {} as any, context);
+    const provider = new ChatViewProvider({} as any, makeServices(), context);
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
     await (provider as any).ensureSession('hi');
@@ -1031,7 +1248,7 @@ suite('ChatViewProvider · turn trace persistence', () => {
 
   test('persisting the conversation again does not drop a stored record', async () => {
     const context = makeSessionContext();
-    const provider = new ChatViewProvider({} as any, {} as any, context);
+    const provider = new ChatViewProvider({} as any, makeServices(), context);
     (provider as any)._view = { webview: { postMessage: () => {} } };
     const sessionId = await (provider as any).ensureSession('hi');
     (provider as any).conversation = [
@@ -1055,7 +1272,7 @@ suite('ChatViewProvider · turn trace persistence', () => {
 
   test('auto-names a "New Session" and pushes the refreshed list to the webview', async () => {
     const context = makeSessionContext();
-    const provider = new ChatViewProvider({} as any, {} as any, context);
+    const provider = new ChatViewProvider({} as any, makeServices(), context);
     const posted: any[] = [];
     (provider as any)._view = { webview: { postMessage: (m: any) => posted.push(m) } };
     await (provider as any).createNewSession();
@@ -1112,7 +1329,7 @@ suite('ChatViewProvider · selectProject', () => {
       git: { workspaceRoot: '' },
       ado: {},
     };
-    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), services, context, (items: any[]) => {
+    const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(services), context, (items: any[]) => {
       treeItems = items;
     });
     const handlers: Array<(msg: any) => void> = [];

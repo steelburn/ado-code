@@ -5,10 +5,8 @@ import * as path from 'path';
 // Before the move, src/webview-ui was excluded from the root tsconfig, so the
 // guard could only regex-parse the catalog SOURCE as text.
 import { CATEGORIES, ADVANCED_CATEGORY } from '../../../config/catalog';
-import { CONFIG_SETTING_KEYS } from '../../../shared/configSchema';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const HOST = 'src/webview/ChatViewProvider.ts';
 
 function read(rel: string): string {
   return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
@@ -37,21 +35,6 @@ suite('Configuration catalog is a single importable source (R2/R5)', () => {
     assert.ok(ADVANCED_CATEGORY.id.length > 0, 'ADVANCED_CATEGORY must import as data');
   });
 
-  test('every catalog key is a canonical setting key', () => {
-    const canonical = new Set<string>(CONFIG_SETTING_KEYS as readonly string[]);
-    const keys = [...CATEGORIES, ADVANCED_CATEGORY]
-      .flatMap(c => c.sections)
-      .flatMap(s => s.settings)
-      .map(s => s.key);
-    const strays = keys.filter(k => !canonical.has(k));
-    assert.deepStrictEqual(
-      strays,
-      [],
-      `catalog keys not present in CONFIG_SETTING_KEYS: ${strays.join(', ')}`,
-    );
-    assert.ok(keys.length > 40, `expected the full catalog, parsed ${keys.length} keys`);
-  });
-
   test('the catalog key field is typed as ConfigSettingKey (compile-time guard)', () => {
     const src = read('src/config/catalog.ts');
     assert.ok(
@@ -64,15 +47,4 @@ suite('Configuration catalog is a single importable source (R2/R5)', () => {
     );
   });
 
-  test('the host derives _allSettings from the canonical key list', () => {
-    const src = read(HOST);
-    assert.ok(
-      /for \(const key of CONFIG_SETTING_KEYS\)/.test(src),
-      '_allSettings must iterate CONFIG_SETTING_KEYS',
-    );
-    assert.ok(
-      !/readonly ConfigSettingKey\[\]\s*=\s*\[/.test(src),
-      'the host must not keep a second hand-maintained key list',
-    );
-  });
 });

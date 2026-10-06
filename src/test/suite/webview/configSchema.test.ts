@@ -98,6 +98,7 @@ suite('Configuration saveConfig schema (Stage 4)', () => {
     const known = new Set<string>(CONFIG_SETTING_KEYS);
     const orphans = catalogKeys().filter(k => !known.has(k));
     assert.deepStrictEqual(orphans, [], 'catalog keys missing from CONFIG_SETTING_KEYS');
+    assert.ok(catalogKeys().length > 40, `expected the full catalog, parsed ${catalogKeys().length} keys`);
   });
 
   test('the saveConfig handler validates through parseSaveConfigPayload', () => {

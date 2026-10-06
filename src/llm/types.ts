@@ -1,6 +1,21 @@
 export type LlmProviderType = 'openai' | 'anthropic';
 
-import type { ContentBlockParam } from './providers/BaseProvider';
+export interface ContentBlockText {
+  type: "text";
+  text: string;
+}
+
+export interface ContentBlockImage {
+  type: "image";
+  source: {
+    type: "base64" | "url";
+    media_type: string;
+    data?: string;
+    url?: string;
+  };
+}
+
+export type ContentBlockParam = ContentBlockText | ContentBlockImage;
 import type { ModelInfo } from './modelCapabilities';
 
 export interface LlmMessage {

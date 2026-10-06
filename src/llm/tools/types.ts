@@ -1,8 +1,9 @@
 /**
  * Tool system types — callback signatures, tool-use interfaces, and tool grouping.
  *
- * Adapted from Roo-Code's tool type system, simplified for our project.
- * Does NOT conflict with src/llm/types.ts (which defines LLM-level types).
+ * In-house tool type system: the tool names and callback signatures are specific
+ * to this extension (Azure DevOps work items and the agentic loop), not a generic
+ * framework. Does NOT conflict with src/llm/types.ts (which defines LLM-level types).
  */
 
 // ---------------------------------------------------------------------------

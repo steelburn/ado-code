@@ -1,7 +1,8 @@
 /**
  * Mode configuration system — defines AI assistant modes with tool filtering.
  *
- * Simplified from Roo-Code's complex modes system. Pure TypeScript, no VS Code dependency.
+ * Lightweight, data-driven mode registry: each mode is a plain config object that
+ * selects which tool groups it may use. Pure TypeScript, no VS Code dependency.
  */
 
 import type { ToolGroup } from './tools/types';

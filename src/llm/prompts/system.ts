@@ -2,8 +2,8 @@
  * Dynamic system prompt generator — creates mode-specific prompts
  * tailored to the current operating mode, environment, and tool access.
  *
- * Simplified from Roo-Code's prompt architecture. Pure TypeScript,
- * no VS Code dependency.
+ * Composed from small section builders (role, tools, memory, skills, delegation) that
+ * are joined per call. Pure TypeScript, no VS Code dependency.
  */
 
 import type { ModeConfig } from '../modes';

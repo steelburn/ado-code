@@ -1,5 +1,5 @@
 import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall } from '../types';
-import type { ContentBlockParam } from './BaseProvider';
+import type { ContentBlockParam } from '../types';
 import { toModelInfo, ModelInfo } from '../modelCapabilities';
 import { ADO_CODE_USER_AGENT } from '../../shared/version';
 

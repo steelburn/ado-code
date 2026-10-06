@@ -218,8 +218,11 @@ export class GitService {
     const base = this.worktreeBase();
     const wtDir = path.join(base, this.worktreeDirName(runId));
 
-    // Ensure base directory exists
-    await execFile('mkdir', ['-p', base], { cwd: this.workspaceRoot });
+    // Ensure the base directory exists. Use fs.mkdir(recursive) rather than
+    // the `mkdir` binary with `-p`: Windows has no mkdir executable and `-p`
+    // is not a valid flag, so spawning it fails with ENOENT and worktree
+    // creation breaks entirely on Windows.
+    await fs.promises.mkdir(base, { recursive: true });
 
     // Check if branch exists; if not, create it from HEAD
     try {
@@ -304,8 +307,14 @@ export class GitService {
         // commit hash). Reading HEAD here would label worktrees with hashes.
         const branch = (lines['branch'] ?? lines['HEAD'] ?? '').replace('refs/heads/', '');
 
-        // Only include our agent worktrees (under .ado-code/worktrees/run-*)
-        if (wtPath.startsWith(base) && wtPath.includes(`${WORKTREE_PREFIX}`)) {
+        // Only include our agent worktrees (under .ado-code/worktrees/run-*).
+        // git emits forward-slash paths (D:/repo/…) while `base` is a native
+        // path (D:\repo\…), so compare in resolved/normalized form — a raw
+        // startsWith() is always false on Windows.
+        const relToBase = path.relative(path.resolve(base), path.resolve(wtPath));
+        const underBase =
+          relToBase !== '' && !relToBase.startsWith('..') && !path.isAbsolute(relToBase);
+        if (underBase && wtPath.includes(`${WORKTREE_PREFIX}`)) {
           const dirName = path.basename(wtPath);
           // Legacy dirs were created as `run-` + runId (double prefix, e.g.
           // run-run-1785…); new dirs are exactly the run id (run-1785…).

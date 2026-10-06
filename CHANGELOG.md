@@ -3,6 +3,90 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+### Fixed
+- **Agent worktree creation is now Windows-safe.** `GitService.createWorktree` created its base directory by spawning the `mkdir` binary with `-p`; Windows has no such executable (and `-p` is not a valid flag), so the spawn failed with `ENOENT` and an agent worktree could not be created at all. It now uses `fs.promises.mkdir(base, { recursive: true })`. `listWorktrees` had a matching bug: it compared git’s forward-slash worktree paths against a native (backslash) base path with `startsWith`, which is always false on Windows, so agent worktrees were never listed — it now compares resolved paths.
+- **Headless `vscode` stub: `ThemeIcon` now retains its `ThemeColor`.** The stub’s `ThemeIcon` constructor ignored its second argument, so `icon.color` was always `undefined` and the three `WorkItemsTreeProvider` assignment-icon tests failed against the stub. It now stores the colour, matching the real VS Code API shape (`icon.color.id`).
+- **Moving the chat into the Editor Area no longer drops an open in-chat prompt.**
+  Tool-consent and confirmation popups are rendered by whichever webview hosts the
+  conversation. When the chat was moved into an editor tab, a pending card stayed
+  stranded in the now-hidden sidebar webview, so the prompt disappeared from view.
+  `ChatViewProvider` now tracks editor-panel visibility and re-posts any pending card
+  into the new surface whenever the chat moves (editor ⇄ sidebar), and it only pauses
+  prompt countdowns when *neither* chat surface is visible — so a card open in the
+  editor keeps ticking while the sidebar is collapsed. Covered by new tests in
+  `src/test/suite/webview/chatViewProvider.test.ts`.
+- **Webview unit suites are green again — the `ChatViewProvider` tests were failing on an incomplete mock.** `syncTodoSession()`, the session rename/remove handlers and `createNewSession()` all dereference `services.todos`, but the tests built the provider with `{}` as `services`, so every session path threw `Cannot read properties of undefined (reading 'setActiveSession')`. Added a `makeServices()` helper (a no-op to-do store) and applied it at every construction site in `chatViewProvider.test.ts` and `conversation.test.ts`. Two `scripts/vscode-stub.js` gaps were fixed alongside: `WorkspaceConfiguration.update()` is now observable by a later `get()`, and `require('vscode')` returns one cached stub so an API a test spied on is seen by the code under test. `chatViewProvider.test.ts` 18 → 0 failures; `conversation.test.ts` 6 → 0.
+- **Webview tree and mermaid suites are green again — the headless `vscode` stub now models `TreeItem`, `ThemeIcon` and `MarkdownString` for real.**
+  `todoTreeProvider`, `worktreesTreeProvider` and `mermaid` build real tree nodes, but the
+  stub's `TreeItem` was a permissive proxy whose `set` trap swallowed writes — so
+  `node.label` / `node.id` / `node.sessionId` came back as a function and every assertion
+  failed (33 failures). The stub now supplies concrete `TreeItem`,
+  `TreeItemCollapsibleState`, `ThemeIcon`, `ThemeColor` and `MarkdownString` classes (a real
+  `EventEmitter`, `Uri` and in-memory `workspace.fs` round it out). A new
+  `src/test/suite/shared/vscodeStub.test.ts` guard pins these contracts — including the
+  observable `WorkspaceConfiguration.update()` and the cached-stub singleton — so they cannot
+  silently regress. Full webview suite 178 → 211 passing, 33 → 0 failures.
+- **`createNewSession()` can no longer mint two sessions with the same id.** Session ids came straight from `new Date().toISOString()` (millisecond resolution), so a rapid "New Session" — or any flow that opens a fresh session per work item — could create two sessions within the same millisecond. Because the id is also the active-session key, the second session silently failed to become active. A new `newSessionId()` helper suffixes a counter until the id is unique among the sessions already stored.
+
+### Maintenance
+- **Removed two redundant config tests.** `configCanonicalKeys.test.ts` re-asserted two invariants already covered by `configSchema.test.ts` (`every catalog key is a canonical setting key` and `the host derives _allSettings from the canonical key list`); the duplicates were dropped and the `> 40 keys` full-catalog sanity check was folded into `configSchema.test.ts`.
+- **Licensing metadata added — the project is now MIT.** It was publicly distributed
+  (GitHub plus Marketplace `.vsix`) with no `LICENSE`, no `package.json` `"license"` field
+  and no README licence section — effectively "all rights reserved". Added a canonical MIT
+  `LICENSE`, set `"license": "MIT"` in `package.json`, and documented it in a README
+  `## License` section. `src/test/suite/shared/licensing.test.ts` guards all three so the
+  metadata cannot silently regress.
+- **Removed `src/llm/providers/BaseProvider.ts`.** Its two strict-mode tool-schema
+  helpers (`convertToolsForOpenAI`, `convertToolSchemaForOpenAI`) were verbatim
+  Roo-Code code with **no callers**: nothing in the extension extends `BaseProvider`,
+  and OpenAI tool payloads are built inline in `src/llm/providers/openai.ts`. Their
+  only practical effect was to place the project under upstream's Apache-2.0
+  obligations (patent grant plus per-file change notices). Deleting them — rather
+  than rewriting code nothing calls — removes the derivation outright.
+- **Reworded the last Roo-Code attribution comments** — the three file headers in
+  `src/llm/tools/types.ts`, `src/llm/modes.ts` and `src/llm/prompts/system.ts`, plus two
+  `Cline-style` CSS comments in `src/webview-ui/src/styles/app.css`. They now describe the
+  in-house design or UI pattern instead of naming an upstream source. The source-hygiene
+  suite below scans every file under `src/` (all extensions, not just `.ts`) and fails if
+  any `Roo`/`Cline` attribution string reappears.
+- **Regenerated the tracked webview bundle** (`webview-ui-dist/webview.js`, committed
+  build output) so the artifact matches the reworded CSS. The production build is
+  deterministic — a second run emitted byte-identical output and rewrote nothing — and
+  the rebuild touches exactly one file: a single-line diff, with the other 70 tracked
+  files left untouched. No `Cline` string remains anywhere in `webview-ui-dist/`.
+- The one live export of that module, the `ContentBlockText` / `ContentBlockImage` /
+  `ContentBlockParam` types, moved to `src/llm/types.ts`. The four type-only importers
+  (`llm/providers/openai.ts`, `llm/providers/anthropic.ts`, `llm/context/tokenCounter.ts`,
+  `webview/ChatViewProvider.ts`) now import from there.
+
+  Behaviour is unchanged — tool schemas were already passed through verbatim, and the
+  removed helpers were unreachable.
+
+  Tests: `src/test/suite/llm/providers.test.ts` adds a source-hygiene guard that scans
+  every file under `src/` — all extensions, production sources only — failing if the
+  derived helpers or any `Roo`/`Cline` attribution reappears, and pins the OpenAI
+  `chatWithTools` tool-payload contract, including that caller tool definitions are
+  not mutated.
+
+- **Packaging: `.github/**` and `.husky/**` are now excluded from the `.vsix`.** CI workflow
+  definitions and Husky git hooks were shipping inside the published package. The
+  `.vscodeignore` change drops the artifact from 110 to 91 files, with no runtime
+  impact. Guarded by a new `src/test/suite/shared/packaging.test.ts`.
+
+- **Open VSX publishing is now scripted — `npm run publish:open-vsx`.** `vsce` cannot
+  publish to Eclipse Open VSX: it is a separate registry with its own CLI (`ovsx`), account
+  and token. `scripts/publish-open-vsx.js` gates the run *before* invoking `ovsx` — a token
+  is present, the `.vsix` exists, and its filename version matches `package.json` — so a
+  misconfigured run fails locally instead of half-authenticating against the registry.
+  `--verify-only` checks the token against the publisher namespace without uploading.
+  Guarded by `src/test/suite/shared/publishOpenVsx.test.ts`.
+
+- **The marketplace icon is a real PNG again.** `resources/icon.png` was a JPEG (JFIF)
+  renamed to `.png` — 428 KB of mislabelled image that VS Code and Open VSX both
+  advertise as a PNG. Converted to a genuine PNG and downscaled to 256x256 (91 KB, from
+  1 MB). Guarded by `src/test/suite/shared/packaging.test.ts`, which asserts the PNG
+  signature and IHDR dimensions.
+
 ## [0.7.1] - 2026-10-05
 
 ### Performance

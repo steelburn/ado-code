@@ -227,3 +227,7 @@ The extension infers the active model's capabilities from its id:
 ## Release Notes
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
+
+## License
+
+ADO Code is released under the [MIT License](LICENSE).

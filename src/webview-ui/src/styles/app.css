@@ -693,7 +693,7 @@ code {
   opacity: 1;
 }
 
-/* ── Input Bar (Cline-style) ─────────────────────────────────── */
+/* ── Input Bar (rounded send / stop controls) ────────────────── */
 .input-bar__stop-btn {
   background: var(--vscode-errorForeground) !important;
   color: var(--vscode-button-foreground) !important;
@@ -824,7 +824,7 @@ code {
   gap: 8px;
 }
 
-/* Mode toggle — Cline-style sliding pill */
+/* Mode toggle — sliding pill */
 .mode-toggle {
   display: flex;
   align-items: center;

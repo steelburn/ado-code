@@ -4,7 +4,17 @@ import { ChatViewProvider } from '../../../webview/ChatViewProvider';
 function makeProvider(saved: Record<string, any> = {}) {
   return new ChatViewProvider(
     { fsPath: '/tmp/x' } as any,
-    {} as any,
+    // Session bookkeeping (syncTodoSession) dereferences services.todos, so a
+    // no-op to-do store is required for every construction.
+    {
+      todos: {
+        setActiveSession() { /* noop */ },
+        rename() { /* noop */ },
+        removeSession() { /* noop */ },
+        removeAll() { /* noop */ },
+        setGoal() { /* noop */ },
+      },
+    } as any,
     { workspaceState: { get: (k: string, defaultVal?: any) => saved[k] ?? defaultVal, update: async (k: string, v: any) => { saved[k] = v; } } } as any
   );
 }

@@ -8,7 +8,7 @@
 
 import type { LlmMessage } from "../types";
 import type { ModelInfo } from "../modelCapabilities";
-import type { ContentBlockParam } from "../providers/BaseProvider";
+import type { ContentBlockParam } from "../types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,6 +71,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // DeepSeek
   "deepseek-chat": 64_000,
   "deepseek-reasoner": 64_000,
+  "deepseek-flash": 1_000_000,
+  "deepseek-v4-flash": 1_000_000,
 
   // Meta
   "llama-4": 1_000_000,
