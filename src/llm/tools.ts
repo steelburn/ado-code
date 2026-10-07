@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { LlmTool } from './types';
+import { interruptedToolResult, shouldInterruptTool } from '../shared/toolInterrupt';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
 import { isCommandSessionApproved, terminalCommandKey, terminalCommandList } from './tool-approval-ui';
@@ -201,7 +202,7 @@ export interface ToolExecutor {
   setMode(mode: 'inline' | 'plan' | 'act' | 'yolo'): void;
   /** Reset per-turn state (e.g. consent-denied flag) at the start of a turn. */
   beginTurn(): void;
-  execute(name: string, args: Record<string, any>): Promise<string>;
+  execute(name: string, args: Record<string, any>, signal?: AbortSignal): Promise<string>;
   /**
    * Predict whether execute(name, args) would run WITHOUT prompting the user
    * (read-only, yolo/auto-approved, allowlisted, or blocked-without-consent).
@@ -844,7 +845,7 @@ export function createToolExecutor(
       // would pop a consent card must stay sequential (one card at a time).
       return gateTool(name, args, state, { onApprove: hooks?.onApprove }).action !== 'prompt';
     },
-    async execute(name, args) {
+    async execute(name, args, signal) {
       // ── Q8 mode + consent gate ─────────────────────────────────────
       // Runs FIRST — before any project/ADO resolution — so blocked tools are
       // rejected even without a workspace (and security checks can't crash).
@@ -1211,11 +1212,29 @@ export function createToolExecutor(
               fileArgs = argv.slice(1);
             }
             const result = await new Promise<string>((resolve) => {
-              execFile(file, fileArgs, spawnOpts, (err: any, stdout: any, stderr: any) => {
+              const child = execFile(file, fileArgs, spawnOpts, (err: any, stdout: any, stderr: any) => {
                 resolve(stdout || stderr || (err?.message ?? ''));
               });
+              // Interrupt-on-message: a new user message cancels the in-flight
+              // command instead of blocking the turn until it completes (or the
+              // 2-minute timeout expires). The promise settles once - whichever
+              // of the callback / abort fires first wins.
+              if (signal) {
+                const onAbort = () => {
+                  try { child.kill(); } catch { /* best-effort kill */ }
+                  resolve(interruptedToolResult());
+                };
+                if (signal.aborted) {
+                  onAbort();
+                } else {
+                  signal.addEventListener('abort', onAbort, { once: true });
+                  child.once('close', () => signal.removeEventListener('abort', onAbort));
+                }
+              }
             });
             outputs.push(result);
+            // A cancelled command stops the rest of the batch.
+            if (shouldInterruptTool(signal)) break;
           }
           const joined = commands.length > 1
             ? outputs.map((o, i) => `$ ${commands[i]}\n${o}`).join('\n\n')

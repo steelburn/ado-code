@@ -357,7 +357,13 @@ export async function runAgenticChat(
   onProgress?: (update: AgenticProgressUpdate) => void,
   // Optional: drains user messages typed while the run is in flight, to be
   // injected as `user` turns on the next iteration (see the steer behavior).
-  options?: { drainSteering?: () => string[] }
+  options?: {
+    drainSteering?: () => string[];
+    // Interrupt-on-message: returns the AbortSignal for the tool ABOUT to run.
+    // A fresh signal per call lets a new user message cancel only the in-flight
+    // tool (without aborting the whole turn). Absent → no interruption.
+    getToolSignal?: () => AbortSignal | undefined;
+  }
 ): Promise<LlmAgenticResult> {
   const messages = [...initialMessages];
   const allToolCalls: ToolCall[] = [];
@@ -471,7 +477,8 @@ export async function runAgenticChat(
       // Live "running" tool card in the chat (plus status-bar detail).
       onProgress?.({ tool: { id: call.id, name: call.name, args: call.arguments } });
       try {
-        let content = await executor.execute(call.name, call.arguments);
+        const toolSignal = options?.getToolSignal?.();
+        let content = await executor.execute(call.name, call.arguments, toolSignal);
         const warning = warningsByCall.get(call.id);
         if (warning) {
           content = `${warning}\n\n${content}`;

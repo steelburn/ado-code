@@ -28,6 +28,7 @@ import { AgentRunner } from '../agents/AgentRunner';
 import type { AgentRun } from '../agents/types';
 import { getMergeConflicts } from '../git/mergeConflicts';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
+import { truncateConsentArgs } from '../shared/consentPreview';
 import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFence } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
@@ -1323,7 +1324,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'consentRequest',
         requestId: pendingConsent.requestId,
         tool: pendingConsent.tool,
-        args: pendingConsent.args,
+        args: truncateConsentArgs(pendingConsent.args).args,
         autoApproveMs: pendingConsent.autoApproveMs,
         expiresAt: pendingConsent.expiresAt,
       });
@@ -1409,7 +1410,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // so the timer can't expire before the user ever sees the card.
     if (this.promptsPaused) this.consentBroker.pause();
     if (this._view || this._editorPanel) {
-      this.postMessage({ type: 'consentRequest', requestId, tool, args, expiresAt });
+      this.postMessage({ type: 'consentRequest', requestId, tool, args: truncateConsentArgs(args).args, expiresAt });
     } else {
       // No webview (e.g. invoked before resolve or after disposal): native pick.
       const pick = await vscode.window.showQuickPick(['Approve', 'Reject'], {
@@ -1918,7 +1919,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'consentRequest',
         requestId: pendingConsent.requestId,
         tool: pendingConsent.tool,
-        args: pendingConsent.args,
+        args: truncateConsentArgs(pendingConsent.args).args,
         autoApproveMs: pendingConsent.autoApproveMs,
         expiresAt: pendingConsent.expiresAt,
       });
@@ -1975,6 +1976,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             this.touchIdle();
             this.pendingSteer.push(message.content);
+            // Interrupt-on-message: cancel any tool currently in flight so the
+            // steer is injected promptly (next iteration) rather than after a
+            // long-running command finishes. The turn itself is NOT aborted.
+            this.interruptRunningTool();
             this.postMessage({ type: 'steeringQueued', content: message.content });
             break;
           case 'sendMessage':
@@ -2083,6 +2088,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // state too — a stuck spinner must not leave the input bar dead
             // after clearing. Any pending consent prompt is denied as well.
             this.llmAbort?.abort();
+            // Interrupt-on-message: a new turn supersedes any tool still in flight from
+            // the previous one — cancel it so a blocking command does not linger.
+            this.toolInterrupt?.abort();
             this.consentBroker.rejectAll();
             this.confirmBroker.rejectAll();
             // "Allow for Session" approvals are scoped to this chat — a
@@ -3916,6 +3924,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // IN ITS OWN session; these fields identify whose turn it is for that stop.
   private runningTurnSession?: string;
   private runningTurnAbort?: AbortController;
+  // Interrupt-on-message: the AbortController handed to the tool currently in
+  // flight. A steer/user message typed mid-turn aborts it so a long-running
+  // tool (e.g. run_terminal_command) stops immediately instead of blocking the
+  // turn until the iteration boundary. Recreated per tool call by getToolSignal.
+  private toolInterrupt?: AbortController;
   /**
    * 0.6.7: Thinking/Tools records that arrived before their answer was written
    * to the session message list, keyed `${sessionId}\n${answerText}`. Typically
@@ -4396,7 +4409,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    *  going in the background. The stopped turn reconciles into ITS OWN session
    *  (marker + persist — see reconcileStoppedTurn); agent runs are separate and
    *  continue unaffected. */
+  /**
+   * Signal for the tool ABOUT to run. Recreates the controller once a previous
+   * signal was consumed by an interrupt, so a later tool in the same turn is not
+   * born already-cancelled. Returns undefined when no turn is running.
+   */
+  private toolSignalForRun(): AbortSignal | undefined {
+    if (!this.toolInterrupt || this.toolInterrupt.signal.aborted) {
+      this.toolInterrupt = new AbortController();
+    }
+    return this.toolInterrupt.signal;
+  }
+
+  /**
+   * Interrupt-on-message: cancel the tool currently in flight (if any) WITHOUT
+   * aborting the turn. The tool resolves with an interrupted result, the loop
+   * finishes the iteration, and the queued steer message is injected on the
+   * next iteration — a user reply is honored promptly instead of waiting for a
+   * long-running command to finish.
+   */
+  private interruptRunningTool(): void {
+    this.toolInterrupt?.abort();
+  }
+
   private stopRunningTurn(): void {
+    // Interrupt-on-message: also cancel any tool currently in flight so a
+    // blocking command stops at once, not just the LLM stream.
+    this.toolInterrupt?.abort();
     const abort = this.runningTurnAbort ?? this.llmAbort;
     abort?.abort();
   }
@@ -4593,6 +4632,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async runChatTurn(llmContent: string | ContentBlockParam[]): Promise<void> {
     // Cancel any in-flight stream before starting a new one
     this.llmAbort?.abort();
+    // Interrupt-on-message: supersede any tool still in flight from the
+    // turn just cancelled — a fresh controller is created below.
+    this.toolInterrupt?.abort();
     const abort = new AbortController();
     this.llmAbort = abort;
     // Fresh turn → drop any steer text left over from a previous turn.
@@ -4635,6 +4677,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.conversation = this.sessionConversationFor(turnSessionId);
     this.runningTurnSession = turnSessionId;
     this.runningTurnAbort = abort;
+    // Fresh per-turn interrupt controller for the in-flight tool.
+    this.toolInterrupt = new AbortController();
     // Flag the owning session as running in the list straight away.
     this.postSessionRunState();
     // Turn-owned posts: reach the webview only while THIS turn's session is
@@ -4781,6 +4825,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Steer mode: hand the loop any user text typed mid-run so it is
         // injected on the next iteration instead of aborting the turn.
         drainSteering: () => this.takePendingSteer(turnConversation),
+        // Interrupt-on-message: the loop asks, per tool call, for the signal to
+        // cancel it. Recreate the controller once a previous signal was consumed
+        // so a later tool in the same turn is not born already-cancelled.
+        getToolSignal: () => this.toolSignalForRun(),
       });
       // Token optimization diagnostics: log how much this turn actually cost
       // (iterations, tool calls, and request payload tokens incl. system+tools).
@@ -4913,6 +4961,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // one (a newer turn may already have claimed the slot after aborting us).
       if (this.runningTurnAbort === abort) {
         this.runningTurnAbort = undefined;
+        this.toolInterrupt = undefined;
         this.runningTurnSession = undefined;
       }
       // Drop the running badge whichever session is on screen.

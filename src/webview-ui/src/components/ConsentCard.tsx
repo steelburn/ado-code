@@ -1,5 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useCountdown, formatCountdown } from './ui/useCountdown';
+import { buildTextPreview } from '../../../shared/consentPreview';
 
 export interface ConsentRequest {
   requestId: string;
@@ -85,6 +86,13 @@ export function ConsentCard({ request, onRespond }: Props) {
   // defeated by a client tick firing while the user is away.
   const countdown = useCountdown(expiresAt);
 
+  // A terminal command can be enormous (heredoc, `node -e "…"`). The card is a
+  // rigid (non-scrolling) row under the transcript, so show a one-line preview
+  // and let the user expand the full text on demand.
+  const summaryText = summarize(request.tool, request.args);
+  const summaryPreview = useMemo(() => buildTextPreview(summaryText), [summaryText]);
+  const [showFullSummary, setShowFullSummary] = useState(false);
+
   const showTimer = !!countdown && countdown.remainingMs > 0;
 
   return (
@@ -102,7 +110,18 @@ export function ConsentCard({ request, onRespond }: Props) {
       </div>
       <div className="consent-card-body">
         <code className="consent-card-tool">{request.tool}</code>
-        <div className="consent-card-summary">{summarize(request.tool, request.args)}</div>
+        <div className={`consent-card-summary${showFullSummary ? ' consent-card-summary--full' : ''}`}>
+          {showFullSummary ? summaryText : summaryPreview.preview}
+        </div>
+        {summaryPreview.truncated && (
+          <button
+            type="button"
+            className="consent-card-summary-toggle"
+            onClick={() => setShowFullSummary((v) => !v)}
+          >
+            {showFullSummary ? 'Show less' : 'Show full command'}
+          </button>
+        )}
         <pre className="consent-card-args">{argsText}</pre>
       </div>
       {/* Countdown to the host-enforced timeout — label names the post-timeout
