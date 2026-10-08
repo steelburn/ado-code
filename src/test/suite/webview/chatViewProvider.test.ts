@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChatViewProvider, capTurnTrace, withStoredTraces } from '../../../webview/ChatViewProvider';
+import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from '../../../webview/chatEditorSerializer';
 import { AgentProgressPanel } from '../../../webview/AgentProgressPanel';
 import {
   isSessionAutoApproved,
@@ -900,6 +901,73 @@ suite('ChatViewProvider · chat in the editor area', () => {
     consentBroker.resolve(requestId, true);
     assert.strictEqual(await decision, true);
   });
+
+  test('restoreChatInEditor re-adopts a restored tab as the live editor chat', () => {
+    const { provider } = makeProvider();
+    const restored = makeFakePanel();
+
+    provider.restoreChatInEditor(restored.panel);
+
+    assert.strictEqual((provider as any)._editorPanel, restored.panel, 'restored panel adopted');
+    assert.ok(String(restored.panel.iconPath.fsPath).endsWith('activitybar-icon.svg'), 'panel icon set');
+    assert.strictEqual(restored.panel.webview.options.enableScripts, true, 'restored webview keeps scripts enabled');
+    assert.strictEqual(restored.panel.webview.options.retainContextWhenHidden, true, 'context retained while hidden');
+    assert.ok(restored.panel.webview.html.length > 0, 'html rendered for the restored tab');
+    assert.ok(restored.posted.some((m: any) => m.type === 'config'), 'config posted to the restored tab');
+    assert.strictEqual((provider as any).editorPanelVisible, true, 'restored tab counted visible');
+  });
+
+  test('a restored tab reopened in the background is not treated as visible', () => {
+    const { provider } = makeProvider();
+    const restored = makeFakePanel();
+    restored.panel.visible = false;
+
+    provider.restoreChatInEditor(restored.panel);
+
+    assert.strictEqual((provider as any).editorPanelVisible, false, 'background restored tab does not hold prompts');
+  });
+
+  test('closing a restored tab returns the chat to the sidebar', async () => {
+    const { provider } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const restored = makeFakePanel();
+    provider.restoreChatInEditor(restored.panel);
+    restored.panel.dispose();
+
+    assert.strictEqual((provider as any)._editorPanel, undefined, 'restored panel released on dispose');
+    const moved = sidebar.posted.filter((m: any) => m.type === 'chatMovedToEditor').pop();
+    assert.strictEqual(moved?.inEditor, false, 'sidebar told the chat is back');
+  });
+
+  test('the panel serializer revives the tab through restoreChatInEditor', () => {
+    const { provider } = makeProvider();
+    const serializer = createChatEditorSerializer(provider);
+    const restored = makeFakePanel();
+
+    serializer.deserializeWebviewPanel(restored.panel, undefined);
+
+    assert.strictEqual((provider as any)._editorPanel, restored.panel, 'serializer adopts the restored panel');
+  });
+
+  test('createChatEditorPanel uses the view type the serializer is registered for', () => {
+    const captured: string[] = [];
+    const original = (vscode.window as any).createWebviewPanel;
+    (vscode.window as any).createWebviewPanel = (viewType: string, ...rest: any[]) => {
+      captured.push(viewType);
+      return original(viewType, ...rest);
+    };
+    try {
+      const provider = new ChatViewProvider(vscode.Uri.file('/tmp/ext'), makeServices(), makeSessionContext());
+      (provider as any).createChatEditorPanel();
+    } finally {
+      (vscode.window as any).createWebviewPanel = original;
+    }
+    assert.strictEqual(captured[0], CHAT_EDITOR_VIEW_TYPE, 'createWebviewPanel receives the serialized view type');
+    assert.strictEqual(CHAT_EDITOR_VIEW_TYPE, 'adoCode.chatEditor');
+  });
+
 });
 
 // ── AGENTS.md sync flow (checkAgentsMd) ────────────────────────────────────

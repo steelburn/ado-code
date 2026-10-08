@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { CHAT_EDITOR_VIEW_TYPE } from '../../../webview/chatEditorSerializer';
 
 function findRepoRoot(): string {
   let dir = __dirname;
@@ -228,3 +229,32 @@ suite('Marketplace keywords', () => {
     );
   });
 });
+
+/**
+ * Guards chat-tab restore across IDE restarts. VS Code only revives an
+ * editor-area webview panel when its view type has a registered serializer
+ * (see createChatEditorSerializer in extension.ts) AND the owning extension is
+ * activated on startup. `onWebviewPanel:*` is NOT auto-generated from the
+ * manifest, so it must be declared explicitly or "ADO Code Chat" is silently
+ * dropped when the window reloads.
+ */
+suite('Chat editor panel restore', () => {
+  test('package.json declares onWebviewPanel for the chat editor view type', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(findRepoRoot(), 'package.json'), 'utf8'));
+    const events: string[] = manifest.activationEvents || [];
+    assert.ok(
+      events.includes(`onWebviewPanel:${CHAT_EDITOR_VIEW_TYPE}`),
+      `activationEvents must include "onWebviewPanel:${CHAT_EDITOR_VIEW_TYPE}" so the chat tab is restored on restart`
+    );
+  });
+
+  test('the manifest activeWebviewType clause matches the serializer view type', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(findRepoRoot(), 'package.json'), 'utf8'));
+    const raw = JSON.stringify(manifest.contributes);
+    assert.ok(
+      raw.includes(`activeWebviewType == '${CHAT_EDITOR_VIEW_TYPE}'`),
+      'editor toolbar menus must key off the same view type the serializer restores'
+    );
+  });
+});
+

@@ -30,6 +30,7 @@
     "model context protocol"
   ],
   "activationEvents": [
+    "onWebviewPanel:adoCode.chatEditor",
     "onView:adoCode.chat",
     "onView:adoCode.workItems",
     "onCommand:adoCode.chat.focus",

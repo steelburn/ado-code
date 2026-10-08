@@ -3,6 +3,10 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+### Added
+
+- **The chat reopens in the Editor Area after an IDE restart** — if "ADO Code Chat" was open as an editor tab when the window closed, the extension now registers a webview-panel serializer (`onWebviewPanel:adoCode.chatEditor`) so VS Code revives the tab in place instead of dropping it on reload.
+
 ### Changed
 
 - **Marketplace categories** — `categories` changed from `["Other"]` to `["AI", "Azure"]`, so the extension is listed under the AI and Azure sections of the VS Code Marketplace and Open VSX instead of only the catch-all "Other" listing.

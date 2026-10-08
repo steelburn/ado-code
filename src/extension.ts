@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ChatViewProvider } from './webview/ChatViewProvider';
+import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from './webview/chatEditorSerializer';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
 import { DeferredStartup } from './shared/deferredStartup';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
@@ -99,6 +100,16 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider(
       'adoCode.chatSecondary',
       chatProvider
+    )
+  );
+
+  // Restore the editor-area chat tab ("ADO Code Chat") after a window reload or
+  // IDE restart. VS Code only revives webview editor tabs whose view type has a
+  // registered serializer, so registering here is what keeps the tab alive.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(
+      CHAT_EDITOR_VIEW_TYPE,
+      createChatEditorSerializer(chatProvider)
     )
   );
 

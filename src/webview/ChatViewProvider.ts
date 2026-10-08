@@ -33,6 +33,7 @@ import { truncateConsentArgs } from '../shared/consentPreview';
 import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFence } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
 import { AgentSummaryPanel } from './AgentSummaryPanel';
+import { CHAT_EDITOR_VIEW_TYPE } from './chatEditorSerializer';
 import { AgentProgressPanel } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
 import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
@@ -5125,8 +5126,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void vscode.commands.executeCommand('setContext', 'adoCode.chatInEditor', true);
     this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: true });
 
-    const panel = this.createChatEditorPanel();
+    this.attachEditorPanel(this.createChatEditorPanel());
+  }
 
+  /**
+   * Re-adopt an editor-area chat tab that VS Code restored after a window
+   * reload or IDE restart (see createChatEditorSerializer and
+   * registerWebviewPanelSerializer in extension.ts). The restored panel is a
+   * brand-new webview, so it is wired exactly like a freshly created one —
+   * only the createWebviewPanel() call is skipped.
+   */
+  public restoreChatInEditor(panel: vscode.WebviewPanel): void {
+    void vscode.commands.executeCommand('setContext', 'adoCode.chatInEditor', true);
+    this._view?.webview.postMessage({ type: 'chatMovedToEditor', inEditor: true });
+    this.attachEditorPanel(panel);
+  }
+
+  /**
+   * Wire a chat panel — freshly created or restored — as the live editor-area
+   * chat surface: identical HTML, options and handlers in both cases, so a
+   * restored tab behaves exactly like one the user just moved to the editor.
+   */
+  private attachEditorPanel(panel: vscode.WebviewPanel): void {
     panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'activitybar-icon.svg');
 
     (panel.webview.options as any) = {
@@ -5156,8 +5177,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     this._editorPanel = panel;
-    // A freshly created panel is the visible tab.
-    this.editorPanelVisible = true;
+    // A freshly created panel is the visible tab; a restored one keeps the
+    // visibility VS Code gave it (its tab may come back in the background).
+    this.editorPanelVisible = panel.visible ?? true;
 
     // Ensure the active session has the latest conversation persisted
     const activeId = this.getActiveSessionId();
@@ -5187,7 +5209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   protected createChatEditorPanel(): vscode.WebviewPanel {
     return vscode.window.createWebviewPanel(
-      'adoCode.chatEditor',
+      CHAT_EDITOR_VIEW_TYPE,
       'ADO Code Chat',
       vscode.ViewColumn.Active,
       {
