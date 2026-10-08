@@ -22,6 +22,7 @@ import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
+import { SerialQueue } from '../shared/serialQueue';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals, terminalCommandKey, terminalCommandList } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/types';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -349,8 +350,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // ── Single task draft (AI create_work_item preview flow) ────────────────
   /** Active task-draft editor tab, if any. */
   private taskDraftEditor?: vscode.TextEditor;
-  /** Resolve/reject the pending onCreateWorkItem hook call. */
-  private taskDraftResolve?: (result: { id: number; url: string } | null) => void;
+  /** Serializes the single-slot draft-editor + confirmation flow (see showTaskDraftInEditor). */
+  private readonly taskDraftQueue = new SerialQueue();
+  /** Monotonic counter that keeps concurrent draft filenames unique. */
+  private taskDraftSeq = 0;
 
   // ── Session persistence (Task 2) ──────────────────────────────────
   /** Workspace-folder key — the stable part of session scoping. */
@@ -1073,11 +1076,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Open an editor tab with the task draft for user review/editing, then
-   * show a confirmation card. On confirm: create in ADO and resolve the
-   * hook promise. On cancel: resolve with null.
+   * Open an editor tab with the task draft for user review/editing, then show
+   * a confirmation card. On confirm: create in ADO and resolve with the created
+   * work item. On cancel: resolve with null.
+   *
+   * Auto-approved tool calls of a single agentic iteration run CONCURRENTLY,
+   * but the draft editor and its confirmation card are single-slot: a second
+   * concurrent call overwrote the first call's resolver, and the confirmation
+   * broker superseded the earlier card (resolving it with null) — which
+   * surfaced to the model as a spurious "cancelled by user". Serializing the
+   * whole flow reviews a batch of create_work_item calls one card at a time.
    */
-  async showTaskDraftInEditor(args: {
+  showTaskDraftInEditor(args: {
+    workItemType: string; title: string; description?: string;
+    acceptanceCriteria?: string; assignedTo?: string; tags?: string;
+    parentWorkItemId?: number;
+  }): Promise<{ id: number; url: string } | null> {
+    return this.taskDraftQueue.run(() => this.runTaskDraftFlow(args));
+  }
+
+  private async runTaskDraftFlow(args: {
     workItemType: string; title: string; description?: string;
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
@@ -1088,7 +1106,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const adoDir = vscode.Uri.joinPath(workspaceRoot, '.ado-code');
     try { await vscode.workspace.fs.createDirectory(adoDir); } catch { /* exists */ }
 
-    const filePath = vscode.Uri.joinPath(adoDir, `task-draft-${Date.now()}.md`);
+    // The monotonic suffix keeps two drafts created in the same millisecond from
+    // colliding on one path — a collision made the second openTextDocument race
+    // and fail with "Could NOT open editor".
+    const filePath = vscode.Uri.joinPath(adoDir, `task-draft-${Date.now()}-${++this.taskDraftSeq}.md`);
     const content = this.formatTaskDraft(args);
 
     // Write the file
@@ -1098,38 +1119,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const doc = await vscode.workspace.openTextDocument(filePath);
     this.taskDraftEditor = await vscode.window.showTextDocument(doc, { preview: false });
 
-    // Return a promise that resolves when the user confirms or cancels
-    return new Promise<{ id: number; url: string } | null>((resolve) => {
-      this.taskDraftResolve = resolve;
+    // Show confirmation card in chat
+    const confirmOptions: ConfirmationOption[] = [
+      { label: '✅ Create Work Item', value: 'create' },
+      { label: '✏️ Edit in Tab', value: 'edit' },
+      { label: '❌ Cancel', value: 'cancel' },
+    ];
+    const decision = await this.requestConfirmation(
+      `Create ${args.workItemType}`,
+      `Review the ${args.workItemType.toLowerCase()} draft in the editor tab, then choose an action.`,
+      confirmOptions,
+    );
 
-      // Show confirmation card in chat
-      const confirmOptions: ConfirmationOption[] = [
-        { label: '✅ Create Work Item', value: 'create' },
-        { label: '✏️ Edit in Tab', value: 'edit' },
-        { label: '❌ Cancel', value: 'cancel' },
-      ];
-      this.requestConfirmation(
-        `Create ${args.workItemType}`,
-        `Review the ${args.workItemType.toLowerCase()} draft in the editor tab, then choose an action.`,
-        confirmOptions,
-      ).then(async (decision) => {
-        if (decision === 'create') {
-          await this.createTaskFromDraft(filePath, args);
-        } else if (decision === 'edit') {
-          // Re-focus the editor so the user can continue editing
-          this.taskDraftEditor?.show();
-          // Don't resolve yet — wait for another confirmation round
-          // The user will need to re-trigger confirmation after editing.
-          // For now, resolve null to let the AI know it was deferred.
-          this.taskDraftResolve = undefined;
-          resolve(null);
-        } else {
-          // Cancel
-          this.taskDraftResolve = undefined;
-          resolve(null);
-        }
-      });
-    });
+    if (decision === 'create') {
+      return await this.createTaskFromDraft(filePath, args);
+    }
+    if (decision === 'edit') {
+      // Keep the tab open for editing; the model is told the draft was not created.
+      this.taskDraftEditor?.show();
+      return null;
+    }
+    // Cancel — close the editor and drop the draft file.
+    this.taskDraftEditor = undefined;
+    try { await vscode.workspace.fs.delete(filePath); } catch { /* best-effort */ }
+    return null;
   }
 
   /**
@@ -1138,7 +1151,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async createTaskFromDraft(
     fileUri: vscode.Uri,
     originalArgs: { workItemType: string; parentWorkItemId?: number },
-  ): Promise<void> {
+  ): Promise<{ id: number; url: string } | null> {
     try {
       const bytes = await vscode.workspace.fs.readFile(fileUri);
       const content = Buffer.from(bytes).toString('utf8');
@@ -1146,7 +1159,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if (!parsed.title || parsed.title === 'Untitled') {
         vscode.window.showWarningMessage('ADO Code: task title is required.');
-        return;
+        return null;
       }
 
       const project = this.activeProject();
@@ -1177,14 +1190,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.taskDraftEditor = undefined;
       try { await vscode.workspace.fs.delete(fileUri); } catch { /* best-effort */ }
 
-      // Resolve the hook promise
-      this.taskDraftResolve?.({ id: result.id, url: result.url });
-      this.taskDraftResolve = undefined;
+      return { id: result.id, url: result.url };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message: `Failed to create work item: ${message}` });
-      this.taskDraftResolve?.(null);
-      this.taskDraftResolve = undefined;
+      this.taskDraftEditor = undefined;
+      try { await vscode.workspace.fs.delete(fileUri); } catch { /* best-effort */ }
+      return null;
     }
   }
 
