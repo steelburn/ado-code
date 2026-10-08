@@ -35,6 +35,19 @@ suite('Packaging hygiene', () => {
 
   const developmentOnlyDirs = ['.github', '.husky'];
 
+  // Secrets (registry publish tokens) must never ship. `.env` is gitignored,
+  // but vsce packages from .vscodeignore, so it needs its own exclusion here.
+  const secretFiles = ['.env'];
+
+  for (const file of secretFiles) {
+    test(`.vscodeignore excludes the ${file} file`, () => {
+      assert.ok(
+        ignorePatterns().includes(file),
+        `.vscodeignore does not exclude "${file}" - secrets would ship in the .vsix`
+      );
+    });
+  }
+
   for (const dir of developmentOnlyDirs) {
     test(`.vscodeignore excludes the ${dir} directory`, () => {
       assert.ok(

@@ -3,6 +3,12 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-08
+
+### Fixed
+
+- **The packaged `.vsix` no longer contains `.env`** — the gitignored `.env` (registry publish tokens) was excluded by `.gitignore` but missing from `.vscodeignore`, and vsce packages from `.vscodeignore`, so `0.7.2` shipped the file to both marketplaces. `.vscodeignore` now excludes `.env` and `.env.*`, guarded by a packaging test that fails if the exclusion is removed.
+
 ## [0.7.2] - 2026-10-08
 
 ### Fixed

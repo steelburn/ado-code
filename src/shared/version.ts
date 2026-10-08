@@ -14,7 +14,7 @@
  * `scripts/check-version.js` (runs on `vsce package` via vscode:prepublish),
  * so a release can no longer ship a stale User-Agent.
  */
-export const EXTENSION_VERSION = '0.7.2';
+export const EXTENSION_VERSION = '0.7.3';
 
 /**
  * User-Agent header sent with every LLM API request so gateway/provider logs
