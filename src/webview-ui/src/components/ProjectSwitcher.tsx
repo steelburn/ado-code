@@ -28,30 +28,29 @@ export function ProjectSwitcher({ projects, current, loading, onSwitch, onRefres
 
   return (
     <div className="project-switcher" title={`Project: ${current || 'none'}`}>
-      {loading ? (
+      <select
+        className="project-switcher-select"
+        value={current || ''}
+        onChange={e => onSwitch(e.target.value)}
+        disabled={loading}
+        aria-label="Switch project"
+      >
+        {options.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      {loading && (
         <span className="project-switcher-loading">Fetching projects…</span>
-      ) : (
-        <>
-          <select
-            className="project-switcher-select"
-            value={current || ''}
-            onChange={e => onSwitch(e.target.value)}
-            aria-label="Switch project"
-          >
-            {options.map(o => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-          <button
-            className="project-switcher-refresh"
-            onClick={onRefresh}
-            title={projects.length === 0 ? 'Project list unavailable — retry' : 'Refresh project list'}
-            aria-label="Refresh project list"
-          >
-            ↻
-          </button>
-        </>
       )}
+      <button
+        className="project-switcher-refresh"
+        onClick={onRefresh}
+        disabled={loading}
+        title={loading ? 'Refreshing project list…' : projects.length === 0 ? 'Project list unavailable — retry' : 'Refresh project list'}
+        aria-label="Refresh project list"
+      >
+        ↻
+      </button>
     </div>
   );
 }

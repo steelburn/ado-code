@@ -4,6 +4,14 @@ import { markdownToHtml } from './markdownToHtml';
 const GA_VERSION = '7.1';
 const PREVIEW_VERSION = '7.1-preview.4';
 
+/**
+ * Per-request timeout for ADO REST calls (ms). Without it a stalled socket
+ * (VPN drop, proxy/DNS blackhole, unreachable org) leaves the fetch promise
+ * pending forever, so the UI sits on "Fetching projects…" with no recovery.
+ * AdoClient.requestTimeoutMs is a static override so tests can lower it.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 /** Max walk rounds per direction for hierarchy expansion (ADO hierarchies are shallow). */
 const MAX_HIERARCHY_ROUNDS = 8;
 
@@ -46,6 +54,9 @@ export function terminalStateForType(workItemType: string): string {
 }
 
 export class AdoClient {
+  /** Per-request timeout (ms); see REQUEST_TIMEOUT_MS. Overridable in tests. */
+  static requestTimeoutMs = REQUEST_TIMEOUT_MS;
+
   private baseUrl: string;
   private headers: Record<string, string>;
   // Profile "me" lives on the vssps host (cloud) or the server root (on-prem).
@@ -506,7 +517,7 @@ export class AdoClient {
   /** Fetch an ADO attachment (rich-text image) with auth as a data URL. */
   private async fetchAttachmentAsDataUrl(url: string): Promise<string | null> {
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithTimeout(url, {
         method: 'GET',
         headers: { ...this.headers, Accept: 'application/octet-stream' },
       });
@@ -737,6 +748,27 @@ export class AdoClient {
   }
 
   /**
+   * Fetch with a hard timeout so a stalled socket can never hang a caller.
+   * Aborts via AbortController and rejects with a clear, user-facing error
+   * so the caller (and the UI) can recover instead of waiting forever.
+   */
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const timeoutMs = AdoClient.requestTimeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`ADO request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Universal ADO API fetch with GA→preview fallback.
    * Tries the GA version first. If the response contains the "preview flag
    * must be supplied" error, automatically retries with the preview version.
@@ -751,14 +783,14 @@ export class AdoClient {
   ): Promise<Response> {
     // Replace any existing api-version param with GA version
     const gaUrl = url.replace(/api-version=[^&]+/, `api-version=${gaVersion}`);
-    let response = await fetch(gaUrl, init);
+    let response = await this.fetchWithTimeout(gaUrl, init);
 
     if (!response.ok) {
       const text = await response.text();
       if (text.includes('-preview flag must be supplied')) {
         // Retry with preview version
         const previewUrl = url.replace(/api-version=[^&]+/, `api-version=${previewVersion}`);
-        response = await fetch(previewUrl, init);
+        response = await this.fetchWithTimeout(previewUrl, init);
       } else {
         // Re-throw the original error (response body was consumed, so create a new error)
         throw new Error(`ADO API error: ${response.status} ${text}`);

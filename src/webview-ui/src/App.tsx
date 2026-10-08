@@ -100,6 +100,10 @@ function restoredMessages(
   }));
 }
 
+/** Watchdog for the project-list fetch. The host aborts its own ADO request
+ *  after 30s; if the message port is wedged we still un-stick the UI at 40s. */
+const PROJECTS_FETCH_WATCHDOG_MS = 40_000;
+
 function App() {
   // ── State ──────────────────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -170,6 +174,24 @@ function App() {
   // per webview session (message-handler closures are stale, so a ref, not
   // state, gates the one-shot fetch).
   const projectsRequestedRef = useRef(false);
+  // Watchdog: a project-list fetch that never comes back (wedged message
+  // port, host crash) must not leave `projectsLoading` true forever — the
+  // header would sit on "Fetching projects…" with no way out.
+  const projectsWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarmProjectsWatchdog = useCallback(() => {
+    if (projectsWatchdogRef.current !== null) {
+      clearTimeout(projectsWatchdogRef.current);
+      projectsWatchdogRef.current = null;
+    }
+  }, []);
+  const armProjectsWatchdog = useCallback(() => {
+    disarmProjectsWatchdog();
+    projectsWatchdogRef.current = setTimeout(() => {
+      projectsWatchdogRef.current = null;
+      setProjectsLoading(false);
+      setError('Timed out fetching projects. Check your network/VPN connection, then try again.');
+    }, PROJECTS_FETCH_WATCHDOG_MS);
+  }, [disarmProjectsWatchdog]);
 
   // Session history
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -390,6 +412,7 @@ function App() {
           setLoading(false);
           // A failed project/model fetch must not leave the wizard stuck on
           // "Fetching…" forever (Refresh links are gated on !loading).
+          disarmProjectsWatchdog();
           setProjectsLoading(false);
           setModelsLoading(false);
           // An error ends the turn — no consent prompt can still be pending.
@@ -500,6 +523,7 @@ function App() {
           if (cfg.configured && (cfg.adoConnectionConfigured ?? cfg.adoConfigured) === true && !projectsRequestedRef.current) {
             projectsRequestedRef.current = true;
             setProjectsLoading(true);
+            armProjectsWatchdog();
             vscode.postMessage({ type: 'fetchProjects' });
           }
           break;
@@ -614,6 +638,7 @@ function App() {
         }
 
         case 'projectList':
+          disarmProjectsWatchdog();
           setProjects(msg.projects);
           setProjectsLoading(false);
           break;
@@ -703,8 +728,11 @@ function App() {
     vscode.postMessage({ type: 'listAgentRuns' });
     vscode.postMessage({ type: 'listSessions' });
 
-    return () => window.removeEventListener('message', handler);
-  }, []);
+    return () => {
+      window.removeEventListener('message', handler);
+      disarmProjectsWatchdog();
+    };
+  }, [armProjectsWatchdog, disarmProjectsWatchdog]);
 
   // Persist history + task detail so the chat restores after panel collapse/reopen
   useEffect(() => {
@@ -980,10 +1008,14 @@ function App() {
 
   const handleFetchProjects = useCallback((organization?: string, pat?: string) => {
     setProjectsLoading(true);
+    // Arm the watchdog: the host aborts its own request after 30s, but if the
+    // port is wedged we must still clear the spinner. 40s lets the host's more
+    // specific error land first when it does respond.
+    armProjectsWatchdog();
     // Pass the typed-but-unsaved credentials: the host fetches with these
     // directly (saved settings are empty until "Save & Continue").
     vscode.postMessage({ type: 'fetchProjects', organization, pat });
-  }, []);
+  }, [armProjectsWatchdog]);
 
   const handleFetchModels = useCallback((provider?: string, apiUrl?: string, apiKey?: string) => {
     // Drop any list from a previous endpoint so the picker can't show stale
