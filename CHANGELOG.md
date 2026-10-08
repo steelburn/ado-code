@@ -3,6 +3,11 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+### Changed
+
+- **Marketplace categories** — `categories` changed from `["Other"]` to `["AI", "Azure"]`, so the extension is listed under the AI and Azure sections of the VS Code Marketplace and Open VSX instead of only the catch-all "Other" listing.
+- **Marketplace keywords** — a `keywords` list (`azure devops`, `work items`, `ai`, `ai coding assistant`, `agentic`, `llm`, `openai`, `anthropic`, `mcp`, `model context protocol`) was added so the extension surfaces for those searches on both registries.
+
 ## [0.7.3] - 2026-10-08
 
 ### Fixed

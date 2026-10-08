@@ -103,3 +103,128 @@ suite('Extension icon', () => {
     );
   });
 });
+
+/**
+ * Guards the marketplace categories. vsce forwards `categories` to the
+ * registries verbatim, so an unrecognised value only fails server-side at
+ * publish time, and the catch-all "Other" listing buries the extension where
+ * nobody browses for it.
+ */
+suite('Marketplace categories', () => {
+  // The values package.json#categories accepts on both registries.
+  const knownCategories = [
+    'AI',
+    'Azure',
+    'Data Science',
+    'Databases',
+    'Debuggers',
+    'Education',
+    'Extension Packs',
+    'Formatters',
+    'Keymaps',
+    'Language Packs',
+    'Linters',
+    'Machine Learning',
+    'Notebooks',
+    'Other',
+    'Programming Languages',
+    'SCM Providers',
+    'Snippets',
+    'Testing',
+    'Themes',
+    'Visualization',
+  ];
+
+  function categories(): string[] {
+    const manifest = JSON.parse(fs.readFileSync(path.join(findRepoRoot(), 'package.json'), 'utf8'));
+    return manifest.categories;
+  }
+
+  test('every declared category is one the registries accept', () => {
+    for (const category of categories()) {
+      assert.ok(
+        knownCategories.includes(category),
+        `"${category}" is not a known marketplace category - publishing would fail`
+      );
+    }
+  });
+
+  test('categories are the intended AI + Azure listing', () => {
+    assert.deepStrictEqual(
+      categories().slice().sort(),
+      ['AI', 'Azure'],
+      'unexpected marketplace categories - this list is user-visible on both registries'
+    );
+  });
+});
+
+/**
+ * Guards the marketplace search keywords/tags. vsce's TagsProcessor unions
+ * package.json#keywords into the gallery tags verbatim and validates nothing,
+ * so a malformed or dishonest keyword becomes a bad listing rather than an
+ * error - which is why the shape and the exact set are pinned here.
+ */
+suite('Marketplace keywords', () => {
+  // Search terms a user realistically types for this extension, kept truthful:
+  // it integrates with Azure DevOps, is an AI coding assistant, and supports
+  // OpenAI/Anthropic-compatible models and MCP servers.
+  const expectedKeywords = [
+    'azure devops',
+    'work items',
+    'ai',
+    'ai coding assistant',
+    'agentic',
+    'llm',
+    'openai',
+    'anthropic',
+    'mcp',
+    'model context protocol',
+  ];
+
+  // Names that would be keyword-squatting: this extension bundles no Copilot
+  // integration and deliberately ships no code derived from Roo Code/Cline.
+  const otherVendors = ['copilot', 'cline', 'roo code', 'roocode'];
+
+  function keywords(): string[] {
+    const manifest = JSON.parse(fs.readFileSync(path.join(findRepoRoot(), 'package.json'), 'utf8'));
+    return manifest.keywords;
+  }
+
+  test('package.json declares an array of unique, lowercase, trimmed keywords', () => {
+    const value = keywords();
+    assert.ok(
+      Array.isArray(value) && value.length > 0,
+      'package.json#keywords must be a non-empty array'
+    );
+    assert.ok(value.every((k) => typeof k === 'string'), 'every keyword must be a string');
+    assert.deepStrictEqual(
+      value.filter((k) => k !== k.trim() || k !== k.toLowerCase()),
+      [],
+      'keywords must be lowercase and already trimmed'
+    );
+    assert.strictEqual(new Set(value).size, value.length, 'keywords must be unique');
+  });
+
+  test('keywords stay within a conservative 30-character bound', () => {
+    // House bound, not a verified registry rule - it just keeps the tags short
+    // and readable wherever the registries display them.
+    assert.deepStrictEqual(
+      keywords().filter((k) => k.length > 30),
+      [],
+      'keywords should stay at 30 characters or fewer'
+    );
+  });
+
+  test("keywords do not squat on another product's name", () => {
+    const squatted = keywords().filter((k) => otherVendors.includes(k.toLowerCase()));
+    assert.deepStrictEqual(squatted, [], 'keywords must not claim another product');
+  });
+
+  test('keywords are the intended search terms', () => {
+    assert.deepStrictEqual(
+      keywords().slice().sort(),
+      expectedKeywords.slice().sort(),
+      'unexpected marketplace keywords - this list is user-visible search metadata'
+    );
+  });
+});

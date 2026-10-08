@@ -14,7 +14,20 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "AI",
+    "Azure"
+  ],
+  "keywords": [
+    "azure devops",
+    "work items",
+    "ai",
+    "ai coding assistant",
+    "agentic",
+    "llm",
+    "openai",
+    "anthropic",
+    "mcp",
+    "model context protocol"
   ],
   "activationEvents": [
     "onView:adoCode.chat",
