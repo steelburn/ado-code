@@ -2,7 +2,7 @@ import { LlmClient } from './client';
 import { LlmMessage, LlmTool, ToolCall, LlmAgenticResult } from './types';
 import { ToolExecutor } from './tools';
 import { logger } from '../services/logger';
-import { DEFAULT_MAX_ITERATIONS } from '../shared/agenticLimits';
+import { DEFAULT_MAX_ITERATIONS, INTERNAL_TODO_TOOLS, MAX_INTERNAL_ITERATIONS } from '../shared/agenticLimits';
 
 /**
  * User-turn appended as the final message when the model exhausts its
@@ -347,6 +347,11 @@ export class ToolLoopDetector {
  * if it exhausts `maxIterations` while still requesting tools — with a forced
  * concluding reply (`result.reachedIterationLimit === true`) instead of
  * throwing, so the user always gets a real chat conclusion.
+ *
+ * Round-trips that call ONLY ADO Code's internal bookkeeping tools
+ * (set_goal / update_todo_list, see INTERNAL_TODO_TOOLS) are exempt from the
+ * budget, so recording the goal or ticking a to-do item never eats a real
+ * iteration.
  */
 export async function runAgenticChat(
   client: LlmClient,
@@ -373,7 +378,14 @@ export async function runAgenticChat(
   // can be stubbed to save re-send cost (see compactOldToolResults).
   let protectFrom = initialMessages.length;
 
-  for (let i = 0; i < maxIterations; i++) {
+  // ADO Code's own bookkeeping tools (set_goal / update_todo_list) are internal
+  // to the harness: a round-trip that ONLY calls them must not burn the user's
+  // iteration budget. Track the budget separately from the raw round-trip count
+  // (`i`, still used for iteration numbers and the loop detector).
+  let i = 0;                  // total model round-trips this turn
+  let billableIterations = 0; // round-trips that count against maxIterations
+  let internalIterations = 0; // internal-only round-trips (capped for safety)
+  while (billableIterations < maxIterations && internalIterations < MAX_INTERNAL_ITERATIONS) {
     // Steering: user messages typed while this run was in flight are drained
     // at the top of every iteration and appended as a `user` turn, so the
     // model sees them on its NEXT round-trip. This deliberately does NOT abort
@@ -397,6 +409,14 @@ export async function runAgenticChat(
 
     if (!toolCalls || toolCalls.length === 0) {
       return { text, toolCalls: allToolCalls, iterations: i + 1 };
+    }
+
+    // Internal-only round-trips (set_goal / update_todo_list) are ADO Code
+    // bookkeeping, not user-visible work — they must not consume the budget.
+    if (toolCalls.every((c: ToolCall) => INTERNAL_TODO_TOOLS.has(c.name))) {
+      internalIterations++;
+    } else {
+      billableIterations++;
     }
 
     allToolCalls.push(...toolCalls);
@@ -557,6 +577,8 @@ export async function runAgenticChat(
       );
       return concludeAtIterationLimit(client, messages, executor.tools, signal, i + 1, allToolCalls, 'loop');
     }
+
+    i++;
   }
 
   // The model spent its whole iteration budget still asking for tools. Do NOT

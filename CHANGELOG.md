@@ -3,11 +3,15 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+## [0.7.4] - 2026-10-13
+
 ### Added
 
 - **The chat reopens in the Editor Area after an IDE restart** — if "ADO Code Chat" was open as an editor tab when the window closed, the extension now registers a webview-panel serializer (`onWebviewPanel:adoCode.chatEditor`) so VS Code revives the tab in place instead of dropping it on reload.
 
 ### Changed
+
+- **`set_goal` and `update_todo_list` no longer consume the agentic iteration budget** — a model round-trip that calls *only* ADO Code's own bookkeeping tools is internal to the harness, so it is now exempt from `DEFAULT_MAX_ITERATIONS` via a separate billable-iteration counter; a mixed batch (an internal tool alongside a real one) still counts as one iteration, and a runaway internal-only loop is force-concluded after `MAX_INTERNAL_ITERATIONS` (50) round-trips.
 
 - **Marketplace categories** — `categories` changed from `["Other"]` to `["AI", "Azure"]`, so the extension is listed under the AI and Azure sections of the VS Code Marketplace and Open VSX instead of only the catch-all "Other" listing.
 - **Marketplace keywords** — a `keywords` list (`azure devops`, `work items`, `ai`, `ai coding assistant`, `agentic`, `llm`, `openai`, `anthropic`, `mcp`, `model context protocol`) was added so the extension surfaces for those searches on both registries.

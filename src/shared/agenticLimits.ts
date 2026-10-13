@@ -14,3 +14,20 @@
  * drift apart again.
  */
 export const DEFAULT_MAX_ITERATIONS = 100;
+
+/**
+ * ADO Code's own bookkeeping tools. A round-trip that calls ONLY these tools
+ * is internal to the harness (recording the session goal, ticking to-do
+ * items) and must NOT consume the user's iteration budget — see
+ * runAgenticChat() in llm/agentic.ts.
+ */
+export const INTERNAL_TODO_TOOLS: ReadonlySet<string> = new Set(['set_goal', 'update_todo_list']);
+
+/**
+ * Safety ceiling on internal-only round-trips. Excluding INTERNAL_TODO_TOOLS
+ * from the iteration budget must not let a misbehaving model loop forever, so
+ * once this many internal-only round-trips have occurred the loop concludes
+ * normally (reachedIterationLimit) instead of continuing to call them.
+ */
+export const MAX_INTERNAL_ITERATIONS = 50;
+

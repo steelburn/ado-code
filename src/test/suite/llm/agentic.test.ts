@@ -751,3 +751,95 @@ suite('runAgenticChat steering (mid-run user input)', () => {
   });
 });
 
+
+suite('runAgenticChat — internal bookkeeping tools are exempt from the iteration budget', () => {
+  const internalTools: LlmTool[] = [
+    { name: 'set_goal', description: 'record the session goal', parameters: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] } },
+    { name: 'update_todo_list', description: 'update the to-do list', parameters: { type: 'object', properties: {}, required: [] } },
+    { name: 'echo', description: 'echo a value', parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] } },
+  ];
+
+  function trackingExecutor(): { ran: string[]; exec: any } {
+    const ran: string[] = [];
+    return {
+      ran,
+      exec: {
+        tools: internalTools,
+        mode: 'act' as 'inline' | 'plan' | 'act' | 'yolo',
+        setMode(_m: 'inline' | 'plan' | 'act' | 'yolo') {},
+        beginTurn() {},
+        canAutoExecute(_name: string, _args: Record<string, any>): boolean { return true; },
+        async execute(name: string, args: Record<string, any>): Promise<string> {
+          ran.push(name);
+          if (name === 'echo') return `echoed: ${args.value}`;
+          return `${name} ok`;
+        },
+      },
+    };
+  }
+
+  const toolCall = (id: string, name: string, args: object) => (
+    `{"id":"${id}","type":"function","function":{"name":"${name}","arguments":${JSON.stringify(JSON.stringify(args))}}}`
+  );
+
+  test('set_goal + update_todo_list round-trips do NOT consume the iteration budget', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return jsonResponse({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [JSON.parse(toolCall('c1', 'set_goal', { goal: 'ship it' }))] } }] });
+      }
+      if (bodies.length === 2) {
+        return jsonResponse({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [JSON.parse(toolCall('c2', 'update_todo_list', {}))] } }] });
+      }
+      if (bodies.length === 3) {
+        return jsonResponse({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [JSON.parse(toolCall('c3', 'echo', { value: 'work' }))] } }] });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const t = trackingExecutor();
+    // Budget of 2: the two internal round-trips must be free, leaving room for
+    // the single real (echo) round-trip to run before the model concludes.
+    const result = await runAgenticChat(new LlmClient(config), t.exec, [{ role: 'user', content: 'go' }], undefined, 2);
+
+    assert.strictEqual(result.reachedIterationLimit, undefined, 'internal-only round-trips must not exhaust the budget');
+    assert.strictEqual(result.text, 'done');
+    assert.deepStrictEqual(t.ran, ['set_goal', 'update_todo_list', 'echo'], 'all three tools ran');
+    assert.strictEqual(result.iterations, 4, 'iterations reports total round-trips, internal included');
+  });
+
+  test('an iteration mixing an internal tool with a real tool still counts as ONE billable iteration', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return jsonResponse({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [JSON.parse(toolCall('c1', 'set_goal', { goal: 'g' })), JSON.parse(toolCall('c2', 'echo', { value: 'x' }))] } }] });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const t = trackingExecutor();
+    const result = await runAgenticChat(new LlmClient(config), t.exec, [{ role: 'user', content: 'go' }], undefined, 1);
+
+    assert.ok(t.ran.includes('echo'), 'the real tool in a mixed batch still runs');
+    assert.strictEqual(result.reachedIterationLimit, true, 'the mixed batch consumed the single-iteration budget');
+  });
+
+  test('a runaway internal-only loop is force-concluded by MAX_INTERNAL_ITERATIONS', async () => {
+    let n = 0;
+    const fetchStub = async () => {
+      n++;
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [JSON.parse(toolCall('c' + n, 'set_goal', { goal: 'g' + n }))] } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const t = trackingExecutor();
+    const result = await runAgenticChat(new LlmClient(config), t.exec, [{ role: 'user', content: 'go' }], undefined, 2);
+    assert.strictEqual(result.reachedIterationLimit, true, 'runaway internal loop is force-concluded');
+  });
+});
