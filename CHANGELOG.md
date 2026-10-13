@@ -14,6 +14,7 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **The new-project wizard scaffolds into a blank folder instead of nesting a project directory inside it** — `ProjectCreationService` now treats a blank target folder (empty, or holding only editor/OS/extension metadata such as `.git`, `.vscode`, `.ado-code`, `node_modules`) as the project base itself, so "Create New Project here" fills the folder the user actually opened instead of leaving it empty and putting the project in `<folder>/<projectName>`. A folder with real content still gets the nested directory, and a folder holding a file a template writes (e.g. a hand-written `.gitignore`) is never scaffolded over.
 - **Refreshing the ADO project list can no longer hang on "Fetching projects…"** — `AdoClient` now aborts an ADO REST request that stalls (VPN drop, proxy/DNS blackhole, unreachable org) after 30 s and rejects with a clear error, so the header always leaves the loading state. The webview backs that with a 40 s watchdog that clears the spinner even when the host never answers, and the ↻ refresh control (previously hidden while loading) now stays mounted and merely disables — so a failed refresh is always retryable without reloading the panel.
 
 ## [0.7.3] - 2026-10-08

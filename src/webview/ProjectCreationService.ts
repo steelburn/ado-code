@@ -12,6 +12,9 @@ export class ProjectCreationService {
   /**
    * Create a new project based on the wizard request.
    * Handles directory creation, template scaffolding, git init, and initial commit.
+   * A blank target folder is used as the project base itself ("Create New
+   * Project here"); only a target holding real content gets a nested
+   * <projectName> directory.
    */
   async createProject(
     request: ProjectCreationRequest
@@ -39,19 +42,27 @@ export class ProjectCreationService {
         };
       }
 
-      const projectDir = path.join(request.targetPath, projectName);
+      const baseDir = request.targetPath;
 
       // Ensure target path exists
-      if (!fs.existsSync(request.targetPath)) {
-        fs.mkdirSync(request.targetPath, { recursive: true });
+      if (!fs.existsSync(baseDir)) {
+        fs.mkdirSync(baseDir, { recursive: true });
       }
 
-      // Check if project directory already exists
-      if (fs.existsSync(projectDir)) {
+      // A blank target folder — a fresh folder opened for "Create New Project
+      // here", possibly holding only editor/OS/extension metadata — IS the
+      // project. Scaffold into it directly instead of nesting a second
+      // <projectName> directory inside it.
+      const scaffoldInPlace = this.isBlankTargetDir(baseDir);
+      const projectDir = scaffoldInPlace ? baseDir : path.join(baseDir, projectName);
+
+      // In-place mode reuses baseDir by design, so only the nested flow can
+      // collide with an existing directory.
+      if (!scaffoldInPlace && fs.existsSync(projectDir)) {
         return {
           success: false,
           path: projectDir,
-          error: `Directory "${projectName}" already exists at ${request.targetPath}`,
+          error: `Directory "${projectName}" already exists at ${baseDir}`,
         };
       }
 
@@ -78,6 +89,39 @@ export class ProjectCreationService {
         path: '',
         error: err instanceof Error ? err.message : String(err),
       };
+    }
+  }
+
+  /**
+   * Entries that don't count as project content when deciding whether a wizard
+   * target folder is blank. None of them is ever written by a template, so
+   * scaffolding in place can never overwrite user work: a folder holding a
+   * .gitignore / package.json / etc. is NOT blank and still gets a nested
+   * <projectName> directory.
+   */
+  private static readonly BENIGN_TARGET_ENTRIES: ReadonlySet<string> = new Set([
+    '.git', // fresh `git init` — the folder itself is the repo
+    '.vscode',
+    '.idea',
+    '.ado-code', // this extension's own metadata (memory, repo understanding)
+    'node_modules',
+    '__pycache__',
+    '.DS_Store',
+    'Thumbs.db',
+    'desktop.ini',
+  ]);
+
+  /**
+   * True when `dir` is empty or holds nothing but benign metadata — i.e. the
+   * user handed the wizard a blank folder to build the project in.
+   */
+  private isBlankTargetDir(dir: string): boolean {
+    try {
+      return fs
+        .readdirSync(dir)
+        .every(entry => ProjectCreationService.BENIGN_TARGET_ENTRIES.has(entry));
+    } catch {
+      return false; // unreadable / not a directory — fall back to the nested flow
     }
   }
 

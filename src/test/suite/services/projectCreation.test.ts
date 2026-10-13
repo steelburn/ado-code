@@ -107,7 +107,8 @@ suite('ProjectCreationService', () => {
       const result = await service.createProject(request);
 
       assert.strictEqual(result.success, true, result.error);
-      assert.strictEqual(result.path, path.join(request.targetPath, 'demo-app'));
+      // A blank target folder IS the project base (in-place scaffold).
+      assert.strictEqual(result.path, request.targetPath);
 
       const projectDir = result.path!;
       for (const file of EXPECTED_FILES[template.id]) {
@@ -276,14 +277,67 @@ suite('ProjectCreationService', () => {
     assert.strictEqual(result.error, 'No target path specified');
   });
 
-  test('creates a new project inside an existing blank directory (the blank-dir flow)', async () => {
+  // ── Base folder: blank target vs folder with content ─────────────
+
+  test('scaffolds in place when the target folder is blank', async () => {
     // Simulates: user opens a BLANK folder, wizard resolves targetPath = that folder.
     const blankDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
     const request = makeRequest({ targetPath: blankDir });
     const result = await service.createProject(request);
     assert.strictEqual(result.success, true, result.error);
-    assert.strictEqual(result.path, path.join(blankDir, 'demo-app'));
-    assert.ok(fs.existsSync(path.join(blankDir, 'demo-app', 'package.json')));
-    assert.ok(gitOk(result.path!, ['log', '--oneline']), 'blank-dir project should be committed');
+    assert.strictEqual(result.path, blankDir, 'blank target folder is the project base');
+    assert.ok(fs.existsSync(path.join(blankDir, 'package.json')));
+    assert.ok(!fs.existsSync(path.join(blankDir, 'demo-app')), 'no nested project directory');
+    assert.ok(gitOk(blankDir, ['log', '--oneline']), 'blank-dir project should be committed');
+  });
+
+  test('still treats a folder as blank when it only holds benign metadata', async () => {
+    const blankDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    // Editor/OS/extension artefacts are not project content: this extension's
+    // own .ado-code metadata, a .vscode settings file, node_modules.
+    fs.mkdirSync(path.join(blankDir, '.ado-code', 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(blankDir, '.ado-code', 'memory', 'keep.md'), 'keep me');
+    fs.mkdirSync(path.join(blankDir, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(blankDir, '.vscode', 'settings.json'), '{}');
+    fs.mkdirSync(path.join(blankDir, 'node_modules'), { recursive: true });
+
+    const result = await service.createProject(makeRequest({ targetPath: blankDir }));
+    assert.strictEqual(result.success, true, result.error);
+    assert.strictEqual(result.path, blankDir);
+    assert.ok(fs.existsSync(path.join(blankDir, 'package.json')));
+    // …and the metadata is left alone.
+    assert.strictEqual(
+      fs.readFileSync(path.join(blankDir, '.ado-code', 'memory', 'keep.md'), 'utf8'),
+      'keep me'
+    );
+  });
+
+  test('scaffolds in place into a folder that is already a fresh git repo', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    execFileSync('git', ['init', '-b', 'main'], { cwd: dir, stdio: 'ignore' });
+    const result = await service.createProject(makeRequest({ targetPath: dir }));
+    assert.strictEqual(result.success, true, result.error);
+    assert.strictEqual(result.path, dir);
+    assert.ok(gitOk(dir, ['log', '--oneline']), 'in-place project should be committed');
+  });
+
+  test('nests a project directory when the target folder already has content', async () => {
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    fs.writeFileSync(path.join(target, 'notes.txt'), 'not a project');
+    const result = await service.createProject(makeRequest({ targetPath: target }));
+    assert.strictEqual(result.success, true, result.error);
+    assert.strictEqual(result.path, path.join(target, 'demo-app'));
+    assert.ok(fs.existsSync(path.join(target, 'demo-app', 'package.json')));
+    assert.strictEqual(fs.readFileSync(path.join(target, 'notes.txt'), 'utf8'), 'not a project');
+  });
+
+  test('nests instead of clobbering a file a template would write', async () => {
+    // Every template writes .gitignore, so a folder holding one is NOT blank.
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    fs.writeFileSync(path.join(target, '.gitignore'), '# mine');
+    const result = await service.createProject(makeRequest({ targetPath: target }));
+    assert.strictEqual(result.success, true, result.error);
+    assert.strictEqual(result.path, path.join(target, 'demo-app'));
+    assert.strictEqual(fs.readFileSync(path.join(target, '.gitignore'), 'utf8'), '# mine');
   });
 });
