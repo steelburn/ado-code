@@ -153,3 +153,83 @@ suite('shared/delegationPlan', () => {
         });
     });
 });
+
+
+// ---------------------------------------------------------------------------
+// AD-02 - prompt-only hardening: unique branch identity + title fallback.
+// ---------------------------------------------------------------------------
+import { delegationBranchToken, delegationRunTitle } from '../../../shared/delegationPlan';
+
+suite('shared/delegationPlan - AD-02 prompt-only hardening', () => {
+    suite('delegationBranchToken', () => {
+        test('is deterministic for the same run id', () => {
+            assert.strictEqual(delegationBranchToken('run-1-prompt-1'), delegationBranchToken('run-1-prompt-1'));
+        });
+
+        test('differs for different run ids', () => {
+            assert.notStrictEqual(delegationBranchToken('run-1-prompt-1'), delegationBranchToken('run-2-prompt-1'));
+        });
+
+        test('is branch-safe (lowercase alphanumeric only)', () => {
+            assert.ok(/^[a-z0-9]+$/.test(delegationBranchToken('run-1791960389813-prompt-7')));
+        });
+    });
+
+    suite('delegationBranchName - prompt-only uniqueness', () => {
+        const prompt = 'Read and follow AGENTS.md';
+
+        test('two different runs of the same prompt get distinct branches', () => {
+            const a = delegationBranchName(undefined, prompt, 'run-100-prompt-1');
+            const b = delegationBranchName(undefined, prompt, 'run-200-prompt-2');
+            assert.notStrictEqual(a, b, 'prompt-only branches must be unique per run');
+            assert.ok(a.startsWith('feature/agent-'), a);
+            assert.ok(b.startsWith('feature/agent-'), b);
+            assert.ok(!/undefined|null/.test(a), a);
+            assert.ok(!/undefined|null/.test(b), b);
+        });
+
+        test('is deterministic for the same run id', () => {
+            assert.strictEqual(
+                delegationBranchName(undefined, prompt, 'run-100-prompt-1'),
+                delegationBranchName(undefined, prompt, 'run-100-prompt-1'),
+            );
+        });
+
+        test('keeps the historic work-item branch byte-for-byte, ignoring the run id', () => {
+            assert.strictEqual(delegationBranchName(42, 'Fix login bug'), 'feature/ADO-42-fix-login-bug');
+            assert.strictEqual(delegationBranchName(42, 'Fix login bug', 'run-100-42'), 'feature/ADO-42-fix-login-bug');
+        });
+
+        test('degrades to feature/agent-<slug> when no run id is supplied', () => {
+            assert.strictEqual(delegationBranchName(undefined, 'Fix login bug'), 'feature/agent-fix-login-bug');
+        });
+
+        test('never emits an id-less branch suffix for an empty prompt with a run id', () => {
+            const b = delegationBranchName(undefined, '', 'run-1-prompt-1');
+            assert.ok(b.startsWith('feature/agent-task-'), b);
+        });
+    });
+
+    suite('delegationRunTitle', () => {
+        test('an explicit title always wins (trimmed)', () => {
+            assert.strictEqual(delegationRunTitle('some prompt', '  My title  '), 'My title');
+        });
+
+        test('falls back to the prompt first non-empty line', () => {
+            assert.strictEqual(
+                delegationRunTitle('\n  Read and follow AGENTS.md\nThen build'),
+                'Read and follow AGENTS.md',
+            );
+        });
+
+        test('truncates a very long first line', () => {
+            assert.ok(delegationRunTitle('x'.repeat(200)).length <= 80);
+        });
+
+        test('never returns an empty string', () => {
+            assert.strictEqual(delegationRunTitle(''), 'Agent delegation');
+            assert.strictEqual(delegationRunTitle('   \n  '), 'Agent delegation');
+            assert.strictEqual(delegationRunTitle('Read AGENTS.md', '   '), 'Read AGENTS.md');
+        });
+    });
+});

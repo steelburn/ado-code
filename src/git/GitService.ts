@@ -457,8 +457,8 @@ export class GitService {
    * Get the branch name for a work item based on title.
    * Same logic as createTaskBranch but without creating the branch.
    */
-  getBranchName(workItemId: number | undefined, title: string): string {
-    return delegationBranchName(workItemId, title);
+  getBranchName(workItemId: number | undefined, title: string, runId?: string): string {
+    return delegationBranchName(workItemId, title, runId);
   }
 
   /**

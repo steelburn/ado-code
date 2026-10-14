@@ -7,6 +7,10 @@ All notable changes to ADO Code will be documented in this file.
 
 - **Agent delegation works without an ADO work item or a selected project** — delegating from a chat with no active work item no longer fails with "select a work item first". With no work item (or no project selected) the run is started from the prompt alone and issues **no** ADO request at all: delegation planning now lives in the pure, unit-tested `src/shared/delegationPlan.ts`. Prompt-only runs fall back to `run-<ts>-prompt-<n>` run ids and `feature/agent-<slug>` branches (never `feature/ADO-undefined-…`), and their run card is labelled "not linked to a work item". With a work item active, delegation behaviour — child-task checklist, per-work-item concurrency guard, `feature/ADO-<id>-<slug>` branch — is unchanged.
 
+### Fixed
+
+- **Concurrent prompt-only delegations no longer share a git branch** — the prompt-only branch is now `feature/agent-<slug>-<token>`, the token derived from the run id, so two same-prompt runs (which AD-01 deliberately does not block) get distinct branches instead of colliding. Previously the second `createWorktree` failed with "already checked out" and the run silently fell back to the **main working tree**, letting two agents write the same checkout. A prompt-only run with no explicit title now also takes its title from the prompt's first non-empty line, so the run card (and the commit/PR defaults) never render blank. Work-item runs keep `feature/ADO-<id>-<slug>` byte-for-byte.
+
 ## [0.7.4] - 2026-10-13
 
 ### Added

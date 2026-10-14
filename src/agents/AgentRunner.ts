@@ -8,7 +8,7 @@ import { createAdapter } from './adapters';
 import { AgentAdapter } from './adapters/types';
 import { GitService } from '../git/GitService';
 import { extractDeliveryReport } from '../llm/prompts';
-import { delegationRunId } from '../shared/delegationPlan';
+import { delegationRunId, delegationRunTitle } from '../shared/delegationPlan';
 
 // M7 fix: the verify command is USER-configured (trusted input), so shell exec
 // is intentional — it respects quotes/globs (e.g. `npm test -- --grep "foo bar"`).
@@ -164,7 +164,7 @@ export class AgentRunner {
       // Windows npm installs) — adapters fall back to their canonical name
       // when this is absent (older persisted runs).
       bin: chosen.bin ?? chosen.name,
-      title: title || '',
+      title: delegationRunTitle(prompt, title),
       workdir,
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -178,7 +178,7 @@ export class AgentRunner {
     // AGENTS.md…", which made ugly branch names).
     try {
       const slugSource = (title ?? prompt.split('\n')[0] ?? '').slice(0, 80) || `task-${workItemId ?? 'prompt'}`;
-      const branchName = this.git.getBranchName(workItemId, slugSource);
+      const branchName = this.git.getBranchName(workItemId, slugSource, run.id);
       // Guardrail: reusing a branch that predates the current base means the
       // agent works from stale code — surface a warning but continue. The
       // guard must NEVER break run setup (wrapped defensively).

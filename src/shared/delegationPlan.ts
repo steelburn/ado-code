@@ -110,17 +110,26 @@ export function delegationRunId(workItemId: number | undefined, now: number): st
 }
 
 /**
- * Branch name for a delegated run. With a work item this is byte-for-byte the
- * historic `feature/ADO-<id>-<slug>`; without one it degrades to
- * `feature/agent-<slug>` — never `feature/ADO-undefined-…`.
+ * Branch name for a delegated run (AD-02). With a work item this is
+ * byte-for-byte the historic `feature/ADO-<id>-<slug>`; any run id is ignored.
+ * Without one it is `feature/agent-<slug>-<token>`, the token being derived
+ * from the run id so concurrent prompt-only runs of the SAME prompt never
+ * share a branch (no worktree / branch clash, no silent main-repo fallback).
+ * With no run id at all it degrades to `feature/agent-<slug>`, and never
+ * emits the literal `undefined`.
  */
-export function delegationBranchName(workItemId: number | undefined, title: string): string {
-  const slug = slugifyBranchTitle(title);
-  if (workItemId === undefined) {
-    // A prompt-only run has no ADO number to key on; fall back to the task slug.
-    return `feature/agent-${slug || 'task'}`;
+export function delegationBranchName(
+  workItemId: number | undefined,
+  title: string,
+  runId?: string,
+): string {
+  const slug = slugifyBranchTitle(title) || 'task';
+  if (workItemId !== undefined) {
+    return `feature/ADO-${workItemId}-${slug}`;
   }
-  return `feature/ADO-${workItemId}-${slug}`;
+  return runId
+    ? `feature/agent-${slug}-${delegationBranchToken(runId)}`
+    : `feature/agent-${slug}`;
 }
 
 /**
@@ -145,4 +154,34 @@ export function formatDelegationStartMessage(args: {
 /** Short scope suffix for the "delegation started" conversation trail line. */
 export function delegationTrailScope(plan: DelegationPlan): string {
   return plan.workItemId !== undefined ? `#${plan.workItemId}` : 'this chat (no work item)';
+}
+
+/** Deterministic, branch-safe (lowercase base36) token for a run id (AD-02). */
+export function delegationBranchToken(runId: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < runId.length; i++) {
+    h ^= runId.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36).padStart(6, '0').slice(-6);
+}
+
+/** Max characters of a prompt-derived run title (AD-02). */
+export const DELEGATION_TITLE_MAX = 80;
+
+/**
+ * Title for a delegated run (AD-02). A caller-supplied title always wins;
+ * otherwise the prompt's first non-empty line; otherwise a stable
+ * placeholder. Never empty, so a prompt-only run card / commit message never
+ * renders blank or `undefined`.
+ */
+export function delegationRunTitle(prompt: string, title?: string): string {
+  const explicit = (title ?? '').trim();
+  if (explicit) return explicit.slice(0, DELEGATION_TITLE_MAX).trim();
+  const firstLine = (prompt || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line.length > 0);
+  if (firstLine) return firstLine.slice(0, DELEGATION_TITLE_MAX).trim();
+  return 'Agent delegation';
 }
