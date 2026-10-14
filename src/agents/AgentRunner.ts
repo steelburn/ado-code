@@ -8,6 +8,7 @@ import { createAdapter } from './adapters';
 import { AgentAdapter } from './adapters/types';
 import { GitService } from '../git/GitService';
 import { extractDeliveryReport } from '../llm/prompts';
+import { delegationRunId } from '../shared/delegationPlan';
 
 // M7 fix: the verify command is USER-configured (trusted input), so shell exec
 // is intentional — it respects quotes/globs (e.g. `npm test -- --grep "foo bar"`).
@@ -91,7 +92,7 @@ export class AgentRunner {
     return this.runLogs.get(runId) ?? '';
   }
 
-  async delegate(workItemId: number, prompt: string, agent?: AgentName, title?: string, childIds?: number[], chatSessionId?: string): Promise<AgentRun> {
+  async delegate(workItemId: number | undefined, prompt: string, agent?: AgentName, title?: string, childIds?: number[], chatSessionId?: string): Promise<AgentRun> {
     const installed = await this.registry.getInstalled();
     // M2 fix: honor adoCode.agents.autoSelect when no agent is specified.
     let chosen: AgentCapability | undefined;
@@ -106,11 +107,20 @@ export class AgentRunner {
       throw new Error(`agent '${agent ?? 'any'}' is not installed`);
     }
 
+    // AD-01: a prompt-only run has no work item, so the work-item guards below
+    // are skipped for it. `itemId` is a const that keeps the undefined-check
+    // narrowing valid inside the closures backing those guards.
+    const itemId = workItemId;
+
     // Guardrail: never run two agents on the same work item concurrently —
     // both would create the same branch and stomp each other's worktree.
-    const activeForItem = [...this.runs.values()].find(
-      r => r.workItemId === workItemId && r.status === 'running'
-    );
+    let activeForItem: AgentRun | undefined;
+    if (itemId !== undefined) {
+      const id = itemId;
+      activeForItem = [...this.runs.values()].find(
+        r => r.workItemId === id && r.status === 'running'
+      );
+    }
     if (activeForItem) {
       throw new Error(
         `work item #${workItemId} already has an active agent run (${activeForItem.agent}, ${activeForItem.id}) — finish or cancel it before delegating again`
@@ -122,17 +132,23 @@ export class AgentRunner {
     // would touch the same work and stomp each other) — and refuse delegating
     // an item that an active parent run already covers.
     const childIdsSet = new Set(childIds ?? []);
-    const childCovered = [...this.runs.values()].find(
-      r => r.status === 'running' && r.workItemId !== undefined && childIdsSet.has(r.workItemId)
-    );
+    let childCovered: AgentRun | undefined;
+    let insideParent: AgentRun | undefined;
+    if (itemId !== undefined) {
+      const id = itemId;
+      childCovered = [...this.runs.values()].find(
+        r => r.status === 'running' && r.workItemId !== undefined && childIdsSet.has(r.workItemId)
+      );
+      insideParent = [...this.runs.values()].find(
+        r => r.status === 'running' && (r.childIds ?? []).includes(id)
+      );
+    }
     if (childCovered) {
       throw new Error(
         `work item #${childCovered.workItemId} (a child of #${workItemId}) already has an active agent run (${childCovered.agent}, ${childCovered.id}) — finish or cancel it before delegating the parent`
       );
     }
-    const insideParent = [...this.runs.values()].find(
-      r => r.status === 'running' && (r.childIds ?? []).includes(workItemId)
-    );
+
     if (insideParent) {
       throw new Error(
         `work item #${workItemId} is covered by the active parent run (${insideParent.agent}, ${insideParent.id}) — finish or cancel it before delegating the child separately`
@@ -141,7 +157,7 @@ export class AgentRunner {
 
     const workdir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const run: AgentRun = {
-      id: `run-${Date.now()}-${workItemId}`,
+      id: delegationRunId(workItemId, Date.now()),
       workItemId,
       agent: chosen.name,
       // Spawn the exact executable detection verified (e.g. claude.cmd on
@@ -161,7 +177,7 @@ export class AgentRunner {
     // first line is only a fallback (it is usually "Read and follow
     // AGENTS.md…", which made ugly branch names).
     try {
-      const slugSource = (title ?? prompt.split('\n')[0] ?? '').slice(0, 80) || `task-${workItemId}`;
+      const slugSource = (title ?? prompt.split('\n')[0] ?? '').slice(0, 80) || `task-${workItemId ?? 'prompt'}`;
       const branchName = this.git.getBranchName(workItemId, slugSource);
       // Guardrail: reusing a branch that predates the current base means the
       // agent works from stale code — surface a warning but continue. The

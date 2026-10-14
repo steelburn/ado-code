@@ -363,4 +363,21 @@ suite('AgentRunner', () => {
       fs.rmSync(workdir, { recursive: true, force: true });
     }
   });
+
+  test('prompt-only delegation runs without a work item (AD-01)', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    const run = await runner.delegate(undefined, 'do stuff with no work item', 'claude');
+    assert.strictEqual(run.workItemId, undefined);
+    assert.ok(run.id.startsWith('run-'), run.id);
+    assert.ok(run.id.includes('prompt'), run.id);
+    assert.ok(!run.id.includes('undefined'), run.id);
+  });
+
+  test('prompt-only runs are not blocked by the per-work-item concurrency guard (AD-01)', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    const first = await runner.delegate(undefined, 'first prompt-only task', 'claude');
+    const second = await runner.delegate(undefined, 'second prompt-only task', 'claude');
+    assert.strictEqual(second.workItemId, undefined);
+    assert.notStrictEqual(second.id, first.id, 'two prompt-only runs must get distinct ids');
+  });
 });

@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
+import { delegationBranchName } from '../shared/delegationPlan';
 
 const execFile = promisify(cp.execFile);
 
@@ -51,13 +52,8 @@ export class GitService {
    * Create a feature branch for a work item: feature/ADO-1234-fix-login-bug
    * Returns the branch name, or null if the branch already exists.
    */
-  async createTaskBranch(workItemId: number, title: string): Promise<string | null> {
-    const slug = title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40);
-    const branchName = `feature/ADO-${workItemId}-${slug}`;
+  async createTaskBranch(workItemId: number | undefined, title: string): Promise<string | null> {
+    const branchName = delegationBranchName(workItemId, title);
 
     // Exists-check for unborn branches: in a repo with NO commits, the branch
     // is "unborn" — `git branch --list` shows nothing and `git checkout -b`
@@ -461,13 +457,8 @@ export class GitService {
    * Get the branch name for a work item based on title.
    * Same logic as createTaskBranch but without creating the branch.
    */
-  getBranchName(workItemId: number, title: string): string {
-    const slug = title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40);
-    return `feature/ADO-${workItemId}-${slug}`;
+  getBranchName(workItemId: number | undefined, title: string): string {
+    return delegationBranchName(workItemId, title);
   }
 
   /**
