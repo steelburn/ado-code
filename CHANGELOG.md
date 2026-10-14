@@ -11,6 +11,8 @@ All notable changes to ADO Code will be documented in this file.
 
 - **Concurrent prompt-only delegations no longer share a git branch** — the prompt-only branch is now `feature/agent-<slug>-<token>`, the token derived from the run id, so two same-prompt runs (which AD-01 deliberately does not block) get distinct branches instead of colliding. Previously the second `createWorktree` failed with "already checked out" and the run silently fell back to the **main working tree**, letting two agents write the same checkout. A prompt-only run with no explicit title now also takes its title from the prompt's first non-empty line, so the run card (and the commit/PR defaults) never render blank. Work-item runs keep `feature/ADO-<id>-<slug>` byte-for-byte.
 
+- **A work-item-less run no longer leaks the missing work item into the completion UI** — after a prompt-only run finished, the worktrees view rendered the literal `#ADO-undefined` and the status panel `#?`; both now read `no work item`, while a linked run still shows `#<id>` / `ADO-<id>`. The post-run ADO decision is now one pure, unit-tested predicate — `planRunCompletion()` in `src/shared/delegationPlan.ts` — that is `false` for every ADO action (child-completion sync, parent auto-close, work-item comment/state write) when the run has no work item, so the completion path issues no ADO call instead of relying on inline guards.
+
 ## [0.7.4] - 2026-10-13
 
 ### Added

@@ -185,3 +185,64 @@ export function delegationRunTitle(prompt: string, title?: string): string {
   if (firstLine) return firstLine.slice(0, DELEGATION_TITLE_MAX).trim();
   return 'Agent delegation';
 }
+/**
+ * AD-03 — the post-run ADO surface. A run may be work-item-less (AD-01): then
+ * nothing about it may be routed through ADO — no child completion sync, no
+ * parent auto-close, no comment/state write — and no completion surface may
+ * render `#undefined` / `#?`. These helpers are the single, unit-tested
+ * decision point for that.
+ */
+
+/** True when the id is a usable ADO work item id (not undefined, NaN or 0). */
+export function isAdoLinked(workItemId: number | undefined): boolean {
+  return typeof workItemId === 'number' && Number.isInteger(workItemId) && workItemId > 0;
+}
+
+/** `ADO-<id>` for a linked run, `''` otherwise — never `ADO-undefined`. */
+export function runAdoRef(workItemId: number | undefined): string {
+  return isAdoLinked(workItemId) ? `ADO-${workItemId}` : '';
+}
+
+/** Compact run label: `#<id>` when linked, a neutral phrase otherwise. */
+export function runWorkItemLabel(workItemId: number | undefined): string {
+  return isAdoLinked(workItemId) ? `#${workItemId}` : 'no work item';
+}
+
+/** What the post-run ADO completion path is allowed to do for a finished run. */
+export interface RunCompletionPlan {
+  adoLinked: boolean;
+  /** The validated work item id — `undefined` when the run is not ADO-linked. */
+  workItemId?: number;
+  /** Validated child ids to sync — empty when the run is not ADO-linked. */
+  childIds: number[];
+  workItemLabel: string;
+  /** Parse the Delivery Report and complete child work items. */
+  syncChildren: boolean;
+  /** Close the parent once every open child is done. */
+  completeParent: boolean;
+  /** Comment on / transition the run's own work item. */
+  recordOnWorkItem: boolean;
+}
+
+/**
+ * Decide the ADO completion path for a finished run. A work-item-less run
+ * (even one delegated with child ids) performs NO ADO work, so callers gate
+ * every ADO call on one tested predicate instead of re-deriving it.
+ */
+export function planRunCompletion(run: {
+  workItemId?: number;
+  childIds?: number[];
+}): RunCompletionPlan {
+  const adoLinked = isAdoLinked(run.workItemId);
+  const childIds = adoLinked ? run.childIds ?? [] : [];
+  const hasChildren = childIds.length > 0;
+  return {
+    adoLinked,
+    workItemId: adoLinked ? run.workItemId : undefined,
+    childIds,
+    workItemLabel: runWorkItemLabel(run.workItemId),
+    syncChildren: hasChildren,
+    completeParent: hasChildren,
+    recordOnWorkItem: adoLinked,
+  };
+}

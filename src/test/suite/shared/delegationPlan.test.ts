@@ -233,3 +233,97 @@ suite('shared/delegationPlan - AD-02 prompt-only hardening', () => {
         });
     });
 });
+// ---------------------------------------------------------------------------
+// AD-03 - graceful ADO completion path when there is no work item / project.
+// ---------------------------------------------------------------------------
+import {
+    isAdoLinked,
+    runAdoRef,
+    runWorkItemLabel,
+    planRunCompletion,
+} from '../../../shared/delegationPlan';
+
+suite('shared/delegationPlan - AD-03 graceful ADO completion', () => {
+    suite('isAdoLinked', () => {
+        test('is true for a real work item id', () => {
+            assert.strictEqual(isAdoLinked(26759), true);
+        });
+
+        test('is false when there is no work item', () => {
+            assert.strictEqual(isAdoLinked(undefined), false);
+        });
+
+        test('treats NaN and 0 as not linked (not real ADO ids)', () => {
+            assert.strictEqual(isAdoLinked(NaN), false);
+            assert.strictEqual(isAdoLinked(0), false);
+        });
+    });
+
+    suite('runAdoRef', () => {
+        test('renders ADO-<id> for a linked run', () => {
+            assert.strictEqual(runAdoRef(26759), 'ADO-26759');
+        });
+
+        test('is empty - never "ADO-undefined" - when unlinked', () => {
+            assert.strictEqual(runAdoRef(undefined), '');
+            assert.ok(!/undefined/.test(runAdoRef(undefined)));
+        });
+    });
+
+    suite('runWorkItemLabel', () => {
+        test('renders #<id> for a linked run', () => {
+            assert.strictEqual(runWorkItemLabel(26759), '#26759');
+        });
+
+        test('reads "no work item" when unlinked - never "#?" or "#undefined"', () => {
+            const label = runWorkItemLabel(undefined);
+            assert.strictEqual(label, 'no work item');
+            assert.ok(!/undefined/.test(label), label);
+            assert.ok(!/\?/.test(label), label);
+        });
+    });
+
+    suite('planRunCompletion', () => {
+        test('ADO-linked run with children syncs and closes the parent', () => {
+            const p = planRunCompletion({ workItemId: 42, childIds: [1, 2] });
+            assert.strictEqual(p.adoLinked, true);
+            assert.strictEqual(p.syncChildren, true);
+            assert.strictEqual(p.completeParent, true);
+            assert.strictEqual(p.recordOnWorkItem, true);
+            assert.strictEqual(p.workItemLabel, '#42');
+        });
+
+        test('ADO-linked run delegated WITHOUT children never runs child completion', () => {
+            const p = planRunCompletion({ workItemId: 42 });
+            assert.strictEqual(p.adoLinked, true);
+            assert.strictEqual(p.syncChildren, false);
+            assert.strictEqual(p.completeParent, false);
+            assert.strictEqual(p.recordOnWorkItem, true);
+        });
+
+        test('work-item-less run performs NO ADO work even with child ids', () => {
+            const p = planRunCompletion({ childIds: [1, 2] });
+            assert.strictEqual(p.adoLinked, false);
+            assert.strictEqual(p.syncChildren, false);
+            assert.strictEqual(p.completeParent, false);
+            assert.strictEqual(p.recordOnWorkItem, false);
+            assert.strictEqual(p.workItemLabel, 'no work item');
+        });
+
+        test('exposes the validated ids so callers never re-derive them', () => {
+            const linked = planRunCompletion({ workItemId: 42, childIds: [7, 8] });
+            assert.strictEqual(linked.workItemId, 42);
+            assert.deepStrictEqual(linked.childIds, [7, 8]);
+            const none = planRunCompletion({ childIds: [7, 8] });
+            assert.strictEqual(none.workItemId, undefined);
+            assert.deepStrictEqual(none.childIds, []);
+        });
+
+        test('no completion label ever contains the string "undefined"', () => {
+            for (const wi of [undefined, 0, NaN, 1, 26759]) {
+                const p = planRunCompletion({ workItemId: wi, childIds: [1] });
+                assert.ok(!/undefined/.test(p.workItemLabel), `${wi} -> ${p.workItemLabel}`);
+            }
+        });
+    });
+});

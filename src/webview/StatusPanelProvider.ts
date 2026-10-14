@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { Services } from '../services';
 import { getSettings } from '../config/settings';
 import { AgentCapability } from '../agents/types';
+import { runWorkItemLabel } from '../shared/delegationPlan';
 import { AgentRunner } from '../agents/AgentRunner';
 import { summarizeMarkdown } from '../shared/markdownSummary';
 
@@ -270,7 +271,7 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
               run.status === 'failed' ? 'error' :
               run.status === 'cancelled' ? 'close' :
               'warning'; // interrupted
-            const label = `#${run.workItemId ?? '?'} — ${run.agent}`;
+            const label = `${runWorkItemLabel(run.workItemId)} — ${run.agent}`;
             const timeDesc = run.finishedAt ? relativeTime(run.finishedAt) : '';
             const child = new StatusItem(label, vscode.TreeItemCollapsibleState.None);
             child.iconPath = new vscode.ThemeIcon(statusIcon);

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { Services } from '../services';
 import { AgentRunner } from '../agents/AgentRunner';
 import { AgentRun } from '../agents/types';
+import { runAdoRef } from '../shared/delegationPlan';
 import { logger } from '../services/logger';
 
 /**
@@ -152,7 +153,7 @@ export class WorktreesTreeProvider implements vscode.TreeDataProvider<WorktreeNo
               ? new vscode.ThemeIcon('circle-slash')
               : new vscode.ThemeIcon('git-branch');
     node.description = run
-      ? `#ADO-${run.workItemId} · ${run.agent} · ${status}`
+      ? `${run.workItemId ? '#' + runAdoRef(run.workItemId) : 'no work item'} · ${run.agent} · ${status}`
       : `${e.runId} · no run record`;
     node.tooltip = e.path;
     node.contextValue = 'worktreeNode';
