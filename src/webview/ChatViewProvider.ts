@@ -28,6 +28,7 @@ import type { ContentBlockParam } from '../llm/types';
 import { AgentRunner } from '../agents/AgentRunner';
 import type { AgentRun } from '../agents/types';
 import { getMergeConflicts } from '../git/mergeConflicts';
+import { buildCompletionEntry } from '../changelog/ChangelogService';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
 import { truncateConsentArgs } from '../shared/consentPreview';
 import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFence } from '../llm/parseChoicePrompt';
@@ -5668,23 +5669,28 @@ First analyze the user story and explain your breakdown reasoning, then output t
     }
 
     // ── completion hook ─────────────────────────────────────────────
-    // Q6: resolve implementing branch + short commit hash at completion time.
-    const [branch, commitHash] = await Promise.all([
+    // The entry must describe the item being CLOSED. Closing children from a
+    // parent's view makes `activeWorkItem` the parent — which is how six
+    // children once got stamped with the story's title (ADO-26934) — so the
+    // closed item's own title is looked up, and a branch pointer is recorded
+    // only when the checked-out branch could be carrying these commits.
+    const [branch, commitHash, closedItem] = await Promise.all([
       this.services.git.getCurrentBranch().catch(() => null),
       this.services.git.getShortCommitHash().catch(() => null),
+      this.services.ado.getWorkItemDetail(project, workItemId).catch(() => null),
     ]);
-    const entry = {
+    // Percent-encode org + project so markdown links survive project names
+    // with spaces (ADO's renderer truncates a link destination at the first
+    // unencoded space, spilling the rest of the line as literal text).
+    const entry = buildCompletionEntry({
       workItemId,
-      title: this.activeWorkItem?.title ?? `Work item ${workItemId}`,
+      closedItemTitle: closedItem?.fields['System.Title'],
       state: newState,
       date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
-      // Percent-encode org + project so markdown links survive project names
-      // with spaces (ADO's renderer truncates a link destination at the first
-      // unencoded space, spilling the rest of the line as literal text).
       workItemUrl: `https://dev.azure.com/${encodeURIComponent(settings.adoOrganization)}/${encodeURIComponent(project)}/_workitems/edit/${workItemId}`,
-      branch: branch ?? undefined,
-      commitHash: commitHash ?? undefined,
-    };
+      branch,
+      commitHash,
+    });
 
     // 1) Local CHANGELOG.md (idempotent via hasEntry)
     if (settings.changelogEnabled && !this.services.changelog.hasEntry(workItemId)) {
