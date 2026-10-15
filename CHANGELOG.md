@@ -2,6 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
+- Closed [ADO-26935](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26935): Task branch slugged from the stale active work item title on one-click agent handoff (ChatViewProvider.ensureGitReady) (2026-10-15)
 - Closed [ADO-26931](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26931): Agent delegation without an ADO work item / project (AD-01–AD-06) (2026-10-15)
 - Closed [ADO-26763](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26763): AD-06 Opt-out setting, docs, and end-to-end regression coverage (2026-10-15)
 - Closed [ADO-26762](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26762): AD-05 Command + webview entry points for prompt-only delegation (2026-10-15)
