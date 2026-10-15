@@ -251,6 +251,9 @@ import {
     runAdoRef,
     runWorkItemLabel,
     planRunCompletion,
+    defaultRunCommitMessage,
+    defaultRunPrTitle,
+    workItemRequired,
 } from '../../../shared/delegationPlan';
 
 suite('shared/delegationPlan - AD-03 graceful ADO completion', () => {
@@ -335,5 +338,69 @@ suite('shared/delegationPlan - AD-03 graceful ADO completion', () => {
                 assert.ok(!/undefined/.test(p.workItemLabel), `${wi} -> ${p.workItemLabel}`);
             }
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// AD-04 - commit / push / PR defaults for work-item-less runs.
+// ---------------------------------------------------------------------------
+suite('shared/delegationPlan - AD-04 merge defaults', () => {
+    suite('defaultRunCommitMessage', () => {
+        test('keeps the historic ADO-<id>: <title> shape for a linked run', () => {
+            assert.strictEqual(
+                defaultRunCommitMessage({ workItemId: 26761, title: 'Fix login' }),
+                'ADO-26761: Fix login',
+            );
+        });
+
+        test('omits the work-item reference for a prompt-only run', () => {
+            const msg = defaultRunCommitMessage({ title: 'Fix login' });
+            assert.strictEqual(msg, 'agent: Fix login');
+            assert.ok(!/ADO|undefined|\?/.test(msg), msg);
+        });
+
+        test('falls back to a non-empty message when the title is missing', () => {
+            assert.strictEqual(defaultRunCommitMessage({}), 'agent: agent changes');
+            assert.strictEqual(defaultRunCommitMessage({ workItemId: 5 }), 'ADO-5: agent changes');
+        });
+    });
+
+    suite('defaultRunPrTitle', () => {
+        test('keeps the historic ADO-<id>: <title> shape for a linked run', () => {
+            assert.strictEqual(
+                defaultRunPrTitle({ workItemId: 26761, title: 'Fix login' }),
+                'ADO-26761: Fix login',
+            );
+        });
+
+        test('renders the bare run title for a prompt-only run', () => {
+            assert.strictEqual(defaultRunPrTitle({ title: 'Fix login' }), 'Fix login');
+        });
+
+        test('never renders an undefined / ADO-? PR title', () => {
+            for (const run of [{}, { workItemId: undefined, title: 'x' }, { title: '' }] as const) {
+                const title = defaultRunPrTitle(run);
+                assert.ok(!/undefined|ADO-\?/.test(title), title);
+                assert.ok(title.length > 0, 'PR title must be non-empty');
+            }
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// AD-06 - `adoCode.agents.requireWorkItem` opt-out decision.
+// ---------------------------------------------------------------------------
+suite('shared/delegationPlan - AD-06 requireWorkItem opt-out', () => {
+    test('ON + no work item blocks (legacy guard restored)', () => {
+        assert.strictEqual(workItemRequired(true, false), true);
+    });
+
+    test('ON + work item allows delegation', () => {
+        assert.strictEqual(workItemRequired(true, true), false);
+    });
+
+    test('OFF (default) allows a prompt-only run', () => {
+        assert.strictEqual(workItemRequired(false, false), false);
+        assert.strictEqual(workItemRequired(false, true), false);
     });
 });

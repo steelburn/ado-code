@@ -47,6 +47,7 @@ export const CONFIG_SETTING_KEYS = [
   'agents.enabled',
   'agents.verifyCommand',
   'agents.autoSelect',
+  'agents.requireWorkItem',
   'agents.autoReview',
   'agents.autoCompleteChildren',
   'agents.progressView',

@@ -533,7 +533,7 @@ export function createToolExecutor(
         type: 'object',
         properties: {
           runId: { type: 'string', description: 'Run id of the finished agent run (from the agent output)' },
-          message: { type: 'string', description: 'Commit message; omit to default to ADO <id> + work item title' },
+          message: { type: 'string', description: 'Commit message; omit to default to ADO <id> + work item title, or just the run title when the run has no work item' },
           allowFailed: { type: 'boolean', description: 'Set true to commit a run whose verification FAILED (e.g. adapter crashed with no code changes). Omit for succeeded runs.' },
         },
         required: ['runId'],
@@ -557,7 +557,7 @@ export function createToolExecutor(
         type: 'object',
         properties: {
           runId: { type: 'string', description: 'Run id of the finished agent run' },
-          title: { type: 'string', description: 'PR title; omit to default to ADO <id> + work item title' },
+          title: { type: 'string', description: 'PR title; omit to default to ADO <id> + work item title, or just the run title when the run has no work item' },
           description: { type: 'string', description: 'PR description (summary of the changes)' },
         },
         required: ['runId'],

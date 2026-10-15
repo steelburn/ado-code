@@ -144,6 +144,7 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.agents.autoSelect` | Default agent when none is specified |
 | `adoCode.agents.autoReview` | Auto-review agent changes via LLM when a run completes (default `true`) |
 | `adoCode.agents.autoCompleteChildren` | After a delegated parent run succeeds, auto-complete its children in ADO: children marked DONE in the agent's Delivery Report transition to their terminal state (Task/Bug → Closed, Story/Feature/Epic → Resolved), and the parent closes when all open children are done (default `false`; off = report + comment only) |
+| `adoCode.agents.requireWorkItem` | Require an active ADO work item before delegating — `true` restores the legacy "select a work item first" guard, `false` (default) allows a prompt-only run with no work item and no project selected |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 | `adoCode.skillRegistryUrls` | Extra skill registry URLs to browse in the Skill Catalog (TSV format: `slug<TAB>url<TAB>description`); the built-in UI Skills registry is always included |
 
@@ -210,10 +211,19 @@ Each delegated agent run gets an isolated git worktree under `.ado-code/worktree
 
 - The **Worktrees** view (ADO Code activity bar) lists every worktree with its run status (running/succeeded/failed/interrupted), branch, dirty/clean files, last commit, and ahead/behind
 - Right-click actions: **Open in Terminal**, **Open in Explorer**, **Commit & Push**, **Remove**, **Show Agent Output**
-- Branches are named from the ADO work item subject, e.g. `feature/ADO-42-fix-login-bug`
+- Branches are named from the ADO work item subject, e.g. `feature/ADO-42-fix-login-bug`; a prompt-only run (no work item) uses `feature/agent-<slug>-<run-token>`, the token derived from the run id so concurrent runs never collide
 - **Merge flow**: after a run finishes, commit its changes (`Commit & Push` or the AI's `commit_worktree`/`push_worktree` tools), then open a PR (`create_pull_request`) — the AI is instructed to execute this flow and will stop and report if a step fails
 - **Parent runs**: delegating a parent work item runs the whole subtree in ONE worktree/branch/PR — children are a delivery checklist inside the prompt, and the post-run sync (see the settings table) updates ADO states when it finishes
 - **Guardrails**: two agents can never run on the same work item concurrently — including overlapping parent/child runs (a parent run covers its descendants); reusing a stale branch warns; **Remove** refuses silently discarding dirty work (offers *Commit & Push, then Remove*) and deletes the local branch afterwards only when it is fully merged — commits are never lost
+
+### Delegating without a work item
+
+Delegation does not require an ADO work item or a selected project — with neither, the run is planned from the prompt alone and performs **no** ADO request:
+
+- Every entry point works: the `/delegate <prompt>` slash command, the **ADO Code: Delegate to Agent…** command palette entry (which prompts for the task), and the chat's delegate control
+- The run title falls back to the prompt's first line, so a run card never reads `#undefined`; each run gets its own worktree and a unique `feature/agent-<slug>-<run-token>` branch
+- ADO-linked post-run steps (child-task sync, work-item comment, state transition) are skipped gracefully, and the commit/PR defaults render without a work-item reference (`agent: <title>`)
+- Set **`adoCode.agents.requireWorkItem`** to `true` to restore the legacy "select a work item first" guard (default `false`)
 
 ## Model Capabilities
 
