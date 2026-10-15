@@ -289,3 +289,23 @@ export function defaultRunPrTitle(run: {
 export function workItemRequired(requireWorkItem: boolean, hasWorkItem: boolean): boolean {
   return requireWorkItem && !hasWorkItem;
 }
+
+/**
+ * Bug #26935 — the single decision point for "which title names the task branch
+ * / the run" when an agent picks up a work item.
+ *
+ * The title must come from the item that was just fetched, never from ambient
+ * state: `startTaskWithAgent` ran its git pre-flight before it activated the
+ * item, so reading `this.activeWorkItem?.title` there slugged the branch from
+ * whichever item was active BEFORE the handoff (or from this fallback on a
+ * fresh session) while the runner got the correct title. Neutral rather than
+ * empty, so no surface can render `feature/ADO-42-`.
+ */
+export function resolveWorkItemTitle(
+  fields: Record<string, unknown> | undefined,
+  workItemId: number,
+): string {
+  const raw = fields?.['System.Title'];
+  const title = typeof raw === 'string' ? raw.trim() : '';
+  return title.length > 0 ? title : `Work item ${workItemId}`;
+}
