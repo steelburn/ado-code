@@ -1198,6 +1198,11 @@
           ],
           "description": "Default agent for delegation when none is specified (M-9: includes all registered agents)"
         },
+        "adoCode.agents.requireWorkItem": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require an active Azure DevOps work item before delegating to an external agent. Off (default) = delegation also works from the prompt alone, with no work item or project selected, and makes no ADO call. On = restores the legacy 'select a work item first' guard."
+        },
         "adoCode.agents.autoReview": {
           "type": "boolean",
           "default": true,

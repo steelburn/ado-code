@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from './webview/chatEditorSerializer';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
+import { defaultRunCommitMessage, runAdoRef } from './shared/delegationPlan';
 import { DeferredStartup } from './shared/deferredStartup';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
@@ -980,8 +981,29 @@ Generate ONLY the commit message, nothing else.`;
   // Task 25: delegate / assign-to-agent commands (context menu on work item nodes)
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.delegateToAgent', async (node?: WorkItemNode) => {
-      if (!node) return;
-      await chatProvider.startTaskWithAgent(node.workItemId, undefined);
+      // AD-05: from a work-item node the historic flow is unchanged; invoked
+      // from the Command Palette (no node) it starts a prompt-only delegation.
+      if (node) {
+        await chatProvider.startTaskWithAgent(node.workItemId, undefined);
+        return;
+      }
+      const requireWorkItem = vscode.workspace.getConfiguration('adoCode').get<boolean>('agents.requireWorkItem', false);
+      if (requireWorkItem) {
+        vscode.window.showWarningMessage('ADO Code: select a work item first (adoCode.agents.requireWorkItem is enabled).');
+        return;
+      }
+      const prompt = await vscode.window.showInputBox({
+        prompt: 'Describe the task for the external agent (no ADO work item required)',
+        placeHolder: 'e.g. Fix the failing login tests',
+        ignoreFocusOut: true,
+      });
+      if (!prompt || !prompt.trim()) return;
+      chatProvider.focus();
+      try {
+        await chatProvider.delegateToAgent(prompt.trim());
+      } catch (err) {
+        vscode.window.showErrorMessage(`ADO Code: delegation failed — ${err instanceof Error ? err.message : err}`);
+      }
     }),
     vscode.commands.registerCommand('adoCode.startTaskWithAgent', async (node?: WorkItemNode) => {
       if (!node) return;
@@ -1409,7 +1431,8 @@ Generate ONLY the commit message, nothing else.`;
       const meta = item?.meta;
       if (!meta?.runId) return;
       const run = agentRunner.listRuns().find(r => r.id === meta.runId);
-      const msg = `ADO-${run?.workItemId ?? '?'}: ${run?.title || 'agent changes'}`;
+      // AD-04: prompt-only runs get a work-item-free commit message.
+      const msg = defaultRunCommitMessage(run ?? {});
       try {
         const commit = await services.git.commitWorktreeChanges(meta.runId, msg);
         if (!commit.committed) {
@@ -1450,7 +1473,7 @@ Generate ONLY the commit message, nothing else.`;
         if (!pick || pick === 'Cancel') return;
         if (pick === 'Commit & Push, then Remove') {
           const run = agentRunner.listRuns().find(r => r.id === meta.runId);
-          const msg = `ADO-${run?.workItemId ?? '?'}: ${run?.title || 'agent changes'}`;
+          const msg = defaultRunCommitMessage(run ?? {});
           try {
             const commit = await services.git.commitWorktreeChanges(meta.runId, msg);
             if (commit.committed) {
@@ -1531,7 +1554,7 @@ Generate ONLY the commit message, nothing else.`;
         }
         const pick = await vscode.window.showQuickPick(
           runs.map(r => ({
-            label: `🤖 ${agentDisplayName(r.agent)} — ADO-${r.workItemId ?? '?'} (${r.status})`,
+            label: `🤖 ${agentDisplayName(r.agent)} — ${runAdoRef(r.workItemId) || 'no work item'} (${r.status})`,
             description: r.branch ?? '',
             detail: r.id,
           })),

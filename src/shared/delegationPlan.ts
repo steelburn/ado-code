@@ -251,3 +251,41 @@ export function planRunCompletion(run: {
     recordOnWorkItem: adoLinked,
   };
 }
+
+/**
+ * AD-04 — default commit message for a finished run. A work-item run keeps the
+ * historic `ADO-<id>: <title>`; a prompt-only run renders the run title alone
+ * (prefixed `agent:`) so a commit never says `ADO-undefined: …` or `ADO-?: …`.
+ */
+export function defaultRunCommitMessage(run: {
+  workItemId?: number;
+  title?: string;
+}): string {
+  const title = (run.title ?? '').trim() || 'agent changes';
+  const ref = runAdoRef(run.workItemId);
+  return ref ? `${ref}: ${title}` : `agent: ${title}`;
+}
+
+/**
+ * AD-04 — default pull-request title. Same work-item rule as the commit
+ * message, but a prompt-only run uses the bare run title (a PR is already
+ * scoped to its branch, so no `agent:` prefix).
+ */
+export function defaultRunPrTitle(run: {
+  workItemId?: number;
+  title?: string;
+}): string {
+  const title = (run.title ?? '').trim() || 'agent changes';
+  const ref = runAdoRef(run.workItemId);
+  return ref ? `${ref}: ${title}` : title;
+}
+
+/**
+ * AD-06 — `adoCode.agents.requireWorkItem` opt-out decision. When the setting
+ * is ON the legacy "select a work item first" guard is restored (block a run
+ * with no active work item); when OFF (the default) a prompt-only run is
+ * allowed.
+ */
+export function workItemRequired(requireWorkItem: boolean, hasWorkItem: boolean): boolean {
+  return requireWorkItem && !hasWorkItem;
+}
