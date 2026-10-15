@@ -154,7 +154,7 @@ suite('ChatViewProvider — prompt-only delegation (AD-06)', () => {
     provider.setAgentRunner(makeFakeRunner(delegateCalls));
 
     const cfg = vscode.workspace.getConfiguration('adoCode');
-    await cfg.update('agents.requireWorkItem', true);
+    await cfg.update('agents.requireWorkItem', true, vscode.ConfigurationTarget.Global);
     try {
       await assert.rejects(
         () => provider.delegateToAgent('Add a dark-mode toggle'),
@@ -163,7 +163,7 @@ suite('ChatViewProvider — prompt-only delegation (AD-06)', () => {
       assert.strictEqual(delegateCalls.length, 0, 'the run must not start while the guard is on');
       assert.deepStrictEqual(ado, [], 'the blocked path makes no ADO call either');
     } finally {
-      await cfg.update('agents.requireWorkItem', undefined);
+      await cfg.update('agents.requireWorkItem', undefined, vscode.ConfigurationTarget.Global);
     }
   });
 
@@ -174,7 +174,7 @@ suite('ChatViewProvider — prompt-only delegation (AD-06)', () => {
     provider.setAgentRunner(makeFakeRunner(delegateCalls));
 
     const cfg = vscode.workspace.getConfiguration('adoCode');
-    await cfg.update('agents.requireWorkItem', false);
+    await cfg.update('agents.requireWorkItem', false, vscode.ConfigurationTarget.Global);
     try {
       const result = await provider.delegateToAgent('Add a dark-mode toggle');
       assert.strictEqual(JSON.parse(result).ok, true, 'delegation succeeded');
@@ -182,7 +182,7 @@ suite('ChatViewProvider — prompt-only delegation (AD-06)', () => {
       assert.strictEqual(delegateCalls[0].workItemId, undefined);
       assert.deepStrictEqual(ado, [], 'no ADO call on the prompt-only path');
     } finally {
-      await cfg.update('agents.requireWorkItem', undefined);
+      await cfg.update('agents.requireWorkItem', undefined, vscode.ConfigurationTarget.Global);
     }
   });
 });
