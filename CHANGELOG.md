@@ -9,6 +9,7 @@ All notable changes to ADO Code will be documented in this file.
 - Closed [ADO-26760](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26760): AD-03 Graceful ADO completion path when no work item / no project (2026-10-15)
 - Closed [ADO-26759](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26759): AD-02 AgentRunner: optional workItemId with run-id / branch / concurrency fallbacks (2026-10-15)
 - Closed [ADO-26758](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26758): AD-01 Decouple agent delegation from active work item / project (prompt-only path) (2026-10-15)
+- Closed [ADO-26932](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26932): AD-07 Concurrent delegation fails: worktree branch collision for the same work item + "The command line is too long." on win32 shims (2026-10-15) — `feature/ADO-26931-work-item-26931 @ 06ef148`
 
 ### Added
 
