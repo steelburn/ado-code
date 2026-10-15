@@ -428,10 +428,15 @@ suite('AgentRunner - AD-02 prompt-only hardening', () => {
     assert.strictEqual(run.title, 'Custom title');
   });
 
-  test('work-item runs keep their historic feature/ADO-<id>-<slug> branch', async () => {
+  test('a work-item run gets a branch unique to the run, not to the work item', async () => {
     const runner = runnerWithRealBranching();
     const run = await runner.delegate(42, prompt);
-    assert.strictEqual(run.branch, delegationBranchName(42, 'Read and follow AGENTS.md'));
+    assert.strictEqual(run.branch, delegationBranchName(42, 'Read and follow AGENTS.md', run.id));
     assert.ok(run.branch!.startsWith('feature/ADO-42-'), run.branch);
+    // Same work item, different run: two worktrees must not fight over one branch.
+    assert.notStrictEqual(
+      run.branch,
+      delegationBranchName(42, 'Read and follow AGENTS.md', 'run-other-42'),
+    );
   });
 });

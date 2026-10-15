@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentName, AgentRun } from '../types';
 import { resolveSpawn } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -42,15 +43,17 @@ export class GenericAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
     const args: string[] = [];
     if (this.name === 'aider') {
       // aider manages its own commits by default — defer to our branch flow.
-      args.push('--message', prompt, '--no-git');
+      args.push('--message', promptArg, '--no-git');
     } else if (this.name === 'cursor-agent') {
-      args.push('exec', prompt);
+      args.push('exec', promptArg);
     } else {
       // pi / openclaw: -p "<prompt>"
-      args.push('-p', prompt);
+      args.push('-p', promptArg);
     }
     // Spawn the resolved executable from the run when present (fallback: name).
     return this.spawn(run.bin ?? this.name, args, run.workdir, signal, onChunk);

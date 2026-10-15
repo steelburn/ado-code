@@ -110,13 +110,19 @@ export function delegationRunId(workItemId: number | undefined, now: number): st
 }
 
 /**
- * Branch name for a delegated run (AD-02). With a work item this is
- * byte-for-byte the historic `feature/ADO-<id>-<slug>`; any run id is ignored.
- * Without one it is `feature/agent-<slug>-<token>`, the token being derived
- * from the run id so concurrent prompt-only runs of the SAME prompt never
- * share a branch (no worktree / branch clash, no silent main-repo fallback).
- * With no run id at all it degrades to `feature/agent-<slug>`, and never
- * emits the literal `undefined`.
+ * Branch name for a delegated run. Work-item runs stay `feature/ADO-<id>-<slug>`,
+ * like they always were, but AD-07 appends the run token whenever a run id is
+ * known. git refuses to check the SAME branch out in two worktrees, and two
+ * concurrent delegations for one work item (the one-run-per-item guard does not
+ * cover two threads of the same chat, nor a re-delegation started while the
+ * first run is still going) used to collide on `feature/ADO-26931-<slug>` —
+ * which dropped the second run back into the naked main repo with no
+ * isolation at all. The token comes from the run id, so a retried run keeps a
+ * stable branch while two different runs never share one.
+ *
+ * Without a run id the historic name is kept; prompt-only runs (AD-02) use
+ * `feature/agent-<slug>-<token>`, and with no run id at all it degrades to
+ * `feature/agent-<slug>` — never the literal `undefined`.
  */
 export function delegationBranchName(
   workItemId: number | undefined,
@@ -124,12 +130,11 @@ export function delegationBranchName(
   runId?: string,
 ): string {
   const slug = slugifyBranchTitle(title) || 'task';
+  const token = runId ? `-${delegationBranchToken(runId)}` : '';
   if (workItemId !== undefined) {
-    return `feature/ADO-${workItemId}-${slug}`;
+    return `feature/ADO-${workItemId}-${slug}${token}`;
   }
-  return runId
-    ? `feature/agent-${slug}-${delegationBranchToken(runId)}`
-    : `feature/agent-${slug}`;
+  return `feature/agent-${slug}${token}`;
 }
 
 /**

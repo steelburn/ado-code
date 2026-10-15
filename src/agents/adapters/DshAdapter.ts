@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -50,7 +51,9 @@ export class DshAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
-    return this.spawn(run.bin ?? 'dsh', ['--profile', 'headless', '--', prompt], run.workdir, signal, onChunk);
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
+    return this.spawn(run.bin ?? 'dsh', ['--profile', 'headless', '--', promptArg], run.workdir, signal, onChunk);
   }
 
   // No resumeTask — headless is one-shot only (H13: synthesized follow-up).

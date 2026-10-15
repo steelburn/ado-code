@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -32,7 +33,9 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal) {
-    return this.spawn(run.bin ?? 'codex', ['exec', '--sandbox', 'workspace-write', '--json', prompt], run.workdir, signal);
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
+    return this.spawn(run.bin ?? 'codex', ['exec', '--sandbox', 'workspace-write', '--json', promptArg], run.workdir, signal);
   }
 
   // No resumeTask — H13: synthesized follow-up (fresh prompt with prior context).

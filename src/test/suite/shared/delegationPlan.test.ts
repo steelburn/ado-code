@@ -195,9 +195,19 @@ suite('shared/delegationPlan - AD-02 prompt-only hardening', () => {
             );
         });
 
-        test('keeps the historic work-item branch byte-for-byte, ignoring the run id', () => {
+        test('a work item keeps the historic branch shape, plus a per-run token', () => {
             assert.strictEqual(delegationBranchName(42, 'Fix login bug'), 'feature/ADO-42-fix-login-bug');
-            assert.strictEqual(delegationBranchName(42, 'Fix login bug', 'run-100-42'), 'feature/ADO-42-fix-login-bug');
+            assert.strictEqual(
+                delegationBranchName(42, 'Fix login bug', 'run-100-42'),
+                `feature/ADO-42-fix-login-bug-${delegationBranchToken('run-100-42')}`,
+            );
+        });
+
+        test('two runs of one work item never share a branch', () => {
+            assert.notStrictEqual(
+                delegationBranchName(42, 'Fix login bug', 'run-100-42'),
+                delegationBranchName(42, 'Fix login bug', 'run-200-42'),
+            );
         });
 
         test('degrades to feature/agent-<slug> when no run id is supplied', () => {

@@ -205,6 +205,44 @@ export class GitService {
     return runId.startsWith(WORKTREE_PREFIX) ? runId : `${WORKTREE_PREFIX}${runId}`;
   }
 
+  /** Is `dir` a worktree git still knows about? (stale dirs are not) */
+  private async isRegisteredWorktree(dir: string): Promise<boolean> {
+    const registered = await this.worktreeListByPath();
+    return registered.some(p => p === path.resolve(dir).toLowerCase());
+  }
+
+  /** Path of the worktree that has `branch` checked out, if any. */
+  private async worktreeHoldingBranch(branch: string): Promise<string | null> {
+    try {
+      const { stdout } = await execFile('git', ['worktree', 'list', '--porcelain'], {
+        cwd: this.workspaceRoot,
+      });
+      let current = '';
+      for (const rawLine of stdout.split('\n')) {
+        const line = rawLine.trim();
+        if (line.startsWith('worktree ')) current = line.slice('worktree '.length).trim();
+        else if (line === `branch refs/heads/${branch}`) return current;
+      }
+    } catch {
+      // let `git worktree add` report the real failure instead
+    }
+    return null;
+  }
+
+  /** Resolved (lower-cased) paths of every registered worktree. */
+  private async worktreeListByPath(): Promise<string[]> {
+    try {
+      const { stdout } = await execFile('git', ['worktree', 'list', '--porcelain'], {
+        cwd: this.workspaceRoot,
+      });
+      return stdout.split('\n')
+        .filter(l => l.startsWith('worktree '))
+        .map(l => path.resolve(l.slice('worktree '.length).trim()).toLowerCase());
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * Create an isolated git worktree for an agent run.
    * Returns the absolute path to the new working directory.
@@ -219,6 +257,29 @@ export class GitService {
     // is not a valid flag, so spawning it fails with ENOENT and worktree
     // creation breaks entirely on Windows.
     await fs.promises.mkdir(base, { recursive: true });
+    // AD-07: `git worktree add` fails on a directory left behind by a crashed
+    // run, and on a branch another worktree still holds — and that failure used
+    // to drop the run back into the shared main repo. Drop genuinely dead
+    // registrations, reuse this run's own worktree, and name the other worktree
+    // when the branch really is taken.
+    try {
+      await execFile('git', ['worktree', 'prune'], { cwd: this.workspaceRoot });
+    } catch {
+      // best effort — a prune failure must not block worktree creation
+    }
+    if (fs.existsSync(wtDir)) {
+      // A retry of the same run can keep what it already prepared; a directory
+      // git no longer knows about is debris and must go before `worktree add`.
+      if (await this.isRegisteredWorktree(wtDir)) return wtDir;
+      await fs.promises.rm(wtDir, { recursive: true, force: true });
+    }
+    const holder = await this.worktreeHoldingBranch(branchName);
+    if (holder && path.resolve(holder) !== path.resolve(wtDir)) {
+      throw new Error(
+        `branch '${branchName}' is already checked out at '${holder}' — ` +
+        `another delegation run owns it`,
+      );
+    }
 
     // Check if branch exists; if not, create it from HEAD
     try {

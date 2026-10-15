@@ -200,7 +200,10 @@ export class AgentRunner {
       this.emitStatus(run, `worktree created: ${branchName}`);
     } catch (err) {
       // Fall back to main repo if worktree creation fails
-      this.emitStatus(run, `worktree failed, using main repo: ${err instanceof Error ? err.message : err}`);
+      this.emitStatus(
+        run,
+        `warning: worktree failed, using main repo (runs are NOT isolated): ${err instanceof Error ? err.message : err}`,
+        );
     }
 
     this.runs.set(run.id, run);
