@@ -2,17 +2,8 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
-- Closed [ADO-26934](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26934): Changelog completion hook stamps the ACTIVE work item's title (and a stale default-branch pointer) onto the entry for the item being closed (2026-10-15)
-- Closed [ADO-26933](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26933): Changelog completion hook: hasEntry() false positive suppresses the entry whenever the work-item id appears in CHANGELOG prose (2026-10-15)
-- Closed [ADO-26935](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26935): Task branch slugged from the stale active work item title on one-click agent handoff (ChatViewProvider.ensureGitReady) (2026-10-15)
-- Closed [ADO-26931](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26931): Agent delegation without an ADO work item / project (AD-01–AD-06) (2026-10-15)
-- Closed [ADO-26763](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26763): AD-06 Opt-out setting, docs, and end-to-end regression coverage (2026-10-15)
-- Closed [ADO-26762](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26762): AD-05 Command + webview entry points for prompt-only delegation (2026-10-15)
-- Closed [ADO-26761](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26761): AD-04 Commit / push / PR defaults for work-item-less runs (2026-10-15)
-- Closed [ADO-26760](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26760): AD-03 Graceful ADO completion path when no work item / no project (2026-10-15)
-- Closed [ADO-26759](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26759): AD-02 AgentRunner: optional workItemId with run-id / branch / concurrency fallbacks (2026-10-15)
-- Closed [ADO-26758](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26758): AD-01 Decouple agent delegation from active work item / project (prompt-only path) (2026-10-15)
-- Closed [ADO-26932](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26932): AD-07 Concurrent delegation fails: worktree branch collision for the same work item + "The command line is too long." on win32 shims (2026-10-15) — `feature/ADO-26931-work-item-26931 @ 06ef148`
+
+## [0.7.5] - 2026-10-16
 
 ### Added
 
@@ -27,6 +18,12 @@ All notable changes to ADO Code will be documented in this file.
 - **Concurrent prompt-only delegations no longer share a git branch** — the prompt-only branch is now `feature/agent-<slug>-<token>`, the token derived from the run id, so two same-prompt runs (which AD-01 deliberately does not block) get distinct branches instead of colliding. Previously the second `createWorktree` failed with "already checked out" and the run silently fell back to the **main working tree**, letting two agents write the same checkout. A prompt-only run with no explicit title now also takes its title from the prompt's first non-empty line, so the run card (and the commit/PR defaults) never render blank. Work-item runs keep the `feature/ADO-<id>-<slug>` shape (a per-run token was appended later, see below).
 
 - **A work-item-less run no longer leaks the missing work item into the completion UI** — after a prompt-only run finished, the worktrees view rendered the literal `#ADO-undefined` and the status panel `#?`; both now read `no work item`, while a linked run still shows `#<id>` / `ADO-<id>`. The post-run ADO decision is now one pure, unit-tested predicate — `planRunCompletion()` in `src/shared/delegationPlan.ts` — that is `false` for every ADO action (child-completion sync, parent auto-close, work-item comment/state write) when the run has no work item, so the completion path issues no ADO call instead of relying on inline guards.
+
+- **A work-item id mentioned anywhere in the CHANGELOG no longer suppresses that item’s completion entry** — the hook’s duplicate guard (`hasEntry()`) did a substring test over the whole file, so an id that appeared in surrounding prose was treated as already having an entry and none was written at all. `hasEntry()` now matches only the exact bullet that `addEntry()` produces, so every closed item gets exactly one entry.
+
+- **The CHANGELOG entry written when a work item is closed no longer carries the wrong title or a misleading branch pointer** — the completion hook took the entry’s title from the *currently active* work item instead of the item being closed, so closing item X could write an entry titled after an unrelated item Y, and it appended a `— <branch> @ <sha>` pointer naming the default branch. The entry now records the **closed** item’s own title, and the branch pointer is emitted only when the item is closed on an implementing branch.
+
+- **The task branch created on a one-click agent handoff is no longer slugged from the previously active work item** — `ChatViewProvider.ensureGitReady()` read the ambient `this.activeWorkItem?.title` for the branch subject, but `startTaskWithAgent()` runs that git pre-flight as its **first** step, before it activates the handed-off item, so the branch took the previous item’s subject (or the neutral `Work item <id>` fallback on a fresh session) while the runner was handed the real title further down — the task branch and the run’s worktree branch disagreed for the same run. `ensureGitReady(workItemId, title)` now *takes* the title, resolved once by the new `resolveWorkItemTitle()` in `src/shared/delegationPlan.ts`, and the signature change makes the stale read fail to compile rather than merely be wrong. `startTask` is unchanged.
 
 ## [0.7.4] - 2026-10-13
 
