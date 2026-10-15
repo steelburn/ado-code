@@ -6,6 +6,24 @@ import { agentBinCandidates } from './resolveBin';
 
 const execFile = promisify(cp.execFile);
 
+const PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Probe one executable shape of an agent CLI and return its version line.
+ * Injectable (see AgentRegistry) so a sweep can be driven from tests without
+ * spawning ~30 child processes.
+ */
+async function probeCandidate(bin: string, versionFlag: string[]): Promise<string> {
+  // M12/M-7 fix: on Windows, npm-installed CLIs ship as .cmd shims; execFile
+  // can't execute .cmd without shell:true — probe with a shell on win32 (args
+  // are static version flags, no injection risk).
+  const { stdout } = await execFile(bin, versionFlag, {
+    timeout: PROBE_TIMEOUT_MS,
+    shell: process.platform === 'win32',
+  });
+  return stdout.trim().split('\n')[0];
+}
+
 /**
  * Detection results are re-probed once this long after the last probe, so a
  * CLI installed (or updated) while VS Code is already running is picked up
@@ -132,7 +150,11 @@ export class AgentRegistry {
   private cachedAt = 0;
 
   // Clock injectable for tests (TTL expiry without waiting).
-  constructor(private now: () => number = Date.now) {}
+  constructor(
+    private now: () => number = Date.now,
+    /** Injectable so tests can drive the sweep without spawning agent CLIs. */
+    private probe: (bin: string, versionFlag: string[]) => Promise<string> = probeCandidate,
+  ) {}
 
   async detect(): Promise<AgentCapability[]> {
     const now = this.now();
@@ -159,14 +181,7 @@ export class AgentRegistry {
       let found: { bin: string; version: string } | undefined;
       for (const candidate of agentBinCandidates(spec.bin, process.platform)) {
         try {
-          // M12/M-7 fix: on Windows, npm-installed CLIs ship as .cmd shims;
-          // execFile can't execute .cmd without shell:true — probe with a
-          // shell on win32 (args are static version flags, no injection risk).
-          const { stdout } = await execFile(candidate, spec.versionFlag, {
-            timeout: 5000,
-            shell: process.platform === 'win32',
-          });
-          found = { bin: candidate, version: stdout.trim().split('\n')[0] };
+          found = { bin: candidate, version: await this.probe(candidate, spec.versionFlag) };
           break;
         } catch {
           // try the next candidate shape
@@ -186,7 +201,11 @@ export class AgentRegistry {
       }
     }
     this.cache = caps;
-    this.cachedAt = now;
+    // Stamp at COMPLETION, not at entry: a cold win32 sweep probes ~10 agents
+    // × up to 3 executable shapes and can run as long as DETECT_TTL_MS, so an
+    // entry stamped at entry is born already expired and every later detect()
+    // re-probes instead of serving the cache.
+    this.cachedAt = this.now();
     return caps;
   }
 

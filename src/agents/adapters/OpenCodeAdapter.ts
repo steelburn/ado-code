@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -27,12 +28,16 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal) {
-    return this.spawn(run.bin ?? 'opencode', ['run', '--format', 'json', prompt], run.workdir, signal);
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
+    return this.spawn(run.bin ?? 'opencode', ['run', '--format', 'json', promptArg], run.workdir, signal);
   }
 
   resumeTask(run: AgentRun, followUp: string, signal?: AbortSignal) {
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(followUp, run.workdir);
     if (!run.sessionId) throw new Error('no session id to resume');
-    return this.spawn(run.bin ?? 'opencode', ['run', '-s', run.sessionId, followUp], run.workdir, signal);
+    return this.spawn(run.bin ?? 'opencode', ['run', '-s', run.sessionId, promptArg], run.workdir, signal);
   }
 
   extractSessionId(output: string): string | undefined {

@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -35,11 +36,15 @@ export class HermesAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
-    return this.spawn(run.bin ?? 'hermes', ['chat', '-q', prompt], run.workdir, signal, onChunk);
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
+    return this.spawn(run.bin ?? 'hermes', ['chat', '-q', promptArg], run.workdir, signal, onChunk);
   }
 
   resumeTask(run: AgentRun, followUp: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(followUp, run.workdir);
     // hermes chat -q "<followUp>" --continue — continues most recent session in workdir.
-    return this.spawn(run.bin ?? 'hermes', ['chat', '-q', followUp, '--continue'], run.workdir, signal, onChunk);
+    return this.spawn(run.bin ?? 'hermes', ['chat', '-q', promptArg, '--continue'], run.workdir, signal, onChunk);
   }
 }

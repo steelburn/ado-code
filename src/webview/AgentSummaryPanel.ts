@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { AgentRun } from '../agents/types';
+import { runAdoRef } from '../shared/delegationPlan';
 import { escapeHtml, renderMarkdown } from './markdown';
 import { agentDisplayName } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
@@ -56,7 +57,8 @@ export class AgentSummaryPanel {
 
   private static formatTitle(run: AgentRun): string {
     const agentLabel = agentDisplayName(run.agent);
-    const wiLabel = run.workItemId ? ` — ADO-${run.workItemId}` : '';
+    const adoRef = runAdoRef(run.workItemId);
+    const wiLabel = adoRef ? ` — ${adoRef}` : '';
     const statusIcon = run.status === 'succeeded' ? '✓' :
                        run.status === 'failed' ? '✗' :
                        run.status === 'cancelled' ? '⊘' : '●';

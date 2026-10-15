@@ -4,6 +4,7 @@ import * as nodePath from 'path';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn, agentBinCandidates } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -64,15 +65,19 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
     // claude -p "<prompt>" --output-format json --max-turns 20 --allowedTools ...
-    const args = ['-p', prompt, '--output-format', 'json', '--max-turns', '20', '--allowedTools', 'Read,Edit,Write,Bash'];
+    const args = ['-p', promptArg, '--output-format', 'json', '--max-turns', '20', '--allowedTools', 'Read,Edit,Write,Bash'];
     return this.spawn(run.bin ?? resolveBin('claude'), args, run.workdir, signal, onChunk);
   }
 
   resumeTask(run: AgentRun, followUp: string, signal?: AbortSignal, onChunk?: (chunk: string) => void) {
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(followUp, run.workdir);
     // Requires session id captured at run time: claude -p "<followUp>" --resume <id>
     if (!run.sessionId) throw new Error('no session id to resume');
-    return this.spawn(run.bin ?? resolveBin('claude'), ['-p', followUp, '--resume', run.sessionId, '--output-format', 'json', '--max-turns', '10'], run.workdir, signal, onChunk);
+    return this.spawn(run.bin ?? resolveBin('claude'), ['-p', promptArg, '--resume', run.sessionId, '--output-format', 'json', '--max-turns', '10'], run.workdir, signal, onChunk);
   }
 
   extractSessionId(output: string): string | undefined {

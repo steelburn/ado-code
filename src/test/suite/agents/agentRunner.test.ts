@@ -363,4 +363,80 @@ suite('AgentRunner', () => {
       fs.rmSync(workdir, { recursive: true, force: true });
     }
   });
+
+  test('prompt-only delegation runs without a work item (AD-01)', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    const run = await runner.delegate(undefined, 'do stuff with no work item', 'claude');
+    assert.strictEqual(run.workItemId, undefined);
+    assert.ok(run.id.startsWith('run-'), run.id);
+    assert.ok(run.id.includes('prompt'), run.id);
+    assert.ok(!run.id.includes('undefined'), run.id);
+  });
+
+  test('prompt-only runs are not blocked by the per-work-item concurrency guard (AD-01)', async () => {
+    const runner = new AgentRunner(fakeRegistry(), fakeGit(), { onStatus: () => {}, onComplete: () => {} });
+    const first = await runner.delegate(undefined, 'first prompt-only task', 'claude');
+    const second = await runner.delegate(undefined, 'second prompt-only task', 'claude');
+    assert.strictEqual(second.workItemId, undefined);
+    assert.notStrictEqual(second.id, first.id, 'two prompt-only runs must get distinct ids');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// AD-02 - AgentRunner prompt-only hardening wiring.
+// ---------------------------------------------------------------------------
+import { delegationBranchName } from '../../../shared/delegationPlan';
+
+suite('AgentRunner - AD-02 prompt-only hardening', () => {
+  const prompt = 'Read and follow AGENTS.md\nThen run the build';
+  const noop = { onStatus: () => {}, onComplete: () => {} };
+
+  // A git fake that routes branch naming through the REAL delegation helper, so
+  // the assertions below exercise AgentRunner's wiring, not the fake.
+  function runnerWithRealBranching(): AgentRunner {
+    const git = {
+      ...fakeGit(),
+      branchExists: async () => false,
+      createWorktree: async (runId: string) => '/tmp/wt/' + runId,
+      getBranchName: (workItemId: number | undefined, title: string, runId?: string) =>
+        delegationBranchName(workItemId, title, runId),
+    };
+    const stubAdapter = { name: 'claude', spawn: async () => { throw new Error('no spawn in tests'); } } as any;
+    return new AgentRunner(fakeRegistry(), git as any, noop, undefined, undefined, () => stubAdapter);
+  }
+
+  test('two same-prompt prompt-only runs get distinct branches', async () => {
+    const runner = runnerWithRealBranching();
+    const a = await runner.delegate(undefined, prompt);
+    const b = await runner.delegate(undefined, prompt);
+    assert.ok(a.branch, 'first run must have a branch');
+    assert.ok(b.branch, 'second run must have a branch');
+    assert.notStrictEqual(a.branch, b.branch, 'same-prompt prompt-only runs must not share a branch');
+    assert.ok(!/undefined|null/.test(a.branch!), a.branch);
+  });
+
+  test('a prompt-only run gets its title from the prompt first line', async () => {
+    const runner = runnerWithRealBranching();
+    const run = await runner.delegate(undefined, prompt);
+    assert.strictEqual(run.title, 'Read and follow AGENTS.md');
+  });
+
+  test('an explicit title still wins for prompt-only runs', async () => {
+    const runner = runnerWithRealBranching();
+    const run = await runner.delegate(undefined, prompt, undefined, 'Custom title');
+    assert.strictEqual(run.title, 'Custom title');
+  });
+
+  test('a work-item run gets a branch unique to the run, not to the work item', async () => {
+    const runner = runnerWithRealBranching();
+    const run = await runner.delegate(42, prompt);
+    assert.strictEqual(run.branch, delegationBranchName(42, 'Read and follow AGENTS.md', run.id));
+    assert.ok(run.branch!.startsWith('feature/ADO-42-'), run.branch);
+    // Same work item, different run: two worktrees must not fight over one branch.
+    assert.notStrictEqual(
+      run.branch,
+      delegationBranchName(42, 'Read and follow AGENTS.md', 'run-other-42'),
+    );
+  });
 });

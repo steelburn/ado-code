@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn } from '../resolveBin';
+import { deliverPromptArg } from '../promptDelivery';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
@@ -27,11 +28,15 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   runTask(run: AgentRun, prompt: string, signal?: AbortSignal) {
-    return this.spawn(run.bin ?? 'gemini', ['-p', prompt], run.workdir, signal);
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(prompt, run.workdir);
+    return this.spawn(run.bin ?? 'gemini', ['-p', promptArg], run.workdir, signal);
   }
 
   resumeTask(run: AgentRun, followUp: string, signal?: AbortSignal) {
+    // AD-07: an oversized prompt travels as a file pointer, not as argv.
+    const promptArg = deliverPromptArg(followUp, run.workdir);
     // gemini -c resumes the most recent session; the follow-up is the next prompt.
-    return this.spawn(run.bin ?? 'gemini', ['-c', followUp], run.workdir, signal);
+    return this.spawn(run.bin ?? 'gemini', ['-c', promptArg], run.workdir, signal);
   }
 }

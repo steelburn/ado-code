@@ -176,6 +176,32 @@ suite('GitService', () => {
     assert.ok(String(refused.reason).includes('protected'));
   });
 
+  test('createWorktree reuses the worktree a repeated run id already prepared', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+
+    const first = await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+    const second = await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+    assert.strictEqual(first, second);
+  });
+
+  test('createWorktree names the worktree that already holds the branch', async () => {
+    const service = new GitService(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
+    cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
+
+    await service.createWorktree('run-1-42', 'feature/ADO-42-fix-login');
+    await assert.rejects(
+      () => service.createWorktree('run-2-42', 'feature/ADO-42-fix-login'),
+      (err: Error) => {
+        assert.ok(/already checked out at/.test(err.message), err.message);
+        assert.ok(err.message.includes('run-1-42'), err.message);
+        return true;
+      },
+    );
+  });
+
   test('isBranchUpToDate detects a stale base; deleteBranchIfMerged only deletes merged branches', async () => {
     const service = new GitService(tmpDir);
     fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
