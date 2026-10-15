@@ -404,3 +404,27 @@ suite('shared/delegationPlan - AD-06 requireWorkItem opt-out', () => {
         assert.strictEqual(workItemRequired(false, true), false);
     });
 });
+
+// ── Bug #26935: the task-branch / run title comes from the fetched work item ──
+import { resolveWorkItemTitle } from '../../../shared/delegationPlan';
+
+suite('shared/delegationPlan — resolveWorkItemTitle (bug #26935)', () => {
+    test('uses System.Title, trimmed, when present', () => {
+        assert.strictEqual(resolveWorkItemTitle({ 'System.Title': 'Fix login' }, 42), 'Fix login');
+        assert.strictEqual(resolveWorkItemTitle({ 'System.Title': '  Fix login  ' }, 42), 'Fix login');
+    });
+
+    test('falls back to a neutral title — never undefined — when the title is absent or blank', () => {
+        assert.strictEqual(resolveWorkItemTitle(undefined, 42), 'Work item 42');
+        assert.strictEqual(resolveWorkItemTitle({}, 7), 'Work item 7');
+        assert.strictEqual(resolveWorkItemTitle({ 'System.Title': '' }, 42), 'Work item 42');
+        assert.strictEqual(resolveWorkItemTitle({ 'System.Title': '   ' }, 42), 'Work item 42');
+        assert.strictEqual(resolveWorkItemTitle({ 'System.Title': 123 }, 42), 'Work item 42');
+    });
+
+    test('the resolved title feeds a branch name that never contains "undefined"', () => {
+        const branch = delegationBranchName(42, resolveWorkItemTitle(undefined, 42), 'run-1');
+        assert.ok(branch.startsWith('feature/ADO-42-'), branch);
+        assert.ok(!branch.includes('undefined'), branch);
+    });
+});
