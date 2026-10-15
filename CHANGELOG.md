@@ -2,6 +2,12 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
+- Closed [ADO-26763](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26763): AD-06 Opt-out setting, docs, and end-to-end regression coverage (2026-10-15)
+- Closed [ADO-26762](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26762): AD-05 Command + webview entry points for prompt-only delegation (2026-10-15)
+- Closed [ADO-26761](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26761): AD-04 Commit / push / PR defaults for work-item-less runs (2026-10-15)
+- Closed [ADO-26760](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26760): AD-03 Graceful ADO completion path when no work item / no project (2026-10-15)
+- Closed [ADO-26759](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26759): AD-02 AgentRunner: optional workItemId with run-id / branch / concurrency fallbacks (2026-10-15)
+- Closed [ADO-26758](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/26758): AD-01 Decouple agent delegation from active work item / project (prompt-only path) (2026-10-15)
 
 ### Added
 
