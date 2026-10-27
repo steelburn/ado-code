@@ -16,6 +16,7 @@ import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
 import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion } from '../llm/prompts';
 import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
+import { readMemoryBudget, remainingMemoryBudget, renderMemoryBlock } from '../memory/memoryBudget';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
@@ -1849,25 +1850,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private buildAgentMemoryContext(): string {
     const parts: string[] = [];
+    const budget = readMemoryBudget();
 
-    const user = this.services.memory.toPromptString();
+    const user = this.services.memory.toPromptString(budget);
     if (user.trim()) parts.push(user.trim());
 
     const wsKeys = this.services.workspaceMemory
       .list()
       .filter(k => k !== 'agent.before' && k !== 'agent.after');
     if (wsKeys.length > 0) {
-      const lines: string[] = ['## Workspace Memory', ''];
-      for (const key of wsKeys) {
-        const value = this.services.workspaceMemory.read(key);
-        if (value) {
-          lines.push(`### ${key}`);
-          lines.push('');
-          lines.push(value);
-          lines.push('');
-        }
-      }
-      parts.push(lines.join('\n'));
+      // Shared budget: the workspace block only gets what user memory left over.
+      const wsBlock = renderMemoryBlock(
+        '## Workspace Memory',
+        wsKeys
+          .map(key => ({ title: key, body: this.services.workspaceMemory.read(key) ?? '' }))
+          .filter(entry => entry.body.trim().length > 0),
+        remainingMemoryBudget(budget, user.trim().length)
+      );
+      if (wsBlock) parts.push(wsBlock);
     }
 
     return parts.join('\n\n');
@@ -5021,12 +5021,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const understandingPrompt = this.services.understanding?.toPromptString() ?? '';
 
     logger.debug(`Chat: building system prompt with ${this.services.memory.getAll().length} user memories, ${this.services.workspaceMemory.list().length} workspace memories`);
+    // Cap the memory injection: user memory first, workspace memory gets what is left.
+    const memoryBudget = readMemoryBudget();
+    const userMemoryPrompt = this.services.memory.toPromptString(memoryBudget);
+    const workspaceMemoryPrompt = this.services.workspaceMemory.toPromptString(
+      remainingMemoryBudget(memoryBudget, userMemoryPrompt.length)
+    );
     const systemPromptContent = generateSystemPrompt({
       mode: currentMode,
       workspacePath,
       os: process.platform,
-      memoryPrompt: this.services.memory.toPromptString(),
-      workspaceMemoryPrompt: this.services.workspaceMemory.toPromptString(),
+      memoryPrompt: userMemoryPrompt,
+      workspaceMemoryPrompt,
       understanding: understandingPrompt,
       suggestDelegation: getSettings().chatSuggestDelegation,
       // The session's live to-do list — keeps the model's own plan visible

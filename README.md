@@ -139,6 +139,9 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.changelog.postToAdo` | Post the changelog entry as an ADO comment |
 | `adoCode.ignore.dotAdoCode` | Offer to add `.ado-code` to `.gitignore`/`.dockerignore` (default `true`) |
 | `adoCode.sessions.maxPerProject` | Max chat sessions kept per workspace + project |
+| `adoCode.memory.maxTotalChars` | Total characters of user + workspace memory injected into one prompt (default `4000`); anything beyond the budget is dropped and reported on one pointer line |
+| `adoCode.memory.maxEntries` | Max memory entries rendered in the injected digest (default `25`); leftovers become "plus N more entries — call `list_workspace_memory`" |
+| `adoCode.memory.maxCharsPerEntry` | Max characters for a single memory entry (default `400`), at injection and on write; `write_workspace_memory` / `set_memory` calls above it are rejected with a clear error |
 | `adoCode.agents.enabled` | Which external agents may be delegated to |
 | `adoCode.agents.verifyCommand` | Shell command run after an agent finishes |
 | `adoCode.agents.autoSelect` | Default agent when none is specified |

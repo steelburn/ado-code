@@ -10,6 +10,7 @@ import { matchesToolPattern, matchesCommandPattern, isHarmlessCommand, hasUnquot
 import { countTokens } from './context/tokenCounter';
 import { renderTodoChecklist } from '../services/todo/TodoStore';
 import { logger } from '../services/logger';
+import { readMemoryBudget, validateMemoryEntry } from '../memory/memoryBudget';
 import type { AdoWorkItem, AdoComment } from '../ado/types';
 
 // ── Tool-result size guard ────────────────────────────────────────────────
@@ -705,7 +706,7 @@ export function createToolExecutor(
     },
     {
       name: 'set_memory',
-      description: 'Store a user memory (preference, instruction, correction, or context) that persists across sessions and is injected into future conversations',
+      description: 'Store a user memory (preference, instruction, correction, or context) that persists across sessions and is injected into future conversations. Keep it short — entries over the adoCode.memory.maxCharsPerEntry budget (default 400 chars) are rejected; keep it to one or two sentences, or split it into several entries.',
       parameters: {
         type: 'object',
         properties: {
@@ -740,7 +741,7 @@ export function createToolExecutor(
     },
     {
       name: 'write_workspace_memory',
-      description: 'Write or overwrite a workspace-scoped memory entry (key-value store under .ado-code/memory/)',
+      description: 'Write or overwrite a workspace-scoped memory entry (key-value store under .ado-code/memory/). Keep it short — entries over the adoCode.memory.maxCharsPerEntry budget (default 400 chars) are rejected; keep it to one or two sentences, or split it into several entries.',
       parameters: {
         type: 'object',
         properties: {
@@ -1254,7 +1255,12 @@ export function createToolExecutor(
           return capToolResult(joined.slice(0, 8000));
         }
         case 'set_memory': {
-          services.memory.set(args.key, args.category, args.content);
+          const content = String(args.content ?? '');
+          const entryCheck = validateMemoryEntry(content, readMemoryBudget());
+          if (!entryCheck.ok) {
+            return JSON.stringify({ error: entryCheck.error });
+          }
+          services.memory.set(args.key, args.category, content);
           return JSON.stringify({ ok: true, key: args.key, category: args.category });
         }
         case 'execute_skill': {
@@ -1276,7 +1282,12 @@ export function createToolExecutor(
           return JSON.stringify({ key: args.key, value: val });
         }
         case 'write_workspace_memory': {
-          services.workspaceMemory.write(args.key, args.value);
+          const value = String(args.value ?? '');
+          const entryCheck = validateMemoryEntry(value, readMemoryBudget());
+          if (!entryCheck.ok) {
+            return JSON.stringify({ error: entryCheck.error });
+          }
+          services.workspaceMemory.write(args.key, value);
           return JSON.stringify({ ok: true, key: args.key });
         }
         case 'list_workspace_memory': {

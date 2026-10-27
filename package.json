@@ -1231,6 +1231,24 @@
           "default": [],
           "description": "MCP servers to connect to: [{ \"name\": \"myserver\", \"command\": \"npx\", \"args\": [\"-y\", \"@myorg/mcp-server\"] }]"
         },
+        "adoCode.memory.maxTotalChars": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 200,
+          "description": "Total characters of memory (user + workspace) injected into one chat or delegated-agent prompt, header and footer included. Anything beyond the budget is omitted and reported on one pointer line, so memory can never crowd out the actual task."
+        },
+        "adoCode.memory.maxEntries": {
+          "type": "number",
+          "default": 25,
+          "minimum": 1,
+          "description": "How many memory entries may be rendered in the injected digest. Leftover entries are reported as 'plus N more entries — call list_workspace_memory', and that tool still returns everything untruncated."
+        },
+        "adoCode.memory.maxCharsPerEntry": {
+          "type": "number",
+          "default": 400,
+          "minimum": 40,
+          "description": "Maximum characters for a single memory entry, both in the injected digest and on write. write_workspace_memory / set_memory calls above this limit are rejected with an explanatory error instead of storing an oversized entry."
+        },
         "adoCode.understanding.enabled": {
           "type": "boolean",
           "default": true,

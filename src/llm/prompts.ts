@@ -1,4 +1,5 @@
 import { WorkItemContext } from '../shared/messages';
+import { DEFAULT_MEMORY_BUDGET, MemoryBudget, truncateMemoryText } from '../memory/memoryBudget';
 
 /**
  * Merge-flow instructions for the chat assistant: after a delegated agent
@@ -19,9 +20,19 @@ Delegated agents work in isolated git worktrees on feature/ADO-<id> branches. Wh
 
 Guardrails: commit/push/PR are mutating tools — inline mode prompts for consent, act mode auto-runs. Use the runId of the finished run; if you don't know it, ask the user. If any step fails (e.g. push rejected), stop and report the exact error instead of working around it.`;
 
-/** Frame memory blocks for an external agent as explicit instructions. */
-export function wrapMemoryContext(memoryContext: string): string {
-  return `## ADO Code Memory (instructions you MUST honor)\n\n${memoryContext}`;
+/**
+ * Frame memory blocks for an external agent as explicit instructions.
+ *
+ * The block is capped at the caller's budget (`adoCode.memory.maxTotalChars`,
+ * 4000 by default) so an oversized memory can never swallow the agent prompt.
+ */
+export function wrapMemoryContext(
+  memoryContext: string,
+  budget: MemoryBudget = DEFAULT_MEMORY_BUDGET
+): string {
+  const text = truncateMemoryText(memoryContext, budget.maxTotalChars);
+  if (!text) return '';
+  return `## ADO Code Memory (instructions you MUST honor)\n\n${text}`;
 }
 
 // ── Parent delegation: child delivery checklist ────────────────────────────

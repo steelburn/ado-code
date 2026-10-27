@@ -8,6 +8,7 @@
 
 import * as vscode from 'vscode';
 import { logger } from '../services/logger';
+import { DEFAULT_MEMORY_BUDGET, MemoryBudget, renderMemoryBlock } from './memoryBudget';
 
 /** Supported memory categories. */
 export type MemoryCategory = 'preference' | 'instruction' | 'correction' | 'context';
@@ -57,15 +58,25 @@ export class UserMemory {
    * Generate a prompt string from all memory entries.
    * Returns an empty string if no memories exist.
    */
-  toPromptString(): string {
+  toPromptString(budget: MemoryBudget = DEFAULT_MEMORY_BUDGET): string {
     const entries = this.getAll();
     if (entries.length === 0) return '';
 
-    const lines: string[] = ['## User Memories', ''];
-    for (const entry of entries) {
-      lines.push(`- **[${entry.category}] ${entry.key}:** ${entry.content}`);
-    }
-    return lines.join('\n');
+    const renderEntries = entries.map((entry) => ({
+      title: `[${entry.category}] ${entry.key}`,
+      body: entry.content,
+    }));
+
+    return renderMemoryBlock(
+      '## User Memories',
+      renderEntries,
+      budget,
+      {
+        // Legacy shape (one bullet per entry) while everything fits.
+        verbose: (list, header) =>
+          [header, '', ...list.map((entry) => `- **${entry.title}:** ${entry.body}`)].join('\n'),
+      }
+    );
   }
 
   /**

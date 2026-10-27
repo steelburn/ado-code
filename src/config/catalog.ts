@@ -196,6 +196,15 @@ export const CATEGORIES: ConfigCategory[] = [
           { key: 'understanding.autoSummarize', label: 'Auto-generate LLM repo summary', type: 'boolean', description: 'Generate an LLM repository summary automatically when the repo changes (new branch/commit, edited AGENTS.md/package.json/README). Uses one model call per change. Refresh manually anytime via "ADO Code: Refresh Repository Understanding".' },
         ],
       },
+      {
+        title: 'Memory',
+        icon: '💾',
+        settings: [
+          { key: 'memory.maxTotalChars', label: 'Max injected memory (chars)', type: 'number', min: 200, description: 'Total characters of user + workspace memory injected into one prompt, header and footer included. Anything beyond the budget is dropped and reported on one pointer line, so memory never crowds out the task.', hint: 'User memory is injected first; workspace memory gets whatever budget is left.' },
+          { key: 'memory.maxEntries', label: 'Max memory entries injected', type: 'number', min: 1, description: 'How many memory entries may be rendered in the injected digest. Leftover entries are reported as plus N more entries — call list_workspace_memory, and that tool still returns everything untruncated.' },
+          { key: 'memory.maxCharsPerEntry', label: 'Max memory entry (chars)', type: 'number', min: 40, description: 'Longest single memory entry, in the injected digest and on write. write_workspace_memory / set_memory calls above it are rejected with a clear error instead of being stored.' },
+        ],
+      },
     ],
   },
   {
