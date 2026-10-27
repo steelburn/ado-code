@@ -3,7 +3,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { logger } from '../logger';
 import { WorkItemContext } from '../../shared/messages';
-import { formatWorkItemContext } from '../../llm/prompts';
+import { formatWorkItemContext, DEFAULT_THREAD_BUDGET } from '../../llm/prompts';
+import { renderDocDigest, stripDigest, withDigest } from '../../shared/docDigest';
 
 /**
  * Repository Understanding — a durable, fingerprinted cache of what ADO Code
@@ -182,7 +183,7 @@ export class UnderstandingService {
         content += `\n\n### LLM Summary\n\n${summary}`;
       }
       this.init();
-      fs.writeFileSync(this.repoFile(), content, 'utf8');
+      fs.writeFileSync(this.repoFile(), this.withRepoDigest(content), 'utf8');
       meta.repo = {
         fingerprint,
         generatedAt: new Date().toISOString(),
@@ -223,7 +224,7 @@ export class UnderstandingService {
       const summary = (await this.summarizeFn(`${SUMMARY_SYSTEM_PROMPT}\n\n${facts}`)).trim();
       if (!summary) return;
       const content = `${facts}\n\n### LLM Summary\n\n${summary.slice(0, MAX_SUMMARY_CHARS)}`;
-      fs.writeFileSync(this.repoFile(), content, 'utf8');
+      fs.writeFileSync(this.repoFile(), this.withRepoDigest(content), 'utf8');
       const meta = this.readMeta();
       meta.repo = {
         ...(meta.repo ?? { fingerprint: '', generatedAt: '' }),
@@ -257,7 +258,7 @@ export class UnderstandingService {
       return;
     }
     this.init();
-    fs.writeFileSync(file, `### Work Item\n\n${formatWorkItemContext(workItem)}`, 'utf8');
+    fs.writeFileSync(file, `${this.workItemDigest(workItem)}\n\n### Work Item\n\n${formatWorkItemContext(workItem)}`, 'utf8');
     meta.workitems = {
       ...(meta.workitems ?? {}),
       [idKey]: { fingerprint: fp, generatedAt: new Date().toISOString() },
@@ -307,7 +308,7 @@ export class UnderstandingService {
         combined = `## ${parts.join('\n## ')}`;
       }
     }
-    fs.writeFileSync(file, combined, 'utf8');
+    fs.writeFileSync(file, this.withKnowledgeDigest(combined), 'utf8');
     const meta = this.readMeta();
     meta.knowledge = {
       updatedAt: new Date().toISOString(),
@@ -506,6 +507,68 @@ export class UnderstandingService {
 
   private knowledgeFile(): string {
     return path.join(this.dir, KNOWLEDGE_FILE);
+  }
+
+  // -----------------------------------------------------------------------
+  // Digest-first headers (ADO-27354)
+  // -----------------------------------------------------------------------
+
+  /** Digest for repo.md: what sections exist and whether a summary is inlined. */
+  private withRepoDigest(content: string): string {
+    const body = stripDigest(content);
+    const sections = body
+      .split('\n')
+      .filter((l) => /^#{2,3} /.test(l))
+      .map((l) => l.replace(/^#+\s*/, '').trim());
+    const hasSummary = /^### LLM Summary/m.test(body);
+    return withDigest(
+      body,
+      renderDocDigest({
+        kind: 'repository facts',
+        facts: [
+          `Sections: ${sections.length > 0 ? sections.join(', ') : '(none)'}`,
+          `Size: ${body.length} chars.`,
+          hasSummary
+            ? 'An LLM summary is inlined under the summary heading below.'
+            : 'No LLM summary yet — deterministic facts only.',
+        ],
+        footer: 'The fingerprint that decides staleness is in "Repository Facts" below; read a line range rather than the whole file.',
+      }),
+    );
+  }
+
+  /** Digest for knowledge.md: how many entries survive and what the newest one is. */
+  private withKnowledgeDigest(text: string): string {
+    const body = stripDigest(text);
+    const entries = body.split('\n## ').filter((e) => e.trim().length > 0);
+    const newest = entries.length > 0 ? entries[entries.length - 1].split('\n')[0].replace(/^##\s*/, '') : '';
+    return withDigest(
+      body,
+      renderDocDigest({
+        kind: 'distilled session knowledge',
+        facts: [
+          `Entries kept: ${entries.length} (oldest dropped first once the file passes ${MAX_KNOWLEDGE_CHARS} chars).`,
+          `Newest entry: ${newest || '(none)'}`,
+          `Size: ${body.length} chars.`,
+        ],
+        footer: 'Do not re-read this whole file each turn — read the entry you need, or use the workspace-memory tools.',
+      }),
+    );
+  }
+
+  /** Digest for a cached work item, with a live retrieval pointer. */
+  private workItemDigest(workItem: WorkItemContext): string {
+    const total = workItem.comments?.length ?? 0;
+    const shown = Math.min(total, DEFAULT_THREAD_BUDGET.maxComments);
+    return renderDocDigest({
+      kind: `cached work item #${workItem.id}`,
+      facts: [
+        `#${workItem.id} — ${workItem.title}`,
+        `State: ${workItem.state || '(unknown)'}; comments rendered: ${shown} of ${total}.`,
+        `Acceptance criteria: ${workItem.acceptanceCriteria ? 'cached below' : '(none set)'}.`,
+      ],
+      footer: `Call get_work_item(${workItem.id}) for the full thread and acceptance criteria.`,
+    });
   }
 
   private workItemFile(id: number): string {
