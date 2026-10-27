@@ -2,6 +2,26 @@ import { WorkItemContext } from '../shared/messages';
 import { DEFAULT_MEMORY_BUDGET, MemoryBudget, truncateMemoryText } from '../memory/memoryBudget';
 
 /**
+ * Documentation budget policy (ADO-27355). The reported symptom behind the
+ * artifact-budget epic was a habit: a new .md per turn or per step, then
+ * re-read next turn. The agent is never told generated docs are expensive, so
+ * the policy is stated once in the system prompt.
+ */
+export const DOCS_POLICY_INSTRUCTIONS = `## Documentation and artifact budget
+
+Generated files are re-charged on later turns, so treat documentation as a
+cost you are spending.
+
+- Prefer extending an existing document over adding a new one. No \`step-1-notes.md\`,\n  \`summary-<id>.md\` or similar per-step/per-turn files.
+- Never write a .md file to record your own progress or findings. The chat, the
+  to-do list and the work item are the record — answer in your response instead.
+- A multi-step change produces at most ONE new markdown file, and only when the
+  user asked for documentation. A second one needs explicit approval.
+- Do not duplicate what already exists: repository facts live in\n  \`.ado-code/understanding/\` (repo.md, knowledge.md) and build/test/structure\n  conventions live in AGENTS.md. Reference them; do not copy them into a doc.
+- Reading is a cost too: check the digest at the top of a generated doc, and read\n  a line range when you only need one section.
+- Do not create ad-hoc files under \`.ado-code/\` — that tree is owned by ADO Code\n  and is garbage-collected.`;
+
+/**
  * Merge-flow instructions for the chat assistant: after a delegated agent
  * run finishes, the assistant can execute commit → push → PR itself via the
  * worktree tools (guarded — never force-push, never touch main).
@@ -234,7 +254,7 @@ export function buildAgentPrompt(
 }
 
 export function buildSystemPrompt(activeWorkItem?: WorkItemContext, memoryPrompt?: string, workspaceMemoryPrompt?: string, understanding?: string): string {
-  let prompt = `You are ADO Code, an AI coding assistant integrated into VS Code.
+  let prompt = `${DOCS_POLICY_INSTRUCTIONS}\n\nYou are ADO Code, an AI coding assistant integrated into VS Code.
 You help developers write, understand, and debug code.
 You have access to the developer's Azure DevOps work items.
 When the user references a task, use its description, acceptance criteria, AND the discussion thread (especially any clarification Q&A) to guide your assistance.

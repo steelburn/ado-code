@@ -74,6 +74,10 @@ VS Code extension: AI coding assistant with Azure DevOps work-item integration. 
 - Workspace-relative paths (path confinement enforced)
 - ADO API: api-version=7.1 (GA) or 7.1-preview.4 (comments)
 - Tool errors return JSON { error: string }, never throw
+- Docs budget: extend an existing document; never a .md per step or per turn
+- Progress lives in the chat and the work item, not in a new markdown file
+- Reference .ado-code/understanding/ and AGENTS.md; do not duplicate them
+- Do not add ad-hoc files under .ado-code/ (it is garbage-collected)
 
 ## What NOT to Do
 - Do not add runtime dependencies without approval

@@ -196,6 +196,20 @@ function describeDir(dir: string, summary: string): string | null {
 }
 
 /** Cap applied to the LLM summary when embedded into AGENTS.md. */
+/**
+ * Documentation conventions (ADO-27355) — the AGENTS.md half of the docs
+ * policy in the system prompt. Kept to a few lines: AGENTS.md is itself
+ * injected, so the conventions must not cost more than they save.
+ */
+const DOCS_CONVENTIONS_SECTION = '## Documentation Conventions';
+const DOCS_CONVENTIONS_LINES = [
+  '- Extend an existing document instead of adding a per-step or per-turn .md file.',
+  '- Record progress in the chat or the work item, never in a new markdown file.',
+  '- One new doc per change, and only when documentation was requested.',
+  '- Reference `.ado-code/understanding/` and this file instead of duplicating them.',
+  '- Do not add files under `.ado-code/`; that tree is garbage-collected.',
+];
+
 const MAX_SUMMARY_CHARS = 2800;
 
 // ---------------------------------------------------------------------------
@@ -295,6 +309,9 @@ function managedBlockText(facts: DerivedFacts, summary: string): string {
       lines.push(`- \`${d}/\` — ${desc}`);
     }
   }
+
+  lines.push('', DOCS_CONVENTIONS_SECTION);
+  lines.push(...DOCS_CONVENTIONS_LINES);
 
   if (summary) {
     lines.push('', UNDERSTANDING_SECTION);
