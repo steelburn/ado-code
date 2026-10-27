@@ -95,3 +95,28 @@ export function shouldAutoScroll(
     }
     return stickToBottom;
 }
+
+/**
+ * Resolve the "follow the newest content" flag after a scroll event.
+ *
+ * Scroll events do not only mean "the reader scrolled": the app's own
+ * jump-to-latest animation and streaming follow fire them too. Reading those
+ * frames as "the reader scrolled up" unpinned the view one frame into a jump,
+ * so "Latest answer" landed short of the still-growing answer and the reader
+ * had to keep chasing it. Only a scroll the reader caused (wheel / touch /
+ * keys, or an upward move) may change the flag:
+ *
+ *  - a reader scroll away from the bottom stops following,
+ *  - a reader scroll back down to the bottom resumes following,
+ *  - a programmatic scroll leaves whatever the reader chose untouched.
+ */
+export function resolveStickToBottom(
+    stickToBottom: boolean,
+    atBottom: boolean,
+    userInitiated: boolean,
+): boolean {
+    if (!userInitiated) {
+        return stickToBottom;
+    }
+    return atBottom;
+}

@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import {
     shouldShowJumpToLatest,
     shouldAutoScroll,
+    resolveStickToBottom,
     resolveActivityExpanded,
     collapseAllActionLabel,
     JUMP_TO_LATEST_THRESHOLD_PX,
@@ -114,5 +115,38 @@ suite('shared/chatNavigation', () => {
         test('offers expand once rows are forced closed', () => {
             assert.strictEqual(collapseAllActionLabel(false), 'Expand all turns');
         });
+    });
+});
+
+/**
+ * Regression guard for the "Latest answer" jump: the follow decision is only
+ * allowed to move when the reader caused the scroll. Our own jump animation
+ * and the streaming follow fire scroll events too, and reading those as "the
+ * reader scrolled up" is exactly what unpinned the view a frame into every
+ * jump.
+ */
+suite('shared/chatNavigation — resolveStickToBottom', () => {
+    test('a programmatic scroll that passes mid-list keeps following', () => {
+        assert.strictEqual(resolveStickToBottom(true, false, false), true);
+    });
+
+    test('a programmatic scroll that lands at the bottom keeps following', () => {
+        assert.strictEqual(resolveStickToBottom(true, true, false), true);
+    });
+
+    test('a programmatic scroll does not resume a view the reader left', () => {
+        assert.strictEqual(resolveStickToBottom(false, true, false), false);
+    });
+
+    test('the reader scrolling up stops following', () => {
+        assert.strictEqual(resolveStickToBottom(true, false, true), false);
+    });
+
+    test('the reader scrolling back to the bottom resumes following', () => {
+        assert.strictEqual(resolveStickToBottom(false, true, true), true);
+    });
+
+    test('the reader scrolling down short of the bottom stays unfollowed', () => {
+        assert.strictEqual(resolveStickToBottom(false, false, true), false);
     });
 });
