@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { splitAcceptanceCriteria } from '../shared/workItemContent';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment, TraceEntry, StoredTurnTrace } from '../shared/messages';
 import { parseSaveConfigPayload, parseWizardConfigPayload, CONFIG_SETTING_KEYS, type ConfigSettingsMap } from '../shared/configSchema';
 import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
@@ -38,6 +39,8 @@ import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { CHAT_EDITOR_VIEW_TYPE } from './chatEditorSerializer';
 import { AgentProgressPanel } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
+import { collectDocumentationExport } from './documentation/exportDocumentation';
+import { promptAndSaveBinary } from './saveBinary';
 import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
 import { SessionMirror, MirroredSessions } from './SessionMirror';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
@@ -1126,6 +1129,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
   }): string {
+    // A description that already carries its own "Acceptance Criteria" section
+    // must not produce a second one — move that section into the AC field first.
+    const content = splitAcceptanceCriteria(args.description, args.acceptanceCriteria);
     const lines: string[] = [
       `# Draft: ${args.workItemType}`,
       '',
@@ -1136,10 +1142,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       args.title,
       '',
       `## [x] Description`,
-      args.description || '',
+      content.description,
       '',
       `## [x] Acceptance Criteria`,
-      args.acceptanceCriteria || '',
+      content.acceptanceCriteria,
       '',
       `## [x] Assigned To`,
       args.assignedTo || '',
@@ -1161,17 +1167,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Reads each `## [x] Section` heading and extracts the body text.
    */
   private parseTaskDraft(content: string): { title: string; description: string; acceptanceCriteria: string; assignedTo: string; tags: string } {
-    const getSection = (name: string): string => {
-      const re = new RegExp(`## \\[[ x]\\] ${name}\\n([\\s\\S]*?)(?=\\n## \\[[ x]\\]|\\n## [A-Z]|\\Z)`, 'i');
-      const m = content.match(re);
-      return m ? m[1].trim() : '';
-    };
+    // Line-based, not a lazy-regex body: a description legitimately contains
+    // its own `## Heading` lines, and the old single-regex parser stopped at
+    // the first `## Uppercase` — silently truncating the description (and the
+    // acceptance criteria written inside it). Only the draft's own sections
+    // end a body here.
+    const sections = new Map<string, string[]>();
+    let current: string[] | null = null;
+    let currentName = '';
+    const flush = () => { if (current) sections.set(currentName, current); };
+    for (const raw of content.split(/\r?\n/)) {
+      const heading = /^##\s*(?:\[[ xX]\]\s*)?(title|description|acceptance criteria|assigned to|tags)\s*$/i.exec(raw.trim());
+      if (heading) {
+        flush();
+        currentName = heading[1].toLowerCase();
+        current = [];
+        continue;
+      }
+      if (/^##\s*parent\s*$/i.test(raw.trim())) {
+        flush();
+        current = null;
+        currentName = '';
+        continue;
+      }
+      if (current) current.push(raw);
+    }
+    flush();
+    const getSection = (name: string): string => (sections.get(name.toLowerCase()) ?? []).join('\n').trim();
+    // Whether the user left the AC section in the description or typed it into
+    // the AC section, the text belongs in the AC field — never in both.
+    const ac = splitAcceptanceCriteria(getSection('description'), getSection('acceptance criteria'));
     return {
-      title: getSection('Title') || 'Untitled',
-      description: getSection('Description'),
-      acceptanceCriteria: getSection('Acceptance Criteria'),
-      assignedTo: getSection('Assigned To'),
-      tags: getSection('Tags'),
+      title: getSection('title') || 'Untitled',
+      description: ac.description,
+      acceptanceCriteria: ac.acceptanceCriteria,
+      assignedTo: getSection('assigned to'),
+      tags: getSection('tags'),
     };
   }
 
@@ -2836,6 +2867,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             break;
           }
+          case 'saveBinary':
+            await promptAndSaveBinary(message.request);
+            break;
+          case 'exportDocumentation': {
+            // Gathers disk-side sources only; rendering stays in the webview.
+            const payload = await collectDocumentationExport(message.request);
+            this.postMessage({
+              type: 'documentationExportPayload',
+              requestId: message.requestId,
+              payload,
+            });
+            break;
+          }
           case 'saveSvg':
             await promptAndSaveSvg(message.content, message.defaultName);
             break;
@@ -2899,7 +2943,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               success: projectResult.success,
               path: projectResult.path,
               error: projectResult.error,
+              warnings: projectResult.warnings,
+              templateId: request.templateId,
+              projectName: request.projectName,
+              documents: projectResult.documents,
             });
+            if (projectResult.success && projectResult.warnings?.length) {
+              // The wizard closes on success, so the scaffolder's notes (KRiSA
+              // coercions, skipped arming) would otherwise be lost.
+              void vscode.window.showWarningMessage(
+                `ADO Code: documentation project created with ${projectResult.warnings.length} note(s) — ${projectResult.warnings
+                  .slice(0, 3)
+                  .join(' · ')}`
+              );
+            }
             if (projectResult.success) {
               vscode.window.showInformationMessage(
                 `ADO Code: project "${request.projectName}" created at ${projectResult.path}${adoNote}`

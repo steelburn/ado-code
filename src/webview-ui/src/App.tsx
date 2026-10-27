@@ -5,6 +5,8 @@ import { TaskDetailPanel } from './components/TaskDetailPanel';
 import { MessageList, LiveTraceEntry, TraceEntry, TraceInput } from './components/MessageList';
 import { InputBar } from './components/InputBar';
 import { StatusLine } from './components/StatusLine';
+import { DocumentationExportBar } from './components/DocumentationExportBar';
+import { deliverDocumentationExportPayload } from './export/documentationExport';
 import { KebabMenu } from './components/KebabMenu';
 import { collapseAllActionLabel } from '../../shared/chatNavigation';
 import { normalizeDensity, cycleDensity, densityLabel } from '../../shared/chatDensity';
@@ -245,6 +247,13 @@ function App() {
   // Creation failure shown INSIDE the wizard (App-level, so it survives the
   // fixed overlay that would hide the global error banner).
   const [projectWizardError, setProjectWizardError] = useState<string | null>(null);
+  // Documentation project just created — the export bar needs its folder and the
+  // documents the scaffolder wrote (both arrive with `projectWizardCreated`).
+  const [docProject, setDocProject] = useState<{
+    name: string;
+    path: string;
+    documents: string[];
+  } | null>(null);
   // Skill catalog
   const [showSkillCatalog, setShowSkillCatalog] = useState(false);
   // Activity indicator — shows a banner while a skill is executing or tasks are generating
@@ -720,9 +729,21 @@ function App() {
           if (msg.success) {
             setProjectWizardError(null);
             setShowProjectWizard(false);
+            if (msg.templateId && msg.templateId.indexOf('doc-') === 0) {
+              setDocProject({
+                name: msg.projectName || msg.path.split(/[\\/]/).pop() || 'documentation',
+                path: msg.path,
+                documents: msg.documents || [],
+              });
+            }
           } else {
             setProjectWizardError(msg.error || 'Failed to create project');
           }
+          break;
+
+        case 'documentationExportPayload':
+          // Routes the host's sources to the export that is awaiting them.
+          deliverDocumentationExportPayload(msg.requestId, msg.payload);
           break;
         case 'openSkillCatalog':
           setShowSkillCatalog(true);
@@ -1365,6 +1386,15 @@ function App() {
         streamText={streamText}
         trace={liveTrace}
       />
+
+      {docProject && (
+        <DocumentationExportBar
+          projectName={docProject.name}
+          projectPath={docProject.path}
+          documents={docProject.documents}
+          onDismiss={() => setDocProject(null)}
+        />
+      )}
 
       <InputBar
         mode={mode}

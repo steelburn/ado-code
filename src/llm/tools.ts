@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { LlmTool } from './types';
 import { interruptedToolResult, shouldInterruptTool } from '../shared/toolInterrupt';
+import { isWorkItemEchoComment, splitAcceptanceCriteria } from '../shared/workItemContent';
 import { Services } from '../services';
 import { getSettings, getActiveOrg } from '../config/settings';
 import { isCommandSessionApproved, terminalCommandKey, terminalCommandList } from './tool-approval-ui';
@@ -490,7 +491,7 @@ export function createToolExecutor(
     },
     {
       name: 'add_comment',
-      description: 'Add a comment to a work item discussion thread',
+      description: "Add a comment to a work item discussion thread. Use it for information that is NOT already on the item — never restate the description, acceptance criteria or the title back into the discussion; an identical comment is silently dropped.",
       parameters: {
         type: 'object',
         properties: { id: { type: 'number' }, text: { type: 'string' } },
@@ -945,18 +946,47 @@ export function createToolExecutor(
           }
           return JSON.stringify({ ok: true, id: args.id, state: args.state });
         case 'add_comment': {
-          const c = await services.ado.addComment(project, args.id, args.text);
+          const commentText = String(args.text ?? '');
+          // Agents like to "record" a freshly written item by posting its body
+          // again as a discussion comment — that just duplicates the item. Read
+          // the item back and drop the echo (best effort: an unreadable item
+          // still gets its comment).
+          const readDetail = (services.ado as any)?.getWorkItemDetail;
+          if (typeof readDetail === 'function') {
+            try {
+              const detail = await readDetail.call(services.ado, project, args.id);
+              const fields = (detail?.fields ?? {}) as Record<string, unknown>;
+              const str = (key: string) => (typeof fields[key] === 'string' ? fields[key] as string : undefined);
+              const echo = isWorkItemEchoComment(commentText, {
+                description: str('System.Description'),
+                acceptanceCriteria: str('Microsoft.VSTS.Common.AcceptanceCriteria'),
+              });
+              if (echo) {
+                return JSON.stringify({
+                  ok: true,
+                  skipped: true,
+                  reason: 'comment duplicates the work item body (description/acceptance criteria) — nothing was posted',
+                });
+              }
+            } catch { /* best effort: post the comment as before */ }
+          }
+          const c = await services.ado.addComment(project, args.id, commentText);
           return JSON.stringify({ ok: true, commentId: c.id });
         }
         case 'create_work_item': {
+          // A description that carries its own "Acceptance Criteria" section is
+          // split so the AC text lands in the AC field — never twice.
+          const createdContent = splitAcceptanceCriteria(args.description, args.acceptanceCriteria);
+          const acMoved = createdContent.description !== String(args.description ?? '').trim()
+            || createdContent.acceptanceCriteria !== String(args.acceptanceCriteria ?? '').trim();
           // Route through the editor-tab preview + confirmation hook so the
           // user can review/edit details before the work item is created in ADO.
           if (hooks?.onCreateWorkItem) {
             const result = await hooks.onCreateWorkItem({
               workItemType: args.workItemType,
               title: args.title,
-              description: args.description,
-              acceptanceCriteria: args.acceptanceCriteria,
+              description: createdContent.description,
+              acceptanceCriteria: createdContent.acceptanceCriteria || undefined,
               assignedTo: args.assignedTo,
               tags: args.tags,
               parentWorkItemId: args.parentWorkItemId ? Number(args.parentWorkItemId) : undefined,
@@ -968,6 +998,10 @@ export function createToolExecutor(
               ok: true,
               id: result.id,
               url: result.url,
+              // Confirm what landed where: the model otherwise tends to post the body
+              // again as a comment because it assumes the fields were lost.
+              acceptanceCriteriaField: createdContent.acceptanceCriteria ? 'filled' : 'empty',
+              acceptanceCriteriaMovedOutOfDescription: acMoved,
               // A tag downgrade (no "Create tag definition" permission) is not a
               // failure — surface it so the model can mention the skipped tags.
               ...(result.warning ? { tagsWarning: result.warning, tagsApplied: result.tagsApplied, droppedTags: result.droppedTags } : {}),
@@ -976,8 +1010,8 @@ export function createToolExecutor(
           // Fallback: direct creation if no hook is wired (e.g. headless).
           const result = await services.ado.createWorkItem(project, args.workItemType, {
             title: args.title,
-            description: args.description,
-            acceptanceCriteria: args.acceptanceCriteria,
+            description: createdContent.description,
+            acceptanceCriteria: createdContent.acceptanceCriteria || undefined,
             assignedTo: args.assignedTo,
             tags: args.tags,
           }, args.parentWorkItemId ? Number(args.parentWorkItemId) : undefined);
@@ -985,6 +1019,10 @@ export function createToolExecutor(
             ok: true,
             id: result.id,
             url: result.url,
+            // Confirm what landed where: the model otherwise tends to post the body
+            // again as a comment because it assumes the fields were lost.
+            acceptanceCriteriaField: createdContent.acceptanceCriteria ? 'filled' : 'empty',
+            acceptanceCriteriaMovedOutOfDescription: acMoved,
             ...(result.warning ? { tagsWarning: result.warning, tagsApplied: result.tagsApplied, droppedTags: result.droppedTags } : {}),
           });
         }

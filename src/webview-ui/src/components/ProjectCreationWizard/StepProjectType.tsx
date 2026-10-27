@@ -12,6 +12,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   fullstack: 'Full-Stack',
   cli: 'CLI',
   library: 'Library',
+  documentation: 'Documentation',
 };
 
 export function StepProjectType({ selectedTemplateId, onSelect }: Props) {

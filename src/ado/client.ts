@@ -1,5 +1,6 @@
 import { AdoWorkItem, WiqlResult, AdoComment } from './types';
 import { markdownToHtml } from './markdownToHtml';
+import { normalizeWorkItemContent } from '../shared/workItemContent';
 
 const GA_VERSION = '7.1';
 const PREVIEW_VERSION = '7.1-preview.4';
@@ -666,12 +667,15 @@ export class AdoClient {
     tags: string[],
     parentWorkItemId?: number
   ): Array<{ op: string; path: string; value: any }> {
+    // An "Acceptance Criteria" section written into the description belongs
+    // in its own ADO field — move it there instead of shipping it twice.
+    const content = normalizeWorkItemContent(fields);
     const body: Array<{ op: string; path: string; value: any }> = [
       { op: 'add', path: '/fields/System.Title', value: fields.title },
     ];
     // Convert markdown to HTML for rich text fields that ADO expects
-    if (fields.description) body.push({ op: 'add', path: '/fields/System.Description', value: markdownToHtml(fields.description) });
-    if (fields.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: markdownToHtml(fields.acceptanceCriteria) });
+    if (content.description) body.push({ op: 'add', path: '/fields/System.Description', value: markdownToHtml(content.description) });
+    if (content.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: markdownToHtml(content.acceptanceCriteria) });
     if (tags.length > 0) body.push({ op: 'add', path: '/fields/System.Tags', value: tags.join('; ') });
     if (fields.assignedTo) body.push({ op: 'add', path: '/fields/System.AssignedTo', value: fields.assignedTo });
     if (fields.areaPath) body.push({ op: 'add', path: '/fields/System.AreaPath', value: fields.areaPath });

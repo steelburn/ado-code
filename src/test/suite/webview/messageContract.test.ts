@@ -18,6 +18,8 @@ const REPO_ROOT = path.resolve(__dirname, '../../../..');
 const SHARED_MESSAGES = path.join(REPO_ROOT, 'src', 'shared', 'messages.ts');
 const SHARED_SESSION_RUN = path.join(REPO_ROOT, 'src', 'shared', 'sessionRun.ts');
 const WEBVIEW_TYPES = path.join(REPO_ROOT, 'src', 'webview-ui', 'src', 'types.ts');
+const CHAT_VIEW_PROVIDER = path.join(REPO_ROOT, 'src', 'webview', 'ChatViewProvider.ts');
+const SAVE_BINARY = path.join(REPO_ROOT, 'src', 'webview', 'saveBinary.ts');
 
 function read(p: string): string {
   return fs.readFileSync(p, 'utf8');
@@ -89,9 +91,47 @@ suite('Message contract — single source of truth', () => {
 
   test('ExtensionToWebviewMessage carries the host→webview messages 0.6.x added', () => {
     const e2w = unionMembers(read(SHARED_MESSAGES), 'ExtensionToWebviewMessage');
-    for (const t of ['delegationSuggestion', 'steeringQueued', 'steeringApplied', 'sessionRunState', 'openProjectWizard']) {
+    for (const t of ['delegationSuggestion', 'steeringQueued', 'steeringApplied', 'sessionRunState', 'openProjectWizard', 'documentationExportPayload']) {
       assert.ok(e2w.includes(t), `ExtensionToWebviewMessage is missing '${t}'`);
     }
+  });
+
+  test('the host handles saveBinary and routes it to the binary saver', () => {
+    const provider = read(CHAT_VIEW_PROVIDER);
+    assert.ok(
+      /case 'saveBinary':/.test(provider),
+      "ChatViewProvider has no 'saveBinary' case — every binary export would be dropped silently",
+    );
+    // Slice up to the NEXT case arm — a fixed-width window can bleed into the
+    // following 'saveSvg' arm and fail for the wrong reason.
+    const start = provider.indexOf("case 'saveBinary':");
+    const nextCase = provider.indexOf("case '", start + "case 'saveBinary':".length);
+    const arm = provider.slice(start, nextCase > start ? nextCase : start + 400);
+    assert.ok(/promptAndSaveBinary\(message\.request\)/.test(arm), 'saveBinary is not routed to promptAndSaveBinary(message.request)');
+    assert.ok(!/promptAndSaveSvg/.test(arm), 'saveBinary must not be routed through the SVG saver');
+
+    const saver = read(SAVE_BINARY);
+    assert.ok(/planBinarySave\(/.test(saver), 'the host saver does not use the shared planner');
+    assert.ok(
+      /Buffer\.from\(plan\.payload, 'base64'\)/.test(saver),
+      'the host saver must decode the validated payload, not the raw request',
+    );
+    assert.ok(/createDirectory\(/.test(saver), 'the host saver must create the parent folder before writing');
+  });
+
+  test('the documentation export round trip is wired in both directions', () => {
+    const provider = read(CHAT_VIEW_PROVIDER);
+    const start = provider.indexOf("case 'exportDocumentation':");
+    assert.ok(start !== -1, "ChatViewProvider has no 'exportDocumentation' case — every export request would be dropped");
+    const nextCase = provider.indexOf("case '", start + 24);
+    const arm = provider.slice(start, nextCase > start ? nextCase : start + 600);
+    assert.ok(/collectDocumentationExport\(message\.request\)/.test(arm), 'the arm must pass the request through the validating collector');
+    assert.ok(/requestId: message\.requestId/.test(arm), 'the reply must echo requestId or the webview cannot match it to its request');
+    assert.ok(/type: 'documentationExportPayload'/.test(arm), 'the arm must post documentationExportPayload');
+
+    const shared = read(SHARED_MESSAGES);
+    assert.ok(/exportDocumentation/.test(shared), 'shared/messages.ts does not declare the request');
+    assert.ok(/documentationExportPayload/.test(shared), 'shared/messages.ts does not declare the reply');
   });
 
   test('WebviewToExtensionMessage only lists webview→host messages', () => {
@@ -99,7 +139,7 @@ suite('Message contract — single source of truth', () => {
     assert.ok(!w2e.includes('openProjectWizard'), "'openProjectWizard' is host→webview and must not be in WebviewToExtensionMessage");
     for (const t of [
       'confirmationResponse', 'getSkillCatalog', 'installSkill', 'uninstallSkill', 'enableSkill',
-      'disableSkill', 'executeSkill', 'getSkillDetail', 'getRegistrySkills', 'installRegistrySkill', 'saveSvg',
+      'disableSkill', 'executeSkill', 'getSkillDetail', 'getRegistrySkills', 'installRegistrySkill', 'saveSvg', 'saveBinary', 'exportDocumentation',
     ]) {
       assert.ok(w2e.includes(t), `WebviewToExtensionMessage is missing '${t}'`);
     }

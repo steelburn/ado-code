@@ -96,6 +96,9 @@ suite('ProjectCreationService', () => {
     'react-ts': ['package.json', 'index.html', 'vite.config.ts', 'tsconfig.json', 'src/main.tsx', 'src/App.tsx', '.gitignore'],
     nextjs: ['package.json', 'next.config.js', 'tsconfig.json', 'src/app/layout.tsx', 'src/app/page.tsx', '.gitignore'],
     empty: ['README.md', '.gitignore', 'LICENSE'],
+    'doc-ba': ['README.md', '.gitignore', '00-project-control/project-charter.md', '01-business-analysis/brs.md', '05-traceability/rtm.md', '05-traceability/rtm.csv', '.ado-code/documentation.json'],
+    'doc-writer': ['README.md', '.gitignore', '01-design/srs.md', '02-user-docs/user-manual.md', 'export/pandoc.yaml', '.ado-code/documentation.json'],
+    'doc-tester': ['README.md', '.gitignore', '01-test-planning/test-plan.md', '02-test-cases/test-cases.md', '04-defects/test-evidence-register.csv', '05-traceability/rtm.csv', '.ado-code/documentation.json'],
   };
 
   for (const template of PROJECT_TEMPLATES) {
@@ -122,6 +125,56 @@ suite('ProjectCreationService', () => {
     });
   }
 
+  // ── Documentation templates: result metadata ─────────────────────
+  //
+  // The wizard toast reads `warnings`, and the export bar is switched on by
+  // `templateId` + `documents` riding on `projectWizardCreated` — so both must
+  // actually come back from createProject, not merely be typed on the result.
+
+  for (const docTemplateId of ['doc-ba', 'doc-writer', 'doc-tester']) {
+    test(`"${docTemplateId}" reports the documents it wrote plus a warnings array`, async () => {
+      const request = makeRequest({
+        templateId: docTemplateId,
+        templateOptions: defaultsFor(docTemplateId),
+      });
+      const result = await service.createProject(request);
+      assert.strictEqual(result.success, true, result.error);
+
+      assert.ok(Array.isArray(result.documents), 'expected a documents array');
+      assert.ok((result.documents?.length ?? 0) > 0, 'expected the written documents to be listed');
+      assert.ok(Array.isArray(result.warnings), 'warnings must be an array even when empty');
+
+      for (const doc of result.documents!) {
+        assert.ok(!path.isAbsolute(doc), `expected a project-relative path, got ${doc}`);
+        assert.ok(!doc.includes('\\'), `expected forward slashes, got ${doc}`);
+        assert.ok(fs.existsSync(path.join(result.path!, doc)), `listed document missing on disk: ${doc}`);
+      }
+
+      // Every role writes its own README; registers are CSV, generated from the
+      // columns contract, and are deliberately not documents.
+      assert.ok(result.documents!.some((d) => d.endsWith('README.md')), 'the project README is a document');
+      assert.ok(!result.documents!.some((d) => d.endsWith('.csv')), 'CSV registers are not documents');
+    });
+  }
+
+  test('a KRiSA documentation project reports its coercions as warnings', async () => {
+    const request = makeRequest({
+      templateId: 'doc-tester',
+      templateOptions: {
+        ...defaultsFor('doc-tester'),
+        governance: 'KRiSA (Government)',
+        includeSecurity: false,
+      },
+    });
+    const result = await service.createProject(request);
+
+    assert.strictEqual(result.success, true, result.error);
+    assert.ok((result.warnings?.length ?? 0) > 0, 'expected the KRiSA coercions to be reported');
+    assert.ok(
+      result.warnings!.some((w) => /security/i.test(w)),
+      `expected the security-report coercion to be named, got: ${result.warnings!.join(' | ')}`
+    );
+  });
   // ── Template option behaviour ────────────────────────────────────
 
   test('node-ts honors eslint/prettier/jest/docker options', async () => {
