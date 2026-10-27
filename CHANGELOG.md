@@ -5,6 +5,13 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **Work-item creation fails when the user may not create tags** — `System.Tags` rode in the same
+  patch as every other field, so a single tag the caller lacked permission to define rejected the
+  whole write (`403 TF401289`) and the work item was never created. Existing tags never need that
+  permission, so creation now recognises a tag-permission rejection, lists the project's tags and
+  retries with only the requested tags that already exist, then once more with no tags at all,
+  reporting `tagsApplied`/`droppedTags`/`warning` so the `create_work_item` tool and the chat say
+  which tags were skipped. Unrelated failures are rethrown untouched and nothing is created twice.
 - **"Latest answer" pins the chat to the bottom instead of jumping once** — the floating affordance smooth-scrolled a single time and then read its own animation frames as "the reader scrolled up", which cleared the follow flag a frame into the jump: on a still-streaming answer the view landed short, the button reappeared and the reader had to keep chasing the bottom. The follow decision now goes through the pure `resolveStickToBottom()` helper in `src/shared/chatNavigation.ts`, and only a scroll the reader caused — wheel, touch, keys, or an upward move — may unpin the view, so after "Latest answer" new content stays pinned until the reader scrolls up again.
 
 - **A chat message survives an abrupt shutdown (laptop power-off, sleep, host kill)** — sessions were stored only in `workspaceState` and only *after* the agentic round returned, so the message the user had just sent — plus any text already streamed back — lived purely in memory for the whole turn and was lost if the machine went down inside that window. The user message is now persisted the moment it is accepted, every agentic iteration checkpoints a throttled "interrupted" draft, per-session transcript writes are serialised so a late draft can no longer overwrite the turn’s final answer, and each session is additionally mirrored to `.ado-code/sessions/<scope>/` with a synchronous `write → fsync → rename`, so recovery no longer depends on the debounced Memento flush landing. On activation the mirror is preferred only when it holds more messages than `workspaceState`, and pending writes are flushed from `deactivate()`, on window blur, and on process exit.

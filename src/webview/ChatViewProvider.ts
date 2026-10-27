@@ -997,6 +997,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const created: Array<{ id: number; title: string }> = [];
+      const tagDowngrades: string[] = [];
       const finalTasks = duplicates.length > 0 && decision === 'skip' ? tasksToCreate : tasks;
 
       for (const task of finalTasks) {
@@ -1014,6 +1015,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             parentId,
           );
           created.push({ id: result.id, title: task.title });
+          if (result.warning) tagDowngrades.push(result.warning);
         } catch (err) {
           logger.error(`Chat: failed to create task "${task.title}":`, err);
         }
@@ -1035,6 +1037,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
 
+        if (tagDowngrades.length > 0) {
+          // One notice per work item — collapse duplicates before appending.
+          message += `\n\n${Array.from(new Set(tagDowngrades)).join('\n\n')}`;
+        }
         this.postMessage({
           type: 'assistantMessage',
           content: message,
@@ -1184,7 +1190,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     workItemType: string; title: string; description?: string;
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
-  }): Promise<{ id: number; url: string } | null> {
+  }): Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null> {
     return this.taskDraftQueue.run(() => this.runTaskDraftFlow(args));
   }
 
@@ -1192,7 +1198,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     workItemType: string; title: string; description?: string;
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
-  }): Promise<{ id: number; url: string } | null> {
+  }): Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null> {
     // Ensure .ado-code directory exists
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!workspaceRoot) return null;
@@ -1244,7 +1250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async createTaskFromDraft(
     fileUri: vscode.Uri,
     originalArgs: { workItemType: string; parentWorkItemId?: number },
-  ): Promise<{ id: number; url: string } | null> {
+  ): Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null> {
     try {
       const bytes = await vscode.workspace.fs.readFile(fileUri);
       const content = Buffer.from(bytes).toString('utf8');
@@ -1274,16 +1280,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // inside the agentic loop while the model waits on the draft review).
       this.postMessage({
         type: 'assistantMessage',
-        content: `✅ Created ${originalArgs.workItemType} **#${result.id}** — ${parsed.title}\n\n${result.url}`,
+        content: `✅ Created ${originalArgs.workItemType} **#${result.id}** — ${parsed.title}\n\n${result.url}${result.warning ? `\n\n⚠️ ${result.warning}` : ''}`,
         done: true,
         id: `wi:${result.id}`,
       });
+      if (result.warning) vscode.window.showWarningMessage(`ADO Code: ${result.warning}`);
 
       // Clean up
       this.taskDraftEditor = undefined;
       try { await vscode.workspace.fs.delete(fileUri); } catch { /* best-effort */ }
 
-      return { id: result.id, url: result.url };
+      return { id: result.id, url: result.url, warning: result.warning, tagsApplied: result.tagsApplied, droppedTags: result.droppedTags };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message: `Failed to create work item: ${message}` });

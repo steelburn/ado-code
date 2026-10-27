@@ -440,7 +440,7 @@ export function createToolExecutor(
     /** Conflict surfacing: fetch conflicted files (base/our/their) for a run's PR. */
     onResolvePrConflicts?: (runId: string) => Promise<Array<{ path: string; worktreePath: string; base?: string; ours?: string; theirs?: string; truncated?: boolean }>>;
     /** Create work item with editor-tab preview + confirmation before ADO write. */
-    onCreateWorkItem?: (args: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; assignedTo?: string; tags?: string; parentWorkItemId?: number }) => Promise<{ id: number; url: string } | null>;
+    onCreateWorkItem?: (args: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; assignedTo?: string; tags?: string; parentWorkItemId?: number }) => Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null>;
     /**
      * Chat session that owns the to-do list. Read lazily per call so the tool
      * always writes the CURRENT session's list, even after the user switches.
@@ -963,7 +963,14 @@ export function createToolExecutor(
             if (!result) {
               return JSON.stringify({ cancelled: true, message: 'Work item creation cancelled by user' });
             }
-            return JSON.stringify({ ok: true, id: result.id, url: result.url });
+            return JSON.stringify({
+              ok: true,
+              id: result.id,
+              url: result.url,
+              // A tag downgrade (no "Create tag definition" permission) is not a
+              // failure — surface it so the model can mention the skipped tags.
+              ...(result.warning ? { tagsWarning: result.warning, tagsApplied: result.tagsApplied, droppedTags: result.droppedTags } : {}),
+            });
           }
           // Fallback: direct creation if no hook is wired (e.g. headless).
           const result = await services.ado.createWorkItem(project, args.workItemType, {
@@ -973,7 +980,12 @@ export function createToolExecutor(
             assignedTo: args.assignedTo,
             tags: args.tags,
           }, args.parentWorkItemId ? Number(args.parentWorkItemId) : undefined);
-          return JSON.stringify({ ok: true, id: result.id, url: result.url });
+          return JSON.stringify({
+            ok: true,
+            id: result.id,
+            url: result.url,
+            ...(result.warning ? { tagsWarning: result.warning, tagsApplied: result.tagsApplied, droppedTags: result.droppedTags } : {}),
+          });
         }
         case 'delegate_to_agent':
           return hooks?.onDelegate
