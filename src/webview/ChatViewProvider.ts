@@ -38,6 +38,7 @@ import { CHAT_EDITOR_VIEW_TYPE } from './chatEditorSerializer';
 import { AgentProgressPanel } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
 import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
+import { SessionMirror, MirroredSessions } from './SessionMirror';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
 import { ConversationCondenser } from '../llm/context/condenser';
@@ -338,6 +339,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private lastAutoContextKey: string | undefined;
   /** B4: max complete user/assistant pairs persisted per session (≈50 msgs). */
   private static readonly MAX_PERSISTED_PAIRS = 25;
+  /** Minimum gap between mid-turn transcript checkpoints (ms). */
+  private static readonly TURN_CHECKPOINT_MS = 2000;
+  /** Cap on the interrupted-turn draft those checkpoints persist. */
+  private static readonly MAX_TURN_DRAFT_CHARS = 4000;
 
   // ── Proposed tasks (generate-tasks review flow) ───────────────────
   /** Active proposed-tasks editor tab, if any. */
@@ -388,12 +393,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return `adoCode.activeSessionId:${this.sessionKey}`;
   }
 
+  /**
+   * Crash-safe on-disk copy of the sessions (see SessionMirror). `workspaceState`
+   * is debounced and loses writes when the machine goes down; this does not.
+   */
+  private readonly sessionMirror = new SessionMirror(
+    () => this.sessionMirrorDir(),
+    () => this.folderKey,
+  );
+  /**
+   * Per-session write chain. Transcript writes must land in the order they were
+   * issued: a mid-turn checkpoint that resolved late would otherwise overwrite
+   * the turn's final answer with its own "interrupted" draft.
+   */
+  private readonly persistQueue = new Map<string, Promise<void>>();
+
+  /**
+   * Where the durable mirror lives: `.ado-code/sessions/<scope>/` — inside the
+   * workspace's gitignored, VSIX-excluded scratch dir, never in source. Undefined
+   * when no folder is open (sessions are not folder-scoped then either).
+   */
+  private sessionMirrorDir(): string | undefined {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root) return undefined;
+    let scope = 'default';
+    try {
+      const key = this.folderKey;
+      if (key) {
+        // Readable tail + short hash: two folders can never share a mirror, and
+        // the directory stays recognisable when debugging.
+        let hash = 0;
+        for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+        const readable = key.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(-40);
+        scope = `${readable || 'folder'}-${(hash >>> 0).toString(36)}`;
+      }
+    } catch {
+      scope = 'default';
+    }
+    return path.join(root, '.ado-code', 'sessions', scope);
+  }
+
   private getSessions(): Session[] {
     return this._context.workspaceState.get<Session[]>(this.sessionsStorageKey, []);
   }
 
   private async saveSessions(sessions: Session[]): Promise<void> {
+    // Mirror FIRST: it is the only write that is guaranteed to be on disk when a
+    // hard shutdown hits (Memento's update() is debounced), so it must not
+    // depend on the workspaceState write below having landed.
+    this.sessionMirror.write(sessions, this.getActiveSessionId());
     await this._context.workspaceState.update(this.sessionsStorageKey, sessions);
+  }
+
+  /**
+   * Crash recovery: adopt the durable mirror where it is AHEAD of workspaceState.
+   *
+   * A Memento update is debounced, so a shutdown (lid closed, power cut, forced
+   * kill) can drop a write whose promise already resolved. The mirror is fsync'd
+   * before that update is even issued, which makes it the surviving copy; here
+   * it is folded back in — including a turn that was still running when the
+   * machine went down (checkpointed mid-turn).
+   */
+  private async restoreFromMirror(): Promise<void> {
+    let mirrored: MirroredSessions | undefined;
+    try {
+      mirrored = this.sessionMirror.read();
+    } catch {
+      return; // unreadable mirror → keep the Memento copy
+    }
+    if (!mirrored) return;
+    const stored = this.getSessions();
+    const merged = SessionMirror.merge(
+      stored,
+      mirrored.sessions,
+      this.getActiveSessionId(),
+      mirrored.activeSessionId,
+    );
+    const changed = merged.added.length > 0 || merged.replaced.length > 0;
+    if (changed) {
+      this.resetConversationCaches();
+      await this.saveSessions(merged.sessions);
+    }
+    if (merged.activeSessionId && merged.activeSessionId !== this.getActiveSessionId()) {
+      await this.setActiveSessionId(merged.activeSessionId);
+    }
   }
 
   /**
@@ -515,6 +598,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (stored === 'mine' || stored === 'all' || stored === 'unassigned') {
       this.workItemsMode = stored;
     }
+    // Crash recovery runs here as well as on webview resolve: the chat can be
+    // reopened in an editor tab (a different attach path), and a shutdown
+    // mid-turn is exactly when the mirror must be consulted before ANYTHING
+    // reads the session list.
+    void this.restoreFromMirror().catch(() => undefined);
   }
 
   /** Which dataset the merged work items tree shows. */
@@ -1932,6 +2020,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       await this.migrateProjectScopedSessions();
       await this.migrateFromLegacyHistory();
+      // Recover anything a hard shutdown dropped from workspaceState before the
+      // active session is loaded into the webview.
+      await this.restoreFromMirror();
       this.sendSessionList();
       const activeId = this.getActiveSessionId();
       if (activeId) {
@@ -4032,10 +4123,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async persistConversation(sessionId?: string, conversation?: LlmMessage[]): Promise<void> {
     const targetId = sessionId ?? this.getActiveSessionId();
     if (!targetId) return;
+    // Snapshot the transcript NOW (the caller may keep mutating the live buffer
+    // while this write is queued) and chain it behind any write in flight.
     const target = conversation ?? this.conversation;
+    const previous = this.persistQueue.get(targetId) ?? Promise.resolve();
+    const write = previous.catch(() => undefined).then(() => this.writeConversation(targetId, target));
+    this.persistQueue.set(targetId, write);
+    try {
+      await write;
+    } finally {
+      if (this.persistQueue.get(targetId) === write) this.persistQueue.delete(targetId);
+    }
+  }
+
+  /** Write a session's transcript (ordering/serialisation: persistConversation). */
+  private async writeConversation(targetId: string, target: LlmMessage[]): Promise<void> {
     const sessions = this.getSessions();
+    const applied = this.applyConversation(targetId, target, sessions);
+    if (!applied) return;
+    // Prune old sessions beyond the configured limit
+    const maxSessions = vscode.workspace.getConfiguration('adoCode').get<number>('sessions.maxPerProject', 20);
+    if (sessions.length > maxSessions) {
+      // Sort oldest-first, keep the most recent `maxSessions` (always keep the
+      // session being written AND the active session)
+      const sorted = [...sessions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const toKeep = new Set(sorted.slice(-maxSessions).map(s => s.id));
+      toKeep.add(targetId);
+      const activeId = this.getActiveSessionId();
+      if (activeId) toKeep.add(activeId);
+      const pruned = sessions.filter(s => toKeep.has(s.id));
+      await this.saveSessions(pruned);
+    } else {
+      await this.saveSessions(sessions);
+    }
+    // A freshly auto-assigned name must reach the UI the moment the turn's
+    // record lands — push the list rather than waiting for a session switch.
+    if (applied.renamed) this.sendSessionList();
+  }
+
+  /**
+   * Fold an in-memory transcript into its session record.
+   *
+   * Synchronous on purpose: the deactivate flush (flushPendingWrites) has to get
+   * the transcript into the durable mirror before the process can be torn down, so
+   * this cannot wait on a promise. Returns undefined when the session is gone,
+   * otherwise whether the session was auto-named (the caller refreshes the list).
+   */
+  private applyConversation(targetId: string, target: LlmMessage[], sessions: Session[]): { renamed: boolean } | undefined {
     const session = sessions.find(s => s.id === targetId);
-    if (!session) return;
+    if (!session) return undefined;
     // 0.6.7: a turn's Thinking/Tools record (recordTurnTrace) lives OUTSIDE the
     // LLM message path — the provider never stores it on LlmMessage. Carry the
     // already-stored traces over, matched by assistant content, so rewriting
@@ -4060,7 +4196,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return { role: m.role, content, ...(trace ? { trace } : {}) };
       });
     // Auto-name from the first user message as soon as the topic is known. The
-    // webview is notified below so the header/dropdown update immediately —
+    // webview is notified by the caller so the header/dropdown update immediately —
     // instead of leaving "New Session" until the user switches away and back.
     const nameBefore = session.name;
     if (session.name === 'New Session') {
@@ -4069,24 +4205,110 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         session.name = firstUser.content.slice(0, 60) + (firstUser.content.length > 60 ? '…' : '');
       }
     }
-    // Prune old sessions beyond the configured limit
-    const maxSessions = vscode.workspace.getConfiguration('adoCode').get<number>('sessions.maxPerProject', 20);
-    if (sessions.length > maxSessions) {
-      // Sort oldest-first, keep the most recent `maxSessions` (always keep the
-      // session being written AND the active session)
-      const sorted = [...sessions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      const toKeep = new Set(sorted.slice(-maxSessions).map(s => s.id));
-      toKeep.add(targetId);
-      const activeId = this.getActiveSessionId();
-      if (activeId) toKeep.add(activeId);
-      const pruned = sessions.filter(s => toKeep.has(s.id));
-      await this.saveSessions(pruned);
-    } else {
-      await this.saveSessions(sessions);
+    return { renamed: session.name !== nameBefore };
+  }
+
+  /**
+   * Last-chance flush of everything this provider holds in memory.
+   *
+   * `deactivate()` is the only notification we get before the extension host goes
+   * away, and an in-flight turn lives only in memory (its messages are pushed onto
+   * the session buffer long before the model round returns). So: mirror the live
+   * transcripts SYNCHRONOUSLY first — a shutdown can cut the returned promise short,
+   * and the fsync'd mirror is the copy that survives the lid closing — then await
+   * the queued workspaceState writes, which is best effort by nature.
+   */
+  async flushPendingWrites(): Promise<void> {
+    this.mirrorLiveConversations();
+    // One drained write can chain another (checkpoint -> final answer), so drain
+    // until the per-session chain is empty instead of awaiting a single batch.
+    for (let pass = 0; pass < 3 && this.persistQueue.size > 0; pass++) {
+      await Promise.all([...this.persistQueue.values()].map(p => p.catch(() => undefined)));
     }
-    // A freshly auto-assigned name must reach the UI the moment the turn's
-    // record lands — push the list rather than waiting for a session switch.
-    if (session.name !== nameBefore) this.sendSessionList();
+    // A drained write persisted ITS snapshot; take one more with whatever the live
+    // buffers hold now, so the mirror never trails the in-memory truth.
+    this.mirrorLiveConversations();
+  }
+
+  /**
+   * Push every live transcript into its session record and mirror the result.
+   * Synchronous by design (see flushPendingWrites).
+   */
+  private mirrorLiveConversations(): void {
+    const sessions = this.getSessions();
+    if (sessions.length === 0) return;
+    for (const [id, buffer] of this.conversationBySession) {
+      if (buffer.length === 0) continue;
+      const session = sessions.find(s => s.id === id);
+      // Storage holding MORE messages means this buffer is a stale seed — never
+      // shorten a transcript on the way out.
+      if (!session || buffer.length < session.messages.length) continue;
+      this.applyConversation(id, buffer, sessions);
+    }
+    this.sessionMirror.write(sessions, this.getActiveSessionId());
+  }
+
+  /**
+   * Synchronous, best-effort durable flush: fold every live conversation buffer
+   * into its session record and fsync it to the mirror. Deliberately skips the
+   * `workspaceState` write and the queued-write drain, because an exit handler
+   * cannot await them.
+   */
+  public flushSync(): void {
+    try {
+      this.mirrorLiveConversations();
+    } catch (err) {
+      logger.warn(`Session flush on process exit failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Register the pre-shutdown flush hooks. `deactivate()` only covers an orderly
+   * quit: a forced teardown (crash, killed window, lid closed on a suspended
+   * machine) never unwinds the host, so the deactivate flush can be skipped
+   * outright. Two extra signals are wired up:
+   *
+   *  - `window.onDidChangeWindowState` — stable API, and the hook that actually
+   *    fires today. A closing lid blurs the window first, and that blur is the
+   *    last event we are guaranteed to observe before the machine goes down
+   *    without a graceful shutdown.
+   *  - `process.on('exit')` — the extension host's own final teardown. Exit
+   *    handlers run synchronously and may only run synchronously, which is exactly
+   *    what `flushSync()` provides; it still covers the case where `deactivate()`
+   *    threw before flushing or was skipped by the host.
+   *
+   * Every hook funnels into the same synchronous mirror write, so the transcript
+   * reaches disk even when the returned promise is never awaited.
+   */
+  public registerSaveStateFlush(): vscode.Disposable[] {
+    const disposables: vscode.Disposable[] = [];
+    // Never let an unexpected shape abort activation: keep only real disposables.
+    const keep = (sub: vscode.Disposable | undefined): void => {
+      if (sub && typeof (sub as { dispose?: unknown }).dispose === 'function') disposables.push(sub);
+    };
+
+    const window = vscode.window as unknown as {
+      onDidChangeWindowState?: (listener: (e: { focused?: boolean }) => unknown) => vscode.Disposable;
+    };
+    if (typeof window.onDidChangeWindowState === 'function') {
+      keep(window.onDidChangeWindowState(e => {
+        if (e && e.focused === false) this.flushForSaveState('windowBlur');
+      }));
+    }
+
+    // Last link in the chain: the host's own exit. Synchronous by construction,
+    // so the mirror write is all we can do here — and all that is needed.
+    const onExit = (): void => this.flushSync();
+    process.on('exit', onExit);
+    disposables.push({ dispose: () => process.off('exit', onExit) });
+    return disposables;
+  }
+
+  /** Fire-and-forget flush for a hook that cannot await us, and may outlive us. */
+  private flushForSaveState(trigger: string): void {
+    void this.flushPendingWrites().catch(err => {
+      logger.warn(`Session flush on ${trigger} failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   /**
@@ -4748,6 +4970,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let turnConversation = this.conversation;
     const pushedUser: LlmMessage = { role: 'user', content: llmContent };
     turnConversation.push(pushedUser);
+    // Persist the user's message IMMEDIATELY — before condensation, before the
+    // first model call. Everything after this point can take minutes (condense
+    // summary, model round, tool loop); a shutdown in that window must not erase
+    // what the user just sent.
+    await this.persistConversation(turnSessionId, turnConversation);
     // A3: condense FIRST (LLM summary preserves context), then hard-truncate
     // only if still over budget. The old order dropped messages the summarizer
     // would have kept, then spent a paid call summarizing what was left.
@@ -4755,6 +4982,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.replaceSessionConversation(turnSessionId, turnConversation);
     turnConversation = this.trimConversation(turnConversation);
     this.replaceSessionConversation(turnSessionId, turnConversation);
+    // The trimmed/condensed transcript replaces the raw one saved above, so the
+    // durable copy always matches what the model is about to be sent.
+    await this.persistConversation(turnSessionId, turnConversation);
 
     // Build system prompt — mode-aware with tool filtering, environment context,
     // and memory injection.
@@ -4809,7 +5039,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Snapshot chat-display settings once: what reaches the webview (and
       // whether it carries tool details) is decided here, before the loop.
       const { chatShowThinking, chatShowToolCalls } = getSettings();
+      // Durability of a LONG turn: each completed iteration (reasoning step or
+      // tool round) checkpoints what the agent has done so far as a trailing
+      // draft, so a shutdown mid-turn restores the work instead of a bare user
+      // message. Throttled — and the turn's own final write supersedes it,
+      // because persistConversation keeps writes in issue order.
+      let turnDraft = '';
+      let lastCheckpointAt = 0;
+      let checkpointedDraft = '';
+      const checkpointTurn = (update: { text?: string; final?: boolean }): void => {
+        if (typeof update.text === 'string' && update.text.trim()) {
+          turnDraft = turnDraft ? `${turnDraft}\n\n${update.text.trim()}` : update.text.trim();
+          if (turnDraft.length > ChatViewProvider.MAX_TURN_DRAFT_CHARS) {
+            turnDraft = `…${turnDraft.slice(-ChatViewProvider.MAX_TURN_DRAFT_CHARS)}`;
+          }
+        }
+        // The final answer is persisted whole by the turn's own write.
+        if (update.final || !turnDraft || turnDraft === checkpointedDraft) return;
+        const now = Date.now();
+        if (now - lastCheckpointAt < ChatViewProvider.TURN_CHECKPOINT_MS) return;
+        lastCheckpointAt = now;
+        checkpointedDraft = turnDraft;
+        const draft: LlmMessage = {
+          role: 'assistant',
+          content: `${turnDraft}\n\n_(this turn was interrupted before it finished)_`,
+        };
+        void this.persistConversation(turnSessionId, [...turnConversation, draft]);
+      };
       const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, maxIterations, (update) => {
+        // Checkpoint even when the turn is not on screen — a session switch must
+        // not cost the running turn its progress.
+        checkpointTurn(update);
         // The turn was stopped/switched away — never post its progress into a
         // session that isn't its own (late chunks from an aborted loop).
         if (!isTurnVisible(turnSessionId, this.getActiveSessionId())) return;

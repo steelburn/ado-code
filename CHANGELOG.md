@@ -3,6 +3,10 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+### Fixed
+
+- **A chat message survives an abrupt shutdown (laptop power-off, sleep, host kill)** — sessions were stored only in `workspaceState` and only *after* the agentic round returned, so the message the user had just sent — plus any text already streamed back — lived purely in memory for the whole turn and was lost if the machine went down inside that window. The user message is now persisted the moment it is accepted, every agentic iteration checkpoints a throttled "interrupted" draft, per-session transcript writes are serialised so a late draft can no longer overwrite the turn’s final answer, and each session is additionally mirrored to `.ado-code/sessions/<scope>/` with a synchronous `write → fsync → rename`, so recovery no longer depends on the debounced Memento flush landing. On activation the mirror is preferred only when it holds more messages than `workspaceState`, and pending writes are flushed from `deactivate()`, on window blur, and on process exit.
+
 ## [0.7.5] - 2026-10-16
 
 ### Added

@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { ChatViewProvider, capTurnTrace, withStoredTraces } from '../../../webview/ChatViewProvider';
 import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from '../../../webview/chatEditorSerializer';
 import { AgentProgressPanel } from '../../../webview/AgentProgressPanel';
+import { SessionMirror } from '../../../webview/SessionMirror';
 import {
   isSessionAutoApproved,
   addSessionToolApproval,
@@ -1426,3 +1427,261 @@ suite('ChatViewProvider · selectProject', () => {
   });
 });
 
+
+suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
+  test('a lone trailing user message survives the pre-model persist', async () => {
+    // Regression: the turn used to live in memory only until its first model
+    // round returned, so shutting the laptop mid-turn lost the sent message.
+    // The turn-start persist writes it immediately — and pair-trimming must
+    // never drop an unanswered trailing user message.
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, makeServices(), context);
+    await (provider as any).ensureSession('hello there');
+    const id = (provider as any).getActiveSessionId();
+
+    await (provider as any).persistConversation(id, [{ role: 'user', content: 'hello there' }]);
+
+    const stored = (provider as any).getSessions().find((s: any) => s.id === id);
+    assert.deepStrictEqual(
+      stored.messages.map((m: any) => m.content),
+      ['hello there'],
+      'user message is durable before any model round',
+    );
+  });
+
+  test('transcript writes are serialised — a checkpoint cannot overwrite the final answer', async () => {
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, makeServices(), context);
+    await (provider as any).ensureSession('race');
+    const id = (provider as any).getActiveSessionId();
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const written: string[] = [];
+    (provider as any).saveSessions = async (sessions: any[]) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const session = sessions.find((s: any) => s.id === id);
+      written.push(session.messages[session.messages.length - 1].content);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      inFlight--;
+    };
+
+    const draft = (provider as any).persistConversation(id, [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'draft (turn interrupted)' },
+    ]);
+    const final = (provider as any).persistConversation(id, [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'the real answer' },
+    ]);
+    await Promise.all([draft, final]);
+
+    assert.strictEqual(maxInFlight, 1, 'no two transcript writes may overlap');
+    assert.deepStrictEqual(written, ['draft (turn interrupted)', 'the real answer'], 'issue order is kept');
+  });
+
+  test('restoreFromMirror adopts a mid-turn transcript the Memento lost', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-restore-'));
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      await (provider as any).ensureSession('lost turn');
+      const id = (provider as any).getActiveSessionId();
+      await (provider as any).persistConversation(id, [{ role: 'user', content: 'lost turn' }]);
+
+      // The mirror holds the checkpoint of a turn that was still running when the
+      // machine went down; the Memento copy only has the user message.
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      assert.ok(mirrorDir, 'mirror dir resolves when a folder is open');
+      const base = (provider as any).getSessions().find((s: any) => s.id === id);
+      const ahead = {
+        ...base,
+        messages: [...base.messages, { role: 'assistant', content: 'working on it…' }],
+      };
+      new SessionMirror(() => mirrorDir).write([ahead], id);
+
+      await (provider as any).restoreFromMirror();
+
+      const restored = (provider as any).getSessions().find((s: any) => s.id === id);
+      assert.deepStrictEqual(
+        restored.messages.map((m: any) => m.content),
+        ['lost turn', 'working on it…'],
+        'the checkpointed transcript is recovered',
+      );
+      assert.strictEqual((provider as any).getActiveSessionId(), id, 'active session recovered too');
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test('flushPendingWrites mirrors the in-flight turn and drains queued writes', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-flush-'));
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      await (provider as any).ensureSession('shutdown mid-turn');
+      const id = (provider as any).getActiveSessionId();
+
+      // A turn is in progress: its messages sit on the live buffer and have not
+      // reached the Memento transcript yet — exactly what a shutdown used to lose.
+      const live = (provider as any).sessionConversationFor(id);
+      live.push({ role: 'user', content: 'shutdown mid-turn' }, { role: 'assistant', content: 'streaming…' });
+
+      const order: string[] = [];
+      let release!: () => void;
+      const queued = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      (provider as any).persistQueue.set(
+        id,
+        queued.then(() => {
+          order.push('queued write drained');
+        }),
+      );
+
+      const flush = (provider as any).flushPendingWrites().then(() => {
+        order.push('flush resolved');
+      });
+
+      // The durable mirror is written SYNCHRONOUSLY — it is already on disk while
+      // the queued Memento write is still in flight.
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      const onDisk = new SessionMirror(() => mirrorDir).read();
+      const mirrored = onDisk?.sessions.find((s: any) => s.id === id);
+      assert.deepStrictEqual(
+        mirrored?.messages.map((m: any) => m.content),
+        ['shutdown mid-turn', 'streaming…'],
+        'the live transcript is mirrored before the flush awaits anything',
+      );
+
+      release();
+      await flush;
+      assert.deepStrictEqual(order, ['queued write drained', 'flush resolved'], 'flush awaits queued writes');
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test('registerSaveStateFlush flushes on window blur and ignores focus gain', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-blur-'));
+    const workspace = vscode.workspace as any;
+    const win = vscode.window as any;
+    const previousFolders = workspace.workspaceFolders;
+    const previousFocusHook = win.onDidChangeWindowState;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    let listener: ((e: any) => unknown) | undefined;
+    win.onDidChangeWindowState = (l: (e: any) => unknown) => {
+      listener = l;
+      return new vscode.Disposable(() => { /* noop */ });
+    };
+    try {
+      const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+      await (provider as any).ensureSession('lid close');
+      const id = (provider as any).getActiveSessionId();
+      (provider as any).sessionConversationFor(id).push({ role: 'user', content: 'lid close' });
+
+      (provider as any).registerSaveStateFlush();
+      assert.ok(listener, 'the window-state hook is registered');
+
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      fs.rmSync(mirrorDir, { recursive: true, force: true });
+      listener!({ focused: true });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.strictEqual(new SessionMirror(() => mirrorDir).read(), undefined, 'regaining focus writes nothing');
+
+      listener!({ focused: false });
+      const mirrored = new SessionMirror(() => mirrorDir).read()?.sessions.find((s: any) => s.id === id);
+      assert.deepStrictEqual(
+        mirrored?.messages.map((m: any) => m.content),
+        ['lid close'],
+        'losing focus (what a closing lid does first) mirrors the turn',
+      );
+    } finally {
+      if (previousFocusHook === undefined) delete win.onDidChangeWindowState;
+      else win.onDidChangeWindowState = previousFocusHook;
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test('registerSaveStateFlush always registers the process-exit hook', () => {
+    const win = vscode.window as any;
+    const previousFocusHook = win.onDidChangeWindowState;
+    win.onDidChangeWindowState = undefined;
+    const before = process.listenerCount('exit');
+    const registered: Array<{ dispose(): void }> = [];
+    try {
+      const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+      registered.push(...(provider as any).registerSaveStateFlush());
+      assert.strictEqual(registered.length, 1, 'process.on("exit") is stable, so it always registers');
+      assert.strictEqual(process.listenerCount('exit'), before + 1);
+    } finally {
+      registered.forEach(d => d.dispose());
+      win.onDidChangeWindowState = previousFocusHook;
+    }
+    assert.strictEqual(process.listenerCount('exit'), before, 'disposal unregisters the process listener');
+  });
+
+  test('the process-exit hook mirrors an in-flight turn synchronously', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-exit-'));
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    const others = process.listeners('exit');
+    const registered: Array<{ dispose(): void }> = [];
+    try {
+      const provider = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+      await (provider as any).ensureSession('lid shut for good');
+      const id = (provider as any).getActiveSessionId();
+      // Typed and streaming: still memory-only, exactly the state a power-off hits.
+      (provider as any).sessionConversationFor(id).push(
+        { role: 'user', content: 'lid shut for good' },
+        { role: 'assistant', content: 'half an answer' },
+      );
+
+      // Isolate our listener so the synthetic exit cannot drive another suite.
+      process.removeAllListeners('exit');
+      registered.push(...(provider as any).registerSaveStateFlush());
+      process.emit('exit', 0);
+
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      const mirrored = new SessionMirror(() => mirrorDir).read()?.sessions.find((s: any) => s.id === id);
+      assert.deepStrictEqual(
+        mirrored?.messages.map((m: any) => m.content),
+        ['lid shut for good', 'half an answer'],
+        'the exit hook mirrors the transcript while the host is being torn down',
+      );
+    } finally {
+      registered.forEach(d => d.dispose());
+      process.removeAllListeners('exit');
+      others.forEach(l => process.on('exit', l));
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+});

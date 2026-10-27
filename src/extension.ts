@@ -104,6 +104,10 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Session state also has to survive a teardown that never reaches deactivate()
+  // (crash, killed window, laptop powering off): register the pre-shutdown hooks.
+  context.subscriptions.push(...chatProvider.registerSaveStateFlush());
+
   // Restore the editor-area chat tab ("ADO Code Chat") after a window reload or
   // IDE restart. VS Code only revives webview editor tabs whose view type has a
   // registered serializer, so registering here is what keeps the tab alive.
@@ -1835,7 +1839,34 @@ Generate ONLY the commit message, nothing else.`;
   logger.info(`startup(activation): services ${servicesMs.toFixed(1)}ms, ready in ${(performance.now() - activationT0).toFixed(1)}ms`);
 }
 
-export function deactivate() {}
+/**
+ * Upper bound on how long the deactivate flush may hold up shutdown. The durable
+ * mirror write inside `flushPendingWrites()` is synchronous and already on disk by
+ * the time the promise is returned, so this only caps the queued Memento writes.
+ */
+const DEACTIVATE_FLUSH_TIMEOUT_MS = 1500;
+
+/**
+ * Flush in-memory session state before the extension host goes away.
+ *
+ * A turn that is still streaming lives only in memory — its messages reach the
+ * `workspaceState` transcript well after the model round returns — so without this
+ * a shutdown (lid closed, machine killed) mid-turn loses the message the user just
+ * sent. `flushPendingWrites()` mirrors the live transcripts synchronously and then
+ * drains the queued writes; the timeout keeps a stuck write from delaying exit.
+ */
+export function deactivate(): Thenable<void> | undefined {
+  const flush = chatProvider?.flushPendingWrites();
+  if (!flush) return undefined;
+  return Promise.race([
+    flush.catch((err: unknown) => {
+      logger.warn(`Session flush on deactivate failed: ${err instanceof Error ? err.message : String(err)}`);
+    }),
+    new Promise<void>(resolve => {
+      setTimeout(resolve, DEACTIVATE_FLUSH_TIMEOUT_MS).unref();
+    }),
+  ]);
+}
 
 /**
  * Open the agent's summary in a formatted webview panel in the editor area
