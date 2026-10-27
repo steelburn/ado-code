@@ -14,64 +14,57 @@ AI coding assistant with Azure DevOps integration
 - `dist/` — project directory
 - `docs/` — documentation
 - `out/` — project directory
-- `resources/` — extension resources
-- `scripts/` — build/version/publish helpers and vscode-stub.js
-- `src/` — extension source; src/webview-ui/ — separate webview app
-- `webview-ui-dist/` — generated outputs; do not edit directly
+- `resources/` — extension icons/assets
+- `scripts/` — build, version, publish helpers; vscode-stub.js
+- `src/` — TypeScript VS Code extension source
+- `webview-ui-dist/` — referenced by AGENTS; webview-ui-dist/ is generated output and must not be edited directly
 
 ## Repository Understanding
 > Distilled from the ADO Code repository-understanding cache (`.ado-code/understanding/`).
 > Refreshed automatically as the repository changes and via "ADO Code: Refresh Repository Understanding".
 > This section and the other generated sections above are rewritten when ADO Code syncs AGENTS.md — edits anywhere else are preserved.
 
-# ADO Code — Repository Map
+# ADO Code — Repository Quick Map
 
-VS Code extension: AI coding assistant with Azure DevOps work-item integration. Root `d:\Development\vscode\ado-code`, branch `main`, HEAD `4932aa2`, remote `steelburn/ado-code`.
+Docs live in `README.md`, `AGENTS.md`, and `docs/`. `AGENTS.md` contains build/test/structure plus generated repository-understanding sections that ADO Code rewrites on sync; edits outside those managed sections are preserved.
 
-### Layout & Docs
-
-```
-.github/          GitHub config
-docs/             documentation
-resources/        extension resources (icons/assets)
-scripts/          build, version, publish helpers + vscode-stub.js
-src/              TypeScript extension source
-src/webview-ui/   separate webview app (own npm project)
-dist/             generated bundle entry (dist/extension.js)
-out/              generated tsc output; tests run from out/test/runTest.js
-webview-ui-dist/  generated webview output
-README.md         features + usage
-AGENTS.md         agent/build/structure guide (managed sections)
-CHANGELOG.md      release history
-```
-
-Root also holds `package.json`, `package-lock.json`, `tsconfig.json`, `.eslintrc.json`, `.env`, `.vscodeignore`, `scripts/`, and committed `.vsix` artifacts (0.6.7–0.7.3).
+### Layout
+- `src/` — TypeScript VS Code extension source.
+- `src/webview-ui/` — separate webview app; has its own build.
+- `scripts/` — build, version, publish helpers; `vscode-stub.js`.
+- `resources/` — extension icons/assets.
+- `docs/` — documentation.
+- `.github/` — GitHub config.
+- `out/`, `dist/`, `webview-ui-dist/` — referenced by AGENTS; `webview-ui-dist/` is generated output and must not be edited directly.
+- Root configs/artifacts: `package.json`, `tsconfig.json`, `.eslintrc.json`, `.env`, `.vscodeignore`, `.gitignore`, several `.vsix` files.
 
 ### Read First
-
-1. `package.json` — extension manifest, scripts, version `0.7.3`.
-2. `AGENTS.md` — build/structure contract and the generated "Repository Understanding" section.
-3. `README.md` — feature surface (work-item tree with My/All/Unassigned toggle and Epic → Feature → User Story → Task hierarchy; AI chat assistant with OpenAI-compatible and Anthropic-compatible LLMs).
-4. `scripts/build.js` and `scripts/check-version.js` — bundling and version guards.
-5. `src/` root and `src/webview-ui/` — extension host code vs. webview UI.
+`README.md`, `AGENTS.md`, `package.json`, `tsconfig.json`, `.eslintrc.json`, `scripts/build.js`, `scripts/check-version.js`, `scripts/vscode-stub.js`, `src/` extension source, `src/webview-ui/package.json`.
 
 ### Architecture
+VS Code extension: AI coding assistant with Azure DevOps work-item integration. README features include one tree view for work items with My Work Items / All Work Items / Unassigned modes, rendered as Epic → Feature → User Story → Task, plus an AI chat assistant. Main extension is TypeScript in `src/`, compiled with `tsc -p ./`; tests run from `out/`. Bundling is via `scripts/build.js`. The webview UI is a separate app under `src/webview-ui/`, built separately.
 
-Two halves built separately:
+### Build / Test / Lint
+- Compile: `npm run compile`
+- Full build: `npm run build:all` = compile + bundle + webview build
+- Bundle: `npm run bundle`; watch: `npm run watch:bundle`
+- TypeScript watch: `npm run watch`
+- Webview build: `npm run build:webview`; watch: `npm run watch:webview`
+- Test: `npm test` → `node ./out/test/runTest.js`
+- Unit test: `npm run test:unit` → Mocha TDD + `scripts/vscode-stub.js`
+- Lint: `npm run lint` → `eslint src --ext ts`
+- Version check: `npm run check:version`
+- Pre-publish: `npm run vscode:prepublish` = check version + compile + bundle
+- Publish Open VSX: `npm run publish:open-vsx`
 
-- **Extension host** — `src/`, compiled by `tsc` into `out/`, then bundled by `scripts/build.js` (esbuild) into `dist/extension.js`, which `vscode:prepublish` treats as the runtime entry.
-- **Webview UI** — `src/webview-ui/` is an independent npm project with its own `build`/`watch` scripts, emitting to `webview-ui-dist/` (referenced by AGENTS.md as generated output).
-
-Supporting layers: `resources/` for static assets, `scripts/` for build/version/publish automation plus `vscode-stub.js` (used by unit tests to fake the VS Code API), `docs/` for prose documentation.
-
-### Conventions
-
-- TypeScript throughout, strict config in `tsconfig.json`; linting via ESLint + `@typescript-eslint`.
-- Source lives under `src/`; never hand-edit `dist/`, `out/`, or `webview-ui-dist/`.
-- `AGENTS.md` uses managed markers (`<!-- ado-code:managed -->`). Generated sections are rewritten on ADO Code sync — edits outside those sections are preserved.
-- Husky + lint-staged wired via the `prepare` script.
-- Version consistency is enforced by `scripts/check-version.js`, so version bumps must be coordinated (manifest/CHANGELOG).
-- Error-handling patterns are not documented in the available facts; inspect `src/` befor
+### Conventions & Gotchas
+- Structure split: extension code in `src/`; webview app in `src/webview-ui/`; helpers in `scripts/`.
+- Generated outputs (`webview-ui-dist/`; `out/`, `dist/` per AGENTS) should not be hand-edited.
+- `AGENTS.md` managed sections are auto-rewritten on sync.
+- `npm test` uses VS Code test Electron; unit tests use Mocha TDD and a VS Code stub.
+- Dev tooling includes TypeScript, ESLint, esbuild, Mocha, `@vscode/test-electron`, and zod; Husky `prepare` and lint-staged are present.
+- No explicit error-handling convention is visible in the supplied facts; follow existing patterns in `src/`.
+- `package.json` version is `0.7.
 <!-- ado-code:managed-end -->
 
 ## Conventions
