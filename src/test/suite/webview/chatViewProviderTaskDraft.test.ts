@@ -9,6 +9,22 @@ function tick(ms = 10): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Wait for a CONDITION rather than sleeping a fixed delay. A draft flow writes
+ * its file, opens the editor and only then asks for confirmation, so 10ms is
+ * not an upper bound on a loaded machine (this suite failed the pre-commit gate
+ * with "0 !== 1" because the first card had not appeared yet).
+ */
+async function waitFor(predicate: () => boolean, what: string, ms = 10000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error('timed out waiting for ' + what);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function makeSessionContext(): any {
   const data = new Map<string, any>();
   return {
@@ -86,7 +102,8 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     const second = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-2' });
     const third = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-3' });
 
-    await tick();
+    await waitFor(() => cards.length >= 1, 'the first draft card');
+    await tick(50); // give any wrongly-concurrent flow a chance to surface
     assert.strictEqual(cards.length, 1, 'only the first draft card may be shown');
     assert.strictEqual(resolvers.length, 1);
 
@@ -94,12 +111,12 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     // NOT have been pre-emptively cancelled by the first one's supersede.
     resolvers[0]!(null);
     assert.strictEqual(await first, null);
-    await tick();
+    await waitFor(() => cards.length >= 2, 'the second draft card');
     assert.strictEqual(cards.length, 2, 'second card appears only after the first settled');
 
     resolvers[1]!(null);
     assert.strictEqual(await second, null);
-    await tick();
+    await waitFor(() => cards.length >= 3, 'the third draft card');
     assert.strictEqual(cards.length, 3, 'third card appears last');
 
     resolvers[2]!(null);

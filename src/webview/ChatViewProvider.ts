@@ -3114,6 +3114,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** True while an LLM turn or a delegated agent run is in flight. Anything
+   *  that is not turn lifecycle (work-item refresh, ADO reads) must consult
+   *  this before posting on the chat channel's `loading` flag — those posts
+   *  used to clear the turn spinner while the loop kept calling tools. */
+  private isBusyProcessing(): boolean {
+    return !!this.runningTurnSession || this.workingDepth > 0;
+  }
+
   async refreshWorkItems(): Promise<void> {
     // C10 fix: resolve the ACTIVE org from workspaceState (getActiveOrg), not raw settings.
     const active = getActiveOrg(this._context, getSettings());
@@ -3126,7 +3134,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
       return;
     }
-    this.postMessage({ type: 'loading', loading: true });
+    // Paired with the guard at the end of this method (see below).
+    if (!this.isBusyProcessing()) this.postMessage({ type: 'loading', loading: true });
     // The signed-in user's display name (lazy, cached) — lets the sidebar
     // tree color-code items as mine / someone else's / unassigned.
     const currentUserPromise = this.getCurrentUserDisplayName();
@@ -3161,7 +3170,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'error', message: `Failed to fetch ${workItemsModeLabel(this.workItemsMode)}: ${err instanceof Error ? err.message : err}` });
     }
 
-    this.postMessage({ type: 'loading', loading: false });
+    // A work-item refresh is not part of a chat turn: never touch the turn
+    // spinner while a turn or a delegated run is still in flight.
+    if (!this.isBusyProcessing()) this.postMessage({ type: 'loading', loading: false });
   }
 
   /** Display name of the signed-in user, fetched once and cached. */
