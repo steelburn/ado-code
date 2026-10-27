@@ -12,6 +12,7 @@ import { countTokens } from './context/tokenCounter';
 import { renderTodoChecklist } from '../services/todo/TodoStore';
 import { logger } from '../services/logger';
 import { readMemoryBudget, validateMemoryEntry } from '../memory/memoryBudget';
+import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
 import type { AdoWorkItem, AdoComment } from '../ado/types';
 
 // ── Tool-result size guard ────────────────────────────────────────────────
@@ -1309,7 +1310,7 @@ export function createToolExecutor(
             input: String(args.input ?? ''),
           });
           return result.success
-            ? result.output
+            ? capSkillContent(String(result.output ?? ''), { maxChars: readSkillBudget() }).content
             : JSON.stringify({ error: result.error ?? 'skill execution failed' });
         }
         case 'read_workspace_memory': {

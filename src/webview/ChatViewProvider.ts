@@ -21,6 +21,7 @@ import { readMemoryBudget, remainingMemoryBudget, renderMemoryBlock } from '../m
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
+import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
@@ -2592,7 +2593,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Inject the skill's prompt as a user message into the chat
             const skill = this.services.skills.getSkill(message.request.skillId);
             if (skill && skill.enabled) {
-              const prompt = skill.prompt || skill.knowledge || '';
+              const rawPrompt = skill.prompt || skill.knowledge || '';
+              const skillCap = capSkillContent(rawPrompt, { maxChars: readSkillBudget(), skillName: skill.name });
+              const prompt = skillCap.content;
               if (prompt) {
                 // Build the content with skill context
                 const skillContent = `[Skill: ${skill.name}]\n\n${prompt}`;

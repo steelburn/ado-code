@@ -230,6 +230,7 @@ export const CATEGORIES: ConfigCategory[] = [
         icon: '🧩',
         settings: [
           { key: 'skillRegistryUrls', label: 'Skill registry URLs', type: 'array', description: 'Additional skill registry URLs to fetch skills from (TSV rows: slug, url, description)', hint: 'One registry URL per line, or paste several separated by commas. The built-in UI Skills registry is always included.' },
+          { key: 'skills.maxInjectedChars', label: 'Max injected skill chars', type: 'number', description: 'How much of a SKILL.md may be injected into the prompt', hint: 'Skills over this ceiling inject their head plus an outline of the remaining sections and the sub-files they reference, so the model can load only what it needs. Default 4000.', min: 200 },
         ],
       },
       {

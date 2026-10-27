@@ -58,6 +58,7 @@ export const CONFIG_SETTING_KEYS = [
   'memory.maxEntries',
   'memory.maxCharsPerEntry',
   'memory.maxTotalChars',
+  'skills.maxInjectedChars',
   'consent.harmlessAutoApprove',
   'yolo.pushApproval',
   'consent.autoApproveTools',

@@ -1243,6 +1243,12 @@
           "minimum": 1,
           "description": "How many memory entries may be rendered in the injected digest. Leftover entries are reported as 'plus N more entries — call list_workspace_memory', and that tool still returns everything untruncated."
         },
+        "adoCode.skills.maxInjectedChars": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 200,
+          "description": "How much of a SKILL.md may be injected into the prompt. Over this ceiling a skill injects its head plus an outline of the remaining sections and the sub-files it references, instead of the whole file."
+        },
         "adoCode.memory.maxCharsPerEntry": {
           "type": "number",
           "default": 400,

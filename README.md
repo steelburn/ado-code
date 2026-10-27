@@ -151,6 +151,7 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.agents.requireWorkItem` | Require an active ADO work item before delegating — `true` restores the legacy "select a work item first" guard, `false` (default) allows a prompt-only run with no work item and no project selected |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 | `adoCode.skillRegistryUrls` | Extra skill registry URLs to browse in the Skill Catalog (TSV format: `slug<TAB>url<TAB>description`); the built-in UI Skills registry is always included |
+| `adoCode.skills.maxInjectedChars` | How much of one SKILL.md may be injected into the prompt (default `4000`); over the cap the skill injects its head plus an outline of the remaining sections and the sub-files it references |
 
 ## To-do View
 
