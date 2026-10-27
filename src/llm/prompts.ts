@@ -114,6 +114,55 @@ export function extractDeliveryReport(output: string): string {
  * cache all describe the item identically. Comments are kept in the order
  * given — ADO returns them NEWEST-FIRST and callers must NOT reverse.
  */
+/**
+ * Budget for the discussion thread. ADO threads grow without bound and the
+ * same rendering is used for the prompt AND the understanding cache, so a
+ * 200-comment item used to cost tens of thousands of characters on every
+ * turn. Retrieval (get_work_item) is never truncated — only injection.
+ */
+export interface ThreadBudget {
+  /** How many comments are rendered, newest first. */
+  maxComments: number;
+  /** How many characters each rendered comment may cost. */
+  maxCharsPerComment: number;
+}
+
+export const DEFAULT_THREAD_BUDGET: ThreadBudget = { maxComments: 5, maxCharsPerComment: 600 };
+
+/**
+ * Render the newest comments within `budget`, collapsing whitespace and
+ * appending a single pointer line when anything was dropped or shortened.
+ * Returns [] when there is no thread.
+ */
+export function formatDiscussionThread(
+  comments: ReadonlyArray<{ author?: string; text?: string }> | undefined,
+  options: { workItemId?: number; budget?: ThreadBudget } = {},
+): string[] {
+  if (!comments || comments.length === 0) return [];
+  const budget = options.budget ?? DEFAULT_THREAD_BUDGET;
+  const maxComments = Math.max(0, budget.maxComments);
+  const shown = comments.slice(0, maxComments);
+  const lines = ['Discussion thread (latest first):'];
+  let shortened = 0;
+  for (const c of shown) {
+    const raw = (c.text ?? '').replace(/\s+/g, ' ').trim();
+    const text = raw.length > budget.maxCharsPerComment
+      ? `${raw.slice(0, Math.max(0, budget.maxCharsPerComment))}…`
+      : raw;
+    if (text !== raw) shortened++;
+    lines.push(`- ${c.author || 'Unknown'}: ${text}`);
+  }
+  const omitted = comments.length - shown.length;
+  if (omitted > 0 || shortened > 0) {
+    const parts: string[] = [];
+    if (omitted > 0) parts.push(`${omitted} earlier comment${omitted === 1 ? '' : 's'} omitted`);
+    if (shortened > 0) parts.push(`${shortened} comment${shortened === 1 ? '' : 's'} shortened`);
+    const target = options.workItemId !== undefined ? `get_work_item(${options.workItemId})` : 'get_work_item';
+    lines.push(`_…${parts.join(', ')} — call ${target} for the full thread._`);
+  }
+  return lines;
+}
+
 export function formatWorkItemContext(workItem: WorkItemContext): string {
   const lines = [
     `Current work item: #${workItem.id} - ${workItem.title}`,
@@ -122,12 +171,8 @@ export function formatWorkItemContext(workItem: WorkItemContext): string {
     `Acceptance Criteria: ${workItem.acceptanceCriteria || 'N/A'}`,
     `Tags: ${workItem.tags || 'N/A'}`,
   ];
-  if (workItem.comments && workItem.comments.length > 0) {
-    lines.push('', 'Discussion thread (latest first):');
-    for (const c of workItem.comments) {
-      lines.push(`- ${c.author}: ${c.text}`);
-    }
-  }
+  const thread = formatDiscussionThread(workItem.comments, { workItemId: workItem.id });
+  if (thread.length > 0) lines.push('', ...thread);
   return lines.join('\n');
 }
 
@@ -157,12 +202,11 @@ export function buildAgentPrompt(
   // Include the discussion thread — especially clarification Q&A the developer
   // collected before handoff (Task 28). This is the whole point of the
   // review-and-clarify step: the agent must build against the clarified spec.
-  if (workItem.comments && workItem.comments.length > 0) {
-    // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST — do NOT reverse.
-    lines.push(``, `Discussion thread (clarifications, latest first):`);
-    for (const c of workItem.comments) {
-      lines.push(`- ${c.author}: ${c.text}`);
-    }
+  // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST — do NOT reverse.
+  const clarifications = formatDiscussionThread(workItem.comments, { workItemId: workItem.id });
+  if (clarifications.length > 0) {
+    clarifications[0] = 'Discussion thread (clarifications, latest first):';
+    lines.push(``, ...clarifications);
   }
 
   lines.push(

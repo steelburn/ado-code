@@ -14,7 +14,7 @@ import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
-import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion } from '../llm/prompts';
+import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion, formatDiscussionThread } from '../llm/prompts';
 import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
 import { readMemoryBudget, remainingMemoryBudget, renderMemoryBlock } from '../memory/memoryBudget';
@@ -5101,9 +5101,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             `Description: ${this.activeWorkItem.description || 'N/A'}`,
             `Acceptance Criteria: ${this.activeWorkItem.acceptanceCriteria || 'N/A'}`,
             `Tags: ${this.activeWorkItem.tags || 'N/A'}`,
-            ...(this.activeWorkItem.comments?.length
-              ? [`Discussion thread (latest first):`, ...this.activeWorkItem.comments.map(c => `- ${c.author}: ${c.text}`)]
-              : []),
+            ...formatDiscussionThread(this.activeWorkItem.comments, { workItemId: this.activeWorkItem.id }),
           ].join('\n')
         : undefined,
     });
