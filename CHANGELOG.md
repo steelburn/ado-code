@@ -2,6 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
+- Closed [ADO-27353](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27353): AC-P0-02 Truncate work-item discussion thread in prompt and cache (2026-10-28) — `fix/tag-permission-fallback @ b891373`
 
 ### Added
 
