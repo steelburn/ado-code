@@ -59,6 +59,8 @@
     "onCommand:adoCode.setMode",
     "onCommand:adoCode.listCheckpoints",
     "onCommand:adoCode.showTokenUsage",
+    "onCommand:adoCode.compactArtifacts",
+    "onCommand:adoCode.showContextCost",
     "onCommand:adoCode.mcpDisconnect",
     "onCommand:adoCode.mcpReconnect",
     "onCommand:adoCode.mcpViewDetails",
@@ -370,6 +372,16 @@
       {
         "command": "adoCode.showTokenUsage",
         "title": "Show Token Usage",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.compactArtifacts",
+        "title": "Compact Artifacts",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showContextCost",
+        "title": "Show Context Cost",
         "category": "ADO Code"
       },
       {
@@ -1143,6 +1155,23 @@
           "type": "boolean",
           "default": true,
           "description": "Ensure `.ado-code` (workspace memory, checkpoints, agent runs) is listed in `.gitignore` and `.dockerignore`; offers to add it when missing. Declining the offer is remembered per workspace (re-enable later by removing the entry from the ignore files and reloading)."
+        },
+        "adoCode.artifacts.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically prune generated artifacts in `.ado-code` (work-item caches, delegated run output, leftover drafts) once a day on activation. Turning this off stops all automatic deletion; the Compact Artifacts command still works on demand."
+        },
+        "adoCode.artifacts.retentionDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "markdownDescription": "Maximum age in days for prunable artifacts. The newest artifact of every kind is always kept, whatever this says."
+        },
+        "adoCode.artifacts.maxFilesPerKind": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum generated files to keep per artifact kind (work-item caches, run output, drafts). Older files beyond this count are removed by the prune."
         },
         "adoCode.sessions.maxPerProject": {
           "type": "number",

@@ -24,6 +24,11 @@ import { gitErrorMessage } from './git/gitError';
 import { AgentRunner } from './agents/AgentRunner';
 import { AgentRun } from './agents/types';
 import { logger } from './services/logger';
+import {
+  compactArtifactsCommand,
+  scheduleArtifactPrune,
+  showContextCostCommand,
+} from './services/artifacts/ArtifactMaintenance';
 
 let chatProvider: ChatViewProvider;
 let treeProvider: WorkItemsTreeProvider;
@@ -178,6 +183,15 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  // Artifact housekeeping: a throttled prune on activation plus the two
+  // commands that expose (Show Context Cost) and reclaim (Compact Artifacts)
+  // what `.ado-code` accumulates.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.compactArtifacts', () => compactArtifactsCommand()),
+    vscode.commands.registerCommand('adoCode.showContextCost', () => showContextCostCommand()),
+  );
+  scheduleArtifactPrune();
 
   // To-do Panel: the AI-generated task ledger for each chat session. Items
   // arrive from the `update_todo_list` tool and are ticked off as the harness
