@@ -365,8 +365,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private taskDraftEditor?: vscode.TextEditor;
   /** Serializes the single-slot draft-editor + confirmation flow (see showTaskDraftInEditor). */
   private readonly taskDraftQueue = new SerialQueue();
-  /** Monotonic counter that keeps concurrent draft filenames unique. */
-  private taskDraftSeq = 0;
 
   // ── Session persistence (Task 2) ──────────────────────────────────
   /** Workspace-folder key — the stable part of session scoping. */
@@ -880,7 +878,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const adoDir = vscode.Uri.joinPath(workspaceRoot, '.ado-code');
     try { await vscode.workspace.fs.createDirectory(adoDir); } catch { /* exists */ }
 
-    const filePath = vscode.Uri.joinPath(adoDir, `proposed-tasks-${parentId}.md`);
+    // ADO-27357: one fixed staging file, overwritten each time, deleted once
+    // the draft is created or cancelled — never a per-call unique name.
+    const filePath = this.proposedTasksDraftUri();
+    if (!filePath) return; // no workspace folder — nothing to stage
     const content = this.formatTasksForEditor(parentId, parentTitle, tasks);
 
     // Write the file
@@ -923,9 +924,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Re-focus the editor so the user can continue editing
           this.proposedTasksEditor?.show();
         }
-        // On cancel: do nothing, editor stays open for manual cleanup
+        // On cancel: close the tab and drop the staging file — nothing to keep.
+        if (decision === 'cancel') {
+          await this.deleteStagingFile(this.proposedTasksDraftUri());
+          await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
       }
     });
+  }
+
+  /** Fixed path of the proposed-tasks staging file (one at a time). */
+  private proposedTasksDraftUri(): vscode.Uri | undefined {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    return root ? vscode.Uri.joinPath(root, '.ado-code', 'proposed-tasks.md') : undefined;
+  }
+
+  /** Fixed path of the task-draft staging file (one at a time). */
+  private taskDraftUri(): vscode.Uri | undefined {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    return root ? vscode.Uri.joinPath(root, '.ado-code', 'task-draft.md') : undefined;
+  }
+
+  /**
+   * Delete an ephemeral staging artifact. Ephemeral state belongs in memory:
+   * the only reason these files exist is that the user may edit them, so they
+   * are removed as soon as their one purpose is served.
+   */
+  private async deleteStagingFile(uri: vscode.Uri | undefined): Promise<void> {
+    if (!uri) return;
+    try {
+      await vscode.workspace.fs.delete(uri, { useTrash: false });
+    } catch {
+      /* already gone — nothing to clean up */
+    }
   }
 
   /**
@@ -1071,6 +1102,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message: `Failed to create tasks: ${message}` });
+    } finally {
+      // ADO-27357: the staging file is ephemeral — created, cancelled and
+      // failed drafts all leave nothing behind on disk.
+      await this.deleteStagingFile(this.proposedTasksDraftUri());
     }
   }
 
@@ -1241,7 +1276,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // The monotonic suffix keeps two drafts created in the same millisecond from
     // colliding on one path — a collision made the second openTextDocument race
     // and fail with "Could NOT open editor".
-    const filePath = vscode.Uri.joinPath(adoDir, `task-draft-${Date.now()}-${++this.taskDraftSeq}.md`);
+    // ADO-27357: fixed staging file (single slot, serialized by the queue),
+    // deleted on create and on cancel instead of accumulating per call.
+    const filePath = this.taskDraftUri();
+    if (!filePath) return null; // no workspace folder — nothing to stage
     const content = this.formatTaskDraft(args);
 
     // Write the file

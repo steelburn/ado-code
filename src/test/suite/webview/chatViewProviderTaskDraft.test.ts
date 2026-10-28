@@ -123,18 +123,12 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     assert.strictEqual(await third, null);
   });
 
-  test('each draft gets a distinct file even within the same millisecond', async () => {
+  test('drafts share one fixed staging file and it is removed once the flow settles', async () => {
     const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     provider._view = { webview: { postMessage: () => { /* noop */ } } };
 
-    const paths: string[] = [];
-    provider.requestConfirmation = (title: string) => {
-      return new Promise((resolve) => {
-        // capture the draft path this call wrote (recorded via openTextDocument)
-        paths.push(title);
-        resolve(null);
-      });
-    };
+    // Every card is cancelled, so each flow must clean up after itself.
+    provider.requestConfirmation = async () => null;
     const opened: string[] = [];
     (vscode.workspace as any).openTextDocument = async (uri: any) => {
       opened.push(uri.fsPath ?? String(uri));
@@ -147,7 +141,12 @@ suite('ChatViewProvider — task-draft concurrency', () => {
       provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'C' }),
     ]);
 
-    assert.strictEqual(opened.length, 3);
-    assert.strictEqual(new Set(opened).size, 3, 'draft filenames must be unique');
+    assert.strictEqual(opened.length, 3, 'each flow still stages a draft');
+    assert.strictEqual(new Set(opened).size, 1, 'drafts share ONE fixed staging slot, not per-call files');
+    assert.ok(
+      opened[0].replace(/\\/g, '/').endsWith('.ado-code/task-draft.md'),
+      `draft must live in the ephemeral staging slot, got ${opened[0]}`,
+    );
+    assert.ok(!nodeFs.existsSync(opened[0]), 'the draft file must not survive the flow');
   });
 });
