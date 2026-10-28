@@ -3,6 +3,8 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-28
+
 ### Added
 
 - **Remote Agent Oversight** — a phone-sized console that mirrors agent runs off this
@@ -20,6 +22,12 @@ All notable changes to ADO Code will be documented in this file.
 - Six `machine`-scoped settings (`adoCode.remote.enabled|bind|port|tunnel|tunnelCommand|`
   `tunnelUrlPattern`) plus `extensionKind: workspace`, since the console is a service on the
   machine that runs the agents. Details: [docs/remote.md](docs/remote.md).
+
+### Notes
+
+- Remote access is **off by default** and binds to loopback only. The `adoCode.remote.*`
+  settings are `machine`-scoped, so enabling it on one machine does not follow a synced
+  settings profile onto another. No breaking changes in this release.
 
 ## [0.8.0] - 2026-10-28
 
