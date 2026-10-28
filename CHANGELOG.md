@@ -3,8 +3,43 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-28
+
 ### Added
 
+- **Documentation projects for business analysts, technical writers and testers** — the new-project
+  wizard gains a `Documentation` category with three role templates (`doc-ba`, `doc-writer`,
+  `doc-tester`). A created project is a working definition of done rather than a set of empty
+  stubs: every document ships real section headings, one filled example row per table, and YAML
+  front matter (`doc-id`, `version`, `status`, `owner`, `classification`, `lang`), so a BA's
+  `REQ-###`, a tester's `TC-###` and a writer's SRS section all join on the same ids. Bahasa
+  Malaysia and bilingual projects get BM front-matter keys and BM titles from the same renderer
+  (`src/shared/documentation/docTemplates.ts`).
+- **KRiSA (government) governance mode** — `governance: KRiSA (Government)` turns on a 26-artefact
+  catalogue (`src/shared/documentation/krisa.ts`), a per-role compliance matrix,
+  `TERHAD`/`RESTRICTED` classification, and forces Word export, spreadsheet registers and security
+  testing. Every coercion is reported as a wizard warning rather than applied silently. **Nothing
+  claims compliance**: each catalogue row carries `guidelineRef: 'TODO — confirm clause'` and a
+  test fails if that marker disappears, until the real KRiSA beta-2026 clause names are confirmed.
+- **Export to Word, Excel and PNG from the chat panel** — an export bar appears for documentation
+  projects with Word / Registers / Diagram actions. Markdown to DOCX runs on `docx` (lazy chunk,
+  cover page from front matter, classification banner, `Page X of Y` footer, images sized from
+  their real headers by `src/shared/imageSize.ts`); registers to XLSX run on a hand-rolled OOXML
+  writer over `fflate` (shared strings, real date serials, enum dropdowns, click-through evidence
+  hyperlinks, byte-deterministic archives); diagrams to PNG rasterise via `data:` SVG to canvas
+  (the chat CSP forbids `blob:`). All three save through one `saveBinary` host bridge. The heavy
+  renderers stay behind `await import()`, so the chat panel grew by ~37 KB instead of ~465 KB.
+- **Source-inputs tree** — each documentation project gets `inputs/<doc-type>/` folders plus an
+  `inputs/source-register.csv` (Received, Triaged, Incorporated) so meeting notes, transcripts and
+  sketch scans are traceable to the document they fed, closing
+  `IN-001` to `REQ-014` to `TC-014` to `EX-0014` to `EVD-014-01.png`. Recordings are registered
+  but git-ignored; derived documents (RTM, compliance matrix) get no folder.
+- **Tool calls can be shown or hidden straight from the chat** — hiding them used to mean a trip to
+  Settings. The chat's ⋮ menu now carries a "Tool calls: shown / hidden" item that flips
+  `adoCode.chat.showToolCalls` (the same setting the configuration screen exposes as AI & Modes →
+  Show tool calls in chat): the open transcript re-renders in place, folding every tool card into one
+  quiet "N tool calls hidden" disclosure, and while it is off the host stops sending tool arguments
+  and results to the webview at all.
 - **Generated artifacts are collected and their context cost is visible** — `.ado-code/` had no
   garbage collection, so every work item ever opened kept its cache and every delegated run its logs.
   A new `ADO Code: Compact Artifacts` command prunes by policy (the newest file of each kind is always
@@ -40,50 +75,18 @@ All notable changes to ADO Code will be documented in this file.
   `read_workspace_memory`, which are never truncated. `set_memory` and `write_workspace_memory` reject
   an entry over the per-entry cap with an error naming the setting, storing nothing.
 
-### Fixed
-
-- **Work-item creation fails when the user may not create tags** — `System.Tags` rode in the same
-  patch as every other field, so a single tag the caller lacked permission to define rejected the
-  whole write (`403 TF401289`) and the work item was never created. Existing tags never need that
-  permission, so creation now recognises a tag-permission rejection, lists the project's tags and
-  retries with only the requested tags that already exist, then once more with no tags at all,
-  reporting `tagsApplied`/`droppedTags`/`warning` so the `create_work_item` tool and the chat say
-  which tags were skipped. Unrelated failures are rethrown untouched and nothing is created twice.
-- **"Latest answer" pins the chat to the bottom instead of jumping once** — the floating affordance smooth-scrolled a single time and then read its own animation frames as "the reader scrolled up", which cleared the follow flag a frame into the jump: on a still-streaming answer the view landed short, the button reappeared and the reader had to keep chasing the bottom. The follow decision now goes through the pure `resolveStickToBottom()` helper in `src/shared/chatNavigation.ts`, and only a scroll the reader caused — wheel, touch, keys, or an upward move — may unpin the view, so after "Latest answer" new content stays pinned until the reader scrolls up again.
-
-- **A chat message survives an abrupt shutdown (laptop power-off, sleep, host kill)** — sessions were stored only in `workspaceState` and only *after* the agentic round returned, so the message the user had just sent — plus any text already streamed back — lived purely in memory for the whole turn and was lost if the machine went down inside that window. The user message is now persisted the moment it is accepted, every agentic iteration checkpoints a throttled "interrupted" draft, per-session transcript writes are serialised so a late draft can no longer overwrite the turn’s final answer, and each session is additionally mirrored to `.ado-code/sessions/<scope>/` with a synchronous `write → fsync → rename`, so recovery no longer depends on the debounced Memento flush landing. On activation the mirror is preferred only when it holds more messages than `workspaceState`, and pending writes are flushed from `deactivate()`, on window blur, and on process exit.
-
-## [0.8.0] - 2026-10-27
-
-### Added
-
-- **Documentation projects for business analysts, technical writers and testers** — the new-project
-  wizard gains a `Documentation` category with three role templates (`doc-ba`, `doc-writer`,
-  `doc-tester`). A created project is a working definition of done rather than a set of empty
-  stubs: every document ships real section headings, one filled example row per table, and YAML
-  front matter (`doc-id`, `version`, `status`, `owner`, `classification`, `lang`), so a BA's
-  `REQ-###`, a tester's `TC-###` and a writer's SRS section all join on the same ids. Bahasa
-  Malaysia and bilingual projects get BM front-matter keys and BM titles from the same renderer
-  (`src/shared/documentation/docTemplates.ts`).
-- **KRiSA (government) governance mode** — `governance: KRiSA (Government)` turns on a 26-artefact
-  catalogue (`src/shared/documentation/krisa.ts`), a per-role compliance matrix,
-  `TERHAD`/`RESTRICTED` classification, and forces Word export, spreadsheet registers and security
-  testing. Every coercion is reported as a wizard warning rather than applied silently. **Nothing
-  claims compliance**: each catalogue row carries `guidelineRef: 'TODO — confirm clause'` and a
-  test fails if that marker disappears, until the real KRiSA beta-2026 clause names are confirmed.
-- **Export to Word, Excel and PNG from the chat panel** — an export bar appears for documentation
-  projects with Word / Registers / Diagram actions. Markdown to DOCX runs on `docx` (lazy chunk,
-  cover page from front matter, classification banner, `Page X of Y` footer, images sized from
-  their real headers by `src/shared/imageSize.ts`); registers to XLSX run on a hand-rolled OOXML
-  writer over `fflate` (shared strings, real date serials, enum dropdowns, click-through evidence
-  hyperlinks, byte-deterministic archives); diagrams to PNG rasterise via `data:` SVG to canvas
-  (the chat CSP forbids `blob:`). All three save through one `saveBinary` host bridge. The heavy
-  renderers stay behind `await import()`, so the chat panel grew by ~37 KB instead of ~465 KB.
-- **Source-inputs tree** — each documentation project gets `inputs/<doc-type>/` folders plus an
-  `inputs/source-register.csv` (Received, Triaged, Incorporated) so meeting notes, transcripts and
-  sketch scans are traceable to the document they fed, closing
-  `IN-001` to `REQ-014` to `TC-014` to `EX-0014` to `EVD-014-01.png`. Recordings are registered
-  but git-ignored; derived documents (RTM, compliance matrix) get no folder.
+- **Documentation projects can be scaffolded from chat** — two native tools expose the same
+  documentation templates the "Create Documentation Project" wizard uses. `list_doc_templates`
+  (read-only, allowed in plan mode) reports each template's id, description and file count, and with
+  an id also its file list and accepted options; `build_documentation` (mutating, so it shows an
+  approval card in inline mode and is refused in plan mode) writes a whole document set into the
+  workspace from one call. The scaffolder moved to `src/shared/documentation/scaffoldDocs.ts` so the
+  wizard and the tools share one writer instead of two copies drifting apart. The build is confined
+  to the workspace: the target directory is resolved against the workspace root and refused when it
+  is absolute, escapes with `..`, or names the root itself, and a non-empty folder is refused unless
+  `overwrite: true` — nothing is ever deleted. Results come back as
+  `{ directory, created[], warnings[], next }` with workspace-relative paths, and bad input (unknown
+  template id, empty project name) returns the usual `{ error }` listing the valid ids.
 
 ### Fixed
 
@@ -101,6 +104,22 @@ All notable changes to ADO Code will be documented in this file.
   `diagram-png`, but the export bar cannot know a fence's line number without parsing the whole
   document, so every real export was rejected with "Pick a diagram to export" while the collector's
   own first-diagram fallback sat unreachable.
+- **A to-do update replaced the list instead of editing it** — `update_todo_list` overwrote the session
+  ledger with exactly what the model sent, so a partial update (only the steps it was touching) silently
+  deleted every other step, open ones and already-earned ticks alike. Writes now **merge**: existing steps
+  keep their place and status, omitted steps stay put, new steps are appended, and a completed step is never
+  un-ticked by a stale snapshot. `mode: "replace"` is the explicit escape hatch for a deliberate plan
+  rewrite, and the tool result echoes the mode it applied.
+- **Work-item creation fails when the user may not create tags** — `System.Tags` rode in the same
+  patch as every other field, so a single tag the caller lacked permission to define rejected the
+  whole write (`403 TF401289`) and the work item was never created. Existing tags never need that
+  permission, so creation now recognises a tag-permission rejection, lists the project's tags and
+  retries with only the requested tags that already exist, then once more with no tags at all,
+  reporting `tagsApplied`/`droppedTags`/`warning` so the `create_work_item` tool and the chat say
+  which tags were skipped. Unrelated failures are rethrown untouched and nothing is created twice.
+- **"Latest answer" pins the chat to the bottom instead of jumping once** — the floating affordance smooth-scrolled a single time and then read its own animation frames as "the reader scrolled up", which cleared the follow flag a frame into the jump: on a still-streaming answer the view landed short, the button reappeared and the reader had to keep chasing the bottom. The follow decision now goes through the pure `resolveStickToBottom()` helper in `src/shared/chatNavigation.ts`, and only a scroll the reader caused — wheel, touch, keys, or an upward move — may unpin the view, so after "Latest answer" new content stays pinned until the reader scrolls up again.
+
+- **A chat message survives an abrupt shutdown (laptop power-off, sleep, host kill)** — sessions were stored only in `workspaceState` and only *after* the agentic round returned, so the message the user had just sent — plus any text already streamed back — lived purely in memory for the whole turn and was lost if the machine went down inside that window. The user message is now persisted the moment it is accepted, every agentic iteration checkpoints a throttled "interrupted" draft, per-session transcript writes are serialised so a late draft can no longer overwrite the turn’s final answer, and each session is additionally mirrored to `.ado-code/sessions/<scope>/` with a synchronous `write → fsync → rename`, so recovery no longer depends on the debounced Memento flush landing. On activation the mirror is preferred only when it holds more messages than `workspaceState`, and pending writes are flushed from `deactivate()`, on window blur, and on process exit.
 
 ## [0.7.5] - 2026-10-16
 

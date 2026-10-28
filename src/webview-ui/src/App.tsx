@@ -40,6 +40,9 @@ interface SanitizedConfig {
   chatInputWhileBusy?: 'steer' | 'queue';
   /** Item 5: chat density mirrored from the host setting (comfortable | compact | answers-only). */
   chatDensity?: string;
+
+  /** adoCode.chat.showToolCalls, mirrored: the kebab action hides tool-call output. */
+  chatShowToolCalls?: boolean;
 }
 
 interface AgentInfo {
@@ -1042,9 +1045,21 @@ function App() {
   // kebab “Chat density” action fires.
   const density = normalizeDensity(config?.chatDensity);
 
+  // Tool-call visibility: the host owns the persisted setting (it also stops
+  // sending tool arguments/results when it is off). The kebab item just asks
+  // the host to flip it — there is no second source of
+  // truth, so a reload or another window lands on the same value.
+  const showToolCalls = config?.chatShowToolCalls !== false;
+  const toggleToolCalls = useCallback(() => {
+    vscode.postMessage({ type: 'updateConfig', config: { chatShowToolCalls: !showToolCalls } });
+  }, [showToolCalls]);
+
   // ── Kebab menu actions ───────────────────────────────────────
   const handleKebabAction = useCallback((action: string) => {
     switch (action) {
+      case 'toggleToolCalls':
+        toggleToolCalls();
+        break;
       case 'toggleAllTurns':
         setActivityOverride(prev => (prev === false ? true : false));
         break;
@@ -1073,7 +1088,7 @@ function App() {
         handleDeleteAllSessions();
         break;
     }
-  }, [handleDeleteAllSessions, density]);
+  }, [handleDeleteAllSessions, density, toggleToolCalls]);
 
   const handleFetchProjects = useCallback((organization?: string, pat?: string) => {
     setProjectsLoading(true);
@@ -1259,6 +1274,7 @@ function App() {
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
             { label: 'Configuration…', icon: '⚙', action: 'openSettings' },
             { label: `Chat density: ${densityLabel(density)}`, icon: '📐', action: 'cycleChatDensity' },
+            { label: `Tool calls: ${showToolCalls ? 'shown' : 'hidden'}`, icon: showToolCalls ? '🧰' : '🙈', action: 'toggleToolCalls' },
             { label: '', action: '', separator: true },
             { label: collapseAllActionLabel(activityOverride), icon: '≡', action: 'toggleAllTurns' },
               { label: 'Clear Chat History', icon: '🗑️', action: 'clearAllSessions' },
@@ -1301,6 +1317,7 @@ function App() {
         activity={activeActivity}
           activityOverride={activityOverride}
             density={density}
+        showToolCalls={showToolCalls}
       />
 
       {/* Consent card — agent wants to run a mutating tool (inline mode) */}

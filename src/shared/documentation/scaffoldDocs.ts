@@ -2,9 +2,11 @@
  * Documentation project scaffolding.
  *
  * Deliberately vscode-free (plain `fs`/`path`) so it runs under mocha, exactly
- * like `ProjectCreationService` itself. `ProjectCreationService` keeps the
- * template dispatch; everything about WHAT a documentation project contains
- * lives here.
+ * like `ProjectCreationService` itself. It lives in `shared/` because TWO
+ * callers build documentation projects: the New Project wizard
+ * (`ProjectCreationService.scaffoldDocProject`) and the `build_documentation`
+ * agent tool (`shared/documentation/docBuild.ts`). One scaffolding path, so the
+ * wizard and the agent can never drift.
  *
  * Design rules enforced by this module:
  *  - Markdown is the source of truth; Word/XLSX/PDF are generated artefacts.
@@ -26,7 +28,7 @@ import {
   renderDocBody,
   renderFrontMatter,
   selectDocFiles,
-} from '../../shared/documentation/docTemplates';
+} from './docTemplates';
 import {
   DOCUMENT_COLUMNS,
   EVIDENCE_COLUMNS,
@@ -35,7 +37,7 @@ import {
   markdownTableHeader,
   toCsv,
   INPUT_COLUMNS,
-} from '../../shared/documentation/columns';
+} from './columns';
 import {
   INPUT_RECORDING_PATTERNS,
   INPUT_REGISTER_PATH,
@@ -47,8 +49,8 @@ import {
   renderInputFolderReadme,
   renderInputsReadme,
   exampleInputFolder,
-} from '../../shared/documentation/docInputs';
-import { KRISA_GUIDELINE_URL, krisaArtefactsForRole } from '../../shared/documentation/krisa';
+} from './docInputs';
+import { KRISA_GUIDELINE_URL, krisaArtefactsForRole } from './krisa';
 
 export interface DocScaffoldRequest {
   templateId: string;

@@ -563,6 +563,63 @@ suite('TodoStore', () => {
     assert.deepStrictEqual(store.readArchive('a'), []);
   });
 
+  test('a partial update keeps the items it does not mention', () => {
+    store.replace(
+      'merge1',
+      [
+        { content: 'Read the code', status: 'completed' },
+        { content: 'Write the fix', status: 'in_progress' },
+        { content: 'Run the tests', status: 'pending' },
+      ],
+      'M1'
+    );
+
+    // The model re-sends only the step it is working on.
+    const list = store.replace('merge1', [{ content: 'Write the fix', status: 'in_progress' }]);
+
+    assert.deepStrictEqual(
+      list.items.map(i => `${i.content}:${i.status}`),
+      ['Read the code:completed', 'Write the fix:in_progress', 'Run the tests:pending'],
+      'omitted items survive with their status and position'
+    );
+  });
+
+  test('merge appends new steps and never un-ticks a completed one', () => {
+    store.replace(
+      'merge2',
+      [
+        { content: 'Plan', status: 'completed' },
+        { content: 'Implement', status: 'in_progress' },
+      ],
+      'M2'
+    );
+
+    const list = store.replace('merge2', [
+      { content: 'Plan', status: 'pending' },
+      { content: 'Implement', status: 'completed' },
+      { content: 'Ship it', status: 'pending' },
+    ]);
+
+    assert.deepStrictEqual(
+      list.items.map(i => `${i.content}:${i.status}`),
+      ['Plan:completed', 'Implement:completed', 'Ship it:pending']
+    );
+  });
+
+  test('mode "replace" discards existing items on purpose', () => {
+    store.replace('merge3', [{ content: 'Old step', status: 'pending' }], 'M3');
+    const list = store.replace('merge3', [{ content: 'New step', status: 'pending' }], 'M3', 'replace');
+    assert.deepStrictEqual(list.items.map(i => i.content), ['New step']);
+  });
+
+  test('merge keeps the session goal', () => {
+    store.setGoal('merge4', 'Ship the feature', 'ai', 'M4');
+    store.replace('merge4', [{ content: 'Step 1', status: 'pending' }], 'M4');
+    const list = store.replace('merge4', [{ content: 'Step 1', status: 'completed' }]);
+    assert.strictEqual(list.goal!.text, 'Ship the feature');
+    assert.strictEqual(list.items[0].status, 'completed');
+  });
+
   test('isGoalCompleted needs a goal, at least one step, and all steps done', () => {
     const goal = { text: 'g', source: 'ai' as const, setAt: '2020-01-01T00:00:00.000Z' };
     const base = { sessionId: 'x', sessionName: 'X', updatedAt: '2020-01-01T00:00:00.000Z' };

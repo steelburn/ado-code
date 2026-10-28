@@ -72,6 +72,10 @@ interface Props {
   /** Chat density (item 5) — how much per-turn chrome to render. Defaults to
    *  'comfortable' when the host hasn't sent one. */
   density?: ChatDensity;
+  /** Global tool-call visibility (adoCode.chat.showToolCalls). When false,
+   *  every tool card folds into one quiet "N tool calls hidden" disclosure so
+   *  the chat reads as answers only — no trip to Settings required. */
+  showToolCalls?: boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -509,7 +513,7 @@ const AttachmentChips: React.FC<{ names: string[] }> = ({ names }) => {
 
 // ── Main Component ───────────────────────────────────────────────
 
-export function MessageList({ messages, loading, liveTrace = [], streamText, activity, activityOverride = null, density = 'comfortable' }: Props) {
+export function MessageList({ messages, loading, liveTrace = [], streamText, activity, activityOverride = null, density = 'comfortable', showToolCalls = true }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Item 6: offer "jump to latest answer" once the reader scrolls away from the
@@ -759,8 +763,10 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                           {groupToolActivity(traceSegs).map((seg, j) =>
                             seg.kind === 'thinking' ? (
                               <ReasoningText key={`th-${j}`} text={seg.text} />
-                            ) : (
+                            ) : showToolCalls ? (
                               <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen={isLiveTurn} forceOpen={activityOverride} />
+                            ) : (
+                              <HiddenToolCalls key={`act-${j}`} calls={seg.calls} />
                             )
                           )}
                         </div>
@@ -790,9 +796,13 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                             produced it. Parsing does not track fence position,
                             so these follow the text — the trace path is the
                             chronological one. */}
-                        {toolCalls.map((tc) => (
-                          <ToolCallBlock key={tc.id} tc={tc} defaultOpen />
-                        ))}
+                        {showToolCalls ? (
+                          toolCalls.map((tc) => (
+                            <ToolCallBlock key={tc.id} tc={tc} defaultOpen />
+                          ))
+                        ) : (
+                          <HiddenToolCalls calls={toolCalls} />
+                        )}
 
                         {/* Fallback: if no text and no tool calls, render raw */}
                         {!hasText && toolCalls.length === 0 && (
@@ -820,7 +830,7 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                   grows beneath it all, the trace scrolls up naturally. */}
               {liveTrace.length > 0 && (
                 <div className="turn-record">
-                  {groupToolActivity(liveTrace.filter(seg => seg.kind === 'thinking' || seg.call.showDetails !== false)).map((seg, j) =>
+                  {groupToolActivity(liveTrace.filter(seg => seg.kind === 'thinking' || (showToolCalls && seg.call.showDetails !== false))).map((seg, j) =>
                     seg.kind === 'thinking' ? (
                       <ReasoningText key={`th-${j}`} text={seg.text} />
                     ) : (
@@ -829,10 +839,10 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                       <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen forceOpen={activityOverride} />
                     )
                   )}
-                  {liveTrace.some(seg => seg.kind === 'tool' && seg.call.showDetails === false) && (
+                  {(!showToolCalls || liveTrace.some(seg => seg.kind === 'tool' && seg.call.showDetails === false)) && (
                     <HiddenToolCalls
                       calls={liveTrace
-                        .filter(seg => seg.kind === 'tool' && seg.call.showDetails === false)
+                        .filter(seg => seg.kind === 'tool' && (!showToolCalls || seg.call.showDetails === false))
                         .map(seg => (seg as { kind: 'tool'; call: ToolCallInfo }).call)}
                     />
                   )}

@@ -105,7 +105,7 @@ function buildToolGuidelines(mode: ModeConfig): string {
     todo: [
       'FIRST, when the objective of the request is clear and it is more than a trivial one-step change, record it with `set_goal` — ONE short outcome-shaped line. It heads the session\'s To-do view and stays fixed; do NOT rewrite it to describe progress or to restate individual steps.',
       'Then break that goal into steps with `update_todo_list`. For any task that needs 3 or more distinct steps — and ALWAYS when the user asks for a plan, a multi-file change, or a migration — write the plan down BEFORE you start working, then keep it current as you go.',
-      'Send the COMPLETE list on every `update_todo_list` call. Items you already finished must be included with status `completed`, so the list never silently loses work.',
+      'Send the list to `update_todo_list`; it is MERGED into the session list, so an item you leave out keeps its status instead of vanishing. Sending the full list is still best — include finished items with status `completed` so progress stays visible.',
       'Exactly ONE item should be `in_progress` at a time (the one you are working on right now); everything not yet started stays `pending`.',
       'Flip an item to `completed` in the SAME iteration you finish it — never batch completions to the end of the turn. The user watches this list tick over in the To-do view; a stale list is worse than no list.',
       'If new work appears mid-task, add it as a new item instead of silently doing it. If an item turns out to be unnecessary, drop it from the list and say why.',
@@ -116,9 +116,11 @@ function buildToolGuidelines(mode: ModeConfig): string {
       'Read files lazily and appropriately: for small or medium files (< 400 lines), read the whole file in ONE call — avoid slicing it into tiny range reads. Use targeted `read_file` ranges (startLine/endLine) only for large files (> 400 lines) where you need a specific section, and avoid reading many files up front — read only what the current step actually needs.',
       'Always check existing patterns and conventions before editing.',
       'When searching, prefer `search_files` over reading files one by one.',
+      'Before building a document set, call `list_doc_templates` (optionally with a templateId) to see which documents a template emits and which options it accepts.',
     ],
     write: [
       'Prefer `edit_file` for targeted changes; use `write_to_file` for new files or full rewrites.',
+      'For documentation work use `build_documentation` instead of hand-writing the tree: it runs the same scaffolder as the New Project wizard and produces the Markdown sources (with front matter), the .md + .csv registers, project-control files and inputs/ folders. Build first, then fill the Markdown in with `edit_file`. A single note or a section added to an existing document is still a normal `edit_file` — that is not a document set.',
       'Preserve existing code style (indentation, naming, imports).',
       'Include only the lines that changed — avoid rewriting entire files when a small edit suffices.',
     ],

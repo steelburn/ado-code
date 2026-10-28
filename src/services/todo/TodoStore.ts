@@ -101,6 +101,47 @@ function itemId(content: string): string {
   return 'it-' + crypto.createHash('sha1').update(content).digest('hex').slice(0, 10);
 }
 
+/** How an AI list write is applied to the session's existing list. */
+export type TodoUpdateMode = 'merge' | 'replace';
+
+/**
+ * Fold an incoming (untrusted, often PARTIAL) list into the session's existing
+ * one. Models routinely re-send only the steps they are working on, so a blind
+ * overwrite silently deletes the rest of the plan - the "my list got replaced
+ * while items were still open" failure. Merge keeps the existing order, applies
+ * the statuses the model sent, leaves an omitted item in place with its status,
+ * and appends genuinely new steps. `replace` stays available as the explicit
+ * escape hatch for a deliberate rewrite of the plan.
+ */
+export function mergeTodoItems(
+  previous: readonly TodoItem[],
+  incoming: readonly TodoItem[],
+  mode: TodoUpdateMode = 'merge'
+): TodoItem[] {
+  if (mode === 'replace') return [...incoming];
+  const previousById = new Map(previous.map(item => [item.id, item]));
+  const incomingById = new Map(incoming.map(item => [item.id, item]));
+  const merged: TodoItem[] = [];
+  // Existing items keep their place in the plan (and their status when the
+  // update does not mention them); a completed item is done work, so an update
+  // that forgets the tick must not un-tick it.
+  for (const prior of previous) {
+    const next = incomingById.get(prior.id);
+    if (!next) {
+      merged.push(prior);
+    } else if (prior.status === 'completed' && next.status !== 'completed') {
+      merged.push({ ...next, status: 'completed' as TodoStatus });
+    } else {
+      merged.push(next);
+    }
+  }
+  // Steps the model added since the last write land at the end, in its order.
+  for (const item of incoming) {
+    if (!previousById.has(item.id)) merged.push(item);
+  }
+  return merged;
+}
+
 /**
  * Coerce arbitrary tool input into a clean list. The model supplies JSON, so
  * every field is untrusted: unknown statuses degrade to `pending`, blank
@@ -329,18 +370,26 @@ export class TodoStore {
   // ── Mutations ─────────────────────────────────────────────────────
 
   /**
-   * Replace a session's list (the AI tool's primitive — TodoWrite semantics:
-   * the model sends the COMPLETE list each call, including the items it just
-   * ticked off). The session's goal is a SEPARATE concern and is preserved —
-   * rewriting the steps must never silently drop the objective.
+   * Apply an AI-authored list to a session (the `update_todo_list` primitive).
+   * By default the incoming list is MERGED into the existing one: items the
+   * model omitted are kept with their status instead of being dropped, so a
+   * partial update can never wipe work that is still open (or already ticked).
+   * `mode: 'replace'` is the deliberate-rewrite escape hatch. The session's
+   * goal is a SEPARATE concern and is always preserved — rewriting the steps
+   * must never silently drop the objective.
    */
-  replace(sessionId: string, rawItems: unknown, sessionName?: string): TodoList {
+  replace(
+    sessionId: string,
+    rawItems: unknown,
+    sessionName?: string,
+    mode: TodoUpdateMode = 'merge'
+  ): TodoList {
     const previous = this.read(sessionId);
     const list: TodoList = {
       sessionId,
       sessionName: sessionName || previous?.sessionName || 'Chat session',
       updatedAt: new Date().toISOString(),
-      items: normalizeTodoItems(rawItems),
+      items: mergeTodoItems(previous?.items ?? [], normalizeTodoItems(rawItems), mode),
       ...(previous?.goal ? { goal: previous.goal } : {}),
     };
     this.write(list);

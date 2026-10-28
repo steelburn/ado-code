@@ -13,6 +13,7 @@ import { renderTodoChecklist } from '../services/todo/TodoStore';
 import { logger } from '../services/logger';
 import { readMemoryBudget, validateMemoryEntry } from '../memory/memoryBudget';
 import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
+import { buildDocumentationProject, describeDocTemplates } from '../shared/documentation/docBuild';
 import type { AdoWorkItem, AdoComment } from '../ado/types';
 
 // ── Tool-result size guard ────────────────────────────────────────────────
@@ -219,10 +220,10 @@ export interface ToolExecutor {
 // Q8: read-only tools are always allowed (inline/plan/act).
 // search_files = pure grep (no mutation); execute_skill loads skill
 // instructions for the model to follow (no side effects of its own).
-const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts']);
+const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts', 'list_doc_templates']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request', 'build_documentation']);
 // The session goal + to-do list are the MODEL'S OWN task ledger, persisted
 // under `.ado-code/todos/` — they never touch workspace source. They are
 // therefore allowed in EVERY mode (plan included: the goal and its plan are
@@ -772,13 +773,13 @@ export function createToolExecutor(
     },
     {
       name: 'update_todo_list',
-      description: 'Create or update the to-do list for THIS chat session (shown in the ADO Code "To-do" view). Send the COMPLETE list on every call — items already finished must be included with status "completed". Keep exactly ONE item "in_progress" while you work on it and flip it to "completed" the moment it is actually done; never batch completions to the end of the turn. Use it for any task with 3+ distinct steps.',
+      description: 'Create or update the to-do list for THIS chat session (shown in the ADO Code "To-do" view). The list is MERGED, not replaced: items you leave out keep their status, so you may send only the steps you are touching. Sending the full list is still preferred: include finished items with status "completed" so progress stays visible. Keep exactly ONE item "in_progress" while you work on it and flip it to "completed" the moment it is actually done; never batch completions to the end of the turn. Pass mode "replace" only when the plan itself is being rewritten and the old steps are obsolete. Use it for any task with 3+ distinct steps.',
       parameters: {
         type: 'object',
         properties: {
           todos: {
             type: 'array',
-            description: 'The complete to-do list, in execution order',
+            description: 'The to-do list, in execution order (merged into the existing list)',
             items: {
               type: 'object',
               properties: {
@@ -789,6 +790,12 @@ export function createToolExecutor(
               required: ['content', 'status'],
             },
           },
+          mode: {
+            type: 'string',
+            enum: ['merge', 'replace'],
+            description:
+              'How to apply the list. "merge" (default) keeps items you omitted, with their status. "replace" discards every existing item first — use it only when rewriting the plan.',
+          },
         },
         required: ['todos'],
       },
@@ -797,6 +804,37 @@ export function createToolExecutor(
       name: 'read_todo_list',
       description: 'Read the current to-do list for THIS chat session. Returns an empty list when no to-do list has been created yet.',
       parameters: { type: 'object', properties: {} },
+    },
+    // ── Documentation building ──────────────────────────────────────
+    {
+      name: 'list_doc_templates',
+      description: "List the built-in documentation-project templates (Business Analysis doc-ba, IT Documentation doc-writer, Test & UAT doc-tester) and how many files each emits. Pass templateId to get that template's full file list plus the option keys build_documentation accepts. Read-only — call it before a build when you need to know what the document set contains.",
+      parameters: {
+        type: 'object',
+        properties: {
+          templateId: { type: 'string', description: "Template id to detail (e.g. 'doc-ba'). Omit for a summary of every template." },
+        },
+      },
+    },
+    {
+      name: 'build_documentation',
+      description: 'Build a documentation project into the workspace from a built-in template. Runs the SAME scaffolder as the New Project wizard, so it creates the complete document set: Markdown sources with YAML front matter (doc id, version, owner, approver), registers as both .md and .csv from one column contract, project-control files and inputs/ folders. Markdown is the source of truth; Word/XLSX/PNG are generated later by the Documentation Export command. Do NOT hand-write these files — build the skeleton here, then fill it in with edit_file/write_to_file. Refuses an unknown template, a folder outside the workspace, or a non-empty folder without overwrite: true.',
+      parameters: {
+        type: 'object',
+        properties: {
+          templateId: { type: 'string', description: "Template id: 'doc-ba', 'doc-writer' or 'doc-tester' (see list_doc_templates)." },
+          projectName: { type: 'string', description: 'Project name — becomes the target folder (unless directory is given) and the document-id prefix (<PROJ>-<ROLE>-<TYPE>-001)' },
+          directory: { type: 'string', description: 'Target folder relative to the workspace root (defaults to projectName)' },
+          version: { type: 'string', description: 'Document version stamped into the front matter (default 0.1.0)' },
+          description: { type: 'string', description: 'One-line project description used in the generated registers' },
+          options: {
+            type: 'object',
+            description: 'Template options, same keys as the New Project wizard: governance, docLanguage, docControl, traceability, krisaCompliance, wordExport, xlsxExport, screenshots, diagramTool, captureInputs, includeStakeholders, includeProcess, includeNfr, includeDesign, includeUserDocs, includeRunbooks, includeApiDocs, includeTestCases, includeUat, includeSecurity, includePerformance, defectManagement',
+          },
+          overwrite: { type: 'boolean', description: 'Allow writing into a folder that already contains files (default false — the tool refuses instead of mixing document sets)' },
+        },
+        required: ['templateId', 'projectName'],
+      },
     },
   ];
 
@@ -1363,7 +1401,8 @@ export function createToolExecutor(
           if (!Array.isArray(args.todos)) {
             return JSON.stringify({ error: "parameter 'todos' must be an array of { content, status } objects" });
           }
-          const list = services.todos.replace(todoSession, args.todos, hooks?.getSessionName?.());
+          const mode = args.mode === 'replace' ? 'replace' : 'merge';
+          const list = services.todos.replace(todoSession, args.todos, hooks?.getSessionName?.(), mode);
           const done = list.items.filter(i => i.status === 'completed').length;
           const running = list.items.filter(i => i.status === 'in_progress').length;
           logger.info(`Todos: session list updated (${done}/${list.items.length} completed, ${running} in progress)`);
@@ -1372,6 +1411,7 @@ export function createToolExecutor(
             // The goal rides along so the model re-anchors on the objective on
             // every list rewrite instead of drifting into busywork.
             goal: list.goal?.text ?? null,
+            mode,
             items: list.items.length,
             completed: done,
             inProgress: running,
@@ -1396,6 +1436,29 @@ export function createToolExecutor(
             remaining: list.items.length - done,
             checklist: renderTodoChecklist(list),
           });
+        }
+        case 'list_doc_templates': {
+          return JSON.stringify(describeDocTemplates(args.templateId));
+        }
+        case 'build_documentation': {
+          const root = vscode.workspace.workspaceFolders?.[0];
+          if (!root) {
+            return JSON.stringify({ error: 'no workspace folder is open — a documentation project needs somewhere to live' });
+          }
+          return capToolResult(
+            JSON.stringify(
+              buildDocumentationProject({
+                workspaceRoot: root.uri.fsPath,
+                templateId: args.templateId,
+                projectName: args.projectName,
+                directory: args.directory,
+                version: args.version,
+                description: args.description,
+                options: args.options,
+                overwrite: args.overwrite === true,
+              })
+            )
+          );
         }
         default:
           // MCP tools use the mcp__<server>__<tool> prefix convention
