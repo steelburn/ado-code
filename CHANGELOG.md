@@ -2,15 +2,26 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
-- Closed [ADO-27360](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27360): AC-P1-09 Cap injected SKILL.md content with pointers to sub-files (2026-10-28) — `fix/tag-permission-fallback @ a096c8f`
-- Closed [ADO-27359](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27359): AC-P1-08 De-duplicate AGENTS.md against repo.md, add byte budget and idempotent sync (2026-10-28) — `fix/tag-permission-fallback @ 1aa8cd7`
-- Closed [ADO-27358](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27358): AC-P1-07 Make markdown an export format with a JSON index and LRU eviction (2026-10-28) — `fix/tag-permission-fallback @ 40ada82`
-- Closed [ADO-27357](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27357): AC-P1-06 Stop writing ephemeral drafts and proposed tasks to disk (2026-10-28) — `fix/tag-permission-fallback @ 36b7029`
-- Closed [ADO-27355](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27355): AC-P0-04 Docs policy in system prompt and AGENTS.md conventions (2026-10-28) — `fix/tag-permission-fallback @ ef7b719`
-- Closed [ADO-27354](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27354): AC-P0-03 Digest-first headers on generated docs (2026-10-28) — `fix/tag-permission-fallback @ 2953f97`
-- Closed [ADO-27353](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27353): AC-P0-02 Truncate work-item discussion thread in prompt and cache (2026-10-28) — `fix/tag-permission-fallback @ b891373`
 
 ### Added
+
+- **Context budgets across every artifact ADO Code generates** — the work-item discussion thread is
+  capped at 5 comments of 600 characters (newest kept, with a pointer naming how many were omitted and
+  where to read them), injected `SKILL.md` bodies at 4000 characters
+  (`adoCode.skills.maxInjectedChars`), the managed block of `AGENTS.md` at 4000 characters and its
+  generated Repository Understanding summary at 600, and generated docs (`workitem-<id>.md`, `repo.md`)
+  now open with a digest-first header stating what the file answers, its size and its section outline.
+  The system prompt and `AGENTS.md` state the same documentation policy, and ephemeral drafts and
+  proposed tasks live in one staging slot that is deleted at the end of the turn instead of one file
+  per call.
+
+- **The repository-understanding cache is indexed in JSON and maintains itself** — a JSON index records
+  kind, path, size, token estimate and last-used time per entry and evicts least-recently-used entries
+  together with their markdown files at `adoCode.understanding.maxEntries`; markdown is the export
+  format only. `AGENTS.md` no longer stores the map that `repo.md` holds (digest + pointer, and `repo.md`
+  folds only the user-authored sections), and the cache fingerprint ignores the managed block, closing a
+  loop where ADO Code's own rewrite invalidated the cache that produced it. A sync that changes nothing
+  no longer rewrites the file.
 
 - **Memory injected into a prompt is budgeted, and oversized writes are refused** — user and workspace
   memory now share one 4000-character budget, rendered as at most 25 single-line entries of 400
