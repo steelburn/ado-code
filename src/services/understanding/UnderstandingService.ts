@@ -5,6 +5,7 @@ import { logger } from '../logger';
 import { WorkItemContext } from '../../shared/messages';
 import { formatWorkItemContext, DEFAULT_THREAD_BUDGET } from '../../llm/prompts';
 import { renderDocDigest, stripDigest, withDigest } from '../../shared/docDigest';
+import { DEFAULT_MAX_ENTRIES, UnderstandingIndex } from './UnderstandingIndex';
 
 /**
  * Repository Understanding — a durable, fingerprinted cache of what ADO Code
@@ -118,6 +119,8 @@ export class UnderstandingService {
 
   /** Guards against overlapping summary generations (activation + chat turn). */
   private summaryInFlight = false;
+  /** Metadata index over the cache directory (lazily created). */
+  private cachedIndex?: UnderstandingIndex;
 
   /** Id of the work item whose cached context `toPromptString()` includes. */
   private currentWorkItemId?: number;
@@ -183,7 +186,9 @@ export class UnderstandingService {
         content += `\n\n### LLM Summary\n\n${summary}`;
       }
       this.init();
-      fs.writeFileSync(this.repoFile(), this.withRepoDigest(content), 'utf8');
+      const repoContent = this.withRepoDigest(content);
+      fs.writeFileSync(this.repoFile(), repoContent, 'utf8');
+      this.index.upsert({ id: 'repo', kind: 'repo', title: 'Repository map', content: repoContent });
       meta.repo = {
         fingerprint,
         generatedAt: new Date().toISOString(),
@@ -224,7 +229,9 @@ export class UnderstandingService {
       const summary = (await this.summarizeFn(`${SUMMARY_SYSTEM_PROMPT}\n\n${facts}`)).trim();
       if (!summary) return;
       const content = `${facts}\n\n### LLM Summary\n\n${summary.slice(0, MAX_SUMMARY_CHARS)}`;
-      fs.writeFileSync(this.repoFile(), this.withRepoDigest(content), 'utf8');
+      const repoContent = this.withRepoDigest(content);
+      fs.writeFileSync(this.repoFile(), repoContent, 'utf8');
+      this.index.upsert({ id: 'repo', kind: 'repo', title: 'Repository map', content: repoContent });
       const meta = this.readMeta();
       meta.repo = {
         ...(meta.repo ?? { fingerprint: '', generatedAt: '' }),
@@ -254,11 +261,15 @@ export class UnderstandingService {
     const prev = meta.workitems?.[idKey];
     const file = this.workItemFile(workItem.id);
     if (prev && prev.fingerprint === fp && fs.existsSync(file)) {
+      this.index.touch(`workitem-${workItem.id}`);
       this.currentWorkItemId = workItem.id;
       return;
     }
     this.init();
-    fs.writeFileSync(file, `${this.workItemDigest(workItem)}\n\n### Work Item\n\n${formatWorkItemContext(workItem)}`, 'utf8');
+    const workItemContent = `${this.workItemDigest(workItem)}\n\n### Work Item\n\n${formatWorkItemContext(workItem)}`;
+    fs.writeFileSync(file, workItemContent, 'utf8');
+    this.index.upsert({ id: `workitem-${workItem.id}`, kind: 'workitem', title: workItem.title, content: workItemContent });
+    this.evictCache();
     meta.workitems = {
       ...(meta.workitems ?? {}),
       [idKey]: { fingerprint: fp, generatedAt: new Date().toISOString() },
@@ -308,7 +319,9 @@ export class UnderstandingService {
         combined = `## ${parts.join('\n## ')}`;
       }
     }
-    fs.writeFileSync(file, this.withKnowledgeDigest(combined), 'utf8');
+    const knowledgeContent = this.withKnowledgeDigest(combined);
+    fs.writeFileSync(file, knowledgeContent, 'utf8');
+    this.index.upsert({ id: 'knowledge', kind: 'knowledge', title: 'Prior session knowledge', content: knowledgeContent });
     const meta = this.readMeta();
     meta.knowledge = {
       updatedAt: new Date().toISOString(),
@@ -327,13 +340,22 @@ export class UnderstandingService {
   toPromptString(): string {
     const parts: string[] = [];
     const repo = this.readFileIfExists(this.repoFile());
-    if (repo) parts.push(repo);
+    if (repo) {
+      parts.push(repo);
+      this.index.touch('repo');
+    }
     if (this.currentWorkItemId !== undefined) {
       const wi = this.readFileIfExists(this.workItemFile(this.currentWorkItemId));
-      if (wi) parts.push(wi);
+      if (wi) {
+        parts.push(wi);
+        this.index.touch(`workitem-${this.currentWorkItemId}`);
+      }
     }
     const knowledge = this.readFileIfExists(this.knowledgeFile());
-    if (knowledge) parts.push(`### Prior Session Knowledge\n\n${knowledge}`);
+    if (knowledge) {
+      parts.push(`### Prior Session Knowledge\n\n${knowledge}`);
+      this.index.touch('knowledge');
+    }
     if (parts.length === 0) return '';
 
     const header =
@@ -631,6 +653,49 @@ export class UnderstandingService {
     } catch {
       return true;
     }
+  }
+
+  /**
+   * Metadata index over the cache directory (id, title, size, hash,
+   * lastAccessed). Rebuilt from disk when missing or corrupt; the markdown
+   * files stay the payload and are additionally an export format.
+   */
+  get index(): UnderstandingIndex {
+    if (!this.cachedIndex) this.cachedIndex = new UnderstandingIndex(this.dir);
+    return this.cachedIndex;
+  }
+
+  /** Configured LRU cap on cached work items (adoCode.understanding.maxEntries). */
+  maxEntries(): number {
+    try {
+      const value = vscode.workspace
+        .getConfiguration('adoCode')
+        .get<number>('understanding.maxEntries', DEFAULT_MAX_ENTRIES);
+      const n = Math.floor(Number(value));
+      return Number.isFinite(n) && n >= 10 ? n : DEFAULT_MAX_ENTRIES;
+    } catch {
+      return DEFAULT_MAX_ENTRIES;
+    }
+  }
+
+  /**
+   * Evict least-recently-accessed work items beyond the cap. repo.md and
+   * knowledge.md are always injected into the prompt, so they are protected.
+   * Returns the evicted ids, oldest first.
+   */
+  evictCache(max = this.maxEntries()): string[] {
+    return this.index.evictLRU(max, ['repo', 'knowledge']);
+  }
+
+  /**
+   * Export the cache as markdown into `targetDir` (default:
+   * `<understanding>/export`). Copies are verbatim, so the export always
+   * matches the cache and the cache files are never modified.
+   */
+  exportMarkdown(targetDir?: string): { dir: string; files: string[]; manifestPath: string } {
+    const dir = targetDir ?? this.index.defaultExportDir();
+    const result = this.index.exportTo(dir);
+    return { dir, files: result.files, manifestPath: result.manifestPath };
   }
 
   private shouldAutoSummarize(): boolean {

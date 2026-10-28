@@ -276,6 +276,11 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.exportUnderstanding",
+        "title": "Export Repository Understanding",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.refreshUnderstanding",
         "title": "Refresh Repository Understanding",
         "icon": "$(lightbulb)",
@@ -1259,6 +1264,12 @@
           "type": "boolean",
           "default": true,
           "description": "Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat sessions and delegated-agent prompts. Disabling stops regeneration; cached content stays on disk."
+        },
+        "adoCode.understanding.maxEntries": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "markdownDescription": "Maximum number of cached work items kept in `.ado-code/understanding/`. Beyond this cap the least-recently-used entries are evicted; `repo.md` and `knowledge.md` are always kept."
         },
         "adoCode.understanding.autoSummarize": {
           "type": "boolean",

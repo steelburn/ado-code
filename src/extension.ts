@@ -135,7 +135,30 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.window.showInformationMessage('ADO Code: repository understanding refreshed.');
       // The refreshed understanding may show AGENTS.md is outdated — offer a sync.
       chatProvider?.notifyUnderstandingRefreshed();
-    })
+    }),
+    vscode.commands.registerCommand('adoCode.exportUnderstanding', async () => {
+      const target = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: 'Export here',
+        title: 'ADO Code: export repository understanding as markdown',
+      });
+      if (!target || target.length === 0) return;
+      try {
+        const result = services.understanding.exportMarkdown(target[0].fsPath);
+        const open = await vscode.window.showInformationMessage(
+          `ADO Code: exported ${result.files.length} cached entr${result.files.length === 1 ? 'y' : 'ies'} to ${result.dir}.`,
+          'Open manifest',
+        );
+        if (open === 'Open manifest') {
+          await vscode.window.showTextDocument(vscode.Uri.file(result.manifestPath));
+        }
+      } catch (err) {
+        logger.warn('exportUnderstanding failed', err);
+        vscode.window.showErrorMessage(`ADO Code: export failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
   );
 
   // Worktrees Panel: dedicated view of agent worktrees with per-worktree
