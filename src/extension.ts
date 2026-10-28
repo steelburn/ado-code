@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from './webview/chatEditorSerializer';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
@@ -23,6 +24,13 @@ import { cleanupMergedRun, hasMergedPullRequest } from './git/mergeCleanup';
 import { gitErrorMessage } from './git/gitError';
 import { AgentRunner } from './agents/AgentRunner';
 import { AgentRun } from './agents/types';
+import { RemoteControl, type RemoteSettings, type StatusBarLike } from './remote/RemoteControl';
+import { RemoteTokenStore } from './remote/remoteToken';
+import { QR_PANEL_TITLE, RemoteQrPanel } from './remote/RemoteQrPanel';
+import { RemoteServer } from './remote/RemoteServer';
+import { RemoteTunnel } from './remote/RemoteTunnel';
+import { CONSOLE_HTML } from './remote/consolePage';
+import { resolveRemoteUrl } from './remote/remoteUrl';
 import { logger } from './services/logger';
 import {
   compactArtifactsCommand,
@@ -1213,11 +1221,15 @@ Generate ONLY the commit message, nothing else.`;
   // Runs whose live progress panel was auto-opened (progressView = 'editor') —
   // open ONCE per run so a user-closed panel does not keep popping back.
   const autoOpenedProgress = new Set<string>();
-  const agentRunner = new AgentRunner(
+  // Remote console (R-P1-11): the agent-run callbacks below mirror the stream to
+// connected phones. The control plane is constructed after this point, so the
+// callbacks only read it once a run actually streams (no TDZ risk).
+const agentRunner = new AgentRunner(
     services.agents,
     services.git,
     {
       onStatus: (run, delta) => {
+          remoteControl.broadcast({ type: 'agentStatus', run, delta });
         chatProvider.postMessage({ type: 'agentStatus', run, delta });
         // Live in-thread run card for chat-originated runs (throttled) — the
         // chat never looks finished while the delegated agent is still working.
@@ -1252,6 +1264,7 @@ Generate ONLY the commit message, nothing else.`;
         }
       },
       onComplete: (run, summary) => {
+          remoteControl.broadcast({ type: 'agentResult', run, summary });
         // Conclude the in-thread run card with the outcome and persist it into
         // the delegating chat session's history.
         chatProvider.notifyAgentRunComplete(run, summary);
@@ -1307,6 +1320,171 @@ Generate ONLY the commit message, nothing else.`;
   chatProvider.setAgentRunner(agentRunner);
   worktreesProvider.setAgentRunner(agentRunner);
   statusProvider.setAgentRunner(agentRunner);
+
+// ── Remote Agent Oversight: phone console (R-P1-11) ────────────────────────
+// One control plane owns status bar, server, tunnel and QR panel; this block
+// only supplies the VS Code surfaces it depends on. Nothing here may throw
+// into activation — a missing tunnel binary must only disable that option.
+let remoteServer: RemoteServer | undefined;
+const remoteTokens = new RemoteTokenStore({
+    // `vscode.SecretStorage` hands back Thenables; the store contract wants Promises.
+    get: async key => context.secrets.get(key),
+    store: async (key, value) => context.secrets.store(key, value),
+    delete: async key => context.secrets.delete(key),
+  });
+
+function readRemoteSettings(): RemoteSettings {
+  const config = vscode.workspace.getConfiguration('adoCode');
+  return {
+    enabled: config.get<boolean>('remote.enabled', false),
+    bind: config.get<'loopback' | 'all'>('remote.bind', 'loopback'),
+    port: config.get<number>('remote.port', 0),
+    tunnel: config.get<'none' | 'cloudflared' | 'custom'>('remote.tunnel', 'none'),
+    tunnelCommand: config.get<string>('remote.tunnelCommand', ''),
+    tunnelUrlPattern: config.get<string>('remote.tunnelUrlPattern', ''),
+  };
+}
+
+/** First non-internal IPv4 address; only advertised when bind === 'all'. */
+function lanAddress(): string | undefined {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === 'IPv4' && !entry.internal) {
+        return entry.address;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Probe PATH for an executable without spawning it. */
+function onPath(bin: string): boolean {
+  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+    for (const ext of exts) {
+      try {
+        if (fs.existsSync(path.join(dir, bin + ext))) {
+          return true;
+        }
+      } catch {
+        // unreadable PATH entry — keep looking
+      }
+    }
+  }
+  return false;
+}
+
+const remoteQrPanel = new RemoteQrPanel({
+  createPanel: () =>
+    vscode.window.createWebviewPanel(
+      'adoCode.remoteQr',
+      QR_PANEL_TITLE,
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      {
+        // Static markup only, but the tunnel call to action is a command link.
+        enableScripts: false,
+        enableCommandUris: true,
+        retainContextWhenHidden: false,
+        localResourceRoots: [],
+      }
+    ),
+});
+
+const remoteControl = new RemoteControl({
+  tokens: remoteTokens,
+  readSettings: readRemoteSettings,
+  writeEnabled: async enabled => {
+    await vscode.workspace
+      .getConfiguration('adoCode')
+      .update('remote.enabled', enabled, vscode.ConfigurationTarget.Global);
+  },
+  onDidChangeConfiguration: listener => {
+    const sub = vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('adoCode.remote')) {
+        listener();
+      }
+    });
+    return { dispose: () => sub.dispose() };
+  },
+  createStatusBarItem: () =>
+    vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Right,
+      98
+    ) as unknown as StatusBarLike,
+  registerCommand: (id, handler) => vscode.commands.registerCommand(id, handler),
+  setContext: async (key, value) => {
+    await vscode.commands.executeCommand('setContext', key, value);
+  },
+  resolveUrl: (port, token, tunnelUrl) => {
+    const settings = readRemoteSettings();
+    return resolveRemoteUrl(port, token, {
+      uiKind: vscode.env.uiKind,
+      asExternalUri: async url =>
+        (await vscode.env.asExternalUri(vscode.Uri.parse(url))).toString(true),
+      remoteName: vscode.env.remoteName,
+      tunnelUrl,
+      bind: settings.bind,
+      lanAddress: settings.bind === 'all' ? lanAddress() : undefined,
+    });
+  },
+  serverFactory: ({ verifyToken }) => {
+    const settings = readRemoteSettings();
+    remoteServer = new RemoteServer({
+      verifyToken,
+      port: settings.port,
+      bind: settings.bind,
+      lanAddress: settings.bind === 'all' ? lanAddress() : undefined,
+      page: () => CONSOLE_HTML,
+      logger,
+    });
+    return remoteServer;
+  },
+  tunnelFactory: handlers => {
+    const settings = readRemoteSettings();
+    return new RemoteTunnel({
+      // 'none' never reaches the factory: the control plane gates on availability.
+      provider: settings.tunnel === 'none' ? 'cloudflared' : settings.tunnel,
+      port: remoteServer?.port ?? settings.port,
+      customCommand: settings.tunnelCommand,
+      urlPattern: settings.tunnelUrlPattern,
+      onUrl: handlers.onUrl,
+      onError: handlers.onError,
+      onExit: handlers.onExit,
+    });
+  },
+  tunnelAvailable: provider => {
+    if (provider === 'none') {
+      return false;
+    }
+    if (provider === 'custom') {
+      return readRemoteSettings().tunnelCommand.trim().length > 0;
+    }
+    return onPath('cloudflared');
+  },
+  showQuickPick: async (items, options) =>
+    vscode.window.showQuickPick(items, { placeHolder: options.placeHolder }),
+  notify: (message: string, kind?: 'info' | 'warn' | 'error') => {
+    if (kind === 'error') {
+      void vscode.window.showErrorMessage(message);
+    } else if (kind === 'warn') {
+      void vscode.window.showWarningMessage(message);
+    } else {
+      void vscode.window.showInformationMessage(message);
+    }
+  },
+  copyToClipboard: async (text: string) => {
+    await vscode.env.clipboard.writeText(text);
+  },
+  showQrPanel: payload => remoteQrPanel.show(payload),
+  hideQrPanel: () => remoteQrPanel.dispose(),
+  createTooltip: markdown => new vscode.MarkdownString(markdown),
+  logger,
+});
+remoteControl.activate();
+context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose() });
 
   // Q7: offer to resume interrupted runs (with a session id) after reload.
   const interrupted = agentRunner.listRuns().filter(r => r.status === 'interrupted' && r.sessionId);

@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "license": "MIT",
   "publisher": "steelburn",
   "repository": {
@@ -13,6 +13,9 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "extensionKind": [
+    "workspace"
+  ],
   "categories": [
     "AI",
     "Azure"
@@ -92,6 +95,42 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "adoCode.remote.toggle",
+        "title": "Toggle Remote Access",
+        "icon": "$(broadcast)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.remote.showQr",
+        "title": "Show Remote Access QR Code",
+        "icon": "$(device-camera)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.remote.copyUrl",
+        "title": "Copy Remote Console URL",
+        "icon": "$(link)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.remote.rotateToken",
+        "title": "Rotate Remote Console Token",
+        "icon": "$(refresh)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.remote.tunnel.start",
+        "title": "Start Remote Access Tunnel",
+        "icon": "$(cloud-upload)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.remote.stop",
+        "title": "Stop Remote Access",
+        "icon": "$(debug-stop)",
+        "category": "ADO Code"
+      },
       {
         "command": "adoCode.selectWorkItem",
         "title": "Select Work Item",
@@ -641,6 +680,16 @@
       ],
       "view/item/context": [
         {
+          "command": "adoCode.remote.toggle",
+          "when": "viewItem == remoteAccessOff",
+          "group": "inline"
+        },
+        {
+          "command": "adoCode.remote.showQr",
+          "when": "viewItem == remoteAccessOn",
+          "group": "inline"
+        },
+        {
           "command": "adoCode.todos.markCompleted",
           "when": "viewItem == todoItemNode",
           "group": "inline"
@@ -969,6 +1018,62 @@
     "configuration": {
       "title": "ADO Code",
       "properties": {
+        "adoCode.remote.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "markdownDescription": "Serve the phone console for agent oversight on this machine. Turning this off stops the server and any tunnel."
+        },
+        "adoCode.remote.bind": {
+          "type": "string",
+          "enum": [
+            "loopback",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Listen on 127.0.0.1 only — reachable from this machine, or through a tunnel.",
+            "Listen on all interfaces — also reachable from devices on the same network."
+          ],
+          "default": "loopback",
+          "scope": "machine",
+          "markdownDescription": "Which interfaces the remote console binds to. Loopback is the safe default; all exposes the console to your LAN."
+        },
+        "adoCode.remote.port": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "scope": "machine",
+          "markdownDescription": "Port for the remote console. 0 lets the OS pick a free port."
+        },
+        "adoCode.remote.tunnel": {
+          "type": "string",
+          "enum": [
+            "none",
+            "cloudflared",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "No tunnel — the console stays local.",
+            "Use cloudflared quick tunnels (cloudflared must be on PATH).",
+            "Run your own command template from adoCode.remote.tunnelCommand."
+          ],
+          "default": "none",
+          "scope": "machine",
+          "markdownDescription": "How to expose the console to the internet."
+        },
+        "adoCode.remote.tunnelCommand": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Command template for adoCode.remote.tunnel: custom. {port} is substituted with the console port."
+        },
+        "adoCode.remote.tunnelUrlPattern": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Regular expression used to scrape the public URL out of tunnel output. Empty means the built-in patterns."
+        },
         "adoCode.organizations": {
           "type": "array",
           "default": [],

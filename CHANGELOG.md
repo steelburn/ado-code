@@ -3,6 +3,24 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+### Added
+
+- **Remote Agent Oversight** — a phone-sized console that mirrors agent runs off this
+  machine. `adoCode.remote.enabled` is the single source of truth: the status bar item, the
+  new **Remote Access** row in the STATUS view, `Toggle Remote Access`, `Show Remote Access QR
+  Code`, `Copy Remote Console URL`, `Rotate Remote Console Token`, `Start Remote Access Tunnel`
+  and `Stop Remote Access` all read and write that one setting. The QR panel renders a vendored
+  QR encoder as inline SVG (no runtime dependency, strict CSP, no scripts) and always states
+  *how* the URL is reachable — **local only**, **tunnel active**, or **VS Code port
+  forwarding** — because a loopback QR scanned on a phone silently does nothing.
+- **Remote console transport** — loopback HTTP server with an SSE stream, a 256-bit token in
+  `SecretStorage` traded once via `POST /session` for an `HttpOnly` cookie, and a `Host` guard
+  that rejects rebinding-style requests. Optional `cloudflared` quick tunnel or a custom command
+  template (`{port}` substitution), killed together with the console.
+- Six `machine`-scoped settings (`adoCode.remote.enabled|bind|port|tunnel|tunnelCommand|`
+  `tunnelUrlPattern`) plus `extensionKind: workspace`, since the console is a service on the
+  machine that runs the agents. Details: [docs/remote.md](docs/remote.md).
+
 ## [0.8.0] - 2026-10-28
 
 ### Added

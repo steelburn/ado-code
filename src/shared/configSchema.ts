@@ -15,6 +15,14 @@
 
 /** Every setting the Configuration page may send back, in contribution order. */
 export const CONFIG_SETTING_KEYS = [
+  // Remote Agent Oversight (R-P1): machine-scoped, still part of the payload so
+  // a Save round-trips them instead of dropping them like mcp.servers once was.
+  'remote.enabled',
+  'remote.bind',
+  'remote.port',
+  'remote.tunnel',
+  'remote.tunnelCommand',
+  'remote.tunnelUrlPattern',
   'organizations',
   'adoOrganization',
   'adoProject',

@@ -8,6 +8,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
 - Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes) — independent tool calls run in parallel (even in mixed batches: consent-free calls don't wait behind approval cards), batched `edit_file` edits, batch `get_work_item` `ids` / `run_terminal_command` `commands` arrays, and a `search_files` grep tool with per-line truncation
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
+- **Remote Agent Oversight**: a phone-sized console mirrors agent runs off this machine — status bar toggle, QR code for the resolved URL, optional cloudflared/custom tunnel. See [docs/remote.md](docs/remote.md)
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, Pi, and more)
 - **Git worktree isolation**: Concurrent agents run in isolated worktrees — no branch conflicts
 - **Worktrees view**: Dedicated sidebar tree with per-worktree details — run status, agent, dirty/clean files, last commit, ahead/behind — plus Open in Terminal/Explorer, Remove, and Show Agent Output actions
@@ -231,6 +232,44 @@ Delegation does not require an ADO work item or a selected project — with neit
 - The run title falls back to the prompt's first line, so a run card never reads `#undefined`; each run gets its own worktree and a unique `feature/agent-<slug>-<run-token>` branch
 - ADO-linked post-run steps (child-task sync, work-item comment, state transition) are skipped gracefully, and the commit/PR defaults render without a work-item reference (`agent: <title>`)
 - Set **`adoCode.agents.requireWorkItem`** to `true` to restore the legacy "select a work item first" guard (default `false`)
+
+## Remote Agent Oversight
+
+Watch your agents from your phone. `ADO Code: Toggle Remote Access` (or the status bar item,
+or the **Remote Access** row in the STATUS view) starts a small console on this machine and
+`Show Remote Access QR Code` renders the URL as a scannable QR code.
+
+The console is read-only oversight in phase 1: it lists running agents, streams their status
+and results, and announces consent prompts waiting on the machine. It does not approve tools
+or accept instructions.
+
+The QR panel always tells you *how* the URL is reachable, because that decides whether a phone
+can use it:
+
+- **Local only** — loopback (or LAN with `adoCode.remote.bind: all`); the code only works on
+  this machine until you start a tunnel.
+- **Tunnel active** — a `cloudflared` quick tunnel (or your own command) is up; the QR encodes
+  the public URL.
+- **Port forwarding** — VS Code already forwards the port (Codespaces, Remote-SSH, dev
+  tunnels).
+
+Access is guarded by a 256-bit token kept in `SecretStorage`: the QR carries it in the `#t=`
+fragment, the console trades it once for an `HttpOnly` cookie, and requests with a foreign
+`Host` header are rejected. `Rotate Remote Console Token` invalidates the old URL.
+
+Settings (all `machine`-scoped, since the console is a service on this machine):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `adoCode.remote.enabled` | `false` | Serve the console; off stops the server and any tunnel. |
+| `adoCode.remote.bind` | `loopback` | `loopback` = 127.0.0.1 only; `all` also serves your LAN. |
+| `adoCode.remote.port` | `0` | Console port; `0` picks a free one. |
+| `adoCode.remote.tunnel` | `none` | `none`, `cloudflared`, or `custom`. |
+| `adoCode.remote.tunnelCommand` | empty | Custom template; `{port}` is substituted. |
+| `adoCode.remote.tunnelUrlPattern` | empty | Regex for scraping the public URL from tunnel output. |
+
+Requires VS Code Desktop — the web client cannot forward a local port. Full details, tunnel
+examples and troubleshooting: [docs/remote.md](docs/remote.md).
 
 ## Model Capabilities
 
