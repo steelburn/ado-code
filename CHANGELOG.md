@@ -2,6 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
+- Closed [ADO-27359](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27359): AC-P1-08 De-duplicate AGENTS.md against repo.md, add byte budget and idempotent sync (2026-10-28) — `fix/tag-permission-fallback @ 1aa8cd7`
 - Closed [ADO-27358](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27358): AC-P1-07 Make markdown an export format with a JSON index and LRU eviction (2026-10-28) — `fix/tag-permission-fallback @ 40ada82`
 - Closed [ADO-27357](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27357): AC-P1-06 Stop writing ephemeral drafts and proposed tasks to disk (2026-10-28) — `fix/tag-permission-fallback @ 36b7029`
 - Closed [ADO-27355](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27355): AC-P0-04 Docs policy in system prompt and AGENTS.md conventions (2026-10-28) — `fix/tag-permission-fallback @ ef7b719`
