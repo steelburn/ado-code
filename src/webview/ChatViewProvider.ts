@@ -42,7 +42,7 @@ import { AgentProgressPanel } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
 import { collectDocumentationExport } from './documentation/exportDocumentation';
 import { promptAndSaveBinary } from './saveBinary';
-import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
+import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior, writeManagedFileIfChanged } from './agentsMd';
 import { SessionMirror, MirroredSessions } from './SessionMirror';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
@@ -3620,14 +3620,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // choice === null → card dismissed without a decision; re-offer next load.
   }
 
-  /** Write the candidate — full file for missing/adopt, in-place for update. */
+  /**
+   * Write the candidate — full file for missing/adopt, in-place for update. The
+   * write is content-guarded (ADO-27359): a sync that changes nothing must not
+   * touch the file, so a no-op sync produces no mtime, facts or artifact churn.
+   */
   private applyAgentsMdSync(root: string, decision: AgentsMdSyncDecision): void {
     const agentsMdPath = path.join(root, 'AGENTS.md');
-    if (decision.kind === 'update') {
-      const existing = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, 'utf8') : '';
-      fs.writeFileSync(agentsMdPath, replaceManagedBlock(existing, decision.candidate), 'utf8');
-    } else {
-      fs.writeFileSync(agentsMdPath, decision.candidate, 'utf8');
+    const next =
+      decision.kind === 'update'
+        ? replaceManagedBlock(
+            fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, 'utf8') : '',
+            decision.candidate
+          )
+        : decision.candidate;
+    if (!writeManagedFileIfChanged(agentsMdPath, next)) {
+      logger.debug('Chat: AGENTS.md already up to date — sync is a no-op');
     }
   }
 

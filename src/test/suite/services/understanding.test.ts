@@ -199,4 +199,65 @@ suite('UnderstandingService', () => {
     assert.ok(out.includes('### Work Item'), 'work item section');
     assert.ok(out.includes('Prior Session Knowledge'), 'knowledge section');
   });
+
+  // --- ADO-27359: no duplicate repository map, idempotent sync -------------
+
+  test('repo facts carry only the user-authored AGENTS.md text', async () => {
+    write(
+      tmpDir,
+      'AGENTS.md',
+      [
+        '<!-- ado-code:managed -->',
+        '## What This Is',
+        'Generated map that would duplicate repo.md.',
+        '<!-- ado-code:managed-end -->',
+        '',
+        '## House Rules',
+        'Squash merges only.',
+        '',
+      ].join('\n')
+    );
+    await service.ensureFresh();
+    const repo = fs.readFileSync(path.join(service.getDir(), 'repo.md'), 'utf8');
+    assert.ok(repo.includes('Squash merges only'), 'authored rules kept');
+    assert.ok(!repo.includes('duplicate repo.md'), 'managed map not duplicated into the facts');
+    assert.ok(!repo.includes('ado-code:managed'), 'managed markers stripped');
+  });
+
+  test('a managed-block-only rewrite does not invalidate the cache', async () => {
+    write(
+      tmpDir,
+      'AGENTS.md',
+      ['<!-- ado-code:managed -->', '## What This Is', 'First generated body.', '<!-- ado-code:managed-end -->', '', '## House Rules', 'Squash merges only.', ''].join(
+        '\n'
+      )
+    );
+    await service.ensureFresh();
+    const fingerprintBefore = service.getMeta().repo!.fingerprint;
+    const repoDir = path.join(service.getDir(), 'repo.md');
+    const before = fs.statSync(repoDir).mtimeMs;
+    // ADO Code rewrites its own managed block: same user text, new generated text.
+    write(
+      tmpDir,
+      'AGENTS.md',
+      ['<!-- ado-code:managed -->', '## What This Is', 'Second generated body, different size.', '<!-- ado-code:managed-end -->', '', '## House Rules', 'Squash merges only.', ''].join(
+        '\n'
+      )
+    );
+    await service.ensureFresh();
+    assert.strictEqual(service.getMeta().repo!.fingerprint, fingerprintBefore, 'fingerprint ignores our own writes');
+    assert.strictEqual(fs.statSync(repoDir).mtimeMs, before, 'repo.md not rewritten');
+  });
+
+  test('over-long authored AGENTS.md text is capped with a pointer', async () => {
+    const body = Array.from({ length: 80 }, (_, i) => `- rule ${i}: keep authored text bounded`).join(
+      '\n'
+    );
+    write(tmpDir, 'AGENTS.md', `<!-- ado-code:managed -->\n## What This Is\nx\n<!-- ado-code:managed-end -->\n${body}\n`);
+    await service.ensureFresh();
+    const repo = fs.readFileSync(path.join(service.getDir(), 'repo.md'), 'utf8');
+    assert.ok(repo.includes('read AGENTS.md for the rest'), 'cap is disclosed');
+    assert.ok(!repo.includes('rule 79'), 'tail not inlined');
+  });
+
 });

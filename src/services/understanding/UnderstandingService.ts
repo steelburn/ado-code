@@ -5,6 +5,7 @@ import { logger } from '../logger';
 import { WorkItemContext } from '../../shared/messages';
 import { formatWorkItemContext, DEFAULT_THREAD_BUDGET } from '../../llm/prompts';
 import { renderDocDigest, stripDigest, withDigest } from '../../shared/docDigest';
+import { hashBlock, stripManagedBlock } from '../../webview/agentsMd';
 import { DEFAULT_MAX_ENTRIES, UnderstandingIndex } from './UnderstandingIndex';
 
 /**
@@ -56,8 +57,10 @@ const REPO_FILE = 'repo.md';
 const KNOWLEDGE_FILE = 'knowledge.md';
 const META_FILE = 'meta.json';
 
-/** Files whose mtime (plus git identity) invalidate the repo understanding. */
+/** Files whose change invalidates the repo understanding (git identity also counts). */
 const WATCHED_FILES = ['AGENTS.md', 'package.json', 'README.md', 'README', 'tsconfig.json'];
+/** Fingerprinted by user-authored content only — ADO Code rewrites its managed block. */
+const WATCHED_AGENTS_MD = 'AGENTS.md';
 
 /** Top-level entries never listed as repo facts. */
 const EXCLUDED_TREE = new Set([
@@ -66,7 +69,10 @@ const EXCLUDED_TREE = new Set([
 ]);
 
 const MAX_TREE_ENTRIES = 40;
-const MAX_AGENTS_MD_CHARS = 1500;
+/** Budget for the user-authored AGENTS.md text folded into repo.md. */
+const MAX_AGENTS_MD_CHARS = 900;
+/** Read window used to find that text past the (possibly large) managed block. */
+const MAX_AGENTS_MD_RAW_CHARS = 12000;
 const MAX_README_CHARS = 1500;
 const MAX_README_LINES = 30;
 const MAX_PKG_SCRIPTS = 20;
@@ -398,6 +404,15 @@ export class UnderstandingService {
     for (const rel of WATCHED_FILES) {
       const abs = path.join(this.root, rel);
       try {
+        if (rel === WATCHED_AGENTS_MD) {
+          // AGENTS.md is written by ADO Code itself (managed-block sync), and
+          // mtime/size would therefore invalidate the cache we generate it from
+          // — a feedback loop. Fingerprint only the user-authored text outside
+          // the managed block: a managed-block rewrite leaves this unchanged.
+          const body = fs.readFileSync(abs, 'utf8');
+          parts.push(`${rel}:${hashBlock(stripManagedBlock(body))}`);
+          continue;
+        }
         const st = fs.statSync(abs);
         parts.push(`${rel}:${st.mtimeMs}:${st.size}`);
       } catch {
@@ -438,9 +453,13 @@ export class UnderstandingService {
       lines.push('');
     }
 
-    const agentsMd = this.readFileCapped(path.join(this.root, 'AGENTS.md'), MAX_AGENTS_MD_CHARS);
-    if (agentsMd) {
-      lines.push('## AGENTS.md', '', '```', agentsMd, '```', '');
+    // Only the user-authored part of AGENTS.md belongs in the facts: the managed
+    // block is generated from these very facts (AGENTS.md and repo.md holding the
+    // same repository map is what ADO-27359 removes), and it is already in the
+    // prompt via AGENTS.md itself.
+    const agentsMdFacts = this.readUserAuthoredAgentsMd();
+    if (agentsMdFacts) {
+      lines.push('## AGENTS.md (user-authored sections)', '', '```', agentsMdFacts, '```', '');
     }
 
     const pkgBlock = this.readPackageJsonBlock();
@@ -626,6 +645,21 @@ export class UnderstandingService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * AGENTS.md minus the ADO Code managed block, capped and annotated with a
+   * pointer when anything had to be dropped.
+   */
+  private readUserAuthoredAgentsMd(): string | null {
+    const raw = this.readFileCapped(path.join(this.root, 'AGENTS.md'), MAX_AGENTS_MD_RAW_CHARS);
+    if (!raw) return null;
+    const authored = stripManagedBlock(raw).trim();
+    if (!authored) return null;
+    if (authored.length <= MAX_AGENTS_MD_CHARS) return authored;
+    const cut = authored.lastIndexOf('\n', MAX_AGENTS_MD_CHARS);
+    const head = cut > 0 ? authored.slice(0, cut) : authored.slice(0, MAX_AGENTS_MD_CHARS);
+    return `${head.trimEnd()}\n… (truncated — read AGENTS.md for the rest)`;
   }
 
   private readFileCapped(file: string, cap: number): string | null {
