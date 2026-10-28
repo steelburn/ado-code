@@ -30,6 +30,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
 - **Reorganized Configuration UI**: Settings are grouped into navigable sidebar categories — Connection, AI & Modes, Permissions, Workflow, and Integrations — each with a setting-count badge, so you can jump straight to what you need instead of scrolling. The Advanced toggle gates a dedicated **Advanced** category: per-mode model selection, capability overrides, the choice detection model, and native token counting
 - **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js, Python, React, Next.js, Laravel, .NET) — configure options, ADO integration, and git setup before creation (`/new-project`); in a blank folder the wizard scaffolds into that folder itself, otherwise it creates a `<projectName>` subfolder
+- **Documentation projects**: three role templates — Business Analysis, IT Documentation, Test & UAT — that scaffold requirements, design, user, test and UAT documentation with a shared `REQ/TC/EX/EVD` identifier vocabulary and joinable registers; optional **KRiSA** governance adds the compliance matrix, change control and security evidence, and every document exports to Word (in-product or via generated Pandoc scripts), registers to Excel, and Mermaid diagrams to PNG ([docs](docs/documentation-projects.md))
 - **Wizard focus**: The Configuration page, project-creation wizard, and first-run setup take over the whole sidebar while open — the sibling views (Work Items / Status / Worktrees) collapse automatically and are restored when the wizard closes, so wizards never share space with the trees. The chat kebab's "Configuration…" opens the in-app Configuration page
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, filtering, and enable/disable toggle (`/skills`)
 - **AI skill execution**: The AI can discover and use enabled skills during conversations via the `execute_skill` tool — "Execute in Chat" button injects the skill prompt and triggers the LLM
@@ -139,6 +140,9 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.changelog.postToAdo` | Post the changelog entry as an ADO comment |
 | `adoCode.ignore.dotAdoCode` | Offer to add `.ado-code` to `.gitignore`/`.dockerignore` (default `true`) |
 | `adoCode.sessions.maxPerProject` | Max chat sessions kept per workspace + project |
+| `adoCode.memory.maxTotalChars` | Total characters of user + workspace memory injected into one prompt (default `4000`); anything beyond the budget is dropped and reported on one pointer line |
+| `adoCode.memory.maxEntries` | Max memory entries rendered in the injected digest (default `25`); leftovers become "plus N more entries — call `list_workspace_memory`" |
+| `adoCode.memory.maxCharsPerEntry` | Max characters for a single memory entry (default `400`), at injection and on write; `write_workspace_memory` / `set_memory` calls above it are rejected with a clear error |
 | `adoCode.agents.enabled` | Which external agents may be delegated to |
 | `adoCode.agents.verifyCommand` | Shell command run after an agent finishes |
 | `adoCode.agents.autoSelect` | Default agent when none is specified |
@@ -147,6 +151,8 @@ The **Advanced Configuration** toggle in the sidebar enables the Advanced catego
 | `adoCode.agents.requireWorkItem` | Require an active ADO work item before delegating — `true` restores the legacy "select a work item first" guard, `false` (default) allows a prompt-only run with no work item and no project selected |
 | `adoCode.mcp.servers` | MCP server configurations (array of `{ name, command, args?, env?, timeout? }`) |
 | `adoCode.skillRegistryUrls` | Extra skill registry URLs to browse in the Skill Catalog (TSV format: `slug<TAB>url<TAB>description`); the built-in UI Skills registry is always included |
+| `adoCode.understanding.maxEntries` | Max cached work items kept in `.ado-code/understanding/` (default `300`); beyond the cap the least-recently-used entries are evicted, while `repo.md` and `knowledge.md` are always kept |
+| `adoCode.skills.maxInjectedChars` | How much of one SKILL.md may be injected into the prompt (default `4000`); over the cap the skill injects its head plus an outline of the remaining sections and the sub-files it references |
 
 ## To-do View
 

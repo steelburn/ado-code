@@ -5,6 +5,8 @@ import { TaskDetailPanel } from './components/TaskDetailPanel';
 import { MessageList, LiveTraceEntry, TraceEntry, TraceInput } from './components/MessageList';
 import { InputBar } from './components/InputBar';
 import { StatusLine } from './components/StatusLine';
+import { DocumentationExportBar } from './components/DocumentationExportBar';
+import { deliverDocumentationExportPayload } from './export/documentationExport';
 import { KebabMenu } from './components/KebabMenu';
 import { collapseAllActionLabel } from '../../shared/chatNavigation';
 import { normalizeDensity, cycleDensity, densityLabel } from '../../shared/chatDensity';
@@ -200,6 +202,38 @@ function App() {
   // badge in the session list while its work happens in the background.
   const [sessionRun, setSessionRun] = useState<SessionRunInfo | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
+  /** Mirror of `sessionRun` for the message handler, which closes over the
+   *  state value captured when the effect subscribed (i.e. stale). */
+  const sessionRunRef = useRef<SessionRunInfo | null>(null);
+
+  /** Keep the session-run mirror and the badge state in step. */
+  const applySessionRun = useCallback((info: SessionRunInfo | null) => {
+    sessionRunRef.current = info;
+    setSessionRun(info);
+  }, []);
+
+  /** True while the session ON SCREEN still owns the (single) in-flight turn. */
+  const turnRunningHere = useCallback(() => {
+    const run = sessionRunRef.current;
+    return !!run && run.id === activeSessionIdRef.current;
+  }, []);
+
+  /** End the turn UI only when no turn still owns the visible session.
+   *  `loading` is a SHARED channel — work-item refreshes, project/model
+   *  fetches, aborts and delegated-run completions all post `loading:false`
+   *  on it, which is what flipped the button back to "Send" while the host
+   *  loop was still calling tools. */
+  const clearTurnLoading = useCallback(() => {
+    if (turnRunningHere()) return;
+    setLoading(false);
+  }, [turnRunningHere]);
+
+  /** ONE truth for every "a turn is live" consumer (Send/Stop button, the
+   *  Working… row, send-while-busy routing): the host's turn flag, plus the
+   *  session that still owns the in-flight run. The second half is what makes
+   *  the UI survive the `loading:false` posts that non-turn subsystems
+   *  (work-item refresh, delegated-run completion, aborts) make mid-loop. */
+  const isBusy = loading || (sessionRun !== null && sessionRun.id === activeSessionId);
 
   const currentSessionKey = activeSessionId || 'default';
   const confirmation = confirmationsBySession[currentSessionKey] ?? null;
@@ -213,6 +247,13 @@ function App() {
   // Creation failure shown INSIDE the wizard (App-level, so it survives the
   // fixed overlay that would hide the global error banner).
   const [projectWizardError, setProjectWizardError] = useState<string | null>(null);
+  // Documentation project just created — the export bar needs its folder and the
+  // documents the scaffolder wrote (both arrive with `projectWizardCreated`).
+  const [docProject, setDocProject] = useState<{
+    name: string;
+    path: string;
+    documents: string[];
+  } | null>(null);
   // Skill catalog
   const [showSkillCatalog, setShowSkillCatalog] = useState(false);
   // Activity indicator — shows a banner while a skill is executing or tasks are generating
@@ -400,7 +441,11 @@ function App() {
           break;
 
         case 'loading':
-          setLoading(msg.loading);
+          // Shared channel: the host also posts here for NON-turn work
+          // (work-item refresh, re-show re-arm). A bare `false` must not end
+          // the turn UI while the agentic loop is still executing tools.
+          if (msg.loading) setLoading(true);
+          else clearTurnLoading();
           break;
 
         case 'delegationSuggestion':
@@ -409,7 +454,9 @@ function App() {
 
         case 'error': {
           setError(msg.message);
-          setLoading(false);
+          // An error can be raised while work keeps going (a delegated run,
+          // a failed ADO refresh); the turn UI ends on sessionRunState(null).
+          clearTurnLoading();
           // A failed project/model fetch must not leave the wizard stuck on
           // "Fetching…" forever (Refresh links are gated on !loading).
           disarmProjectsWatchdog();
@@ -563,7 +610,7 @@ function App() {
 
         case 'sessionList':
           setSessions(msg.sessions);
-          setSessionRun(msg.running ?? null);
+          applySessionRun(msg.running ?? null);
           setActiveSessionId(msg.activeId);
           activeSessionIdRef.current = msg.activeId;
           if (msg.activeId) {
@@ -581,9 +628,16 @@ function App() {
           finishTurnState();
           break;
 
-        case 'sessionRunState':
-          setSessionRun(msg.running ?? null);
+        case 'sessionRunState': {
+          const runState = msg.running ?? null;
+          applySessionRun(runState);
+          // The host is authoritative about turn lifetime: a null run (or
+          // one owned by a DIFFERENT session) means nothing is executing
+          // here, so any stray `true` left on the shared loading channel
+          // must go — this is what keeps the Stop button from sticking.
+          if (!runState || runState.id !== activeSessionIdRef.current) setLoading(false);
           break;
+        }
 
         case 'workItemDetail':
           setDetail(msg.item as unknown as WorkItemDetail);
@@ -633,7 +687,10 @@ function App() {
               ? prev
               : [...prev, { role: 'assistant', content: completionMsg }]
           );
-          setLoading(false);
+          // A delegated run finishing is NOT the end of the chat turn that
+          // spawned it — the agentic loop may still be executing tools. Only
+          // clear when nothing owns the visible session.
+          clearTurnLoading();
           break;
         }
 
@@ -672,9 +729,21 @@ function App() {
           if (msg.success) {
             setProjectWizardError(null);
             setShowProjectWizard(false);
+            if (msg.templateId && msg.templateId.indexOf('doc-') === 0) {
+              setDocProject({
+                name: msg.projectName || msg.path.split(/[\\/]/).pop() || 'documentation',
+                path: msg.path,
+                documents: msg.documents || [],
+              });
+            }
           } else {
             setProjectWizardError(msg.error || 'Failed to create project');
           }
+          break;
+
+        case 'documentationExportPayload':
+          // Routes the host's sources to the export that is awaiting them.
+          deliverDocumentationExportPayload(msg.requestId, msg.payload);
           break;
         case 'openSkillCatalog':
           setShowSkillCatalog(true);
@@ -732,7 +801,7 @@ function App() {
       window.removeEventListener('message', handler);
       disarmProjectsWatchdog();
     };
-  }, [armProjectsWatchdog, disarmProjectsWatchdog]);
+  }, [armProjectsWatchdog, disarmProjectsWatchdog, applySessionRun, clearTurnLoading]);
 
   // Persist history + task detail so the chat restores after panel collapse/reopen
   useEffect(() => {
@@ -777,7 +846,7 @@ function App() {
     if (fullContent.trim().toLowerCase().startsWith('/generate-tasks')) {
       setActiveActivity('Generating tasks');
     }
-  }, [finishTurnState]);
+  }, [finishTurnState, applySessionRun, clearTurnLoading]);
 
   // Steer mode: post the text to the host so it is injected into the ACTIVE
   // run's next iteration. The bubble is rendered immediately ("⚡ steering")
@@ -806,28 +875,28 @@ function App() {
     //  - queue → hold the message (shown as a pending chip) and run it next
     //  - steer → post it to the host, which injects it into the RUNNING turn's
     //            next iteration (it does NOT abort the run)
-    if (loading && inputWhileBusy === 'queue') {
+    if (isBusy && inputWhileBusy === 'queue') {
       if (!fullContent.trim() && !(images && images.length)) return;
       setQueued(prev => [...prev, { id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, fullContent, displayContent, images }]);
       setDraft('');
       setAttachedFiles([]);
       return;
     }
-    if (loading && inputWhileBusy === 'steer') {
+    if (isBusy && inputWhileBusy === 'steer') {
       if (!fullContent.trim() && !(images && images.length)) return;
       steerNow(fullContent, displayContent, images);
       return;
     }
     sendNow(fullContent, displayContent, images);
-  }, [attachedFiles, loading, inputWhileBusy, sendNow, steerNow]);
+  }, [attachedFiles, isBusy, inputWhileBusy, sendNow, steerNow]);
 
   // Drain the queue: once the current turn finishes, send the next held message.
   useEffect(() => {
-    if (loading || queued.length === 0) return;
+    if (isBusy || queued.length === 0) return;
     const [next, ...rest] = queued;
     setQueued(rest);
     sendNow(next.fullContent, next.displayContent, next.images);
-  }, [loading, queued, sendNow]);
+  }, [isBusy, queued, sendNow]);
 
   const handleConsentResponse = useCallback((requestId: string, approved: boolean, scope?: 'once' | 'session' | 'permanent') => {
     setConsent(null);
@@ -1226,7 +1295,7 @@ function App() {
       {/* Messages */}
       <MessageList
         messages={messages}
-        loading={loading}
+        loading={isBusy}
         liveTrace={liveTrace}
         streamText={streamText}
         activity={activeActivity}
@@ -1312,11 +1381,20 @@ function App() {
       </div>
 
       <StatusLine
-        loading={loading}
+        loading={isBusy}
         activity={activeActivity}
         streamText={streamText}
         trace={liveTrace}
       />
+
+      {docProject && (
+        <DocumentationExportBar
+          projectName={docProject.name}
+          projectPath={docProject.path}
+          documents={docProject.documents}
+          onDismiss={() => setDocProject(null)}
+        />
+      )}
 
       <InputBar
         mode={mode}
@@ -1326,7 +1404,10 @@ function App() {
         onStop={() => {
           vscode.postMessage({ type: 'stopGeneration' });
           setQueued([]); // stopping the turn cancels anything held in the queue
-          setLoading(false);
+          // NOT setLoading(false): the host keeps runningTurnSession until
+          // the loop has actually unwound (a tool call in flight is not
+          // abortable) and only then posts sessionRunState(null). Clearing
+          // here is what turned the Stop button back into "Send" too early.
           setConsent(null);
           setConfirmationsBySession(prev => {
             const curKey = activeSessionIdRef.current || 'default';
@@ -1339,7 +1420,12 @@ function App() {
         onModeSelect={handleModeSelect}
         onAddContext={() => vscode.postMessage({ type: 'getEditorContext' })}
         onAttachFiles={() => vscode.postMessage({ type: 'pickFiles' })}
-        loading={loading ? mode : ''}
+        loading={
+          // Derived, never the raw turn flag: non-turn subsystems post
+          // `loading:false` on the shared channel while the agentic loop is
+          // still calling tools, which flipped this button back to "Send".
+          isBusy ? mode : ''
+        }
         canAttachImages={config.modelCapabilities?.vision ?? true}
         attachedFiles={attachedFiles}
         onRemoveAttachedFile={(index) => setAttachedFiles(prev => prev.filter((_, i) => i !== index))}

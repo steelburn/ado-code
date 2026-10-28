@@ -3,7 +3,10 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { logger } from '../logger';
 import { WorkItemContext } from '../../shared/messages';
-import { formatWorkItemContext } from '../../llm/prompts';
+import { formatWorkItemContext, DEFAULT_THREAD_BUDGET } from '../../llm/prompts';
+import { renderDocDigest, stripDigest, withDigest } from '../../shared/docDigest';
+import { hashBlock, stripManagedBlock } from '../../webview/agentsMd';
+import { DEFAULT_MAX_ENTRIES, UnderstandingIndex } from './UnderstandingIndex';
 
 /**
  * Repository Understanding — a durable, fingerprinted cache of what ADO Code
@@ -54,8 +57,10 @@ const REPO_FILE = 'repo.md';
 const KNOWLEDGE_FILE = 'knowledge.md';
 const META_FILE = 'meta.json';
 
-/** Files whose mtime (plus git identity) invalidate the repo understanding. */
+/** Files whose change invalidates the repo understanding (git identity also counts). */
 const WATCHED_FILES = ['AGENTS.md', 'package.json', 'README.md', 'README', 'tsconfig.json'];
+/** Fingerprinted by user-authored content only — ADO Code rewrites its managed block. */
+const WATCHED_AGENTS_MD = 'AGENTS.md';
 
 /** Top-level entries never listed as repo facts. */
 const EXCLUDED_TREE = new Set([
@@ -64,7 +69,10 @@ const EXCLUDED_TREE = new Set([
 ]);
 
 const MAX_TREE_ENTRIES = 40;
-const MAX_AGENTS_MD_CHARS = 1500;
+/** Budget for the user-authored AGENTS.md text folded into repo.md. */
+const MAX_AGENTS_MD_CHARS = 900;
+/** Read window used to find that text past the (possibly large) managed block. */
+const MAX_AGENTS_MD_RAW_CHARS = 12000;
 const MAX_README_CHARS = 1500;
 const MAX_README_LINES = 30;
 const MAX_PKG_SCRIPTS = 20;
@@ -117,6 +125,8 @@ export class UnderstandingService {
 
   /** Guards against overlapping summary generations (activation + chat turn). */
   private summaryInFlight = false;
+  /** Metadata index over the cache directory (lazily created). */
+  private cachedIndex?: UnderstandingIndex;
 
   /** Id of the work item whose cached context `toPromptString()` includes. */
   private currentWorkItemId?: number;
@@ -182,7 +192,9 @@ export class UnderstandingService {
         content += `\n\n### LLM Summary\n\n${summary}`;
       }
       this.init();
-      fs.writeFileSync(this.repoFile(), content, 'utf8');
+      const repoContent = this.withRepoDigest(content);
+      fs.writeFileSync(this.repoFile(), repoContent, 'utf8');
+      this.index.upsert({ id: 'repo', kind: 'repo', title: 'Repository map', content: repoContent });
       meta.repo = {
         fingerprint,
         generatedAt: new Date().toISOString(),
@@ -223,7 +235,9 @@ export class UnderstandingService {
       const summary = (await this.summarizeFn(`${SUMMARY_SYSTEM_PROMPT}\n\n${facts}`)).trim();
       if (!summary) return;
       const content = `${facts}\n\n### LLM Summary\n\n${summary.slice(0, MAX_SUMMARY_CHARS)}`;
-      fs.writeFileSync(this.repoFile(), content, 'utf8');
+      const repoContent = this.withRepoDigest(content);
+      fs.writeFileSync(this.repoFile(), repoContent, 'utf8');
+      this.index.upsert({ id: 'repo', kind: 'repo', title: 'Repository map', content: repoContent });
       const meta = this.readMeta();
       meta.repo = {
         ...(meta.repo ?? { fingerprint: '', generatedAt: '' }),
@@ -253,11 +267,15 @@ export class UnderstandingService {
     const prev = meta.workitems?.[idKey];
     const file = this.workItemFile(workItem.id);
     if (prev && prev.fingerprint === fp && fs.existsSync(file)) {
+      this.index.touch(`workitem-${workItem.id}`);
       this.currentWorkItemId = workItem.id;
       return;
     }
     this.init();
-    fs.writeFileSync(file, `### Work Item\n\n${formatWorkItemContext(workItem)}`, 'utf8');
+    const workItemContent = `${this.workItemDigest(workItem)}\n\n### Work Item\n\n${formatWorkItemContext(workItem)}`;
+    fs.writeFileSync(file, workItemContent, 'utf8');
+    this.index.upsert({ id: `workitem-${workItem.id}`, kind: 'workitem', title: workItem.title, content: workItemContent });
+    this.evictCache();
     meta.workitems = {
       ...(meta.workitems ?? {}),
       [idKey]: { fingerprint: fp, generatedAt: new Date().toISOString() },
@@ -307,7 +325,9 @@ export class UnderstandingService {
         combined = `## ${parts.join('\n## ')}`;
       }
     }
-    fs.writeFileSync(file, combined, 'utf8');
+    const knowledgeContent = this.withKnowledgeDigest(combined);
+    fs.writeFileSync(file, knowledgeContent, 'utf8');
+    this.index.upsert({ id: 'knowledge', kind: 'knowledge', title: 'Prior session knowledge', content: knowledgeContent });
     const meta = this.readMeta();
     meta.knowledge = {
       updatedAt: new Date().toISOString(),
@@ -326,13 +346,22 @@ export class UnderstandingService {
   toPromptString(): string {
     const parts: string[] = [];
     const repo = this.readFileIfExists(this.repoFile());
-    if (repo) parts.push(repo);
+    if (repo) {
+      parts.push(repo);
+      this.index.touch('repo');
+    }
     if (this.currentWorkItemId !== undefined) {
       const wi = this.readFileIfExists(this.workItemFile(this.currentWorkItemId));
-      if (wi) parts.push(wi);
+      if (wi) {
+        parts.push(wi);
+        this.index.touch(`workitem-${this.currentWorkItemId}`);
+      }
     }
     const knowledge = this.readFileIfExists(this.knowledgeFile());
-    if (knowledge) parts.push(`### Prior Session Knowledge\n\n${knowledge}`);
+    if (knowledge) {
+      parts.push(`### Prior Session Knowledge\n\n${knowledge}`);
+      this.index.touch('knowledge');
+    }
     if (parts.length === 0) return '';
 
     const header =
@@ -375,6 +404,15 @@ export class UnderstandingService {
     for (const rel of WATCHED_FILES) {
       const abs = path.join(this.root, rel);
       try {
+        if (rel === WATCHED_AGENTS_MD) {
+          // AGENTS.md is written by ADO Code itself (managed-block sync), and
+          // mtime/size would therefore invalidate the cache we generate it from
+          // — a feedback loop. Fingerprint only the user-authored text outside
+          // the managed block: a managed-block rewrite leaves this unchanged.
+          const body = fs.readFileSync(abs, 'utf8');
+          parts.push(`${rel}:${hashBlock(stripManagedBlock(body))}`);
+          continue;
+        }
         const st = fs.statSync(abs);
         parts.push(`${rel}:${st.mtimeMs}:${st.size}`);
       } catch {
@@ -415,9 +453,13 @@ export class UnderstandingService {
       lines.push('');
     }
 
-    const agentsMd = this.readFileCapped(path.join(this.root, 'AGENTS.md'), MAX_AGENTS_MD_CHARS);
-    if (agentsMd) {
-      lines.push('## AGENTS.md', '', '```', agentsMd, '```', '');
+    // Only the user-authored part of AGENTS.md belongs in the facts: the managed
+    // block is generated from these very facts (AGENTS.md and repo.md holding the
+    // same repository map is what ADO-27359 removes), and it is already in the
+    // prompt via AGENTS.md itself.
+    const agentsMdFacts = this.readUserAuthoredAgentsMd();
+    if (agentsMdFacts) {
+      lines.push('## AGENTS.md (user-authored sections)', '', '```', agentsMdFacts, '```', '');
     }
 
     const pkgBlock = this.readPackageJsonBlock();
@@ -508,6 +550,68 @@ export class UnderstandingService {
     return path.join(this.dir, KNOWLEDGE_FILE);
   }
 
+  // -----------------------------------------------------------------------
+  // Digest-first headers (ADO-27354)
+  // -----------------------------------------------------------------------
+
+  /** Digest for repo.md: what sections exist and whether a summary is inlined. */
+  private withRepoDigest(content: string): string {
+    const body = stripDigest(content);
+    const sections = body
+      .split('\n')
+      .filter((l) => /^#{2,3} /.test(l))
+      .map((l) => l.replace(/^#+\s*/, '').trim());
+    const hasSummary = /^### LLM Summary/m.test(body);
+    return withDigest(
+      body,
+      renderDocDigest({
+        kind: 'repository facts',
+        facts: [
+          `Sections: ${sections.length > 0 ? sections.join(', ') : '(none)'}`,
+          `Size: ${body.length} chars.`,
+          hasSummary
+            ? 'An LLM summary is inlined under the summary heading below.'
+            : 'No LLM summary yet — deterministic facts only.',
+        ],
+        footer: 'The fingerprint that decides staleness is in "Repository Facts" below; read a line range rather than the whole file.',
+      }),
+    );
+  }
+
+  /** Digest for knowledge.md: how many entries survive and what the newest one is. */
+  private withKnowledgeDigest(text: string): string {
+    const body = stripDigest(text);
+    const entries = body.split('\n## ').filter((e) => e.trim().length > 0);
+    const newest = entries.length > 0 ? entries[entries.length - 1].split('\n')[0].replace(/^##\s*/, '') : '';
+    return withDigest(
+      body,
+      renderDocDigest({
+        kind: 'distilled session knowledge',
+        facts: [
+          `Entries kept: ${entries.length} (oldest dropped first once the file passes ${MAX_KNOWLEDGE_CHARS} chars).`,
+          `Newest entry: ${newest || '(none)'}`,
+          `Size: ${body.length} chars.`,
+        ],
+        footer: 'Do not re-read this whole file each turn — read the entry you need, or use the workspace-memory tools.',
+      }),
+    );
+  }
+
+  /** Digest for a cached work item, with a live retrieval pointer. */
+  private workItemDigest(workItem: WorkItemContext): string {
+    const total = workItem.comments?.length ?? 0;
+    const shown = Math.min(total, DEFAULT_THREAD_BUDGET.maxComments);
+    return renderDocDigest({
+      kind: `cached work item #${workItem.id}`,
+      facts: [
+        `#${workItem.id} — ${workItem.title}`,
+        `State: ${workItem.state || '(unknown)'}; comments rendered: ${shown} of ${total}.`,
+        `Acceptance criteria: ${workItem.acceptanceCriteria ? 'cached below' : '(none set)'}.`,
+      ],
+      footer: `Call get_work_item(${workItem.id}) for the full thread and acceptance criteria.`,
+    });
+  }
+
   private workItemFile(id: number): string {
     return path.join(this.dir, `workitem-${id}.md`);
   }
@@ -543,6 +647,21 @@ export class UnderstandingService {
     }
   }
 
+  /**
+   * AGENTS.md minus the ADO Code managed block, capped and annotated with a
+   * pointer when anything had to be dropped.
+   */
+  private readUserAuthoredAgentsMd(): string | null {
+    const raw = this.readFileCapped(path.join(this.root, 'AGENTS.md'), MAX_AGENTS_MD_RAW_CHARS);
+    if (!raw) return null;
+    const authored = stripManagedBlock(raw).trim();
+    if (!authored) return null;
+    if (authored.length <= MAX_AGENTS_MD_CHARS) return authored;
+    const cut = authored.lastIndexOf('\n', MAX_AGENTS_MD_CHARS);
+    const head = cut > 0 ? authored.slice(0, cut) : authored.slice(0, MAX_AGENTS_MD_CHARS);
+    return `${head.trimEnd()}\n… (truncated — read AGENTS.md for the rest)`;
+  }
+
   private readFileCapped(file: string, cap: number): string | null {
     const content = this.readFileIfExists(file);
     if (!content) return null;
@@ -568,6 +687,49 @@ export class UnderstandingService {
     } catch {
       return true;
     }
+  }
+
+  /**
+   * Metadata index over the cache directory (id, title, size, hash,
+   * lastAccessed). Rebuilt from disk when missing or corrupt; the markdown
+   * files stay the payload and are additionally an export format.
+   */
+  get index(): UnderstandingIndex {
+    if (!this.cachedIndex) this.cachedIndex = new UnderstandingIndex(this.dir);
+    return this.cachedIndex;
+  }
+
+  /** Configured LRU cap on cached work items (adoCode.understanding.maxEntries). */
+  maxEntries(): number {
+    try {
+      const value = vscode.workspace
+        .getConfiguration('adoCode')
+        .get<number>('understanding.maxEntries', DEFAULT_MAX_ENTRIES);
+      const n = Math.floor(Number(value));
+      return Number.isFinite(n) && n >= 10 ? n : DEFAULT_MAX_ENTRIES;
+    } catch {
+      return DEFAULT_MAX_ENTRIES;
+    }
+  }
+
+  /**
+   * Evict least-recently-accessed work items beyond the cap. repo.md and
+   * knowledge.md are always injected into the prompt, so they are protected.
+   * Returns the evicted ids, oldest first.
+   */
+  evictCache(max = this.maxEntries()): string[] {
+    return this.index.evictLRU(max, ['repo', 'knowledge']);
+  }
+
+  /**
+   * Export the cache as markdown into `targetDir` (default:
+   * `<understanding>/export`). Copies are verbatim, so the export always
+   * matches the cache and the cache files are never modified.
+   */
+  exportMarkdown(targetDir?: string): { dir: string; files: string[]; manifestPath: string } {
+    const dir = targetDir ?? this.index.defaultExportDir();
+    const result = this.index.exportTo(dir);
+    return { dir, files: result.files, manifestPath: result.manifestPath };
   }
 
   private shouldAutoSummarize(): boolean {

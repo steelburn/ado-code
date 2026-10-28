@@ -1,4 +1,9 @@
 // Messages from Webview → Extension Host
+import {
+  DocumentationExportPayload,
+  DocumentationExportRequest,
+} from './documentation/exportPayload';
+import { BinarySaveRequest } from './binaryExport';
 import { AgentRun, AgentCapability } from '../agents/types';
 import { ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
 import { ChatDensity } from './chatDensity';
@@ -120,11 +125,22 @@ export type WebviewToExtensionMessage =
   // Skill registry (remote TSV registries)
   | { type: 'getRegistrySkills' }
   | { type: 'installRegistrySkill'; entry: { slug: string; url: string; description: string } }
+  // Binary exports rendered in the webview (DOCX / XLSX / rasterised diagram
+  // or evidence image) — written through a native save dialog by the host.
+  // the file with docx/fflate/mermaid, and the host writes it where the user picks.
+  | { type: 'saveBinary'; request: BinarySaveRequest }
+  // Documentation project export round trip: the webview asks the host for
+  // the sources (registers, Markdown + image bytes, a mermaid fence), builds
+  // the file with docx/fflate/mermaid, and saves it via `saveBinary` below.
+  | { type: 'exportDocumentation'; requestId: string; request: DocumentationExportRequest }
   // Mermaid SVG export
   | { type: 'saveSvg'; content: string; defaultName?: string };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
+  // Reply to `exportDocumentation` — success and failure share this shape,
+  // so the UI has exactly one place to handle an export outcome.
+  | { type: 'documentationExportPayload'; requestId: string; payload: DocumentationExportPayload }
   // Optional `id` stamps an assistant bubble with a stable identity so a later
   // done:true message with the SAME id REPLACES that bubble's content instead
   // of appending a new one. Used for the live delegation card: the host rewrites
@@ -202,7 +218,18 @@ export type ExtensionToWebviewMessage =
   // Proposed tasks created in ADO after user review
   | { type: 'proposedTasksCreated'; count: number; parentId: number }
   // Project creation wizard result
-  | { type: 'projectWizardCreated'; success: boolean; path: string; error?: string }
+  | {
+      type: 'projectWizardCreated';
+      success: boolean;
+      path: string;
+      error?: string;
+      /** Non-fatal notes from the scaffolder (KRiSA coercions, skipped arming). */
+      warnings?: string[];
+      templateId?: string;
+      projectName?: string;
+      /** Project-relative document paths the scaffolder wrote (documentation templates). */
+      documents?: string[];
+    }
   // Open the project-creation wizard in the webview (host-initiated)
   | { type: 'openProjectWizard' }
   // Steering while the AI is processing (chat.inputWhileBusy): queued + applied

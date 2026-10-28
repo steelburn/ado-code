@@ -143,6 +143,27 @@ const systemPrompt = `You are ADO Code.${workspaceContext}
 ... rest of prompt ...`
 ```
 
+### Injection Budget
+
+Memory is injected as a compact digest under hard budgets so it can never
+crowd out the actual task:
+
+- `adoCode.memory.maxTotalChars` (default `4000`) — total characters of the
+  injected block, header and footer included. User memory is injected first;
+  workspace memory gets whatever budget is left.
+- `adoCode.memory.maxEntries` (default `25`) — at most 25 entries per block.
+  The remainder is reported on one pointer line,
+  `_…plus N more entries — call list_workspace_memory for the full text._`,
+  and `list_workspace_memory` itself always returns the full entries.
+- `adoCode.memory.maxCharsPerEntry` (default `400`) — one line per entry:
+  the body is flattened and cut with a `…` marker. The same ceiling is
+  enforced at write time — `write_workspace_memory` / `set_memory` reject an
+  oversized entry with an explanatory error instead of storing it.
+
+Small memories are unaffected: below the budgets the rendering is what it
+was before. All three budgets live in `src/memory/memoryBudget.ts`; the
+helpers are pure so they are unit-tested without a VS Code host.
+
 ## Writing Workspace Memory
 
 ### From Chat Commands

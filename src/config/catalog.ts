@@ -193,7 +193,26 @@ export const CATEGORIES: ConfigCategory[] = [
         settings: [
           { key: 'understanding.enabled', label: 'Cache repository understanding', type: 'boolean', description: 'Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat sessions and delegated-agent prompts (so new sessions and agents start from prior knowledge)' },
           { key: 'understanding.agentsMdSync', label: 'Sync AGENTS.md with understanding', type: 'boolean', description: 'Keep AGENTS.md in sync with the repository understanding: generate one when missing, and refresh its generated sections when understanding changes', hint: 'ADO Code rewrites only the managed sections of AGENTS.md on sync; edits you make anywhere else in the file are preserved.' },
+          { key: 'understanding.maxEntries', label: 'Cached work items to keep', type: 'number', min: 1, description: 'Maximum work-item understanding entries kept in .ado-code/understanding/. Beyond this cap the least-recently-used entries are evicted; repo.md and knowledge.md are always kept.' },
           { key: 'understanding.autoSummarize', label: 'Auto-generate LLM repo summary', type: 'boolean', description: 'Generate an LLM repository summary automatically when the repo changes (new branch/commit, edited AGENTS.md/package.json/README). Uses one model call per change. Refresh manually anytime via "ADO Code: Refresh Repository Understanding".' },
+        ],
+      },
+      {
+        title: 'Memory',
+        icon: '💾',
+        settings: [
+          { key: 'memory.maxTotalChars', label: 'Max injected memory (chars)', type: 'number', min: 200, description: 'Total characters of user + workspace memory injected into one prompt, header and footer included. Anything beyond the budget is dropped and reported on one pointer line, so memory never crowds out the task.', hint: 'User memory is injected first; workspace memory gets whatever budget is left.' },
+          { key: 'memory.maxEntries', label: 'Max memory entries injected', type: 'number', min: 1, description: 'How many memory entries may be rendered in the injected digest. Leftover entries are reported as plus N more entries — call list_workspace_memory, and that tool still returns everything untruncated.' },
+          { key: 'memory.maxCharsPerEntry', label: 'Max memory entry (chars)', type: 'number', min: 40, description: 'Longest single memory entry, in the injected digest and on write. write_workspace_memory / set_memory calls above it are rejected with a clear error instead of being stored.' },
+        ],
+      },
+      {
+        title: 'Artifacts & cleanup',
+        icon: '🧹',
+        settings: [
+          { key: 'artifacts.enabled', label: 'Prune artifacts automatically', type: 'boolean', description: 'Delete generated artifacts in .ado-code (work-item caches, delegated run output, leftover drafts) once a day on activation. Turning this off stops all automatic deletion; the Compact Artifacts command still works on demand.' },
+          { key: 'artifacts.retentionDays', label: 'Retention (days)', type: 'number', min: 1, description: 'Maximum age in days for prunable artifacts. The newest artifact of every kind is always kept, so an in-use work item never loses its cache.' },
+          { key: 'artifacts.maxFilesPerKind', label: 'Max files per kind', type: 'number', min: 1, description: 'Maximum generated files kept per artifact kind (work-item caches, run output, drafts). Files beyond this count are removed oldest-first.' },
         ],
       },
     ],
@@ -221,6 +240,7 @@ export const CATEGORIES: ConfigCategory[] = [
         icon: '🧩',
         settings: [
           { key: 'skillRegistryUrls', label: 'Skill registry URLs', type: 'array', description: 'Additional skill registry URLs to fetch skills from (TSV rows: slug, url, description)', hint: 'One registry URL per line, or paste several separated by commas. The built-in UI Skills registry is always included.' },
+          { key: 'skills.maxInjectedChars', label: 'Max injected skill chars', type: 'number', description: 'How much of a SKILL.md may be injected into the prompt', hint: 'Skills over this ceiling inject their head plus an outline of the remaining sections and the sub-files they reference, so the model can load only what it needs. Default 4000.', min: 200 },
         ],
       },
       {

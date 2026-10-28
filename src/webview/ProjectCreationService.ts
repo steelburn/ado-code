@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
+import { DocProjectSpec, DOC_PROJECT_SPECS } from '../shared/documentation/docTemplates';
+import { scaffoldDocumentationProject } from './documentation/scaffoldDocs';
 
 /**
  * Scaffolds new projects from wizard requests. Deliberately vscode-free so it
@@ -18,7 +20,14 @@ export class ProjectCreationService {
    */
   async createProject(
     request: ProjectCreationRequest
-  ): Promise<{ success: boolean; path: string; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    path: string;
+    error?: string;
+    warnings?: string[];
+    /** Project-relative paths of the documents written (documentation projects). */
+    documents?: string[];
+  }> {
     try {
       // Guard against empty targetPath (webview sends '' expecting host resolution)
       if (!request.targetPath) {
@@ -67,7 +76,9 @@ export class ProjectCreationService {
       }
 
       // Scaffold files based on template
-      await this.scaffoldByTemplate(projectDir, { ...request, projectName });
+      const warnings: string[] = [];
+      const documents: string[] = [];
+      documents.push(...(await this.scaffoldByTemplate(projectDir, { ...request, projectName }, warnings)));
 
       // Initialize git if requested
       if (request.gitInit) {
@@ -81,6 +92,10 @@ export class ProjectCreationService {
 
       return {
         success: true,
+        // Always arrays, even when empty: the wizard forwards these straight to
+        // the webview, where `undefined` would force every consumer to guard.
+        warnings,
+        documents,
         path: projectDir,
       };
     } catch (err) {
@@ -130,12 +145,15 @@ export class ProjectCreationService {
    */
   private async scaffoldByTemplate(
     dir: string,
-    request: ProjectCreationRequest
-  ): Promise<void> {
+    request: ProjectCreationRequest,
+    warnings: string[] = []
+  ): Promise<string[]> {
     const template = PROJECT_TEMPLATES.find((t) => t.id === request.templateId);
     if (!template) {
       throw new Error(`Unknown template: ${request.templateId}`);
     }
+
+    const documents: string[] = [];
 
     switch (request.templateId) {
       case 'node-ts':
@@ -168,10 +186,34 @@ export class ProjectCreationService {
       case 'empty':
         await this.scaffoldEmpty(dir, request);
         break;
+      case 'doc-ba':
+      case 'doc-writer':
+      case 'doc-tester':
+        documents.push(
+          ...(await this.scaffoldDocProject(dir, request, DOC_PROJECT_SPECS[request.templateId], warnings))
+        );
+        break;
       default:
         throw new Error(`No scaffolder for template: ${request.templateId}`);
     }
+
+    return documents;
   }
+
+  // ──────────────────────────────────────────────
+  //  Documentation projects (BA / Writer / Tester)
+  // ──────────────────────────────────────────────
+  private async scaffoldDocProject(
+    dir: string,
+    request: ProjectCreationRequest,
+    spec: DocProjectSpec,
+    warnings: string[]
+  ): Promise<string[]> {
+    // The documentation scaffolder writes its own richer .gitignore (it is not
+    // a code project), so writeGitignore is deliberately not called here.
+    return scaffoldDocumentationProject(dir, request, spec, warnings);
+  }
+
 
   // ──────────────────────────────────────────────
   //  Node.js (TypeScript)

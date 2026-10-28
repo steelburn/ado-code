@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { buildAgentsMdContent, computeManagedBlock, extractManagedBlock, replaceManagedBlock, evaluateAgentsMdSync, hashBlock, MANAGED_START, MANAGED_END } from '../../../webview/agentsMd';
+import { buildAgentsMdContent, computeManagedBlock, extractManagedBlock, replaceManagedBlock, evaluateAgentsMdSync, hashBlock, MANAGED_START, MANAGED_END, MAX_MANAGED_BLOCK_CHARS, stripManagedBlock, writeManagedFileIfChanged } from '../../../webview/agentsMd';
 
 const roots: string[] = [];
 
@@ -357,4 +357,53 @@ suite('evaluateAgentsMdSync', () => {
     assert.strictEqual(a, hashBlock('same text'), 'deterministic');
     assert.notStrictEqual(a, hashBlock('different text'));
   });
+
+  // --- ADO-27359: byte budget, de-duplication, idempotent writes ----------
+
+  test('the understanding section is a digest with a pointer, not the whole summary', () => {
+    const root = makeRoot({ files: { 'src/a.ts': '' } });
+    const filler = Array.from(
+      { length: 200 },
+      (_, i) => `### Detail ${i} — filler prose that must not be copied into AGENTS.md.`
+    ).join('\n');
+    const summary = `## Architecture\n- \`src/\` — extension host\n${filler}`;
+    const block = computeManagedBlock(root, { summary });
+    assert.ok(block.includes('.ado-code/understanding/repo.md'), 'points at the cached full map');
+    assert.ok(!block.includes('Detail 150'), 'summary tail is not embedded');
+    assert.ok(block.length < 2500, `digest keeps the block small (${block.length})`);
+    assert.ok(block.includes('digest cut at'), 'truncation is disclosed');
+    assert.ok(block.includes('### Architecture'), 'headings demoted, head of summary kept');
+  });
+
+  test('the managed block honours its byte budget', () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 150; i++) files[`dir${String(i).padStart(3, '0')}/a.ts`] = '';
+    const root = makeRoot({ files });
+    const block = computeManagedBlock(root, { summary: '## Architecture\n- `dir000/` — filler' });
+    assert.ok(block.length <= MAX_MANAGED_BLOCK_CHARS, `within budget (${block.length})`);
+    assert.ok(block.startsWith('## What This Is'), 'head of the block survives');
+    assert.ok(block.includes('Managed block trimmed to its'), 'trim is disclosed');
+    assert.ok(block.includes('dir000'), 'early structure bullets survive the trim');
+  });
+
+  test('stripManagedBlock drops the generated map and keeps authored text', () => {
+    const md = buildAgentsMdContent(makeRoot({ files: { 'src/a.ts': '' } }));
+    const authored = `${md}\n## My Notes\nHand-written detail.\n`;
+    const stripped = stripManagedBlock(authored);
+    assert.ok(!stripped.includes('## What This Is'), 'generated sections dropped');
+    assert.ok(stripped.includes('Hand-written detail.'), 'authored text kept');
+    assert.strictEqual(stripManagedBlock('no markers here'), 'no markers here', 'unmanaged file untouched');
+  });
+
+  test('a no-op sync does not rewrite the file', () => {
+    const root = makeRoot({ files: { 'src/a.ts': '' } });
+    const file = path.join(root, 'AGENTS.md');
+    const content = buildAgentsMdContent(root);
+    assert.strictEqual(writeManagedFileIfChanged(file, content), true, 'first write lands');
+    const before = fs.statSync(file).mtimeMs;
+    assert.strictEqual(writeManagedFileIfChanged(file, content), false, 'identical content is skipped');
+    assert.strictEqual(fs.statSync(file).mtimeMs, before, 'mtime unchanged');
+    assert.strictEqual(writeManagedFileIfChanged(file, `${content}\n## Extra\n`), true, 'changed content is written');
+  });
+
 });

@@ -24,6 +24,11 @@ import { gitErrorMessage } from './git/gitError';
 import { AgentRunner } from './agents/AgentRunner';
 import { AgentRun } from './agents/types';
 import { logger } from './services/logger';
+import {
+  compactArtifactsCommand,
+  scheduleArtifactPrune,
+  showContextCostCommand,
+} from './services/artifacts/ArtifactMaintenance';
 
 let chatProvider: ChatViewProvider;
 let treeProvider: WorkItemsTreeProvider;
@@ -104,6 +109,10 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Session state also has to survive a teardown that never reaches deactivate()
+  // (crash, killed window, laptop powering off): register the pre-shutdown hooks.
+  context.subscriptions.push(...chatProvider.registerSaveStateFlush());
+
   // Restore the editor-area chat tab ("ADO Code Chat") after a window reload or
   // IDE restart. VS Code only revives webview editor tabs whose view type has a
   // registered serializer, so registering here is what keeps the tab alive.
@@ -131,7 +140,30 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.window.showInformationMessage('ADO Code: repository understanding refreshed.');
       // The refreshed understanding may show AGENTS.md is outdated — offer a sync.
       chatProvider?.notifyUnderstandingRefreshed();
-    })
+    }),
+    vscode.commands.registerCommand('adoCode.exportUnderstanding', async () => {
+      const target = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: 'Export here',
+        title: 'ADO Code: export repository understanding as markdown',
+      });
+      if (!target || target.length === 0) return;
+      try {
+        const result = services.understanding.exportMarkdown(target[0].fsPath);
+        const open = await vscode.window.showInformationMessage(
+          `ADO Code: exported ${result.files.length} cached entr${result.files.length === 1 ? 'y' : 'ies'} to ${result.dir}.`,
+          'Open manifest',
+        );
+        if (open === 'Open manifest') {
+          await vscode.window.showTextDocument(vscode.Uri.file(result.manifestPath));
+        }
+      } catch (err) {
+        logger.warn('exportUnderstanding failed', err);
+        vscode.window.showErrorMessage(`ADO Code: export failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
   );
 
   // Worktrees Panel: dedicated view of agent worktrees with per-worktree
@@ -151,6 +183,15 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  // Artifact housekeeping: a throttled prune on activation plus the two
+  // commands that expose (Show Context Cost) and reclaim (Compact Artifacts)
+  // what `.ado-code` accumulates.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.compactArtifacts', () => compactArtifactsCommand()),
+    vscode.commands.registerCommand('adoCode.showContextCost', () => showContextCostCommand()),
+  );
+  scheduleArtifactPrune();
 
   // To-do Panel: the AI-generated task ledger for each chat session. Items
   // arrive from the `update_todo_list` tool and are ticked off as the harness
@@ -1835,7 +1876,34 @@ Generate ONLY the commit message, nothing else.`;
   logger.info(`startup(activation): services ${servicesMs.toFixed(1)}ms, ready in ${(performance.now() - activationT0).toFixed(1)}ms`);
 }
 
-export function deactivate() {}
+/**
+ * Upper bound on how long the deactivate flush may hold up shutdown. The durable
+ * mirror write inside `flushPendingWrites()` is synchronous and already on disk by
+ * the time the promise is returned, so this only caps the queued Memento writes.
+ */
+const DEACTIVATE_FLUSH_TIMEOUT_MS = 1500;
+
+/**
+ * Flush in-memory session state before the extension host goes away.
+ *
+ * A turn that is still streaming lives only in memory — its messages reach the
+ * `workspaceState` transcript well after the model round returns — so without this
+ * a shutdown (lid closed, machine killed) mid-turn loses the message the user just
+ * sent. `flushPendingWrites()` mirrors the live transcripts synchronously and then
+ * drains the queued writes; the timeout keeps a stuck write from delaying exit.
+ */
+export function deactivate(): Thenable<void> | undefined {
+  const flush = chatProvider?.flushPendingWrites();
+  if (!flush) return undefined;
+  return Promise.race([
+    flush.catch((err: unknown) => {
+      logger.warn(`Session flush on deactivate failed: ${err instanceof Error ? err.message : String(err)}`);
+    }),
+    new Promise<void>(resolve => {
+      setTimeout(resolve, DEACTIVATE_FLUSH_TIMEOUT_MS).unref();
+    }),
+  ]);
+}
 
 /**
  * Open the agent's summary in a formatted webview panel in the editor area

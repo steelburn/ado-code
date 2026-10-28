@@ -15,6 +15,7 @@ import { summarizeTurn, formatTurnSummary } from '../../../shared/turnSummary';
 import {
   shouldShowJumpToLatest,
   shouldAutoScroll,
+  resolveStickToBottom,
   resolveActivityExpanded,
 } from '../../../shared/chatNavigation';
 
@@ -520,17 +521,54 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
   // Item 5: turns the reader explicitly revealed in 'answers-only' density
   // (keyed by message index). Empty = each turn keeps its density default.
   const [expandedTurns, setExpandedTurns] = useState<Record<number, boolean>>({});
+  // Scroll events do NOT mean "the reader scrolled": the jump-to-latest
+  // animation and the streaming follow below emit them too. Reading those as
+  // "the reader scrolled up" unpinned the view a frame into every jump, so
+  // "Latest answer" landed short of the still-growing answer and the reader
+  // had to keep chasing it. Only reader input (wheel/touch/keys) or an upward
+  // move may change the follow flag; our own scrolls leave it alone.
+  const userScrollIntentAtRef = useRef(0);
+  const lastScrollTopRef = useRef(0);
+  const markScrollIntent = () => {
+    userScrollIntentAtRef.current = Date.now();
+  };
+  /** Scroll to the newest content ourselves. Clears any stale input mark so a
+   *  click that never scrolled cannot later pass for the reader leaving the
+   *  bottom, and hides the affordance we are scrolling away from. */
+  const scrollToBottom = (behavior: ScrollBehavior) => {
+    userScrollIntentAtRef.current = 0;
+    setShowJumpToLatest(false);
+    bottomRef.current?.scrollIntoView({ behavior });
+  };
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    const show = shouldShowJumpToLatest(el.scrollTop, el.scrollHeight, el.clientHeight);
-    setShowJumpToLatest(show);
+    const atBottom = !shouldShowJumpToLatest(el.scrollTop, el.scrollHeight, el.clientHeight);
+    const movedUp = el.scrollTop < lastScrollTopRef.current;
+    lastScrollTopRef.current = el.scrollTop;
+    const recentInput = Date.now() - userScrollIntentAtRef.current < 300;
+    if (recentInput) {
+      userScrollIntentAtRef.current = 0;
+    }
+    const userInitiated = recentInput || movedUp;
     // Scrolled away from the bottom → stop following; back at the bottom →
     // resume following. Read by the auto-scroll effect below.
-    stickToBottomRef.current = !show;
+    stickToBottomRef.current = resolveStickToBottom(
+      stickToBottomRef.current,
+      atBottom,
+      userInitiated,
+    );
+    // Our own scrolling is on its way to the bottom: leave the affordance
+    // hidden instead of flashing it as the animation passes mid-list.
+    if (userInitiated) {
+      setShowJumpToLatest(!atBottom);
+    }
   };
   const jumpToLatest = () => {
+    // Pin to the bottom: new content is followed again from here on, until the
+    // reader scrolls up of their own accord.
     stickToBottomRef.current = true;
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setShowJumpToLatest(false);
+    scrollToBottom('smooth');
   };
   const prevCountRef = useRef(messages.length);
   // Signature of everything the chat area displays. Id-bubble replacements
@@ -569,7 +607,9 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
     // Bulk load (refresh, session switch) → instant scroll, no animation
     // Single message → smooth scroll
     const behavior = countDelta > 1 ? 'instant' : 'smooth';
-    bottomRef.current?.scrollIntoView({ behavior });
+    // Our own scroll: handleScroll must not read it as the reader leaving the
+    // bottom, or following would stop while the answer is still streaming.
+    scrollToBottom(behavior);
   }, [messages, loading, liveTrace, streamText, activity]);
 
   if (messages.length === 0 && !loading) {
@@ -601,7 +641,16 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
 
   return (
     <div className={`messages-wrap ${densityContainerClass(density)}`}>
-    <div className="messages-area" ref={scrollRef} onScroll={handleScroll}>
+    <div
+      className="messages-area"
+      ref={scrollRef}
+      onScroll={handleScroll}
+      onWheel={markScrollIntent}
+      onTouchStart={markScrollIntent}
+      onTouchMove={markScrollIntent}
+      onKeyDown={markScrollIntent}
+      onMouseDown={markScrollIntent}
+    >
       {messages.map((m, i) => {
         const isAssistant = m.role === 'assistant';
         const isUser = m.role === 'user';

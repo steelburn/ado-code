@@ -1,4 +1,25 @@
 import { WorkItemContext } from '../shared/messages';
+import { DEFAULT_MEMORY_BUDGET, MemoryBudget, truncateMemoryText } from '../memory/memoryBudget';
+
+/**
+ * Documentation budget policy (ADO-27355). The reported symptom behind the
+ * artifact-budget epic was a habit: a new .md per turn or per step, then
+ * re-read next turn. The agent is never told generated docs are expensive, so
+ * the policy is stated once in the system prompt.
+ */
+export const DOCS_POLICY_INSTRUCTIONS = `## Documentation and artifact budget
+
+Generated files are re-charged on later turns, so treat documentation as a
+cost you are spending.
+
+- Prefer extending an existing document over adding a new one. No \`step-1-notes.md\`,\n  \`summary-<id>.md\` or similar per-step/per-turn files.
+- Never write a .md file to record your own progress or findings. The chat, the
+  to-do list and the work item are the record — answer in your response instead.
+- A multi-step change produces at most ONE new markdown file, and only when the
+  user asked for documentation. A second one needs explicit approval.
+- Do not duplicate what already exists: repository facts live in\n  \`.ado-code/understanding/\` (repo.md, knowledge.md) and build/test/structure\n  conventions live in AGENTS.md. Reference them; do not copy them into a doc.
+- Reading is a cost too: check the digest at the top of a generated doc, and read\n  a line range when you only need one section.
+- Do not create ad-hoc files under \`.ado-code/\` — that tree is owned by ADO Code\n  and is garbage-collected.`;
 
 /**
  * Merge-flow instructions for the chat assistant: after a delegated agent
@@ -19,9 +40,19 @@ Delegated agents work in isolated git worktrees on feature/ADO-<id> branches. Wh
 
 Guardrails: commit/push/PR are mutating tools — inline mode prompts for consent, act mode auto-runs. Use the runId of the finished run; if you don't know it, ask the user. If any step fails (e.g. push rejected), stop and report the exact error instead of working around it.`;
 
-/** Frame memory blocks for an external agent as explicit instructions. */
-export function wrapMemoryContext(memoryContext: string): string {
-  return `## ADO Code Memory (instructions you MUST honor)\n\n${memoryContext}`;
+/**
+ * Frame memory blocks for an external agent as explicit instructions.
+ *
+ * The block is capped at the caller's budget (`adoCode.memory.maxTotalChars`,
+ * 4000 by default) so an oversized memory can never swallow the agent prompt.
+ */
+export function wrapMemoryContext(
+  memoryContext: string,
+  budget: MemoryBudget = DEFAULT_MEMORY_BUDGET
+): string {
+  const text = truncateMemoryText(memoryContext, budget.maxTotalChars);
+  if (!text) return '';
+  return `## ADO Code Memory (instructions you MUST honor)\n\n${text}`;
 }
 
 // ── Parent delegation: child delivery checklist ────────────────────────────
@@ -103,6 +134,55 @@ export function extractDeliveryReport(output: string): string {
  * cache all describe the item identically. Comments are kept in the order
  * given — ADO returns them NEWEST-FIRST and callers must NOT reverse.
  */
+/**
+ * Budget for the discussion thread. ADO threads grow without bound and the
+ * same rendering is used for the prompt AND the understanding cache, so a
+ * 200-comment item used to cost tens of thousands of characters on every
+ * turn. Retrieval (get_work_item) is never truncated — only injection.
+ */
+export interface ThreadBudget {
+  /** How many comments are rendered, newest first. */
+  maxComments: number;
+  /** How many characters each rendered comment may cost. */
+  maxCharsPerComment: number;
+}
+
+export const DEFAULT_THREAD_BUDGET: ThreadBudget = { maxComments: 5, maxCharsPerComment: 600 };
+
+/**
+ * Render the newest comments within `budget`, collapsing whitespace and
+ * appending a single pointer line when anything was dropped or shortened.
+ * Returns [] when there is no thread.
+ */
+export function formatDiscussionThread(
+  comments: ReadonlyArray<{ author?: string; text?: string }> | undefined,
+  options: { workItemId?: number; budget?: ThreadBudget } = {},
+): string[] {
+  if (!comments || comments.length === 0) return [];
+  const budget = options.budget ?? DEFAULT_THREAD_BUDGET;
+  const maxComments = Math.max(0, budget.maxComments);
+  const shown = comments.slice(0, maxComments);
+  const lines = ['Discussion thread (latest first):'];
+  let shortened = 0;
+  for (const c of shown) {
+    const raw = (c.text ?? '').replace(/\s+/g, ' ').trim();
+    const text = raw.length > budget.maxCharsPerComment
+      ? `${raw.slice(0, Math.max(0, budget.maxCharsPerComment))}…`
+      : raw;
+    if (text !== raw) shortened++;
+    lines.push(`- ${c.author || 'Unknown'}: ${text}`);
+  }
+  const omitted = comments.length - shown.length;
+  if (omitted > 0 || shortened > 0) {
+    const parts: string[] = [];
+    if (omitted > 0) parts.push(`${omitted} earlier comment${omitted === 1 ? '' : 's'} omitted`);
+    if (shortened > 0) parts.push(`${shortened} comment${shortened === 1 ? '' : 's'} shortened`);
+    const target = options.workItemId !== undefined ? `get_work_item(${options.workItemId})` : 'get_work_item';
+    lines.push(`_…${parts.join(', ')} — call ${target} for the full thread._`);
+  }
+  return lines;
+}
+
 export function formatWorkItemContext(workItem: WorkItemContext): string {
   const lines = [
     `Current work item: #${workItem.id} - ${workItem.title}`,
@@ -111,12 +191,8 @@ export function formatWorkItemContext(workItem: WorkItemContext): string {
     `Acceptance Criteria: ${workItem.acceptanceCriteria || 'N/A'}`,
     `Tags: ${workItem.tags || 'N/A'}`,
   ];
-  if (workItem.comments && workItem.comments.length > 0) {
-    lines.push('', 'Discussion thread (latest first):');
-    for (const c of workItem.comments) {
-      lines.push(`- ${c.author}: ${c.text}`);
-    }
-  }
+  const thread = formatDiscussionThread(workItem.comments, { workItemId: workItem.id });
+  if (thread.length > 0) lines.push('', ...thread);
   return lines.join('\n');
 }
 
@@ -146,12 +222,11 @@ export function buildAgentPrompt(
   // Include the discussion thread — especially clarification Q&A the developer
   // collected before handoff (Task 28). This is the whole point of the
   // review-and-clarify step: the agent must build against the clarified spec.
-  if (workItem.comments && workItem.comments.length > 0) {
-    // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST — do NOT reverse.
-    lines.push(``, `Discussion thread (clarifications, latest first):`);
-    for (const c of workItem.comments) {
-      lines.push(`- ${c.author}: ${c.text}`);
-    }
+  // LIVE-TEST FIX: ADO returns comments NEWEST-FIRST — do NOT reverse.
+  const clarifications = formatDiscussionThread(workItem.comments, { workItemId: workItem.id });
+  if (clarifications.length > 0) {
+    clarifications[0] = 'Discussion thread (clarifications, latest first):';
+    lines.push(``, ...clarifications);
   }
 
   lines.push(
@@ -179,7 +254,7 @@ export function buildAgentPrompt(
 }
 
 export function buildSystemPrompt(activeWorkItem?: WorkItemContext, memoryPrompt?: string, workspaceMemoryPrompt?: string, understanding?: string): string {
-  let prompt = `You are ADO Code, an AI coding assistant integrated into VS Code.
+  let prompt = `${DOCS_POLICY_INSTRUCTIONS}\n\nYou are ADO Code, an AI coding assistant integrated into VS Code.
 You help developers write, understand, and debug code.
 You have access to the developer's Azure DevOps work items.
 When the user references a task, use its description, acceptance criteria, AND the discussion thread (especially any clarification Q&A) to guide your assistance.

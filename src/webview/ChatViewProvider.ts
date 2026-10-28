@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { splitAcceptanceCriteria } from '../shared/workItemContent';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment, TraceEntry, StoredTurnTrace } from '../shared/messages';
 import { parseSaveConfigPayload, parseWizardConfigPayload, CONFIG_SETTING_KEYS, type ConfigSettingsMap } from '../shared/configSchema';
 import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
@@ -13,12 +14,14 @@ import { Services } from '../services';
 import { getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
-import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion } from '../llm/prompts';
+import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion, formatDiscussionThread } from '../llm/prompts';
 import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
+import { readMemoryBudget, remainingMemoryBudget, renderMemoryBlock } from '../memory/memoryBudget';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
 import { runAgenticChat } from '../llm/agentic';
 import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
+import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
@@ -37,7 +40,10 @@ import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { CHAT_EDITOR_VIEW_TYPE } from './chatEditorSerializer';
 import { AgentProgressPanel } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
-import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior } from './agentsMd';
+import { collectDocumentationExport } from './documentation/exportDocumentation';
+import { promptAndSaveBinary } from './saveBinary';
+import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior, writeManagedFileIfChanged } from './agentsMd';
+import { SessionMirror, MirroredSessions } from './SessionMirror';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
 import { ConversationCondenser } from '../llm/context/condenser';
@@ -338,6 +344,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private lastAutoContextKey: string | undefined;
   /** B4: max complete user/assistant pairs persisted per session (≈50 msgs). */
   private static readonly MAX_PERSISTED_PAIRS = 25;
+  /** Minimum gap between mid-turn transcript checkpoints (ms). */
+  private static readonly TURN_CHECKPOINT_MS = 2000;
+  /** Cap on the interrupted-turn draft those checkpoints persist. */
+  private static readonly MAX_TURN_DRAFT_CHARS = 4000;
 
   // ── Proposed tasks (generate-tasks review flow) ───────────────────
   /** Active proposed-tasks editor tab, if any. */
@@ -355,8 +365,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private taskDraftEditor?: vscode.TextEditor;
   /** Serializes the single-slot draft-editor + confirmation flow (see showTaskDraftInEditor). */
   private readonly taskDraftQueue = new SerialQueue();
-  /** Monotonic counter that keeps concurrent draft filenames unique. */
-  private taskDraftSeq = 0;
 
   // ── Session persistence (Task 2) ──────────────────────────────────
   /** Workspace-folder key — the stable part of session scoping. */
@@ -388,12 +396,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return `adoCode.activeSessionId:${this.sessionKey}`;
   }
 
+  /**
+   * Crash-safe on-disk copy of the sessions (see SessionMirror). `workspaceState`
+   * is debounced and loses writes when the machine goes down; this does not.
+   */
+  private readonly sessionMirror = new SessionMirror(
+    () => this.sessionMirrorDir(),
+    () => this.folderKey,
+  );
+  /**
+   * Per-session write chain. Transcript writes must land in the order they were
+   * issued: a mid-turn checkpoint that resolved late would otherwise overwrite
+   * the turn's final answer with its own "interrupted" draft.
+   */
+  private readonly persistQueue = new Map<string, Promise<void>>();
+
+  /**
+   * Where the durable mirror lives: `.ado-code/sessions/<scope>/` — inside the
+   * workspace's gitignored, VSIX-excluded scratch dir, never in source. Undefined
+   * when no folder is open (sessions are not folder-scoped then either).
+   */
+  private sessionMirrorDir(): string | undefined {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root) return undefined;
+    let scope = 'default';
+    try {
+      const key = this.folderKey;
+      if (key) {
+        // Readable tail + short hash: two folders can never share a mirror, and
+        // the directory stays recognisable when debugging.
+        let hash = 0;
+        for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+        const readable = key.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(-40);
+        scope = `${readable || 'folder'}-${(hash >>> 0).toString(36)}`;
+      }
+    } catch {
+      scope = 'default';
+    }
+    return path.join(root, '.ado-code', 'sessions', scope);
+  }
+
   private getSessions(): Session[] {
     return this._context.workspaceState.get<Session[]>(this.sessionsStorageKey, []);
   }
 
   private async saveSessions(sessions: Session[]): Promise<void> {
+    // Mirror FIRST: it is the only write that is guaranteed to be on disk when a
+    // hard shutdown hits (Memento's update() is debounced), so it must not
+    // depend on the workspaceState write below having landed.
+    this.sessionMirror.write(sessions, this.getActiveSessionId());
     await this._context.workspaceState.update(this.sessionsStorageKey, sessions);
+  }
+
+  /**
+   * Crash recovery: adopt the durable mirror where it is AHEAD of workspaceState.
+   *
+   * A Memento update is debounced, so a shutdown (lid closed, power cut, forced
+   * kill) can drop a write whose promise already resolved. The mirror is fsync'd
+   * before that update is even issued, which makes it the surviving copy; here
+   * it is folded back in — including a turn that was still running when the
+   * machine went down (checkpointed mid-turn).
+   */
+  private async restoreFromMirror(): Promise<void> {
+    let mirrored: MirroredSessions | undefined;
+    try {
+      mirrored = this.sessionMirror.read();
+    } catch {
+      return; // unreadable mirror → keep the Memento copy
+    }
+    if (!mirrored) return;
+    const stored = this.getSessions();
+    const merged = SessionMirror.merge(
+      stored,
+      mirrored.sessions,
+      this.getActiveSessionId(),
+      mirrored.activeSessionId,
+    );
+    const changed = merged.added.length > 0 || merged.replaced.length > 0;
+    if (changed) {
+      this.resetConversationCaches();
+      await this.saveSessions(merged.sessions);
+    }
+    if (merged.activeSessionId && merged.activeSessionId !== this.getActiveSessionId()) {
+      await this.setActiveSessionId(merged.activeSessionId);
+    }
   }
 
   /**
@@ -515,6 +601,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (stored === 'mine' || stored === 'all' || stored === 'unassigned') {
       this.workItemsMode = stored;
     }
+    // Crash recovery runs here as well as on webview resolve: the chat can be
+    // reopened in an editor tab (a different attach path), and a shutdown
+    // mid-turn is exactly when the mirror must be consulted before ANYTHING
+    // reads the session list.
+    void this.restoreFromMirror().catch(() => undefined);
   }
 
   /** Which dataset the merged work items tree shows. */
@@ -787,7 +878,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const adoDir = vscode.Uri.joinPath(workspaceRoot, '.ado-code');
     try { await vscode.workspace.fs.createDirectory(adoDir); } catch { /* exists */ }
 
-    const filePath = vscode.Uri.joinPath(adoDir, `proposed-tasks-${parentId}.md`);
+    // ADO-27357: one fixed staging file, overwritten each time, deleted once
+    // the draft is created or cancelled — never a per-call unique name.
+    const filePath = this.proposedTasksDraftUri();
+    if (!filePath) return; // no workspace folder — nothing to stage
     const content = this.formatTasksForEditor(parentId, parentTitle, tasks);
 
     // Write the file
@@ -830,9 +924,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Re-focus the editor so the user can continue editing
           this.proposedTasksEditor?.show();
         }
-        // On cancel: do nothing, editor stays open for manual cleanup
+        // On cancel: close the tab and drop the staging file — nothing to keep.
+        if (decision === 'cancel') {
+          await this.deleteStagingFile(this.proposedTasksDraftUri());
+          await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
       }
     });
+  }
+
+  /** Fixed path of the proposed-tasks staging file (one at a time). */
+  private proposedTasksDraftUri(): vscode.Uri | undefined {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    return root ? vscode.Uri.joinPath(root, '.ado-code', 'proposed-tasks.md') : undefined;
+  }
+
+  /** Fixed path of the task-draft staging file (one at a time). */
+  private taskDraftUri(): vscode.Uri | undefined {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    return root ? vscode.Uri.joinPath(root, '.ado-code', 'task-draft.md') : undefined;
+  }
+
+  /**
+   * Delete an ephemeral staging artifact. Ephemeral state belongs in memory:
+   * the only reason these files exist is that the user may edit them, so they
+   * are removed as soon as their one purpose is served.
+   */
+  private async deleteStagingFile(uri: vscode.Uri | undefined): Promise<void> {
+    if (!uri) return;
+    try {
+      await vscode.workspace.fs.delete(uri, { useTrash: false });
+    } catch {
+      /* already gone — nothing to clean up */
+    }
   }
 
   /**
@@ -909,6 +1033,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       const created: Array<{ id: number; title: string }> = [];
+      const tagDowngrades: string[] = [];
       const finalTasks = duplicates.length > 0 && decision === 'skip' ? tasksToCreate : tasks;
 
       for (const task of finalTasks) {
@@ -926,6 +1051,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             parentId,
           );
           created.push({ id: result.id, title: task.title });
+          if (result.warning) tagDowngrades.push(result.warning);
         } catch (err) {
           logger.error(`Chat: failed to create task "${task.title}":`, err);
         }
@@ -947,6 +1073,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
 
+        if (tagDowngrades.length > 0) {
+          // One notice per work item — collapse duplicates before appending.
+          message += `\n\n${Array.from(new Set(tagDowngrades)).join('\n\n')}`;
+        }
         this.postMessage({
           type: 'assistantMessage',
           content: message,
@@ -972,6 +1102,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message: `Failed to create tasks: ${message}` });
+    } finally {
+      // ADO-27357: the staging file is ephemeral — created, cancelled and
+      // failed drafts all leave nothing behind on disk.
+      await this.deleteStagingFile(this.proposedTasksDraftUri());
     }
   }
 
@@ -1031,6 +1165,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
   }): string {
+    // A description that already carries its own "Acceptance Criteria" section
+    // must not produce a second one — move that section into the AC field first.
+    const content = splitAcceptanceCriteria(args.description, args.acceptanceCriteria);
     const lines: string[] = [
       `# Draft: ${args.workItemType}`,
       '',
@@ -1041,10 +1178,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       args.title,
       '',
       `## [x] Description`,
-      args.description || '',
+      content.description,
       '',
       `## [x] Acceptance Criteria`,
-      args.acceptanceCriteria || '',
+      content.acceptanceCriteria,
       '',
       `## [x] Assigned To`,
       args.assignedTo || '',
@@ -1066,17 +1203,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Reads each `## [x] Section` heading and extracts the body text.
    */
   private parseTaskDraft(content: string): { title: string; description: string; acceptanceCriteria: string; assignedTo: string; tags: string } {
-    const getSection = (name: string): string => {
-      const re = new RegExp(`## \\[[ x]\\] ${name}\\n([\\s\\S]*?)(?=\\n## \\[[ x]\\]|\\n## [A-Z]|\\Z)`, 'i');
-      const m = content.match(re);
-      return m ? m[1].trim() : '';
-    };
+    // Line-based, not a lazy-regex body: a description legitimately contains
+    // its own `## Heading` lines, and the old single-regex parser stopped at
+    // the first `## Uppercase` — silently truncating the description (and the
+    // acceptance criteria written inside it). Only the draft's own sections
+    // end a body here.
+    const sections = new Map<string, string[]>();
+    let current: string[] | null = null;
+    let currentName = '';
+    const flush = () => { if (current) sections.set(currentName, current); };
+    for (const raw of content.split(/\r?\n/)) {
+      const heading = /^##\s*(?:\[[ xX]\]\s*)?(title|description|acceptance criteria|assigned to|tags)\s*$/i.exec(raw.trim());
+      if (heading) {
+        flush();
+        currentName = heading[1].toLowerCase();
+        current = [];
+        continue;
+      }
+      if (/^##\s*parent\s*$/i.test(raw.trim())) {
+        flush();
+        current = null;
+        currentName = '';
+        continue;
+      }
+      if (current) current.push(raw);
+    }
+    flush();
+    const getSection = (name: string): string => (sections.get(name.toLowerCase()) ?? []).join('\n').trim();
+    // Whether the user left the AC section in the description or typed it into
+    // the AC section, the text belongs in the AC field — never in both.
+    const ac = splitAcceptanceCriteria(getSection('description'), getSection('acceptance criteria'));
     return {
-      title: getSection('Title') || 'Untitled',
-      description: getSection('Description'),
-      acceptanceCriteria: getSection('Acceptance Criteria'),
-      assignedTo: getSection('Assigned To'),
-      tags: getSection('Tags'),
+      title: getSection('title') || 'Untitled',
+      description: ac.description,
+      acceptanceCriteria: ac.acceptanceCriteria,
+      assignedTo: getSection('assigned to'),
+      tags: getSection('tags'),
     };
   }
 
@@ -1096,7 +1258,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     workItemType: string; title: string; description?: string;
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
-  }): Promise<{ id: number; url: string } | null> {
+  }): Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null> {
     return this.taskDraftQueue.run(() => this.runTaskDraftFlow(args));
   }
 
@@ -1104,7 +1266,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     workItemType: string; title: string; description?: string;
     acceptanceCriteria?: string; assignedTo?: string; tags?: string;
     parentWorkItemId?: number;
-  }): Promise<{ id: number; url: string } | null> {
+  }): Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null> {
     // Ensure .ado-code directory exists
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!workspaceRoot) return null;
@@ -1114,7 +1276,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // The monotonic suffix keeps two drafts created in the same millisecond from
     // colliding on one path — a collision made the second openTextDocument race
     // and fail with "Could NOT open editor".
-    const filePath = vscode.Uri.joinPath(adoDir, `task-draft-${Date.now()}-${++this.taskDraftSeq}.md`);
+    // ADO-27357: fixed staging file (single slot, serialized by the queue),
+    // deleted on create and on cancel instead of accumulating per call.
+    const filePath = this.taskDraftUri();
+    if (!filePath) return null; // no workspace folder — nothing to stage
     const content = this.formatTaskDraft(args);
 
     // Write the file
@@ -1156,7 +1321,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async createTaskFromDraft(
     fileUri: vscode.Uri,
     originalArgs: { workItemType: string; parentWorkItemId?: number },
-  ): Promise<{ id: number; url: string } | null> {
+  ): Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null> {
     try {
       const bytes = await vscode.workspace.fs.readFile(fileUri);
       const content = Buffer.from(bytes).toString('utf8');
@@ -1186,16 +1351,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // inside the agentic loop while the model waits on the draft review).
       this.postMessage({
         type: 'assistantMessage',
-        content: `✅ Created ${originalArgs.workItemType} **#${result.id}** — ${parsed.title}\n\n${result.url}`,
+        content: `✅ Created ${originalArgs.workItemType} **#${result.id}** — ${parsed.title}\n\n${result.url}${result.warning ? `\n\n⚠️ ${result.warning}` : ''}`,
         done: true,
         id: `wi:${result.id}`,
       });
+      if (result.warning) vscode.window.showWarningMessage(`ADO Code: ${result.warning}`);
 
       // Clean up
       this.taskDraftEditor = undefined;
       try { await vscode.workspace.fs.delete(fileUri); } catch { /* best-effort */ }
 
-      return { id: result.id, url: result.url };
+      return { id: result.id, url: result.url, warning: result.warning, tagsApplied: result.tagsApplied, droppedTags: result.droppedTags };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'error', message: `Failed to create work item: ${message}` });
@@ -1754,25 +1920,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private buildAgentMemoryContext(): string {
     const parts: string[] = [];
+    const budget = readMemoryBudget();
 
-    const user = this.services.memory.toPromptString();
+    const user = this.services.memory.toPromptString(budget);
     if (user.trim()) parts.push(user.trim());
 
     const wsKeys = this.services.workspaceMemory
       .list()
       .filter(k => k !== 'agent.before' && k !== 'agent.after');
     if (wsKeys.length > 0) {
-      const lines: string[] = ['## Workspace Memory', ''];
-      for (const key of wsKeys) {
-        const value = this.services.workspaceMemory.read(key);
-        if (value) {
-          lines.push(`### ${key}`);
-          lines.push('');
-          lines.push(value);
-          lines.push('');
-        }
-      }
-      parts.push(lines.join('\n'));
+      // Shared budget: the workspace block only gets what user memory left over.
+      const wsBlock = renderMemoryBlock(
+        '## Workspace Memory',
+        wsKeys
+          .map(key => ({ title: key, body: this.services.workspaceMemory.read(key) ?? '' }))
+          .filter(entry => entry.body.trim().length > 0),
+        remainingMemoryBudget(budget, user.trim().length)
+      );
+      if (wsBlock) parts.push(wsBlock);
     }
 
     return parts.join('\n\n');
@@ -1932,6 +2097,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       await this.migrateProjectScopedSessions();
       await this.migrateFromLegacyHistory();
+      // Recover anything a hard shutdown dropped from workspaceState before the
+      // active session is loaded into the webview.
+      await this.restoreFromMirror();
       this.sendSessionList();
       const activeId = this.getActiveSessionId();
       if (activeId) {
@@ -2463,7 +2631,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Inject the skill's prompt as a user message into the chat
             const skill = this.services.skills.getSkill(message.request.skillId);
             if (skill && skill.enabled) {
-              const prompt = skill.prompt || skill.knowledge || '';
+              const rawPrompt = skill.prompt || skill.knowledge || '';
+              const skillCap = capSkillContent(rawPrompt, { maxChars: readSkillBudget(), skillName: skill.name });
+              const prompt = skillCap.content;
               if (prompt) {
                 // Build the content with skill context
                 const skillContent = `[Skill: ${skill.name}]\n\n${prompt}`;
@@ -2738,6 +2908,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             break;
           }
+          case 'saveBinary':
+            await promptAndSaveBinary(message.request);
+            break;
+          case 'exportDocumentation': {
+            // Gathers disk-side sources only; rendering stays in the webview.
+            const payload = await collectDocumentationExport(message.request);
+            this.postMessage({
+              type: 'documentationExportPayload',
+              requestId: message.requestId,
+              payload,
+            });
+            break;
+          }
           case 'saveSvg':
             await promptAndSaveSvg(message.content, message.defaultName);
             break;
@@ -2801,7 +2984,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               success: projectResult.success,
               path: projectResult.path,
               error: projectResult.error,
+              warnings: projectResult.warnings,
+              templateId: request.templateId,
+              projectName: request.projectName,
+              documents: projectResult.documents,
             });
+            if (projectResult.success && projectResult.warnings?.length) {
+              // The wizard closes on success, so the scaffolder's notes (KRiSA
+              // coercions, skipped arming) would otherwise be lost.
+              void vscode.window.showWarningMessage(
+                `ADO Code: documentation project created with ${projectResult.warnings.length} note(s) — ${projectResult.warnings
+                  .slice(0, 3)
+                  .join(' · ')}`
+              );
+            }
             if (projectResult.success) {
               vscode.window.showInformationMessage(
                 `ADO Code: project "${request.projectName}" created at ${projectResult.path}${adoNote}`
@@ -3023,6 +3219,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** True while an LLM turn or a delegated agent run is in flight. Anything
+   *  that is not turn lifecycle (work-item refresh, ADO reads) must consult
+   *  this before posting on the chat channel's `loading` flag — those posts
+   *  used to clear the turn spinner while the loop kept calling tools. */
+  private isBusyProcessing(): boolean {
+    return !!this.runningTurnSession || this.workingDepth > 0;
+  }
+
   async refreshWorkItems(): Promise<void> {
     // C10 fix: resolve the ACTIVE org from workspaceState (getActiveOrg), not raw settings.
     const active = getActiveOrg(this._context, getSettings());
@@ -3035,7 +3239,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showWarningMessage('ADO Code: configure organization, project and PAT first.');
       return;
     }
-    this.postMessage({ type: 'loading', loading: true });
+    // Paired with the guard at the end of this method (see below).
+    if (!this.isBusyProcessing()) this.postMessage({ type: 'loading', loading: true });
     // The signed-in user's display name (lazy, cached) — lets the sidebar
     // tree color-code items as mine / someone else's / unassigned.
     const currentUserPromise = this.getCurrentUserDisplayName();
@@ -3070,7 +3275,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'error', message: `Failed to fetch ${workItemsModeLabel(this.workItemsMode)}: ${err instanceof Error ? err.message : err}` });
     }
 
-    this.postMessage({ type: 'loading', loading: false });
+    // A work-item refresh is not part of a chat turn: never touch the turn
+    // spinner while a turn or a delegated run is still in flight.
+    if (!this.isBusyProcessing()) this.postMessage({ type: 'loading', loading: false });
   }
 
   /** Display name of the signed-in user, fetched once and cached. */
@@ -3413,14 +3620,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // choice === null → card dismissed without a decision; re-offer next load.
   }
 
-  /** Write the candidate — full file for missing/adopt, in-place for update. */
+  /**
+   * Write the candidate — full file for missing/adopt, in-place for update. The
+   * write is content-guarded (ADO-27359): a sync that changes nothing must not
+   * touch the file, so a no-op sync produces no mtime, facts or artifact churn.
+   */
   private applyAgentsMdSync(root: string, decision: AgentsMdSyncDecision): void {
     const agentsMdPath = path.join(root, 'AGENTS.md');
-    if (decision.kind === 'update') {
-      const existing = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, 'utf8') : '';
-      fs.writeFileSync(agentsMdPath, replaceManagedBlock(existing, decision.candidate), 'utf8');
-    } else {
-      fs.writeFileSync(agentsMdPath, decision.candidate, 'utf8');
+    const next =
+      decision.kind === 'update'
+        ? replaceManagedBlock(
+            fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, 'utf8') : '',
+            decision.candidate
+          )
+        : decision.candidate;
+    if (!writeManagedFileIfChanged(agentsMdPath, next)) {
+      logger.debug('Chat: AGENTS.md already up to date — sync is a no-op');
     }
   }
 
@@ -4032,10 +4247,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async persistConversation(sessionId?: string, conversation?: LlmMessage[]): Promise<void> {
     const targetId = sessionId ?? this.getActiveSessionId();
     if (!targetId) return;
+    // Snapshot the transcript NOW (the caller may keep mutating the live buffer
+    // while this write is queued) and chain it behind any write in flight.
     const target = conversation ?? this.conversation;
+    const previous = this.persistQueue.get(targetId) ?? Promise.resolve();
+    const write = previous.catch(() => undefined).then(() => this.writeConversation(targetId, target));
+    this.persistQueue.set(targetId, write);
+    try {
+      await write;
+    } finally {
+      if (this.persistQueue.get(targetId) === write) this.persistQueue.delete(targetId);
+    }
+  }
+
+  /** Write a session's transcript (ordering/serialisation: persistConversation). */
+  private async writeConversation(targetId: string, target: LlmMessage[]): Promise<void> {
     const sessions = this.getSessions();
+    const applied = this.applyConversation(targetId, target, sessions);
+    if (!applied) return;
+    // Prune old sessions beyond the configured limit
+    const maxSessions = vscode.workspace.getConfiguration('adoCode').get<number>('sessions.maxPerProject', 20);
+    if (sessions.length > maxSessions) {
+      // Sort oldest-first, keep the most recent `maxSessions` (always keep the
+      // session being written AND the active session)
+      const sorted = [...sessions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const toKeep = new Set(sorted.slice(-maxSessions).map(s => s.id));
+      toKeep.add(targetId);
+      const activeId = this.getActiveSessionId();
+      if (activeId) toKeep.add(activeId);
+      const pruned = sessions.filter(s => toKeep.has(s.id));
+      await this.saveSessions(pruned);
+    } else {
+      await this.saveSessions(sessions);
+    }
+    // A freshly auto-assigned name must reach the UI the moment the turn's
+    // record lands — push the list rather than waiting for a session switch.
+    if (applied.renamed) this.sendSessionList();
+  }
+
+  /**
+   * Fold an in-memory transcript into its session record.
+   *
+   * Synchronous on purpose: the deactivate flush (flushPendingWrites) has to get
+   * the transcript into the durable mirror before the process can be torn down, so
+   * this cannot wait on a promise. Returns undefined when the session is gone,
+   * otherwise whether the session was auto-named (the caller refreshes the list).
+   */
+  private applyConversation(targetId: string, target: LlmMessage[], sessions: Session[]): { renamed: boolean } | undefined {
     const session = sessions.find(s => s.id === targetId);
-    if (!session) return;
+    if (!session) return undefined;
     // 0.6.7: a turn's Thinking/Tools record (recordTurnTrace) lives OUTSIDE the
     // LLM message path — the provider never stores it on LlmMessage. Carry the
     // already-stored traces over, matched by assistant content, so rewriting
@@ -4060,7 +4320,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return { role: m.role, content, ...(trace ? { trace } : {}) };
       });
     // Auto-name from the first user message as soon as the topic is known. The
-    // webview is notified below so the header/dropdown update immediately —
+    // webview is notified by the caller so the header/dropdown update immediately —
     // instead of leaving "New Session" until the user switches away and back.
     const nameBefore = session.name;
     if (session.name === 'New Session') {
@@ -4069,24 +4329,110 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         session.name = firstUser.content.slice(0, 60) + (firstUser.content.length > 60 ? '…' : '');
       }
     }
-    // Prune old sessions beyond the configured limit
-    const maxSessions = vscode.workspace.getConfiguration('adoCode').get<number>('sessions.maxPerProject', 20);
-    if (sessions.length > maxSessions) {
-      // Sort oldest-first, keep the most recent `maxSessions` (always keep the
-      // session being written AND the active session)
-      const sorted = [...sessions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      const toKeep = new Set(sorted.slice(-maxSessions).map(s => s.id));
-      toKeep.add(targetId);
-      const activeId = this.getActiveSessionId();
-      if (activeId) toKeep.add(activeId);
-      const pruned = sessions.filter(s => toKeep.has(s.id));
-      await this.saveSessions(pruned);
-    } else {
-      await this.saveSessions(sessions);
+    return { renamed: session.name !== nameBefore };
+  }
+
+  /**
+   * Last-chance flush of everything this provider holds in memory.
+   *
+   * `deactivate()` is the only notification we get before the extension host goes
+   * away, and an in-flight turn lives only in memory (its messages are pushed onto
+   * the session buffer long before the model round returns). So: mirror the live
+   * transcripts SYNCHRONOUSLY first — a shutdown can cut the returned promise short,
+   * and the fsync'd mirror is the copy that survives the lid closing — then await
+   * the queued workspaceState writes, which is best effort by nature.
+   */
+  async flushPendingWrites(): Promise<void> {
+    this.mirrorLiveConversations();
+    // One drained write can chain another (checkpoint -> final answer), so drain
+    // until the per-session chain is empty instead of awaiting a single batch.
+    for (let pass = 0; pass < 3 && this.persistQueue.size > 0; pass++) {
+      await Promise.all([...this.persistQueue.values()].map(p => p.catch(() => undefined)));
     }
-    // A freshly auto-assigned name must reach the UI the moment the turn's
-    // record lands — push the list rather than waiting for a session switch.
-    if (session.name !== nameBefore) this.sendSessionList();
+    // A drained write persisted ITS snapshot; take one more with whatever the live
+    // buffers hold now, so the mirror never trails the in-memory truth.
+    this.mirrorLiveConversations();
+  }
+
+  /**
+   * Push every live transcript into its session record and mirror the result.
+   * Synchronous by design (see flushPendingWrites).
+   */
+  private mirrorLiveConversations(): void {
+    const sessions = this.getSessions();
+    if (sessions.length === 0) return;
+    for (const [id, buffer] of this.conversationBySession) {
+      if (buffer.length === 0) continue;
+      const session = sessions.find(s => s.id === id);
+      // Storage holding MORE messages means this buffer is a stale seed — never
+      // shorten a transcript on the way out.
+      if (!session || buffer.length < session.messages.length) continue;
+      this.applyConversation(id, buffer, sessions);
+    }
+    this.sessionMirror.write(sessions, this.getActiveSessionId());
+  }
+
+  /**
+   * Synchronous, best-effort durable flush: fold every live conversation buffer
+   * into its session record and fsync it to the mirror. Deliberately skips the
+   * `workspaceState` write and the queued-write drain, because an exit handler
+   * cannot await them.
+   */
+  public flushSync(): void {
+    try {
+      this.mirrorLiveConversations();
+    } catch (err) {
+      logger.warn(`Session flush on process exit failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Register the pre-shutdown flush hooks. `deactivate()` only covers an orderly
+   * quit: a forced teardown (crash, killed window, lid closed on a suspended
+   * machine) never unwinds the host, so the deactivate flush can be skipped
+   * outright. Two extra signals are wired up:
+   *
+   *  - `window.onDidChangeWindowState` — stable API, and the hook that actually
+   *    fires today. A closing lid blurs the window first, and that blur is the
+   *    last event we are guaranteed to observe before the machine goes down
+   *    without a graceful shutdown.
+   *  - `process.on('exit')` — the extension host's own final teardown. Exit
+   *    handlers run synchronously and may only run synchronously, which is exactly
+   *    what `flushSync()` provides; it still covers the case where `deactivate()`
+   *    threw before flushing or was skipped by the host.
+   *
+   * Every hook funnels into the same synchronous mirror write, so the transcript
+   * reaches disk even when the returned promise is never awaited.
+   */
+  public registerSaveStateFlush(): vscode.Disposable[] {
+    const disposables: vscode.Disposable[] = [];
+    // Never let an unexpected shape abort activation: keep only real disposables.
+    const keep = (sub: vscode.Disposable | undefined): void => {
+      if (sub && typeof (sub as { dispose?: unknown }).dispose === 'function') disposables.push(sub);
+    };
+
+    const window = vscode.window as unknown as {
+      onDidChangeWindowState?: (listener: (e: { focused?: boolean }) => unknown) => vscode.Disposable;
+    };
+    if (typeof window.onDidChangeWindowState === 'function') {
+      keep(window.onDidChangeWindowState(e => {
+        if (e && e.focused === false) this.flushForSaveState('windowBlur');
+      }));
+    }
+
+    // Last link in the chain: the host's own exit. Synchronous by construction,
+    // so the mirror write is all we can do here — and all that is needed.
+    const onExit = (): void => this.flushSync();
+    process.on('exit', onExit);
+    disposables.push({ dispose: () => process.off('exit', onExit) });
+    return disposables;
+  }
+
+  /** Fire-and-forget flush for a hook that cannot await us, and may outlive us. */
+  private flushForSaveState(trigger: string): void {
+    void this.flushPendingWrites().catch(err => {
+      logger.warn(`Session flush on ${trigger} failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   /**
@@ -4748,6 +5094,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let turnConversation = this.conversation;
     const pushedUser: LlmMessage = { role: 'user', content: llmContent };
     turnConversation.push(pushedUser);
+    // Persist the user's message IMMEDIATELY — before condensation, before the
+    // first model call. Everything after this point can take minutes (condense
+    // summary, model round, tool loop); a shutdown in that window must not erase
+    // what the user just sent.
+    await this.persistConversation(turnSessionId, turnConversation);
     // A3: condense FIRST (LLM summary preserves context), then hard-truncate
     // only if still over budget. The old order dropped messages the summarizer
     // would have kept, then spent a paid call summarizing what was left.
@@ -4755,6 +5106,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.replaceSessionConversation(turnSessionId, turnConversation);
     turnConversation = this.trimConversation(turnConversation);
     this.replaceSessionConversation(turnSessionId, turnConversation);
+    // The trimmed/condensed transcript replaces the raw one saved above, so the
+    // durable copy always matches what the model is about to be sent.
+    await this.persistConversation(turnSessionId, turnConversation);
 
     // Build system prompt — mode-aware with tool filtering, environment context,
     // and memory injection.
@@ -4773,12 +5127,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const understandingPrompt = this.services.understanding?.toPromptString() ?? '';
 
     logger.debug(`Chat: building system prompt with ${this.services.memory.getAll().length} user memories, ${this.services.workspaceMemory.list().length} workspace memories`);
+    // Cap the memory injection: user memory first, workspace memory gets what is left.
+    const memoryBudget = readMemoryBudget();
+    const userMemoryPrompt = this.services.memory.toPromptString(memoryBudget);
+    const workspaceMemoryPrompt = this.services.workspaceMemory.toPromptString(
+      remainingMemoryBudget(memoryBudget, userMemoryPrompt.length)
+    );
     const systemPromptContent = generateSystemPrompt({
       mode: currentMode,
       workspacePath,
       os: process.platform,
-      memoryPrompt: this.services.memory.toPromptString(),
-      workspaceMemoryPrompt: this.services.workspaceMemory.toPromptString(),
+      memoryPrompt: userMemoryPrompt,
+      workspaceMemoryPrompt,
       understanding: understandingPrompt,
       suggestDelegation: getSettings().chatSuggestDelegation,
       // The session's live to-do list — keeps the model's own plan visible
@@ -4790,9 +5150,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             `Description: ${this.activeWorkItem.description || 'N/A'}`,
             `Acceptance Criteria: ${this.activeWorkItem.acceptanceCriteria || 'N/A'}`,
             `Tags: ${this.activeWorkItem.tags || 'N/A'}`,
-            ...(this.activeWorkItem.comments?.length
-              ? [`Discussion thread (latest first):`, ...this.activeWorkItem.comments.map(c => `- ${c.author}: ${c.text}`)]
-              : []),
+            ...formatDiscussionThread(this.activeWorkItem.comments, { workItemId: this.activeWorkItem.id }),
           ].join('\n')
         : undefined,
     });
@@ -4809,7 +5167,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Snapshot chat-display settings once: what reaches the webview (and
       // whether it carries tool details) is decided here, before the loop.
       const { chatShowThinking, chatShowToolCalls } = getSettings();
+      // Durability of a LONG turn: each completed iteration (reasoning step or
+      // tool round) checkpoints what the agent has done so far as a trailing
+      // draft, so a shutdown mid-turn restores the work instead of a bare user
+      // message. Throttled — and the turn's own final write supersedes it,
+      // because persistConversation keeps writes in issue order.
+      let turnDraft = '';
+      let lastCheckpointAt = 0;
+      let checkpointedDraft = '';
+      const checkpointTurn = (update: { text?: string; final?: boolean }): void => {
+        if (typeof update.text === 'string' && update.text.trim()) {
+          turnDraft = turnDraft ? `${turnDraft}\n\n${update.text.trim()}` : update.text.trim();
+          if (turnDraft.length > ChatViewProvider.MAX_TURN_DRAFT_CHARS) {
+            turnDraft = `…${turnDraft.slice(-ChatViewProvider.MAX_TURN_DRAFT_CHARS)}`;
+          }
+        }
+        // The final answer is persisted whole by the turn's own write.
+        if (update.final || !turnDraft || turnDraft === checkpointedDraft) return;
+        const now = Date.now();
+        if (now - lastCheckpointAt < ChatViewProvider.TURN_CHECKPOINT_MS) return;
+        lastCheckpointAt = now;
+        checkpointedDraft = turnDraft;
+        const draft: LlmMessage = {
+          role: 'assistant',
+          content: `${turnDraft}\n\n_(this turn was interrupted before it finished)_`,
+        };
+        void this.persistConversation(turnSessionId, [...turnConversation, draft]);
+      };
       const result = await runAgenticChat(this.llmClient(), this.executor, messages, abort.signal, maxIterations, (update) => {
+        // Checkpoint even when the turn is not on screen — a session switch must
+        // not cost the running turn its progress.
+        checkpointTurn(update);
         // The turn was stopped/switched away — never post its progress into a
         // session that isn't its own (late chunks from an aborted loop).
         if (!isTurnVisible(turnSessionId, this.getActiveSessionId())) return;

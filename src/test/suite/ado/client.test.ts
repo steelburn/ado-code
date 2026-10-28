@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../../../ado/client';
+import { AdoClient, parentIdOf, splitTags, isTagPermissionError, isTerminalState, terminalStateForType } from '../../../ado/client';
 
 suite('AdoClient', () => {
   test('constructs with organization and PAT', () => {
@@ -450,3 +450,150 @@ suite('AdoClient.resolveImagesInHtml', () => {
     assert.strictEqual((out.match(/data:image/g) || []).length, 2, 'both occurrences rewritten');
   });
 });
+
+suite('AdoClient.createWorkItem tag-permission fallback', () => {
+  const originalFetch = (globalThis as any).fetch;
+  const TAG_PERMISSION_MESSAGE =
+    'TF401289: The identity does not have permission to create tag definition "brand-new".';
+
+  teardown(() => {
+    (globalThis as any).fetch = originalFetch;
+  });
+
+  function jsonResponse(payload: any) {
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    };
+  }
+
+  function errorResponse(status: number, message: string) {
+    return {
+      ok: false,
+      status,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ message }),
+      text: async () => message,
+    };
+  }
+
+  /** Fakes the tags list + work item create endpoints; records every call. */
+  function mockAdo(options: { existingTags: string[] | 'fail'; rejectNewTags: boolean; createError?: string }) {
+    const calls: Array<{ url: string; method: string; body: string }> = [];
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      const method = init && init.method ? init.method : 'GET';
+      const body = init && typeof init.body === 'string' ? init.body : '';
+      calls.push({ url: String(url), method, body });
+
+      if (String(url).includes('/_apis/wit/tags')) {
+        if (options.existingTags === 'fail') {
+          return errorResponse(403, 'VS403283: the identity is not authorized to read tags.');
+        }
+        return jsonResponse({
+          count: options.existingTags.length,
+          value: options.existingTags.map(name => ({ name })),
+        });
+      }
+      if (method === 'POST' && String(url).includes('/workitems/')) {
+        if (options.createError) return errorResponse(400, options.createError);
+        if (options.rejectNewTags && body.includes('brand-new')) {
+          return errorResponse(403, TAG_PERMISSION_MESSAGE);
+        }
+        return jsonResponse({ id: 42, _links: { html: { href: 'https://dev.azure.com/org/_workitems/edit/42' } } });
+      }
+      return errorResponse(404, 'unexpected url ' + url);
+    };
+    return calls;
+  }
+
+  test('splitTags trims names and drops empties', () => {
+    assert.deepStrictEqual(splitTags('web; api ;; '), ['web', 'api']);
+    assert.deepStrictEqual(splitTags(undefined), []);
+  });
+
+  test('isTagPermissionError only matches tag permission failures', () => {
+    assert.strictEqual(isTagPermissionError(new Error('ADO API error: 403 ' + TAG_PERMISSION_MESSAGE)), true);
+    assert.strictEqual(
+      isTagPermissionError(new Error('ADO API error: 400 TF401320: Rule Error for field System.Title')),
+      false
+    );
+    assert.strictEqual(isTagPermissionError(new Error('ADO request timed out after 30s')), false);
+    assert.strictEqual(isTagPermissionError(undefined), false);
+  });
+
+  test('retries with the tags that already exist and reports the dropped ones', async () => {
+    const calls = mockAdo({ existingTags: ['web'], rejectNewTags: true });
+    const client = new AdoClient('org', 'pat');
+
+    const result = await client.createWorkItem('Proj', 'Task', { title: 'T', tags: 'web; brand-new' });
+
+    assert.strictEqual(result.id, 42);
+    assert.strictEqual(result.url, 'https://dev.azure.com/org/_workitems/edit/42');
+    assert.strictEqual(result.tagsApplied, 'web');
+    assert.deepStrictEqual(result.droppedTags, ['brand-new']);
+    assert.ok(result.warning && result.warning.includes('brand-new'));
+
+    const creates = calls.filter(c => c.method === 'POST');
+    assert.strictEqual(creates.length, 2);
+    assert.ok(creates[0].body.includes('web; brand-new'));
+    assert.ok(creates[1].body.includes('"web"'));
+    assert.ok(!creates[1].body.includes('brand-new'));
+  });
+
+  test('creates the work item without tags when none of the requested tags exist', async () => {
+    const calls = mockAdo({ existingTags: [], rejectNewTags: true });
+    const client = new AdoClient('org', 'pat');
+
+    const result = await client.createWorkItem('Proj', 'Task', { title: 'T', tags: 'brand-new' });
+
+    assert.strictEqual(result.id, 42);
+    assert.strictEqual(result.tagsApplied, '');
+    assert.deepStrictEqual(result.droppedTags, ['brand-new']);
+    assert.ok(result.warning && result.warning.includes('without tags'));
+
+    const creates = calls.filter(c => c.method === 'POST');
+    assert.strictEqual(creates.length, 2);
+    assert.ok(!creates[1].body.includes('System.Tags'));
+  });
+
+  test('creates the work item without tags when the tag list cannot be read', async () => {
+    const calls = mockAdo({ existingTags: 'fail', rejectNewTags: true });
+    const client = new AdoClient('org', 'pat');
+
+    const result = await client.createWorkItem('Proj', 'Task', { title: 'T', tags: 'web; brand-new' });
+
+    assert.strictEqual(result.id, 42);
+    assert.deepStrictEqual(result.droppedTags, ['web', 'brand-new']);
+    const creates = calls.filter(c => c.method === 'POST');
+    assert.strictEqual(creates.length, 2);
+    assert.ok(!creates[1].body.includes('System.Tags'));
+  });
+
+  test('rethrows unrelated create failures without retrying', async () => {
+    const calls = mockAdo({ existingTags: ['web'], rejectNewTags: true, createError: 'TF401320: Rule Error for field System.Title' });
+    const client = new AdoClient('org', 'pat');
+
+    await assert.rejects(
+      client.createWorkItem('Proj', 'Task', { title: '', tags: 'web; brand-new' }),
+      /Rule Error/
+    );
+    assert.strictEqual(calls.filter(c => c.method === 'POST').length, 1);
+    assert.strictEqual(calls.filter(c => c.url.includes('/_apis/wit/tags')).length, 0);
+  });
+
+  test('does not consult the tag list when no tags are requested', async () => {
+    const calls = mockAdo({ existingTags: ['web'], rejectNewTags: true });
+    const client = new AdoClient('org', 'pat');
+
+    const result = await client.createWorkItem('Proj', 'Task', { title: 'T' });
+
+    assert.strictEqual(result.id, 42);
+    assert.strictEqual(result.warning, undefined);
+    assert.strictEqual(calls.filter(c => c.method === 'POST').length, 1);
+    assert.strictEqual(calls.filter(c => c.url.includes('/_apis/wit/tags')).length, 0);
+  });
+});
+

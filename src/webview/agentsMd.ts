@@ -196,7 +196,39 @@ function describeDir(dir: string, summary: string): string | null {
 }
 
 /** Cap applied to the LLM summary when embedded into AGENTS.md. */
+/**
+ * Documentation conventions (ADO-27355) — the AGENTS.md half of the docs
+ * policy in the system prompt. Kept to a few lines: AGENTS.md is itself
+ * injected, so the conventions must not cost more than they save.
+ */
+const DOCS_CONVENTIONS_SECTION = '## Documentation Conventions';
+const DOCS_CONVENTIONS_LINES = [
+  '- Extend an existing document instead of adding a per-step or per-turn .md file.',
+  '- Record progress in the chat or the work item, never in a new markdown file.',
+  '- One new doc per change, and only when documentation was requested.',
+  '- Reference `.ado-code/understanding/` and this file instead of duplicating them.',
+  '- Do not add files under `.ado-code/`; that tree is garbage-collected.',
+];
+
 const MAX_SUMMARY_CHARS = 2800;
+
+/**
+ * Byte budget for the managed block (ADO-27359). The block is the part of
+ * AGENTS.md that ADO Code rewrites, so it is also the part that is paid for
+ * twice — once here and once in the understanding cache. Cap it, and point at
+ * the cache instead of copying it.
+ */
+export const MAX_MANAGED_BLOCK_CHARS = 4000;
+
+/**
+ * Digest budget for the `## Repository Understanding` section. The full map
+ * lives in `.ado-code/understanding/repo.md`; AGENTS.md carries only a
+ * digest plus a pointer, so the same repository map is never stored twice.
+ */
+export const MAX_UNDERSTANDING_DIGEST_CHARS = 600;
+
+const UNDERSTANDING_POINTER =
+  '> Full map: `.ado-code/understanding/repo.md` — read the line ranges you need instead of copying it here.';
 
 // ---------------------------------------------------------------------------
 // Managed block (the drift-checked, syncable region)
@@ -216,6 +248,32 @@ export interface AgentsMdBuildOptions {
 /** The inner managed block for the current workspace state. Deterministic. */
 export function computeManagedBlock(root: string, options?: AgentsMdBuildOptions): string {
   return managedBlockText(deriveFacts(root), options?.summary?.trim() ?? '');
+}
+
+/**
+ * AGENTS.md with its managed block removed — the user-authored text only.
+ * Used to de-duplicate the generated map out of the facts pipeline and to
+ * fingerprint AGENTS.md without re-triggering on our own writes.
+ */
+export function stripManagedBlock(content: string): string {
+  const start = content.indexOf(MANAGED_START);
+  if (start < 0) return content;
+  const end = content.indexOf(MANAGED_END, start);
+  if (end < 0) return content.slice(0, start);
+  return `${content.slice(0, start)}${content.slice(end + MANAGED_END.length)}`.trim();
+}
+
+/**
+ * Write AGENTS.md only when its content actually changed, so a no-op sync
+ * produces no file churn (and no understanding invalidation). Returns true
+ * when the file was written.
+ */
+export function writeManagedFileIfChanged(file: string, content: string): boolean {
+  try {
+    if (fs.readFileSync(file, 'utf8') === content) return false;
+  } catch { /* missing file — write it */ }
+  fs.writeFileSync(file, content, 'utf8');
+  return true;
 }
 
 /** Inner content of the managed block in an existing AGENTS.md, or null. */
@@ -296,20 +354,52 @@ function managedBlockText(facts: DerivedFacts, summary: string): string {
     }
   }
 
+  lines.push('', DOCS_CONVENTIONS_SECTION);
+  lines.push(...DOCS_CONVENTIONS_LINES);
+
   if (summary) {
     lines.push('', UNDERSTANDING_SECTION);
     lines.push(
-      '> Distilled from the ADO Code repository-understanding cache (`.ado-code/understanding/`).',
-      '> Refreshed automatically as the repository changes and via "ADO Code: Refresh Repository Understanding".',
-      '> This section and the other generated sections above are rewritten when ADO Code syncs AGENTS.md — edits anywhere else are preserved.',
-      '',
-      // The summary's own ## headings would sit at the same level as the
-      // managed sections — demote them so the document tree stays clean.
-      summary.slice(0, MAX_SUMMARY_CHARS).replace(/^## /gm, '### '),
+      '> Digest of the ADO Code repository-understanding cache; refreshed automatically',
+      '> as the repository changes and via "ADO Code: Refresh Repository Understanding".',
+      '> The managed sections above and this digest are rewritten when ADO Code syncs',
+      '> AGENTS.md — everything outside the managed block is preserved.',
     );
+    const digest = digestSummary(summary);
+    if (digest) lines.push('', digest);
+    lines.push(UNDERSTANDING_POINTER);
   }
 
-  return lines.join('\n');
+  return enforceManagedBudget(lines);
+}
+
+/**
+ * The understanding summary, cut down to its digest: headings demoted (so the
+ * document tree stays clean) and the body capped at
+ * MAX_UNDERSTANDING_DIGEST_CHARS on a line boundary, with an explicit marker
+ * when anything was dropped.
+ */
+function digestSummary(summary: string): string {
+  const demoted = summary.slice(0, MAX_SUMMARY_CHARS).replace(/^## /gm, '### ');
+  if (demoted.length <= MAX_UNDERSTANDING_DIGEST_CHARS) return demoted.trim();
+  const cut = demoted.lastIndexOf('\n', MAX_UNDERSTANDING_DIGEST_CHARS);
+  const head = cut > 0 ? demoted.slice(0, cut) : demoted.slice(0, MAX_UNDERSTANDING_DIGEST_CHARS);
+  return `${head.trimEnd()}\n\n_…digest cut at ${MAX_UNDERSTANDING_DIGEST_CHARS} characters._`;
+}
+
+/**
+ * Hard byte budget for the managed block. Sections are dropped from the end
+ * on a line boundary until the block fits, and one explicit marker records
+ * that it was trimmed — a budget must never silently swallow content.
+ */
+function enforceManagedBudget(lines: string[]): string {
+  let text = lines.join('\n');
+  if (text.length <= MAX_MANAGED_BLOCK_CHARS) return text;
+  const note = `> Managed block trimmed to its ${MAX_MANAGED_BLOCK_CHARS}-character budget — see \`.ado-code/understanding/repo.md\`.`;
+  const room = MAX_MANAGED_BLOCK_CHARS - note.length - 2;
+  const cut = text.lastIndexOf('\n', room);
+  text = (cut > 0 ? text.slice(0, cut) : text.slice(0, room)).trimEnd();
+  return `${text}\n\n${note}`;
 }
 
 /**

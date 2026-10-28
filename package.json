@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "license": "MIT",
   "publisher": "steelburn",
   "repository": {
@@ -59,6 +59,8 @@
     "onCommand:adoCode.setMode",
     "onCommand:adoCode.listCheckpoints",
     "onCommand:adoCode.showTokenUsage",
+    "onCommand:adoCode.compactArtifacts",
+    "onCommand:adoCode.showContextCost",
     "onCommand:adoCode.mcpDisconnect",
     "onCommand:adoCode.mcpReconnect",
     "onCommand:adoCode.mcpViewDetails",
@@ -276,6 +278,11 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.exportUnderstanding",
+        "title": "Export Repository Understanding",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.refreshUnderstanding",
         "title": "Refresh Repository Understanding",
         "icon": "$(lightbulb)",
@@ -365,6 +372,16 @@
       {
         "command": "adoCode.showTokenUsage",
         "title": "Show Token Usage",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.compactArtifacts",
+        "title": "Compact Artifacts",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showContextCost",
+        "title": "Show Context Cost",
         "category": "ADO Code"
       },
       {
@@ -1139,6 +1156,23 @@
           "default": true,
           "description": "Ensure `.ado-code` (workspace memory, checkpoints, agent runs) is listed in `.gitignore` and `.dockerignore`; offers to add it when missing. Declining the offer is remembered per workspace (re-enable later by removing the entry from the ignore files and reloading)."
         },
+        "adoCode.artifacts.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically prune generated artifacts in `.ado-code` (work-item caches, delegated run output, leftover drafts) once a day on activation. Turning this off stops all automatic deletion; the Compact Artifacts command still works on demand."
+        },
+        "adoCode.artifacts.retentionDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "markdownDescription": "Maximum age in days for prunable artifacts. The newest artifact of every kind is always kept, whatever this says."
+        },
+        "adoCode.artifacts.maxFilesPerKind": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum generated files to keep per artifact kind (work-item caches, run output, drafts). Older files beyond this count are removed by the prune."
+        },
         "adoCode.sessions.maxPerProject": {
           "type": "number",
           "default": 20,
@@ -1231,10 +1265,40 @@
           "default": [],
           "description": "MCP servers to connect to: [{ \"name\": \"myserver\", \"command\": \"npx\", \"args\": [\"-y\", \"@myorg/mcp-server\"] }]"
         },
+        "adoCode.memory.maxTotalChars": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 200,
+          "description": "Total characters of memory (user + workspace) injected into one chat or delegated-agent prompt, header and footer included. Anything beyond the budget is omitted and reported on one pointer line, so memory can never crowd out the actual task."
+        },
+        "adoCode.memory.maxEntries": {
+          "type": "number",
+          "default": 25,
+          "minimum": 1,
+          "description": "How many memory entries may be rendered in the injected digest. Leftover entries are reported as 'plus N more entries — call list_workspace_memory', and that tool still returns everything untruncated."
+        },
+        "adoCode.skills.maxInjectedChars": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 200,
+          "description": "How much of a SKILL.md may be injected into the prompt. Over this ceiling a skill injects its head plus an outline of the remaining sections and the sub-files it references, instead of the whole file."
+        },
+        "adoCode.memory.maxCharsPerEntry": {
+          "type": "number",
+          "default": 400,
+          "minimum": 40,
+          "description": "Maximum characters for a single memory entry, both in the injected digest and on write. write_workspace_memory / set_memory calls above this limit are rejected with an explanatory error instead of storing an oversized entry."
+        },
         "adoCode.understanding.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Cache repository + work-item understanding in .ado-code/understanding/ and inject it into chat sessions and delegated-agent prompts. Disabling stops regeneration; cached content stays on disk."
+        },
+        "adoCode.understanding.maxEntries": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "markdownDescription": "Maximum number of cached work items kept in `.ado-code/understanding/`. Beyond this cap the least-recently-used entries are evicted; `repo.md` and `knowledge.md` are always kept."
         },
         "adoCode.understanding.autoSummarize": {
           "type": "boolean",

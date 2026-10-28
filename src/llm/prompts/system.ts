@@ -97,6 +97,7 @@ function buildToolGuidelines(mode: ModeConfig): string {
     '- To fetch details of SEVERAL work items, pass all their ids in ONE `get_work_item` call via the `ids` array instead of repeated calls.',
     '- To run several quick terminal commands, pass them as the `commands` array in ONE `run_terminal_command` call instead of repeated calls (each command still runs separately, in order; outputs are concatenated).',
     '- To read SEVERAL files at once, pass all their paths in ONE `read_file` call via the `paths` array instead of repeated calls (max 10 files).',
+    '- A work item already carries its own description and acceptance criteria: an `add_comment` call that merely restates them is dropped as a duplicate. Comment only NEW information (findings, decisions, results), and pass acceptance criteria to `create_work_item` as `acceptanceCriteria` — do not repeat that section inside the description.',
     '',
   );
 

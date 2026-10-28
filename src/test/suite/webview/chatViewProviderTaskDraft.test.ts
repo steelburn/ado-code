@@ -9,6 +9,22 @@ function tick(ms = 10): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Wait for a CONDITION rather than sleeping a fixed delay. A draft flow writes
+ * its file, opens the editor and only then asks for confirmation, so 10ms is
+ * not an upper bound on a loaded machine (this suite failed the pre-commit gate
+ * with "0 !== 1" because the first card had not appeared yet).
+ */
+async function waitFor(predicate: () => boolean, what: string, ms = 10000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error('timed out waiting for ' + what);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function makeSessionContext(): any {
   const data = new Map<string, any>();
   return {
@@ -86,7 +102,8 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     const second = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-2' });
     const third = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-3' });
 
-    await tick();
+    await waitFor(() => cards.length >= 1, 'the first draft card');
+    await tick(50); // give any wrongly-concurrent flow a chance to surface
     assert.strictEqual(cards.length, 1, 'only the first draft card may be shown');
     assert.strictEqual(resolvers.length, 1);
 
@@ -94,30 +111,24 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     // NOT have been pre-emptively cancelled by the first one's supersede.
     resolvers[0]!(null);
     assert.strictEqual(await first, null);
-    await tick();
+    await waitFor(() => cards.length >= 2, 'the second draft card');
     assert.strictEqual(cards.length, 2, 'second card appears only after the first settled');
 
     resolvers[1]!(null);
     assert.strictEqual(await second, null);
-    await tick();
+    await waitFor(() => cards.length >= 3, 'the third draft card');
     assert.strictEqual(cards.length, 3, 'third card appears last');
 
     resolvers[2]!(null);
     assert.strictEqual(await third, null);
   });
 
-  test('each draft gets a distinct file even within the same millisecond', async () => {
+  test('drafts share one fixed staging file and it is removed once the flow settles', async () => {
     const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     provider._view = { webview: { postMessage: () => { /* noop */ } } };
 
-    const paths: string[] = [];
-    provider.requestConfirmation = (title: string) => {
-      return new Promise((resolve) => {
-        // capture the draft path this call wrote (recorded via openTextDocument)
-        paths.push(title);
-        resolve(null);
-      });
-    };
+    // Every card is cancelled, so each flow must clean up after itself.
+    provider.requestConfirmation = async () => null;
     const opened: string[] = [];
     (vscode.workspace as any).openTextDocument = async (uri: any) => {
       opened.push(uri.fsPath ?? String(uri));
@@ -130,7 +141,12 @@ suite('ChatViewProvider — task-draft concurrency', () => {
       provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'C' }),
     ]);
 
-    assert.strictEqual(opened.length, 3);
-    assert.strictEqual(new Set(opened).size, 3, 'draft filenames must be unique');
+    assert.strictEqual(opened.length, 3, 'each flow still stages a draft');
+    assert.strictEqual(new Set(opened).size, 1, 'drafts share ONE fixed staging slot, not per-call files');
+    assert.ok(
+      opened[0].replace(/\\/g, '/').endsWith('.ado-code/task-draft.md'),
+      `draft must live in the ephemeral staging slot, got ${opened[0]}`,
+    );
+    assert.ok(!nodeFs.existsSync(opened[0]), 'the draft file must not survive the flow');
   });
 });

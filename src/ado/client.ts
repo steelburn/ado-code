@@ -1,8 +1,62 @@
 import { AdoWorkItem, WiqlResult, AdoComment } from './types';
 import { markdownToHtml } from './markdownToHtml';
+import { normalizeWorkItemContent } from '../shared/workItemContent';
 
 const GA_VERSION = '7.1';
 const PREVIEW_VERSION = '7.1-preview.4';
+
+/** ADO's project Tags API (list) is still preview-only. */
+const TAGS_PREVIEW_VERSION = '7.1-preview.1';
+
+/** Outcome of creating a work item, including any tag downgrade applied. */
+export interface CreateWorkItemResult {
+  id: number;
+  url: string;
+  /** Tags actually written (may be a subset of the requested tags). */
+  tagsApplied?: string;
+  /** Requested tags that were skipped because they cannot be created. */
+  droppedTags?: string[];
+  /** User/agent-facing notice explaining a tag downgrade. */
+  warning?: string;
+}
+
+/** Splits an ADO tag string ("a; b") into trimmed, non-empty tag names. */
+export function splitTags(tags?: string): string[] {
+  return (tags ?? '')
+    .split(';')
+    .map(tag => tag.trim())
+    .filter(tag => tag.length > 0);
+}
+
+/**
+ * True when ADO rejected a call because the caller may not create a tag
+ * definition (the project-level "Create tag definition" permission is
+ * missing). Existing tags never need that permission, so this failure is
+ * recoverable by dropping the tags that do not exist yet.
+ */
+export function isTagPermissionError(error: unknown): boolean {
+  const text = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  if (!text.includes('tag')) return false;
+  return (
+    text.includes('permission') ||
+    text.includes('not authorized') ||
+    text.includes('unauthorized') ||
+    text.includes('forbidden') ||
+    text.includes('denied') ||
+    text.includes('tf401289') ||
+    text.includes('vs403418') ||
+    /\b403\b/.test(text)
+  );
+}
+
+/** Explains a tag downgrade to the user (undefined when nothing was dropped). */
+function describeTagDowngrade(droppedTags: string[], keptTags: string[]): string | undefined {
+  if (droppedTags.length === 0) return undefined;
+  const names = droppedTags.map(tag => `"${tag}"`).join(', ');
+  return keptTags.length > 0
+    ? `Created the work item with existing tag(s) only — your Azure DevOps identity is not allowed to create new tags, so ${names} was skipped.`
+    : `Created the work item without tags — your Azure DevOps identity is not allowed to create new tags, so ${names} was skipped.`;
+}
 
 /**
  * Per-request timeout for ADO REST calls (ms). Without it a stalled socket
@@ -536,6 +590,12 @@ export class AdoClient {
   /**
    * Create a new work item (Task, Bug, etc.) in Azure DevOps.
    * Uses JSON Patch (application/json-patch+json) with optional parent link.
+   *
+   * Tags: ADO only accepts a *new* tag when the caller holds the project-level
+   * "Create tag definition" permission. Without it the whole write is rejected
+   * even though every other field is valid. Existing tags never need that
+   * permission, so a tag-permission failure is retried with only the requested
+   * tags that already exist, then with no tags at all.
    */
   async createWorkItem(
     project: string,
@@ -549,14 +609,74 @@ export class AdoClient {
       areaPath?: string;
     },
     parentWorkItemId?: number
-  ): Promise<{ id: number; url: string }> {
+  ): Promise<CreateWorkItemResult> {
+    const requestedTags = splitTags(fields.tags);
+    const create = (tags: string[]) =>
+      this.post<{ id: number; _links?: { html?: { href?: string } } }>(
+        `/${project}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}?api-version=${GA_VERSION}`,
+        this.buildCreateWorkItemPatch(project, fields, tags, parentWorkItemId),
+        { 'Content-Type': 'application/json-patch+json' }
+      );
+
+    try {
+      const result = await create(requestedTags);
+      return { id: result.id, url: result._links?.html?.href ?? '' };
+    } catch (error) {
+      if (requestedTags.length === 0 || !isTagPermissionError(error)) throw error;
+
+      // No permission to create tags: keep the ones that already exist and
+      // drop the rest. If the tag list is unreadable, assume none can be made.
+      const existingTags = await this.getExistingTagNames(project);
+      const keptTags = existingTags
+        ? requestedTags.filter(tag => existingTags.has(tag.toLowerCase()))
+        : [];
+      const droppedTags = requestedTags.filter(tag => !keptTags.includes(tag));
+      const attempts: string[][] = keptTags.length > 0 ? [keptTags, []] : [[]];
+      let lastError: unknown = error;
+
+      for (const tags of attempts) {
+        try {
+          const result = await create(tags);
+          return {
+            id: result.id,
+            url: result._links?.html?.href ?? '',
+            tagsApplied: tags.join('; '),
+            droppedTags,
+            warning: describeTagDowngrade(droppedTags, keptTags),
+          };
+        } catch (retryError) {
+          lastError = retryError;
+          if (!isTagPermissionError(retryError)) throw retryError;
+        }
+      }
+      throw lastError;
+    }
+  }
+
+  /** Builds the JSON Patch document for createWorkItem with an explicit tag list. */
+  private buildCreateWorkItemPatch(
+    project: string,
+    fields: {
+      title: string;
+      description?: string;
+      acceptanceCriteria?: string;
+      tags?: string;
+      assignedTo?: string;
+      areaPath?: string;
+    },
+    tags: string[],
+    parentWorkItemId?: number
+  ): Array<{ op: string; path: string; value: any }> {
+    // An "Acceptance Criteria" section written into the description belongs
+    // in its own ADO field — move it there instead of shipping it twice.
+    const content = normalizeWorkItemContent(fields);
     const body: Array<{ op: string; path: string; value: any }> = [
       { op: 'add', path: '/fields/System.Title', value: fields.title },
     ];
     // Convert markdown to HTML for rich text fields that ADO expects
-    if (fields.description) body.push({ op: 'add', path: '/fields/System.Description', value: markdownToHtml(fields.description) });
-    if (fields.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: markdownToHtml(fields.acceptanceCriteria) });
-    if (fields.tags) body.push({ op: 'add', path: '/fields/System.Tags', value: fields.tags });
+    if (content.description) body.push({ op: 'add', path: '/fields/System.Description', value: markdownToHtml(content.description) });
+    if (content.acceptanceCriteria) body.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: markdownToHtml(content.acceptanceCriteria) });
+    if (tags.length > 0) body.push({ op: 'add', path: '/fields/System.Tags', value: tags.join('; ') });
     if (fields.assignedTo) body.push({ op: 'add', path: '/fields/System.AssignedTo', value: fields.assignedTo });
     if (fields.areaPath) body.push({ op: 'add', path: '/fields/System.AreaPath', value: fields.areaPath });
 
@@ -572,12 +692,33 @@ export class AdoClient {
       });
     }
 
-    const result = await this.post<any>(
-      `/${project}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}?api-version=${GA_VERSION}`,
-      body,
-      { 'Content-Type': 'application/json-patch+json' }
-    );
-    return { id: result.id, url: result._links?.html?.href ?? '' };
+    return body;
+  }
+
+  /**
+   * Lower-cased names of the tags that already exist in the project, or null
+   * when they cannot be read (the caller then drops all tags instead of failing).
+   */
+  private async getExistingTagNames(project: string): Promise<Set<string> | null> {
+    const url = this.buildUrl(`/${project}/_apis/wit/tags?api-version=${TAGS_PREVIEW_VERSION}`);
+    try {
+      const response = await this.fetchWithFallback(
+        url,
+        { method: 'GET', headers: this.headers },
+        GA_VERSION,
+        TAGS_PREVIEW_VERSION
+      );
+      const payload = (await response.json()) as { value?: Array<{ name?: string }> };
+      const names = new Set<string>();
+      for (const tag of payload.value ?? []) {
+        const name = (tag.name ?? '').trim().toLowerCase();
+        if (name) names.add(name);
+      }
+      return names;
+    } catch (error) {
+      console.warn('[AdoClient] could not list existing tags; creating the work item without tags:', error);
+      return null;
+    }
   }
 
   /** List all projects in the organization the authenticated user has access to. */

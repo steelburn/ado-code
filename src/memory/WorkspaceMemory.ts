@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { logger } from '../services/logger';
+import { DEFAULT_MEMORY_BUDGET, MemoryBudget, renderMemoryBlock } from './memoryBudget';
 
 /**
  * WorkspaceMemory provides persistent key-value storage scoped to the workspace.
@@ -84,21 +85,27 @@ export class WorkspaceMemory {
    * Format all memory entries as a markdown string suitable for injection into
    * an LLM system prompt. Returns an empty string if there are no entries.
    */
-  toPromptString(): string {
+  toPromptString(budget: MemoryBudget = DEFAULT_MEMORY_BUDGET): string {
     const keys = this.list();
     if (keys.length === 0) {
       return '';
     }
-
-    const lines: string[] = ['## Workspace Memory', ''];
-    for (const key of keys) {
-      const value = this.read(key);
-      lines.push(`### ${key}`);
-      lines.push('');
-      lines.push(value ?? '');
-      lines.push('');
-    }
-    return lines.join('\n');
+    return renderMemoryBlock(
+      '## Workspace Memory',
+      keys.map((key) => ({ title: key, body: this.read(key) ?? '' })),
+      budget,
+      {
+        // Legacy shape (heading + raw body per entry) while everything fits,
+        // so small memory blocks are byte-for-byte what they always were.
+        verbose: (entries, header) => {
+          const parts = [header];
+          for (const entry of entries) {
+            parts.push(`### ${entry.title}`, '', entry.body);
+          }
+          return parts.join('\n');
+        },
+      }
+    );
   }
 
   /**
