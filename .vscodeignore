@@ -15,3 +15,5 @@ out/**
 .husky/**
 .env
 .env.*
+tmp-*
+*.tmp
