@@ -78,6 +78,11 @@ export type WebviewToExtensionMessage =
   | { type: 'pickMode' }
   | { type: 'rerunWizard' }
   | { type: 'openSettings' }
+  // Remote Oversight actions from the Configuration page — the page only
+  // carries the settings rows, so the console URL/QR is reached by running
+  // the same commands the status bar exposes.
+  | { type: 'showRemoteQr' }
+  | { type: 'copyRemoteUrl' }
   | { type: 'moveChatToEditor' }
   | { type: 'moveChatToSidebar' }
   | { type: 'cycleMode' }

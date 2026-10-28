@@ -16,7 +16,7 @@ import { AgentProgressPanel, agentDisplayName } from './webview/AgentProgressPan
 import { AgentDetailPanel } from './webview/AgentDetailPanel';
 import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider';
 import { createServices, Services } from './services';
-import { selectActiveOrganization, getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from './config/settings';
+import { selectActiveOrganization, getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope, isUnregisteredSettingError } from './config/settings';
 import { LlmClient } from './llm/client';
 import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { GitService } from './git/GitService';
@@ -1397,9 +1397,27 @@ const remoteControl = new RemoteControl({
   tokens: remoteTokens,
   readSettings: readRemoteSettings,
   writeEnabled: async enabled => {
-    await vscode.workspace
-      .getConfiguration('adoCode')
-      .update('remote.enabled', enabled, vscode.ConfigurationTarget.Global);
+    try {
+      await vscode.workspace
+        .getConfiguration('adoCode')
+        .update('remote.enabled', enabled, vscode.ConfigurationTarget.Global);
+    } catch (err) {
+      // A window that stayed open across an extension update keeps the OLD
+      // configuration registry, so VS Code rejects the write with “Unable to
+      // write to User Settings because adoCode.remote.enabled is not a
+      // registered configuration.” Nothing but a reload can fix that, so say
+      // so instead of letting the raw error escape the toggle command.
+      if (!isUnregisteredSettingError(err)) {
+        throw err;
+      }
+      const pick = await vscode.window.showWarningMessage(
+        'Remote oversight is not available in this window yet — reload the window to pick up the updated settings.',
+        'Reload Window',
+      );
+      if (pick === 'Reload Window') {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    }
   },
   onDidChangeConfiguration: listener => {
     const sub = vscode.workspace.onDidChangeConfiguration(event => {

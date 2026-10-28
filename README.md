@@ -237,7 +237,10 @@ Delegation does not require an ADO work item or a selected project — with neit
 
 Watch your agents from your phone. `ADO Code: Toggle Remote Access` (or the status bar item,
 or the **Remote Access** row in the STATUS view) starts a small console on this machine and
-`Show Remote Access QR Code` renders the URL as a scannable QR code.
+`Show Remote Access QR Code` renders the URL as a scannable QR code. The same switch and its
+settings live in the in-app **Configuration → Remote Oversight** category, which also carries
+**Show QR code** / **Copy console URL** buttons so you never have to leave the page to get the
+phone URL.
 
 The console is read-only oversight in phase 1: it lists running agents, streams their status
 and results, and announces consent prompts waiting on the machine. It does not approve tools

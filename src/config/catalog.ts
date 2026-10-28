@@ -16,6 +16,9 @@ export interface ConfigSection {
   showModelFetcher?: boolean;
   /** Render the vision/tools capability readout under this section. */
   showModelCapabilities?: boolean;
+  /** Render the Remote Oversight action buttons (Show QR / Copy URL) under
+   *  this section — the settings rows alone cannot reach the console URL. */
+  showRemoteActions?: boolean;
 }
 
 export interface ConfigCategory {
@@ -143,6 +146,26 @@ export const CATEGORIES: ConfigCategory[] = [
         settings: [
           { key: 'consent.harmlessAutoApprove', label: 'Auto-approve harmless commands', type: 'boolean', description: 'Run read-only terminal commands (git status/diff/log, npm test, ls, grep, …) immediately, without a consent card or countdown timer', hint: 'When ON, harmless read-only commands like git status, git diff, npm test and ls execute instantly — no approval prompt at all. When OFF, they ask for approval like any other mutating tool. Commands are detected automatically (no shell operators + a known read-only base/subcommand).' },
           { key: 'consent.autoApproveTools', label: 'Auto-approve tools (wildcards)', type: 'array', description: 'Tool names (or patterns) that run without a consent prompt', hint: 'Enter tool names like edit_file, or patterns with * and ? — e.g. "read_*" auto-approves read_file and read_workspace_memory, "get_*" auto-approves all get_* tools. Tools matching here skip the consent card in inline and act modes (plan mode still stays read-only). Terminal commands: "run_terminal_command" or "run_*" auto-approves ALL shell commands — treat that like yolo mode.' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'remote',
+    title: 'Remote Oversight',
+    icon: '📱',
+    sections: [
+      {
+        title: 'Phone console',
+        icon: '📱',
+        showRemoteActions: true,
+        settings: [
+          { key: 'remote.enabled', label: 'Enable remote oversight', type: 'boolean', description: 'Serve the phone console for agent oversight on this machine', hint: 'Off stops the server and any tunnel. Same switch as the status-bar item and “ADO Code: Toggle Remote Access”.' },
+          { key: 'remote.bind', label: 'Bind address', type: 'enum', options: ['loopback', 'all'], description: 'Which interfaces the console listens on — loopback is the safe default, all exposes it to your LAN' },
+          { key: 'remote.port', label: 'Port', type: 'number', min: 0, max: 65535, description: 'Port for the console — 0 lets the OS pick a free one' },
+          { key: 'remote.tunnel', label: 'Tunnel', type: 'enum', options: ['none', 'cloudflared', 'custom'], description: 'How to expose the console to the internet — cloudflared must be on PATH, custom runs your own command' },
+          { key: 'remote.tunnelCommand', label: 'Custom tunnel command', type: 'string', description: 'Command template used when the tunnel is custom — {port} is replaced with the console port' },
+          { key: 'remote.tunnelUrlPattern', label: 'Tunnel URL pattern', type: 'string', description: 'Regex used to scrape the public URL out of tunnel output — empty uses the built-in patterns' },
         ],
       },
     ],

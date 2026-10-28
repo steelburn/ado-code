@@ -1,7 +1,36 @@
 # Changelog
 
 All notable changes to ADO Code will be documented in this file.
+
 ## [Unreleased]
+
+## [0.8.2] - 2026-10-29
+
+### Added
+
+- **Remote Agent Oversight is now reachable from the Configuration page.** A dedicated *Remote
+  Oversight* category carries the enable switch, bind address, port, tunnel mode and the two tunnel
+  templates — the six `adoCode.remote.*` keys used to be deliberately excluded from the page, which
+  left users hunting VS Code Settings for the one switch that turns the console on. The section also
+  has **Show QR code** and **Copy console URL** buttons that run the same commands as the status bar,
+  so enabling the console and getting the phone URL no longer needs a detour to the command palette.
+
+### Fixed
+
+- **The Configuration page no longer dies on the first setting VS Code refuses.** VS Code rejects a
+  write for a setting the *running window* has not registered — which is what happens when an
+  extension update is installed while the window stays open: the new bundle's Configuration page
+  offers keys (e.g. `adoCode.artifacts.enabled`) that the window's registry still describes with the
+  previous `package.json`, so saving fails with *Unable to write to User Settings because
+  adoCode.artifacts.enabled is not a registered configuration*. That one rejection used to abort the
+  whole save loop, silently dropping every later key (`adoPat` included) while earlier keys saved
+  fine. Failures are now collected per key, the rest of the page still writes, and this specific
+  rejection is answered with a **Reload Window** prompt — a reload is the only thing that re-reads
+  the contributed manifest.
+- **The Remote Access status-bar toggle explains a stale window instead of failing.** Toggling it in a
+  window that predates the installed update raised a bare *Unable to write to User Settings because
+  adoCode.remote.enabled is not a registered configuration*; it now offers **Reload Window** for that
+  specific rejection and still surfaces any other error unchanged.
 
 ## [0.8.1] - 2026-10-28
 

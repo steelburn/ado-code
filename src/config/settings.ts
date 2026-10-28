@@ -220,3 +220,27 @@ export async function updateSettingRespectingScope(
   await cfg.update(key, value, target);
 }
 
+/**
+ * VS Code only accepts a write for a setting that the *running window* has in
+ * its configuration registry. Installing an extension update while the window
+ * stays open replaces the bundle on disk but not that registry: the new code —
+ * and the Configuration page it serves — knows settings the window does not, so
+ * every write to one of them is rejected with
+ *
+ *   Unable to write to User Settings because adoCode.<key> is not a registered
+ *   configuration.
+ *
+ * Only a window reload re-reads the contributed manifest, so the honest answer
+ * is to ask for the reload instead of retrying the write.
+ */
+export const STALE_SETTINGS_MANIFEST_HINT =
+  'ADO Code settings added by the update are not registered in this window yet. Reload the window, then save again.';
+
+const UNREGISTERED_SETTING_PATTERN = /is not a registered configuration/i;
+
+/** True when a settings write was refused because the window's registry is stale. */
+export function isUnregisteredSettingError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return UNREGISTERED_SETTING_PATTERN.test(message);
+}
+

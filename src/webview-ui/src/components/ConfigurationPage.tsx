@@ -293,6 +293,30 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                   overrides={asCapOverrides(config['llm.capabilityOverrides'])}
                 />
               )}
+              {/* Remote Oversight: the rows above configure the server, but the
+                  console URL/QR only exists once it runs — reuse the same
+                  commands the status bar item exposes. */}
+              {section.showRemoteActions && (
+                <div className="config-remote-actions">
+                  <button
+                    type="button"
+                    className="config-remote-btn"
+                    onClick={() => vscode?.postMessage({ type: 'showRemoteQr' })}
+                  >
+                    Show QR code
+                  </button>
+                  <button
+                    type="button"
+                    className="config-remote-btn"
+                    onClick={() => vscode?.postMessage({ type: 'copyRemoteUrl' })}
+                  >
+                    Copy console URL
+                  </button>
+                  <span className="config-desc config-remote-note">
+                    Save first — the QR reflects the saved state and starts the console if needed.
+                  </span>
+                </div>
+              )}
               {/* 0.6.5: the model pickers above (per-mode rows, choice-detection
                   model, capability-override rows) are DROPDOWNS fed by the
                   provider's model list — offer fetch/refresh right here in

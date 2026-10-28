@@ -11,7 +11,14 @@ import { isTurnVisible, foreignRunningTurn, runningElsewhereNotice, sessionRunIn
 import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
-import { getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope } from '../config/settings';
+import {
+  getSettings,
+  getActiveOrg,
+  isUnregisteredSettingError,
+  llmConfigFromSettings,
+  STALE_SETTINGS_MANIFEST_HINT,
+  updateSettingRespectingScope,
+} from '../config/settings';
 import { LlmClient } from '../llm/client';
 import { LlmMessage, LlmProviderType, messageText } from '../llm/types';
 import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, ChildChecklistItem, extractDelegationSuggestion, formatDiscussionThread } from '../llm/prompts';
@@ -2214,7 +2221,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // actually changed (the page echoes the GLOBAL values, which may
             // differ from this workspace's deliberate per-workspace override).
             const prevSettings = getSettings();
-            let saveError: string | null = null;
+            // Failures are COLLECTED, not fatal: a key VS Code refuses must never
+            // drop the remaining keys on the floor (the per-key try/catch below
+            // only helps if the loop keeps going after a rejection).
+            const saveFailures: string[] = [];
+            let staleManifest = false;
             // Stage 4: validate the payload before writing. Unknown keys and
             // non-JSON values are reported and skipped — never aborting, per the
             // per-key rule above. `modelCapabilities` is a derived value and is
@@ -2232,12 +2243,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               try {
                 await updateSettingRespectingScope(cfg, key, value);
               } catch (err) {
-                saveError = `"${key}": ${err instanceof Error ? err.message : String(err)}`;
-                break;
+                saveFailures.push(`"${key}": ${err instanceof Error ? err.message : String(err)}`);
+                if (isUnregisteredSettingError(err)) staleManifest = true;
               }
             }
-            if (saveError) {
-              this.postMessage({ type: 'error', message: `Failed to save ${saveError}` });
+            if (saveFailures.length > 0) {
+              const [first, ...rest] = saveFailures;
+              const more = rest.length > 0 ? ` (+${rest.length} more setting${rest.length === 1 ? '' : 's'})` : '';
+              this.postMessage({ type: 'error', message: `Failed to save ${first}${more}` });
+              // "…is not a registered configuration" is not a value problem: the
+              // window's settings registry predates the running bundle (an update
+              // was installed while this window stayed open). No retry can fix it —
+              // only re-reading the manifest can — so offer the reload.
+              if (staleManifest) {
+                await this.offerReloadForStaleSettings();
+              }
               break;
             }
             // Keep the workspaceState active-org/project bindings in sync for
@@ -2379,6 +2399,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // webview lets it maximize itself (sibling views collapse via the
             // webview's maximizeWizard message).
             this.postMessage({ type: 'openSettings' });
+            break;
+          case 'showRemoteQr':
+            // Configuration → Remote Oversight: reuse the command so the QR
+            // panel, URL resolution and "not enabled" guidance stay in one place.
+            await vscode.commands.executeCommand('adoCode.remote.showQr');
+            break;
+          case 'copyRemoteUrl':
+            await vscode.commands.executeCommand('adoCode.remote.copyUrl');
             break;
           case 'maximizeWizard':
             // A full-page wizard opened/closed in the chat webview — collapse
@@ -3044,6 +3072,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Mark content as changed — the next idle refresh cycle will pick it up. */
   private markDirty(): void {
     this._dirty = true;
+  }
+
+  /**
+   * The window has not registered settings contributed by the running bundle
+   * (typical right after an extension update: the new code is live, the settings
+   * registry still holds the old package.json). Only a reload re-reads it.
+   */
+  private async offerReloadForStaleSettings(): Promise<void> {
+    const reload = 'Reload Window';
+    const pick = await vscode.window.showWarningMessage(STALE_SETTINGS_MANIFEST_HINT, reload);
+    if (pick === reload) {
+      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }
   }
 
   /** Record user interaction — resets the idle timer. */

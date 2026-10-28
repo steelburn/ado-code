@@ -704,3 +704,31 @@
   background: var(--vscode-widget-border);
   color: var(--vscode-foreground);
 }
+
+/* Remote Oversight action row — the console URL/QR cannot be derived from
+   the settings rows, so the section carries its own commands. */
+.config-remote-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--vscode-widget-border);
+}
+.config-remote-btn {
+  background: var(--vscode-button-secondaryBackground);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 3px;
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  padding: 5px 10px;
+  font-size: 0.95em;
+}
+.config-remote-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+.config-remote-note {
+  flex: 1 1 240px;
+  margin: 0;
+}
