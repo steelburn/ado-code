@@ -116,9 +116,11 @@ function buildToolGuidelines(mode: ModeConfig): string {
       'Read files lazily and appropriately: for small or medium files (< 400 lines), read the whole file in ONE call — avoid slicing it into tiny range reads. Use targeted `read_file` ranges (startLine/endLine) only for large files (> 400 lines) where you need a specific section, and avoid reading many files up front — read only what the current step actually needs.',
       'Always check existing patterns and conventions before editing.',
       'When searching, prefer `search_files` over reading files one by one.',
+      'Before building a document set, call `list_doc_templates` (optionally with a templateId) to see which documents a template emits and which options it accepts.',
     ],
     write: [
       'Prefer `edit_file` for targeted changes; use `write_to_file` for new files or full rewrites.',
+      'For documentation work use `build_documentation` instead of hand-writing the tree: it runs the same scaffolder as the New Project wizard and produces the Markdown sources (with front matter), the .md + .csv registers, project-control files and inputs/ folders. Build first, then fill the Markdown in with `edit_file`. A single note or a section added to an existing document is still a normal `edit_file` — that is not a document set.',
       'Preserve existing code style (indentation, naming, imports).',
       'Include only the lines that changed — avoid rewriting entire files when a small edit suffices.',
     ],

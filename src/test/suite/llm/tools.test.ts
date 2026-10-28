@@ -1200,3 +1200,105 @@ suite('ToolExecutor · session to-do list', () => {
   });
 });
 
+
+// ── Documentation building ─────────────────────────────────────────────────
+suite('ToolExecutor · documentation building', () => {
+  let originalWorkspaceFolders: typeof vscode.workspace.workspaceFolders;
+  let workspaceRoot: string;
+
+  suiteSetup(() => {
+    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-code-doc-tools-'));
+    originalWorkspaceFolders = vscode.workspace.workspaceFolders;
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      value: [{ uri: vscode.Uri.file(workspaceRoot), name: 'ws', index: 0 }],
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  suiteTeardown(() => {
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      value: originalWorkspaceFolders,
+      configurable: true,
+      writable: true,
+    });
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
+  test('tools are advertised in the mode-specific tool list', () => {
+    const act = makeExecutor('act');
+    const names = act.tools.map(t => t.name);
+    assert.ok(names.includes('list_doc_templates'));
+    assert.ok(names.includes('build_documentation'));
+
+    // list_doc_templates is read-only, so plan mode keeps it and drops the builder.
+    const plan = makeExecutor('plan');
+    const planNames = plan.tools.map(t => t.name);
+    assert.ok(planNames.includes('list_doc_templates'));
+    assert.ok(!planNames.includes('build_documentation'));
+  });
+
+  test('list_doc_templates returns the catalogue', async () => {
+    const ex = makeExecutor('plan');
+    const res = JSON.parse(await ex.execute('list_doc_templates', {}));
+    assert.strictEqual(res.error, undefined);
+    assert.deepStrictEqual(
+      res.templates.map((t: any) => t.templateId),
+      ['doc-ba', 'doc-writer', 'doc-tester']
+    );
+
+    const detail = JSON.parse(await ex.execute('list_doc_templates', { templateId: 'doc-writer' }));
+    assert.strictEqual(detail.templates.length, 1);
+    assert.ok(detail.templates[0].documents.length > 0);
+
+    const unknown = JSON.parse(await ex.execute('list_doc_templates', { templateId: 'doc-nope' }));
+    assert.ok(String(unknown.error).includes('doc-nope'));
+  });
+
+  test('build_documentation scaffolds into the workspace', async () => {
+    const ex = makeExecutor('yolo');
+    const res = JSON.parse(
+      await ex.execute('build_documentation', {
+        templateId: 'doc-ba',
+        projectName: 'Agent Built',
+        directory: 'agent-built',
+      })
+    );
+    assert.strictEqual(res.error, undefined, res.error);
+    assert.strictEqual(res.directory, 'agent-built');
+    assert.ok(res.created.length > 0);
+    assert.ok(fs.existsSync(path.join(workspaceRoot, 'agent-built', '.ado-code', 'documentation.json')));
+  });
+
+  test('build_documentation reports bad input as a JSON error', async () => {
+    const ex = makeExecutor('yolo');
+    const unknown = JSON.parse(
+      await ex.execute('build_documentation', { templateId: 'doc-nope', projectName: 'X' })
+    );
+    assert.ok(String(unknown.error).includes('doc-nope'));
+
+    const escape = JSON.parse(
+      await ex.execute('build_documentation', {
+        templateId: 'doc-ba',
+        projectName: 'X',
+        directory: '../outside',
+      })
+    );
+    assert.ok(String(escape.error).length > 0);
+  });
+
+  test('build_documentation needs approval in inline mode and is blocked in plan mode', async () => {
+    const blocked = await makeExecutor('plan').execute('build_documentation', {
+      templateId: 'doc-ba',
+      projectName: 'Blocked',
+    });
+    assert.ok(String(blocked).includes('not allowed in plan mode'));
+
+    const noHook = await makeExecutor('inline', false).execute('build_documentation', {
+      templateId: 'doc-ba',
+      projectName: 'Needs approval',
+    });
+    assert.ok(String(noHook).includes('requires approval'));
+    assert.ok(!fs.existsSync(path.join(workspaceRoot, 'Needs approval')));
+  });
+});

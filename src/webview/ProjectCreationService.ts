@@ -3,7 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
 import { DocProjectSpec, DOC_PROJECT_SPECS } from '../shared/documentation/docTemplates';
-import { scaffoldDocumentationProject } from './documentation/scaffoldDocs';
+import { scaffoldDocumentationProject } from '../shared/documentation/scaffoldDocs';
 
 /**
  * Scaffolds new projects from wizard requests. Deliberately vscode-free so it

@@ -3112,6 +3112,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       chatInputWhileBusy: s.chatInputWhileBusy,
       chatSuggestDelegation: s.chatSuggestDelegation,
       chatDensity: s.chatDensity,
+      chatShowToolCalls: s.chatShowToolCalls,
       configured: Boolean(s.llmApiKey),
       // ADO is optional: `configured` (LLM) gates the welcome wizard, but ADO
       // features only activate once the org + project + PAT are present.

@@ -169,6 +169,7 @@ export const WIZARD_CONFIG_KEYS: ReadonlyArray<readonly [ConfigSettingKey, strin
   ['changelog.enabled', 'changelogEnabled'],
   ['changelog.postToAdo', 'changelogPostToAdo'],
   ['chat.density', 'chatDensity'],
+  ['chat.showToolCalls', 'chatShowToolCalls'],
 ];
 
 export interface WizardConfigParseResult {

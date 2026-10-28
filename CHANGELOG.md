@@ -5,6 +5,12 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Added
 
+- **Tool calls can be shown or hidden straight from the chat** — hiding them used to mean a trip to
+  Settings. The chat's ⋮ menu now carries a "Tool calls: shown / hidden" item that flips
+  `adoCode.chat.showToolCalls` (the same setting the configuration screen exposes as AI & Modes →
+  Show tool calls in chat): the open transcript re-renders in place, folding every tool card into one
+  quiet "N tool calls hidden" disclosure, and while it is off the host stops sending tool arguments
+  and results to the webview at all.
 - **Generated artifacts are collected and their context cost is visible** — `.ado-code/` had no
   garbage collection, so every work item ever opened kept its cache and every delegated run its logs.
   A new `ADO Code: Compact Artifacts` command prunes by policy (the newest file of each kind is always
@@ -39,6 +45,19 @@ All notable changes to ADO Code will be documented in this file.
   bites, the block collapses to a one-line digest that points at `list_workspace_memory` and
   `read_workspace_memory`, which are never truncated. `set_memory` and `write_workspace_memory` reject
   an entry over the per-entry cap with an error naming the setting, storing nothing.
+
+- **Documentation projects can be scaffolded from chat** — two native tools expose the same
+  documentation templates the "Create Documentation Project" wizard uses. `list_doc_templates`
+  (read-only, allowed in plan mode) reports each template's id, description and file count, and with
+  an id also its file list and accepted options; `build_documentation` (mutating, so it shows an
+  approval card in inline mode and is refused in plan mode) writes a whole document set into the
+  workspace from one call. The scaffolder moved to `src/shared/documentation/scaffoldDocs.ts` so the
+  wizard and the tools share one writer instead of two copies drifting apart. The build is confined
+  to the workspace: the target directory is resolved against the workspace root and refused when it
+  is absolute, escapes with `..`, or names the root itself, and a non-empty folder is refused unless
+  `overwrite: true` — nothing is ever deleted. Results come back as
+  `{ directory, created[], warnings[], next }` with workspace-relative paths, and bad input (unknown
+  template id, empty project name) returns the usual `{ error }` listing the valid ids.
 
 ### Fixed
 

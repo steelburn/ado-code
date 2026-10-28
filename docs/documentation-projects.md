@@ -288,6 +288,35 @@ Diagram source lives beside the rendered image: `diagrams/DIA-003.mmd` (source),
 
 ---
 
+## Building from chat (agent tools)
+
+The wizard is not the only caller. Two native tools expose the same scaffolder to the
+chat agent, so "write me the BA document set" produces the real project instead of a
+hand-invented folder tree:
+
+| Tool | Mode | What it does |
+|---|---|---|
+| `list_doc_templates` | read-only (plan included) | the catalogue: `doc-ba` / `doc-writer` / `doc-tester`, file counts, and — with a `templateId` — that template's file list plus the option keys |
+| `build_documentation` | mutating (approval in inline, blocked in plan) | runs `scaffoldDocumentationProject`, i.e. exactly what the wizard runs, into a folder inside the workspace |
+
+Both go through `src/shared/documentation/docBuild.ts`, which owns the guard rails:
+
+- **Known template** — an unknown id is an error listing the valid ones.
+- **Confinement** — `directory` is resolved against the workspace root and refused if it
+  is absolute, escapes the root (`..`), or *is* the root. There is no default into the
+  repository root.
+- **No silent mixing** — an existing non-empty folder is refused unless `overwrite: true`
+  is passed; even then the scaffolder writes over its own file names and leaves other
+  files alone. It never deletes.
+- **Same output** — front matter, `.md` + `.csv` registers, `.ado-code/documentation.json`
+  and the `inputs/` tree, because it is one code path, not a second implementation.
+
+Typical loop: `list_doc_templates` → `build_documentation` →
+`edit_file`/`write_to_file` on the Markdown sources → the **Documentation Export**
+command for Word/XLSX/PNG. Export is never hand-edited back into Markdown.
+
+---
+
 ## Where things live
 
 | File | Responsibility |
@@ -296,7 +325,8 @@ Diagram source lives beside the rendered image: `diagrams/DIA-003.mmd` (source),
 | `src/shared/documentation/krisa.ts` | KRiSA artefact catalogue (edit clauses here) |
 | `src/shared/documentation/docTemplates.ts` | the three role specs and every document body |
 | `src/shared/documentation/docInputs.ts` | inputs tree derivation, index, per-folder READMEs |
-| `src/webview/documentation/scaffoldDocs.ts` | the scaffolder: coercions, registers, export pipeline |
+| `src/shared/documentation/scaffoldDocs.ts` | the scaffolder: coercions, registers, export pipeline |
+| `src/shared/documentation/docBuild.ts` | build-as-an-operation: template catalogue + confined, guarded project build |
 | `src/shared/docBlocks.ts` | Markdown + front matter → block model (no dependencies) |
 | `src/shared/docxLayout.ts` | layout decisions: cover, A4 geometry, banners, table widths |
 | `src/webview-ui/src/export/docxRenderer.ts` | block model → `docx` |
