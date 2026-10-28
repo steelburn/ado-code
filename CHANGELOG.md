@@ -3,8 +3,37 @@
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-28
+
 ### Added
 
+- **Documentation projects for business analysts, technical writers and testers** — the new-project
+  wizard gains a `Documentation` category with three role templates (`doc-ba`, `doc-writer`,
+  `doc-tester`). A created project is a working definition of done rather than a set of empty
+  stubs: every document ships real section headings, one filled example row per table, and YAML
+  front matter (`doc-id`, `version`, `status`, `owner`, `classification`, `lang`), so a BA's
+  `REQ-###`, a tester's `TC-###` and a writer's SRS section all join on the same ids. Bahasa
+  Malaysia and bilingual projects get BM front-matter keys and BM titles from the same renderer
+  (`src/shared/documentation/docTemplates.ts`).
+- **KRiSA (government) governance mode** — `governance: KRiSA (Government)` turns on a 26-artefact
+  catalogue (`src/shared/documentation/krisa.ts`), a per-role compliance matrix,
+  `TERHAD`/`RESTRICTED` classification, and forces Word export, spreadsheet registers and security
+  testing. Every coercion is reported as a wizard warning rather than applied silently. **Nothing
+  claims compliance**: each catalogue row carries `guidelineRef: 'TODO — confirm clause'` and a
+  test fails if that marker disappears, until the real KRiSA beta-2026 clause names are confirmed.
+- **Export to Word, Excel and PNG from the chat panel** — an export bar appears for documentation
+  projects with Word / Registers / Diagram actions. Markdown to DOCX runs on `docx` (lazy chunk,
+  cover page from front matter, classification banner, `Page X of Y` footer, images sized from
+  their real headers by `src/shared/imageSize.ts`); registers to XLSX run on a hand-rolled OOXML
+  writer over `fflate` (shared strings, real date serials, enum dropdowns, click-through evidence
+  hyperlinks, byte-deterministic archives); diagrams to PNG rasterise via `data:` SVG to canvas
+  (the chat CSP forbids `blob:`). All three save through one `saveBinary` host bridge. The heavy
+  renderers stay behind `await import()`, so the chat panel grew by ~37 KB instead of ~465 KB.
+- **Source-inputs tree** — each documentation project gets `inputs/<doc-type>/` folders plus an
+  `inputs/source-register.csv` (Received, Triaged, Incorporated) so meeting notes, transcripts and
+  sketch scans are traceable to the document they fed, closing
+  `IN-001` to `REQ-014` to `TC-014` to `EX-0014` to `EVD-014-01.png`. Recordings are registered
+  but git-ignored; derived documents (RTM, compliance matrix) get no folder.
 - **Tool calls can be shown or hidden straight from the chat** — hiding them used to mean a trip to
   Settings. The chat's ⋮ menu now carries a "Tool calls: shown / hidden" item that flips
   `adoCode.chat.showToolCalls` (the same setting the configuration screen exposes as AI & Modes →
@@ -61,6 +90,20 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **Exported Mermaid diagrams lost their labels** — mermaid 12.1.0 honours only root-level
+  `htmlLabels`, so `flowchart.htmlLabels:false` in `EXPORT_INIT_DIRECTIVE` was silently ignored and
+  every exported diagram carried `<foreignObject>` HTML labels, which Chromium drops inside an
+  `<img>`-sourced SVG, giving a diagram that arrives with no text. The directive now sets
+  `htmlLabels:false` at the root, verified in a real webview by
+  `src/test/suite/webview/mermaidRenderProbe.test.ts`.
+- **A new documentation project pointed at folders that did not exist** — `assets/README.md`
+  instructed writers to put figures in `assets/img/` and evidence in `assets/evidence/`, and the
+  diagram guide referenced `diagrams/`, but the scaffolder created none of them. Each is now
+  created (with a `.gitkeep`) according to the template's screenshots / evidence / diagram options.
+- **"Export diagram" always failed** — `normaliseExportRequest` required `diagramLine` for
+  `diagram-png`, but the export bar cannot know a fence's line number without parsing the whole
+  document, so every real export was rejected with "Pick a diagram to export" while the collector's
+  own first-diagram fallback sat unreachable.
 - **A to-do update replaced the list instead of editing it** — `update_todo_list` overwrote the session
   ledger with exactly what the model sent, so a partial update (only the steps it was touching) silently
   deleted every other step, open ones and already-earned ticks alike. Writes now **merge**: existing steps
@@ -77,55 +120,6 @@ All notable changes to ADO Code will be documented in this file.
 - **"Latest answer" pins the chat to the bottom instead of jumping once** — the floating affordance smooth-scrolled a single time and then read its own animation frames as "the reader scrolled up", which cleared the follow flag a frame into the jump: on a still-streaming answer the view landed short, the button reappeared and the reader had to keep chasing the bottom. The follow decision now goes through the pure `resolveStickToBottom()` helper in `src/shared/chatNavigation.ts`, and only a scroll the reader caused — wheel, touch, keys, or an upward move — may unpin the view, so after "Latest answer" new content stays pinned until the reader scrolls up again.
 
 - **A chat message survives an abrupt shutdown (laptop power-off, sleep, host kill)** — sessions were stored only in `workspaceState` and only *after* the agentic round returned, so the message the user had just sent — plus any text already streamed back — lived purely in memory for the whole turn and was lost if the machine went down inside that window. The user message is now persisted the moment it is accepted, every agentic iteration checkpoints a throttled "interrupted" draft, per-session transcript writes are serialised so a late draft can no longer overwrite the turn’s final answer, and each session is additionally mirrored to `.ado-code/sessions/<scope>/` with a synchronous `write → fsync → rename`, so recovery no longer depends on the debounced Memento flush landing. On activation the mirror is preferred only when it holds more messages than `workspaceState`, and pending writes are flushed from `deactivate()`, on window blur, and on process exit.
-
-## [0.8.0] - 2026-10-27
-
-### Added
-
-- **Documentation projects for business analysts, technical writers and testers** — the new-project
-  wizard gains a `Documentation` category with three role templates (`doc-ba`, `doc-writer`,
-  `doc-tester`). A created project is a working definition of done rather than a set of empty
-  stubs: every document ships real section headings, one filled example row per table, and YAML
-  front matter (`doc-id`, `version`, `status`, `owner`, `classification`, `lang`), so a BA's
-  `REQ-###`, a tester's `TC-###` and a writer's SRS section all join on the same ids. Bahasa
-  Malaysia and bilingual projects get BM front-matter keys and BM titles from the same renderer
-  (`src/shared/documentation/docTemplates.ts`).
-- **KRiSA (government) governance mode** — `governance: KRiSA (Government)` turns on a 26-artefact
-  catalogue (`src/shared/documentation/krisa.ts`), a per-role compliance matrix,
-  `TERHAD`/`RESTRICTED` classification, and forces Word export, spreadsheet registers and security
-  testing. Every coercion is reported as a wizard warning rather than applied silently. **Nothing
-  claims compliance**: each catalogue row carries `guidelineRef: 'TODO — confirm clause'` and a
-  test fails if that marker disappears, until the real KRiSA beta-2026 clause names are confirmed.
-- **Export to Word, Excel and PNG from the chat panel** — an export bar appears for documentation
-  projects with Word / Registers / Diagram actions. Markdown to DOCX runs on `docx` (lazy chunk,
-  cover page from front matter, classification banner, `Page X of Y` footer, images sized from
-  their real headers by `src/shared/imageSize.ts`); registers to XLSX run on a hand-rolled OOXML
-  writer over `fflate` (shared strings, real date serials, enum dropdowns, click-through evidence
-  hyperlinks, byte-deterministic archives); diagrams to PNG rasterise via `data:` SVG to canvas
-  (the chat CSP forbids `blob:`). All three save through one `saveBinary` host bridge. The heavy
-  renderers stay behind `await import()`, so the chat panel grew by ~37 KB instead of ~465 KB.
-- **Source-inputs tree** — each documentation project gets `inputs/<doc-type>/` folders plus an
-  `inputs/source-register.csv` (Received, Triaged, Incorporated) so meeting notes, transcripts and
-  sketch scans are traceable to the document they fed, closing
-  `IN-001` to `REQ-014` to `TC-014` to `EX-0014` to `EVD-014-01.png`. Recordings are registered
-  but git-ignored; derived documents (RTM, compliance matrix) get no folder.
-
-### Fixed
-
-- **Exported Mermaid diagrams lost their labels** — mermaid 12.1.0 honours only root-level
-  `htmlLabels`, so `flowchart.htmlLabels:false` in `EXPORT_INIT_DIRECTIVE` was silently ignored and
-  every exported diagram carried `<foreignObject>` HTML labels, which Chromium drops inside an
-  `<img>`-sourced SVG, giving a diagram that arrives with no text. The directive now sets
-  `htmlLabels:false` at the root, verified in a real webview by
-  `src/test/suite/webview/mermaidRenderProbe.test.ts`.
-- **A new documentation project pointed at folders that did not exist** — `assets/README.md`
-  instructed writers to put figures in `assets/img/` and evidence in `assets/evidence/`, and the
-  diagram guide referenced `diagrams/`, but the scaffolder created none of them. Each is now
-  created (with a `.gitkeep`) according to the template's screenshots / evidence / diagram options.
-- **"Export diagram" always failed** — `normaliseExportRequest` required `diagramLine` for
-  `diagram-png`, but the export bar cannot know a fence's line number without parsing the whole
-  document, so every real export was rejected with "Pick a diagram to export" while the collector's
-  own first-diagram fallback sat unreachable.
 
 ## [0.7.5] - 2026-10-16
 
