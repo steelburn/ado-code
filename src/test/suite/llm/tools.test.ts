@@ -989,7 +989,7 @@ suite('ToolExecutor · session to-do list', () => {
     assert.deepStrictEqual(stored!.items.map(i => i.status), ['completed', 'in_progress', 'pending']);
   });
 
-  test('is a FULL REPLACE — ticking an item off is sent as the whole list', async () => {
+  test('ticking an item off is sent as the whole list and never duplicates items', async () => {
     const ex = makeTodoExecutor('act');
     await ex.execute('update_todo_list', {
       todos: [
@@ -1005,9 +1005,48 @@ suite('ToolExecutor · session to-do list', () => {
       ],
     }));
 
-    assert.strictEqual(res.items, 2, 'the replacement must not accumulate duplicates');
+    assert.strictEqual(res.items, 2, 'the update must not accumulate duplicates');
+    assert.strictEqual(res.mode, 'merge');
     assert.strictEqual(res.completed, 1);
     assert.deepStrictEqual(todos.read('session-1')!.items.map(i => i.status), ['completed', 'in_progress']);
+  });
+
+  test('a partial list keeps the items it does not mention', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('update_todo_list', {
+      todos: [
+        { content: 'Step one', status: 'completed' },
+        { content: 'Step two', status: 'in_progress' },
+        { content: 'Step three', status: 'pending' },
+      ],
+    });
+
+    // The model re-sends only what it is touching: nothing else may vanish.
+    const res = JSON.parse(
+      await ex.execute('update_todo_list', { todos: [{ content: 'Step two', status: 'completed' }] })
+    );
+
+    assert.strictEqual(res.items, 3);
+    assert.deepStrictEqual(
+      todos.read('session-1')!.items.map(i => `${i.content}:${i.status}`),
+      ['Step one:completed', 'Step two:completed', 'Step three:pending']
+    );
+  });
+
+  test('mode "replace" drops the previous plan on purpose', async () => {
+    const ex = makeTodoExecutor('act');
+    await ex.execute('update_todo_list', { todos: [{ content: 'Old step', status: 'pending' }] });
+
+    const res = JSON.parse(
+      await ex.execute('update_todo_list', {
+        todos: [{ content: 'New step', status: 'pending' }],
+        mode: 'replace',
+      })
+    );
+
+    assert.strictEqual(res.mode, 'replace');
+    assert.strictEqual(res.items, 1);
+    assert.deepStrictEqual(todos.read('session-1')!.items.map(i => i.content), ['New step']);
   });
 
   test('the tool result carries a rendered checklist for the model', async () => {

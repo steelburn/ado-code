@@ -105,7 +105,7 @@ function buildToolGuidelines(mode: ModeConfig): string {
     todo: [
       'FIRST, when the objective of the request is clear and it is more than a trivial one-step change, record it with `set_goal` — ONE short outcome-shaped line. It heads the session\'s To-do view and stays fixed; do NOT rewrite it to describe progress or to restate individual steps.',
       'Then break that goal into steps with `update_todo_list`. For any task that needs 3 or more distinct steps — and ALWAYS when the user asks for a plan, a multi-file change, or a migration — write the plan down BEFORE you start working, then keep it current as you go.',
-      'Send the COMPLETE list on every `update_todo_list` call. Items you already finished must be included with status `completed`, so the list never silently loses work.',
+      'Send the list to `update_todo_list`; it is MERGED into the session list, so an item you leave out keeps its status instead of vanishing. Sending the full list is still best — include finished items with status `completed` so progress stays visible.',
       'Exactly ONE item should be `in_progress` at a time (the one you are working on right now); everything not yet started stays `pending`.',
       'Flip an item to `completed` in the SAME iteration you finish it — never batch completions to the end of the turn. The user watches this list tick over in the To-do view; a stale list is worse than no list.',
       'If new work appears mid-task, add it as a new item instead of silently doing it. If an item turns out to be unnecessary, drop it from the list and say why.',

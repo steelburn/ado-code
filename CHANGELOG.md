@@ -42,6 +42,12 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **A to-do update replaced the list instead of editing it** — `update_todo_list` overwrote the session
+  ledger with exactly what the model sent, so a partial update (only the steps it was touching) silently
+  deleted every other step, open ones and already-earned ticks alike. Writes now **merge**: existing steps
+  keep their place and status, omitted steps stay put, new steps are appended, and a completed step is never
+  un-ticked by a stale snapshot. `mode: "replace"` is the explicit escape hatch for a deliberate plan
+  rewrite, and the tool result echoes the mode it applied.
 - **Work-item creation fails when the user may not create tags** — `System.Tags` rode in the same
   patch as every other field, so a single tag the caller lacked permission to define rejected the
   whole write (`403 TF401289`) and the work item was never created. Existing tags never need that

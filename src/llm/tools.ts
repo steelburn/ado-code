@@ -772,13 +772,13 @@ export function createToolExecutor(
     },
     {
       name: 'update_todo_list',
-      description: 'Create or update the to-do list for THIS chat session (shown in the ADO Code "To-do" view). Send the COMPLETE list on every call — items already finished must be included with status "completed". Keep exactly ONE item "in_progress" while you work on it and flip it to "completed" the moment it is actually done; never batch completions to the end of the turn. Use it for any task with 3+ distinct steps.',
+      description: 'Create or update the to-do list for THIS chat session (shown in the ADO Code "To-do" view). The list is MERGED, not replaced: items you leave out keep their status, so you may send only the steps you are touching. Sending the full list is still preferred: include finished items with status "completed" so progress stays visible. Keep exactly ONE item "in_progress" while you work on it and flip it to "completed" the moment it is actually done; never batch completions to the end of the turn. Pass mode "replace" only when the plan itself is being rewritten and the old steps are obsolete. Use it for any task with 3+ distinct steps.',
       parameters: {
         type: 'object',
         properties: {
           todos: {
             type: 'array',
-            description: 'The complete to-do list, in execution order',
+            description: 'The to-do list, in execution order (merged into the existing list)',
             items: {
               type: 'object',
               properties: {
@@ -788,6 +788,12 @@ export function createToolExecutor(
               },
               required: ['content', 'status'],
             },
+          },
+          mode: {
+            type: 'string',
+            enum: ['merge', 'replace'],
+            description:
+              'How to apply the list. "merge" (default) keeps items you omitted, with their status. "replace" discards every existing item first — use it only when rewriting the plan.',
           },
         },
         required: ['todos'],
@@ -1363,7 +1369,8 @@ export function createToolExecutor(
           if (!Array.isArray(args.todos)) {
             return JSON.stringify({ error: "parameter 'todos' must be an array of { content, status } objects" });
           }
-          const list = services.todos.replace(todoSession, args.todos, hooks?.getSessionName?.());
+          const mode = args.mode === 'replace' ? 'replace' : 'merge';
+          const list = services.todos.replace(todoSession, args.todos, hooks?.getSessionName?.(), mode);
           const done = list.items.filter(i => i.status === 'completed').length;
           const running = list.items.filter(i => i.status === 'in_progress').length;
           logger.info(`Todos: session list updated (${done}/${list.items.length} completed, ${running} in progress)`);
@@ -1372,6 +1379,7 @@ export function createToolExecutor(
             // The goal rides along so the model re-anchors on the objective on
             // every list rewrite instead of drifting into busywork.
             goal: list.goal?.text ?? null,
+            mode,
             items: list.items.length,
             completed: done,
             inProgress: running,
