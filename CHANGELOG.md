@@ -2,6 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
+- Closed [ADO-27361](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27361): AC-P2-10 Show Context Cost diagnostics command (2026-10-28) — `fix/tag-permission-fallback @ 5e04451`
 
 ### Added
 
