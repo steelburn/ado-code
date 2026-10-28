@@ -303,6 +303,6 @@ suite('documentation export — host payloads', () => {
   test('the extension can resolve a project from a Uri', async () => {
     // Guards the contract the ChatViewProvider arm relies on.
     const uri = vscode.Uri.file(projectPath);
-    assert.strictEqual(uri.fsPath, path.resolve(projectPath));
+      assert.strictEqual(uri.fsPath.toLowerCase(), path.resolve(projectPath).toLowerCase());
   });
 });

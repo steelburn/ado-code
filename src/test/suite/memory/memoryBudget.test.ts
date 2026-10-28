@@ -217,7 +217,7 @@ suite('memory budgets', () => {
     teardown(async () => {
       const cfg = vscode.workspace.getConfiguration(section);
       for (const key of ['maxEntries', 'maxCharsPerEntry', 'maxTotalChars']) {
-        await cfg.update(key, undefined);
+        await cfg.update(key, undefined, vscode.ConfigurationTarget.Global);
       }
     });
 
@@ -230,17 +230,17 @@ suite('memory budgets', () => {
 
     test('reads configured values', async () => {
       const cfg = vscode.workspace.getConfiguration(section);
-      await cfg.update('maxEntries', 5);
-      await cfg.update('maxCharsPerEntry', 120);
-      await cfg.update('maxTotalChars', 900);
+      await cfg.update('maxEntries', 5, vscode.ConfigurationTarget.Global);
+      await cfg.update('maxCharsPerEntry', 120, vscode.ConfigurationTarget.Global);
+      await cfg.update('maxTotalChars', 900, vscode.ConfigurationTarget.Global);
       assert.deepStrictEqual(readMemoryBudget(), { maxEntries: 5, maxCharsPerEntry: 120, maxTotalChars: 900 });
     });
 
     test('ignores nonsensical values', async () => {
       const cfg = vscode.workspace.getConfiguration(section);
-      await cfg.update('maxEntries', 0);
-      await cfg.update('maxCharsPerEntry', -3);
-      await cfg.update('maxTotalChars', Number.NaN);
+      await cfg.update('maxEntries', 0, vscode.ConfigurationTarget.Global);
+      await cfg.update('maxCharsPerEntry', -3, vscode.ConfigurationTarget.Global);
+      await cfg.update('maxTotalChars', Number.NaN, vscode.ConfigurationTarget.Global);
       const budget = readMemoryBudget();
       assert.ok(budget.maxEntries >= 1);
       assert.ok(budget.maxCharsPerEntry >= 40);

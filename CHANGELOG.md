@@ -2,9 +2,18 @@
 
 All notable changes to ADO Code will be documented in this file.
 ## [Unreleased]
-- Closed [ADO-27361](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/27361): AC-P2-10 Show Context Cost diagnostics command (2026-10-28) — `fix/tag-permission-fallback @ 5e04451`
 
 ### Added
+
+- **Generated artifacts are collected and their context cost is visible** — `.ado-code/` had no
+  garbage collection, so every work item ever opened kept its cache and every delegated run its logs.
+  A new `ADO Code: Compact Artifacts` command prunes by policy (the newest file of each kind is always
+  kept; memory, sessions, checkpoints and worktrees are never touched) and reports the exact files and
+  bytes the real run would free before anything is deleted; the same prune runs automatically at most
+  once every 24 hours, controlled by `adoCode.artifacts.enabled`, `retentionDays` and
+  `maxFilesPerKind`. `ADO Code: Show Context Cost` reports files, bytes, estimated prompt tokens, the
+  largest offenders and every injected category against its budget. A regression suite pins each of
+  these limits, so a quietly relaxed budget now fails a test.
 
 - **Context budgets across every artifact ADO Code generates** — the work-item discussion thread is
   capped at 5 comments of 600 characters (newest kept, with a pointer naming how many were omitted and

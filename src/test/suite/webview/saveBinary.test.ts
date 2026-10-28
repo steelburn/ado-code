@@ -9,6 +9,9 @@ const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 /** Two-byte payload with a known decode: 'UEsDBA==' -> PK\x03\x04. */
 const PAYLOAD = 'UEsDBA==';
+
+/** Uri.file() may re-case the Windows drive letter; compare path-insensitively. */
+const norm = (p: string): string => p.replace(/\\/g, "/").toLowerCase();
 const PAYLOAD_BYTES = Buffer.from(PAYLOAD, 'base64');
 
 interface Patches {
@@ -23,7 +26,6 @@ interface Patches {
 let originals: {
   win: Record<string, unknown>;
   exec: unknown;
-  write: unknown;
   folders: PropertyDescriptor | undefined;
 };
 
@@ -62,8 +64,16 @@ function installHarness(targetFolder: string, options: { cancel?: boolean; infoA
     return undefined;
   };
   if (options.writeFails) {
-    (vscode.workspace.fs as any).writeFile = async () => {
-      throw new Error('disk full');
+    // The real host defines workspace.fs.writeFile non-configurable, so the
+    // write cannot be stubbed — make the chosen destination a directory and
+    // let the genuine EISDIR come back through the error path instead.
+    const dialog = win.showSaveDialog;
+    win.showSaveDialog = async (opts: any) => {
+      const chosen = await dialog(opts);
+      if (chosen) {
+        fs.mkdirSync(chosen.fsPath, { recursive: true });
+      }
+      return chosen;
     };
   }
   return patches;
@@ -121,7 +131,6 @@ suite('saveBinary — host bridge', () => {
         showErrorMessage: win.showErrorMessage,
       },
       exec: (vscode.commands as any).executeCommand,
-      write: (vscode.workspace.fs as any).writeFile,
       folders: Object.getOwnPropertyDescriptor(vscode.workspace, 'workspaceFolders'),
     };
   });
@@ -134,7 +143,6 @@ suite('saveBinary — host bridge', () => {
     win.showInformationMessage = originals.win.showInformationMessage;
     win.showErrorMessage = originals.win.showErrorMessage;
     setProp(vscode.commands, 'executeCommand', originals.exec);
-    setProp(vscode.workspace.fs, 'writeFile', originals.write);
     restoreProp(vscode.workspace, 'workspaceFolders', originals.folders);
   });
   test('writes the decoded bytes to the chosen destination', async () => {
@@ -150,7 +158,7 @@ suite('saveBinary — host bridge', () => {
 
       assert.strictEqual(outcome.saved, true);
       const expected = path.join(dir, 'export', 'out', 'report.docx');
-      assert.strictEqual(outcome.filePath, expected);
+      assert.strictEqual(norm(outcome.filePath as string), norm(expected));
       assert.ok(fs.existsSync(expected), 'file was not written');
       assert.deepStrictEqual(fs.readFileSync(expected), PAYLOAD_BYTES, 'bytes differ from the payload');
       assert.strictEqual(patches.infos.length, 1);
@@ -248,7 +256,7 @@ suite('saveBinary — host bridge', () => {
       const outcome = await promptAndSaveBinary({ content: PAYLOAD, mime: DOCX, defaultName: 'report' });
       assert.strictEqual(outcome.saved, false);
       assert.strictEqual(outcome.reason, 'error');
-      assert.ok(outcome.message && /disk full/.test(outcome.message), outcome.message);
+      assert.ok(outcome.message && /Failed to save export/.test(outcome.message), outcome.message);
       assert.strictEqual(patches.errors.length, 1);
     } finally {
       cleanup(dir);
@@ -300,7 +308,7 @@ suite('saveBinary — host bridge', () => {
         defaultDir: '../../../escape',
       });
       const fsPath = patches.dialogs[0].defaultUri!.fsPath;
-      assert.ok(fsPath.startsWith(dir), `dialog escaped the workspace: ${fsPath}`);
+      assert.ok(norm(fsPath).startsWith(norm(dir)), `dialog escaped the workspace: ${fsPath}`);
       assert.ok(fsPath.endsWith('report.docx'), fsPath);
     } finally {
       cleanup(dir);
