@@ -41,6 +41,18 @@ const SPECIAL_CASED_KEYS = new Set<string>([
   'llm.modeConfigs',
   // Per-mode reasoning-effort rows rendered by ModeModelConfig.
   'llm.modeReasoningEffort',
+  // Remote Agent Oversight (R-P1). All six are scope: machine - they describe
+  // THIS machine loopback listener and tunnel, so syncing them across a users
+  // devices would be wrong. Their UI is the status-bar toggle, the QR console
+  // panel and the adoCode.remote.* commands rather than a row on this page, and
+  // the two tunnel templates are free-form CLI/URL patterns the simplified
+  // Configuration page cannot express.
+  'remote.enabled',
+  'remote.bind',
+  'remote.port',
+  'remote.tunnel',
+  'remote.tunnelCommand',
+  'remote.tunnelUrlPattern',
 ]);
 
 /** Catalog rows are `{ key: '<id>', label: ...` — precise enough to skip

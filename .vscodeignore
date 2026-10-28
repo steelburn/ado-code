@@ -13,6 +13,7 @@ out/**
 *.vsix
 .github/**
 .husky/**
+docs/promo/**
 .env
 .env.*
 tmp-*

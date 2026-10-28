@@ -45,6 +45,19 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
   /** Debounce timer for rapid config changes. */
   private _refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /** Runtime view of Remote Access (R-P1-09); set once the control plane exists. */
+  private remoteAccess: RemoteAccessSource | undefined;
+
+  /**
+   * Attach the Remote Access control plane so the STATUS tree can render
+   * `Remote Access: On/Off` from the runtime state (what is actually
+   * listening) rather than the setting alone.
+   */
+  setRemoteAccess(source: RemoteAccessSource | undefined): void {
+    this.remoteAccess = source;
+    this.debouncedRefresh();
+  }
+
   constructor(private services: Services) {
     // Kick off initial async agent detection; fire tree refresh when done
     // so the STATUS tree shows agents after the async probe completes.
@@ -288,8 +301,28 @@ export class StatusPanelProvider implements vscode.TreeDataProvider<StatusItem> 
       // agentRunner not available
     }
 
+    // Remote Access (R-P1-09): one row driven by the runtime state.
+    if (this.remoteAccess) {
+      const on = this.remoteAccess.currentState === 'on';
+      const remoteItem = new StatusItem(
+        `Remote Access: ${on ? 'On' : 'Off'}`,
+        vscode.TreeItemCollapsibleState.None,
+        { command: 'adoCode.remote.showQr', title: 'Show QR Code' }
+      );
+      remoteItem.iconPath = new vscode.ThemeIcon(on ? 'broadcast' : 'radio-tower');
+      remoteItem.description = on ? `${this.remoteAccess.deviceCount} device(s)` : undefined;
+      remoteItem.contextValue = on ? 'remoteAccessOn' : 'remoteAccessOff';
+      items.push(remoteItem);
+    }
+
     return items;
   }
+}
+
+/** Minimal runtime view of the Remote Access control plane (R-P1-09). */
+export interface RemoteAccessSource {
+  currentState: 'off' | 'starting' | 'on' | 'error';
+  deviceCount: number;
 }
 
 class StatusItem extends vscode.TreeItem {
