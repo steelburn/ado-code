@@ -12,11 +12,15 @@
  *  - it is exchanged once for an HttpOnly cookie via `POST /session` and then
  *    dropped from the address bar (`history.replaceState`) so a shoulder-surfed
  *    URL or a screenshotted tab cannot be replayed;
- *  - every other request (SSE + any future POST) relies on the cookie, so the
- *    token never appears in a request URL, a log line or a proxy trail.
+ *  - every other request (SSE, the approval POSTs and the GET probes) relies on
+ *    the cookie, so the token never appears in a request URL, a log line or a
+ *    proxy trail.
  *
- * Phase 1 is strictly view-only: the page renders runs and their status and has
- * no buttons that could approve anything.
+ * The page renders agent runs and their status, and mirrors any *open* approval
+ * request so it can be answered from the phone. It can only ever answer a
+ * request the host already raised, never create one, and the decision is taken
+ * by the same broker that backs the desktop card, so the two cards cannot
+ * disagree.
  */
 
 export const CONSOLE_HTML = `<!DOCTYPE html>
@@ -90,6 +94,50 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
   .banner.error { color: var(--error); }
   footer { padding: 0 16px 24px; font-size: 12px; color: var(--muted); text-align: center; }
+    /* Approvals — first thing on the page: a decision is the only thing a
+       phone visitor may need to do, and it is time-critical. */
+    #approvals { margin: 0 0 16px; }
+    .approval {
+      border: 1px solid rgba(201, 162, 39, 0.85);
+      border-radius: 10px;
+      padding: 12px 12px 10px;
+      margin: 0 0 10px;
+      background: rgba(201, 162, 39, 0.10);
+    }
+    .ap-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
+    .ap-title { font-weight: 600; font-size: 15px; }
+    .ap-timer { font-size: 13px; opacity: 0.75; font-variant-numeric: tabular-nums; }
+    .ap-tool { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; opacity: 0.85; margin: 0 0 6px; word-break: break-all; }
+    .ap-args, .ap-desc {
+      margin: 0 0 10px;
+      padding: 8px;
+      max-height: 150px;
+      overflow: auto;
+      border-radius: 6px;
+      background: rgba(127, 127, 127, 0.14);
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ap-desc { font-family: inherit; font-size: 14px; }
+    .ap-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .act {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 10px 14px;
+      font-size: 15px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: 1px solid rgba(127, 127, 127, 0.5);
+      background: rgba(127, 127, 127, 0.14);
+      color: inherit;
+      cursor: pointer;
+    }
+    .act.go { border-color: #2e7d32; }
+    .act.danger { border-color: #b3261e; }
+    .act:disabled { opacity: 0.45; cursor: default; }
 </style>
 </head>
 <body>
@@ -99,13 +147,14 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
 </header>
 <main>
   <div id="banner" class="banner" hidden></div>
+  <div id="approvals"></div>
   <div id="runs"><div class="empty">Connecting…</div></div>
 </main>
-<footer>View-only · approvals stay on the machine running VS Code</footer>
+  <footer>Approvals can be answered here — mutating tools still need a decision</footer>
 <script>
 (function () {
   'use strict';
-  var state = { runs: {}, order: [], source: null, connected: false };
+  var state = { runs: {}, order: [], approvals: {}, approvalOrder: [], source: null, connected: false };
   var runsEl = document.getElementById('runs');
   var bannerEl = document.getElementById('banner');
   var viewersEl = document.getElementById('viewers');
@@ -132,7 +181,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   function render() {
     if (!state.order.length) {
       runsEl.innerHTML = state.connected
-        ? '<div class="empty">No agent runs yet.</div>'
+        ? '<div class="empty">No agent runs yet. Waiting tool approvals show up at the top.</div>'
         : '<div class="empty">Connecting…</div>';
       return;
     }
@@ -187,12 +236,16 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
         break;
       }
       case 'consentRequest': {
-        // Phase 1 is view-only: show that the host is waiting, without buttons.
-        showBanner('A consent prompt is waiting on the machine (' + (event.tool || 'tool') + ').');
+        addApproval(event, 'consent');
         break;
       }
       case 'confirmationRequest': {
-        showBanner('A confirmation is waiting on the machine: ' + (event.title || ''));
+        addApproval(event, 'confirm');
+        break;
+      }
+      case 'approvalResolved': {
+        // Answered here, answered on the desktop, or expired: drop the card.
+        removeApproval(event.requestId);
         break;
       }
       case 'viewerCount': {
@@ -205,6 +258,182 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     render();
   }
 
+  var approvalsEl = document.getElementById('approvals');
+
+  function argsText(args) {
+    var text;
+    try { text = JSON.stringify(args || {}, null, 2); } catch (err) { text = '{}'; }
+    if (text.length > 1200) { text = text.slice(0, 1200) + String.fromCharCode(8230); }
+    return text;
+  }
+
+  function leftLabel(expiresAt) {
+    if (!expiresAt) { return ''; }
+    var ms = expiresAt - Date.now();
+    if (ms <= 0) { return 'expired'; }
+    var total = Math.floor(ms / 1000);
+    var mm = Math.floor(total / 60);
+    var ss = total % 60;
+    return mm + ':' + (ss < 10 ? '0' + ss : String(ss));
+  }
+
+  function addApproval(event, kind) {
+    if (!event || !event.requestId) { return; }
+    var expiresAt = event.expiresAt || (event.autoApproveMs ? Date.now() + event.autoApproveMs : 0);
+    state.approvals[event.requestId] = {
+      requestId: event.requestId,
+      kind: kind,
+      title: kind === 'consent' ? 'Allow ' + (event.tool || 'this tool') + '?' : String(event.title || 'Confirm?'),
+      tool: String(event.tool || ''),
+      argsText: kind === 'consent' ? argsText(event.args) : '',
+      description: String(event.description || ''),
+      options: event.options || [],
+      expiresAt: expiresAt,
+      sent: false
+    };
+    if (state.approvalOrder.indexOf(event.requestId) < 0) {
+      state.approvalOrder.push(event.requestId);
+    }
+    renderApprovals();
+  }
+
+  function removeApproval(requestId) {
+    if (!state.approvals[requestId]) { return; }
+    delete state.approvals[requestId];
+    var at = state.approvalOrder.indexOf(requestId);
+    if (at >= 0) { state.approvalOrder.splice(at, 1); }
+    renderApprovals();
+  }
+
+  function decisionButton(card, label, attrs, className) {
+    var disabled = card.sent ? ' disabled' : '';
+    return '<button class="act ' + esc(className) + '" data-id="' + esc(card.requestId) + '" ' + esc(attrs) + esc(disabled) + '>' + esc(label) + '</button>';
+  }
+
+  function cardHtml(card) {
+    var html = '<section class="approval">';
+    html += '<div class="ap-head"><span class="ap-title">' + esc(card.title) + '</span>';
+    html += '<span class="ap-timer" data-expires="' + esc(String(card.expiresAt)) + '">' + esc(leftLabel(card.expiresAt)) + '</span></div>';
+    if (card.kind === 'consent') {
+      html += '<div class="ap-tool">' + esc(card.tool) + '</div>';
+      html += '<pre class="ap-args">' + esc(card.argsText) + '</pre>';
+    } else if (card.description) {
+      html += '<div class="ap-desc">' + esc(card.description) + '</div>';
+    }
+    html += '<div class="ap-actions">';
+    if (card.kind === 'consent') {
+      html += decisionButton(card, 'Allow once', 'data-kind="consent" data-approved="1" data-scope="once"', 'go');
+      html += decisionButton(card, 'Allow for session', 'data-kind="consent" data-approved="1" data-scope="session"', '');
+      html += decisionButton(card, 'Deny', 'data-kind="consent" data-approved="0"', 'danger');
+    } else {
+      for (var i = 0; i < card.options.length; i++) {
+        var option = card.options[i] || {};
+        html += decisionButton(card, String(option.label || option.value || 'OK'),
+          'data-kind="confirm" data-value="' + esc(String(option.value || '')) + '"',
+          option.isDangerous ? 'danger' : '');
+      }
+    }
+    html += '</div></section>';
+    return html;
+  }
+
+  function renderApprovals() {
+    if (!state.approvalOrder.length) {
+      approvalsEl.innerHTML = '';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < state.approvalOrder.length; i++) {
+      var card = state.approvals[state.approvalOrder[i]];
+      if (card) { html += cardHtml(card); }
+    }
+    approvalsEl.innerHTML = html;
+  }
+
+  function tickApprovalTimers() {
+    var nodes = approvalsEl.querySelectorAll('.ap-timer');
+    for (var i = 0; i < nodes.length; i++) {
+      var expiresAt = parseInt(nodes[i].getAttribute('data-expires'), 10) || 0;
+      var label = leftLabel(expiresAt);
+      if (nodes[i].textContent !== label) { nodes[i].textContent = label; }
+    }
+    // An expired card can no longer be answered — the broker denied it.
+    for (var j = state.approvalOrder.length - 1; j >= 0; j--) {
+      var card = state.approvals[state.approvalOrder[j]];
+      if (card && card.expiresAt && card.expiresAt <= Date.now()) {
+        removeApproval(card.requestId);
+      }
+    }
+  }
+
+  function postDecision(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    }).catch(function () { return null; });
+  }
+
+  approvalsEl.addEventListener('click', function (clickEvent) {
+    var target = clickEvent.target;
+    var button = target && target.closest ? target.closest('button.act') : null;
+    if (!button || button.disabled) { return; }
+    var requestId = button.getAttribute('data-id');
+    var card = state.approvals[requestId];
+    if (!card || card.sent) { return; }
+    // Optimistic lock: a double tap must not post twice.
+    card.sent = true;
+    renderApprovals();
+    var kind = button.getAttribute('data-kind');
+    var path = kind === 'consent' ? '/consent' : '/confirm';
+    var body;
+    if (kind === 'consent') {
+      body = { requestId: requestId, approved: button.getAttribute('data-approved') === '1' };
+      var scope = button.getAttribute('data-scope');
+      if (scope && body.approved) { body.scope = scope; }
+    } else {
+      body = { requestId: requestId, value: button.getAttribute('data-value') };
+    }
+    postDecision(path, body).then(function (response) {
+      if (!response) {
+        card.sent = false;
+        renderApprovals();
+        showBanner('Could not reach VS Code — try again.', true);
+        return;
+      }
+      // 409: already answered on the other surface, or expired. Gone is gone.
+      // 401: the session cookie is no longer valid — nothing can be decided.
+      if (response.ok || response.status === 409 || response.status === 401) {
+        removeApproval(requestId);
+        if (response.status === 401) {
+          showBanner('Session expired — rotate the token in VS Code and rescan.', true);
+        }
+        return;
+      }
+      card.sent = false;
+      renderApprovals();
+      showBanner('VS Code refused that decision.', true);
+    });
+  });
+
+  function loadPending() {
+    fetch('/pending', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        if (!payload || !payload.approvals) { return; }
+        for (var i = 0; i < payload.approvals.length; i++) {
+          var item = payload.approvals[i];
+          if (!item || !item.requestId) { continue; }
+          if (state.approvals[item.requestId]) { continue; }
+          addApproval(item, item.type === 'confirmationRequest' ? 'confirm' : 'consent');
+        }
+      })
+      .catch(function () { /* offline: the SSE stream will deliver new ones */ });
+  }
+
+  setInterval(tickApprovalTimers, 1000);
+
   function connect() {
     if (state.source) { state.source.close(); }
     var source = new EventSource('/events');
@@ -213,6 +442,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       state.connected = true;
       showBanner('');
       render();
+      loadPending();
     };
     source.onmessage = function (message) {
       var payload;
@@ -237,10 +467,25 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     } catch (err) { /* some browsers refuse; harmless */ }
   }
 
+  /**
+   * Is the cookie from an earlier scan still good? A reload, a tab restore or
+   * "open in browser" from the tab list drops the URL fragment, and a lost
+   * fragment is not a lost session — ask the host before sending the user back
+   * to VS Code to re-scan.
+   */
+  function resumeSession() {
+    return fetch('/session', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok; })
+      .catch(function () { return false; });
+  }
+
   function start() {
     var token = readToken();
     if (!token) {
-      showBanner('This link is missing its access token. Re-open the QR code from VS Code.', true);
+      resumeSession().then(function (ok) {
+        if (ok) { connect(); return; }
+        showBanner('This link is missing its access token. Re-open the QR code from VS Code.', true);
+      });
       return;
     }
     clearTokenFromAddressBar();
@@ -253,7 +498,12 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       if (!response.ok) { throw new Error('HTTP ' + response.status); }
       connect();
     }).catch(function () {
-      showBanner('Could not sign in — the access token was rejected. Rotate it in VS Code and rescan.', true);
+      // A rotated token behind a live cookie still signs in; only a genuinely
+      // dead session deserves "rotate it and rescan".
+      resumeSession().then(function (ok) {
+        if (ok) { connect(); return; }
+        showBanner('Could not sign in — the access token was rejected. Rotate it in VS Code and rescan.', true);
+      });
     });
   }
 

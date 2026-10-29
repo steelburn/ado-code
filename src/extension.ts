@@ -1456,6 +1456,10 @@ const remoteControl = new RemoteControl({
       bind: settings.bind,
       lanAddress: settings.bind === 'all' ? lanAddress() : undefined,
       page: () => CONSOLE_HTML,
+      // Remote approvals: the console answers the same brokers the cards do.
+      onConsent: payload => chatProvider.handleRemoteConsent(payload),
+      onConfirm: payload => chatProvider.handleRemoteConfirmation(payload),
+      pendingApprovals: () => chatProvider.pendingApprovals(),
       logger,
     });
     return remoteServer;
@@ -1501,6 +1505,11 @@ const remoteControl = new RemoteControl({
   createTooltip: markdown => new vscode.MarkdownString(markdown),
   logger,
 });
+
+// Mirror every approval card raised in the chat to the mobile console, so the
+// same decision can be taken from the phone; the answer lands in the same
+// brokers (handleRemoteConsent / handleRemoteConfirmation).
+chatProvider.setRemoteBridge(event => remoteControl?.broadcast(event));
 remoteControl.activate();
 context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose() });
 

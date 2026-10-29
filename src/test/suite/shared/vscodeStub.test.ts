@@ -1,5 +1,6 @@
 import * as assert from 'assert';
-import * as os from 'os';
+import * as fs from 'fs';
+import { makeScratchDir } from '../utils/scratchDir';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -89,13 +90,15 @@ suite('shared/vscodeStub', () => {
   });
 
   test('workspace.fs round-trips a file through the real filesystem', async () => {
-    const uri = vscode.Uri.file(path.join(os.tmpdir(), `ado-code-stub-${process.pid}-${Date.now()}.txt`));
+    // The write must land somewhere the Electron host allows: not %TEMP%.
+    const dir = makeScratchDir('ado-stub-');
+    const uri = vscode.Uri.file(path.join(dir, `stub-${process.pid}-${Date.now()}.txt`));
     try {
       await vscode.workspace.fs.writeFile(uri, Buffer.from('hello stub', 'utf8'));
       const data = await vscode.workspace.fs.readFile(uri);
       assert.strictEqual(Buffer.from(data).toString('utf8'), 'hello stub');
     } finally {
-      await vscode.workspace.fs.delete(uri);
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

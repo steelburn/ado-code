@@ -74,11 +74,26 @@ export interface RemoteViewerCountEvent {
   count: number;
 }
 
+export type RemoteApprovalOutcome = 'approved' | 'denied' | 'expired';
+
+/**
+ * A pending approval left the host's decision table: answered in VS Code,
+ * answered on another console, or expired. Every console drops the card on
+ * this frame instead of keeping a button that can no longer land.
+ */
+export interface RemoteApprovalResolvedEvent {
+  type: 'approvalResolved';
+  requestId: string;
+  outcome: RemoteApprovalOutcome;
+  source: 'host' | 'remote';
+}
+
 export type RemoteDownstreamEvent =
   | RemoteAgentStatusEvent
   | RemoteAgentResultEvent
   | RemoteConsentRequestEvent
   | RemoteConfirmationRequestEvent
+  | RemoteApprovalResolvedEvent
   | RemoteViewerCountEvent;
 
 /** Upstream endpoint kinds map 1:1 onto the POST routes. */
@@ -221,6 +236,21 @@ export function parseDownstream(input: unknown): RemoteParseResult<RemoteDownstr
         return reject('viewerCount.count must be a non-negative integer');
       }
       return { ok: true, value: { type: 'viewerCount', count } };
+    }
+    case 'approvalResolved': {
+      const requestId = readId(body.requestId);
+      if (requestId === null) {
+        return reject('approvalResolved.requestId must be a short non-empty string');
+      }
+      const outcome = body.outcome;
+      if (outcome !== 'approved' && outcome !== 'denied' && outcome !== 'expired') {
+        return reject('approvalResolved.outcome must be approved | denied | expired');
+      }
+      const source = body.source;
+      if (source !== 'host' && source !== 'remote') {
+        return reject('approvalResolved.source must be host | remote');
+      }
+      return { ok: true, value: { type: 'approvalResolved', requestId, outcome, source } };
     }
     default:
       return reject(`unknown event type: ${String(body.type)}`);

@@ -1,6 +1,6 @@
 import type { RemoteDownstreamEvent } from '../shared/remoteProtocol';
 import { RemoteTokenStore } from './remoteToken';
-import type { RemoteUrlResolution } from './remoteUrl';
+import { withTokenFragment, type RemoteUrlResolution } from './remoteUrl';
 import type { RemoteQrPanelPayload } from './RemoteQrPanel';
 
 /**
@@ -44,6 +44,9 @@ export interface RemoteServerLike {
   readonly viewerCount: number;
   start(): Promise<number>;
   broadcast(event: RemoteDownstreamEvent): void;
+  /** Admit the public host of the tunnel now running (see RemoteServer). */
+  allowHost(url: string): void;
+  clearAllowedHosts(): void;
   dispose(): Promise<void>;
 }
 
@@ -337,28 +340,49 @@ export class RemoteControl {
 
   private createTunnel(): RemoteTunnelLike {
     return this.deps.tunnelFactory({
-      onUrl: (url) => {
-        this.deps.showQrPanel({
-          url,
-          resolution: {
-            kind: 'tunnel',
-            url,
-            loopbackUrl: `http://127.0.0.1:${this.server?.port ?? 0}/`,
-            message: 'Reachable through the tunnel.',
-          },
-          tunnelUrl: url,
-          deviceCount: this.deviceCount,
-        });
-        void this.setState('on');
-      },
+      onUrl: (url) => this.handleTunnelUrl(url),
       onError: (message) => {
         this.deps.notify(message, 'error');
         void this.setState(this.server ? 'on' : 'error');
       },
       onExit: () => {
         this.tunnel = null;
+        this.server?.clearAllowedHosts();
         void this.setState(this.server ? 'on' : 'off');
       },
+    });
+  }
+
+  /**
+   * Every tunnel URL reaches the panel through here. The console reads its token
+   * out of the `#t=` fragment (see consolePage.ts), so a QR drawn from the bare
+   * tunnel URL authenticates nobody — the fragment is not optional, exactly as
+   * `resolveUrl` does it on the non-eager path.
+   */
+  private handleTunnelUrl(url: string): void {
+    // The tunnel forwards its own public Host header, which the rebinding guard
+    // would otherwise reject as `forbidden host`.
+    this.server?.allowHost(url);
+    void this.setState('on');
+    void this.showTunnelPanel(url).catch((error: unknown) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.deps.notify(`Remote Access could not show the tunnel URL: ${this.lastError}`, 'error');
+    });
+  }
+
+  /** Render the tunnel URL with its token fragment — the phone needs both. */
+  private async showTunnelPanel(url: string): Promise<void> {
+    const token = await this.deps.tokens.ensure();
+    const publicUrl = withTokenFragment(url, token);
+    this.deps.showQrPanel({
+      url: publicUrl,
+      resolution: {
+        kind: 'tunnel',
+        url: publicUrl,
+        loopbackUrl: `http://127.0.0.1:${this.server?.port ?? 0}/`,
+        message: 'Reachable through the tunnel.',
+      },
+      deviceCount: this.deviceCount,
     });
   }
 
@@ -391,20 +415,7 @@ export class RemoteControl {
     // setting having been persisted first.
     this.tunnel?.dispose();
     const tunnel = this.deps.tunnelFactory({
-      onUrl: (url) => {
-        this.deps.showQrPanel({
-          url,
-          resolution: {
-            kind: 'tunnel',
-            url,
-            loopbackUrl: `http://127.0.0.1:${this.server?.port ?? 0}/`,
-            message: 'Reachable through the tunnel.',
-          },
-          tunnelUrl: url,
-          deviceCount: this.deviceCount,
-        });
-        void this.setState('on');
-      },
+      onUrl: (url) => this.handleTunnelUrl(url),
       onError: (message) => {
         this.deps.notify(message, 'error');
         this.tunnel = null;

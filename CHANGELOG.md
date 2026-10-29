@@ -4,6 +4,65 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-29
+
+### Added
+
+- **Tool approvals are answerable from the phone.** The remote console now renders the consent
+  and confirmation cards the desktop chat shows — **Allow once / Allow for session / Always /
+  Deny**, or one button per option for an agent question — with a live countdown and the same
+  allowlist effect as the desktop card (a phone "allow for session" writes to the *same*
+  allowlist, not a weaker one). Both cards are views of one request: the first answer retires
+  the other, a losing tap gets `409 Conflict` instead of silently answering the *next* request,
+  an option the host never offered gets `400`, and an answer that never reaches the host
+  decides nothing. A page that loads or wakes mid-prompt picks the card up through the new
+  authorized `GET /pending`, because the SSE stream has no replay. Until now the console
+  announced prompts as "phase 1 is view-only", so a live session showed "No agent runs yet."
+  with no way to act on the pending approval.
+
+### Fixed
+
+- **A tunnel QR no longer scans to a link without its session token.** When the tunnel reported
+  its public URL the panel was redrawn straight from that URL, so the QR — and the URL printed
+  under it — lost the `#t=<token>` fragment every other path adds through `withTokenFragment`.
+  The phone opened the console as an anonymous visitor and was asked for a token it had no way to
+  type, so a tunnel that was visibly up could not be used from the device that scanned it. Both
+  tunnel providers (cloudflared and the custom command) now resolve the URL through one
+  `handleTunnelUrl` helper that tokenises it first; the console reads the token from the fragment
+  and can only fall back to a cookie when one already exists.
+- **A phone reload no longer answers "This link is missing its access token".** The console keeps
+  the token out of the address bar and authenticates with the `HttpOnly` cookie from then on, but
+  mobile browsers drop the URL fragment on reload, tab restore and "open in browser" — so a
+  perfectly signed-in session was greeted with a re-scan banner. The page now probes the new
+  `GET /session` (cookie only, mints nothing) and reconnects while the session is live; a rejected
+  token behind a live cookie resumes the same way, and only a dead session — private mode,
+  cleared cache, rotated token, different host — still asks for the QR code.
+
+- **A cloudflared tunnel no longer answers `{"error":"forbidden host"}`.** The remote console's
+  DNS-rebinding guard only accepted loopback, private-range and the LAN address, but cloudflared
+  forwards the *public* `Host` (`<id>.trycloudflare.com`) unchanged — so a tunnel the user had just
+  started was rejected with a bare 403 JSON body and the phone never got the console. The server now
+  admits exactly the host of the tunnel it started itself (`allowHost`), drops it again when that
+  tunnel exits, and replaces it when a restarted quick tunnel comes up on a fresh subdomain; every
+  other foreign host, and every request without a token, is still refused. The token exchange was
+  never the problem: `isSecureRequest` already honours cloudflared's `x-forwarded-proto: https`.
+
+- **The Electron test harness no longer exits 1 having reported no tests at all.**
+  `tools.test.ts` created a scratch directory at suite-*registration* scope, so `fs.mkdtempSync`
+  ran inside `Mocha.loadFiles`: when it threw, Mocha never started and the run ended with an empty
+  report - indistinguishable from a quiet pass. The call moved into `suiteSetup`, where a failure
+  surfaces as one hook error instead of blacking out the run. All 57 throwaway directories across 30
+  suites now go through the new `src/test/suite/utils/scratchDir.ts`, whose default root is
+  `.ado-code/test-scratch` inside the checkout - the only writable place for the sandboxed
+  extension host - with `ADO_CODE_TEST_SCRATCH` and `os.tmpdir()` as overrides. Because that root
+  sits below the worktree root, every suite that shells out to git now `git init`s its own scratch
+  directory first, so a `git commit` there targets a throwaway repo instead of the developer's and
+  never re-enters the repo's pre-commit hook. The two suites asserting the opposite - that a
+  directory is *not* a repository - ask `makeDirOutsideRepo()` for a directory outside the checkout
+  and skip with a visible reason when the host forbids writing outside it. `runTest.ts` now wipes the
+  scratch root on both ends of a run, so the checkout never accumulates the ~600 throwaway
+  directories a full run leaves behind.
+
 ## [0.8.2] - 2026-10-29
 
 ### Added

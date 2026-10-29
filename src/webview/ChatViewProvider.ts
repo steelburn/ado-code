@@ -1,3 +1,4 @@
+import type { RemoteConsentScope, RemoteDownstreamEvent } from '../shared/remoteProtocol';
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
@@ -2478,31 +2479,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'consentResponse': {
-            // Process scope before resolving — the broker clears pending on resolve.
-            if (message.approved && message.scope && this.consentBroker.pending) {
-              const pending = this.consentBroker.pending;
-              if (message.scope === 'session') {
-                // Allow for Session: exact command(s) (terminal, batch-aware)
-                // or tool name.
-                if (pending.tool === 'run_terminal_command') {
-                  addSessionCommandApproval(terminalCommandKey(pending.args));
-                } else {
-                  addSessionToolApproval(pending.tool);
-                }
-              } else if (message.scope === 'permanent' && pending.tool === 'run_terminal_command') {
-                // Fire-and-forget: add EVERY command of a batch to the allowlist.
-                for (const cmd of terminalCommandList(pending.args)) {
-                  addToTerminalAllowlist(cmd).catch(err =>
-                    logger.error(`[tool-approval] failed to update allowlist: ${err}`),
-                  );
-                }
-              }
-            }
+            this.applyConsentScope(message.approved ? message.scope : undefined);
             this.consentBroker.resolve(message.requestId, message.approved);
+            this.broadcastResolved(message.requestId, message.approved ? 'approved' : 'denied', 'host');
             break;
           }
           case 'confirmationResponse': {
             this.confirmBroker.resolve(message.requestId, message.value);
+            this.broadcastResolved(message.requestId, 'approved', 'host');
             break;
           }
           // Task 2: session management
@@ -3045,9 +3029,168 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+  // ── Remote approval bridge (mobile console) ──────────────────────────
+  /** Downstream sink into the remote console (SSE). Installed by activate(). */
+  private remoteBridge: ((event: RemoteDownstreamEvent) => void) | null = null;
+
+  /**
+   * Install the sink that mirrors approval cards to the mobile console.
+   * Null when remote access is off: no bridge, no mirroring, no surface.
+   */
+  setRemoteBridge(sink: ((event: RemoteDownstreamEvent) => void) | null): void {
+    this.remoteBridge = sink;
+  }
+
+  /** Mirror a card-creating (or card-clearing) webview message to the phone. */
+  private mirrorApproval(message: any): void {
+    const sink = this.remoteBridge;
+    if (!sink || !message || typeof message !== 'object') return;
+    // `remote: true` marks messages we posted ourselves after answering on
+    // the phone: they clear the desktop card but must not be mirrored back
+    // (the resolution was already broadcast with source: remote).
+    if (message.remote === true) return;
+    switch (message.type) {
+      case 'consentRequest':
+        sink({
+          type: 'consentRequest',
+          requestId: message.requestId,
+          tool: message.tool,
+          args: message.args ?? {},
+          expiresAt: message.expiresAt,
+        });
+        break;
+      case 'confirmationRequest':
+        sink({
+          type: 'confirmationRequest',
+          requestId: message.requestId,
+          title: message.title ?? '',
+          description: message.description ?? '',
+          options: message.options ?? [],
+          expiresAt: message.expiresAt,
+        });
+        break;
+      case 'promptExpired':
+        sink({ type: 'approvalResolved', requestId: message.requestId, outcome: 'expired', source: 'host' });
+        break;
+    }
+  }
+
+  /** Broadcast a resolution so every surface drops the card. */
+  private broadcastResolved(requestId: string, outcome: 'approved' | 'denied' | 'expired', source: 'host' | 'remote'): void {
+    this.remoteBridge?.({ type: 'approvalResolved', requestId, outcome, source });
+  }
+
+  /**
+   * Apply an approved scope to the in-flight consent request. Must run BEFORE
+   * resolving, because the broker clears `pending` on resolve. Shared by the
+   * desktop card and the phone card, so a remote approval widens exactly the
+   * same allowlists a desktop approval would.
+   */
+  private applyConsentScope(scope?: string): void {
+    if (!scope || scope === 'once') return;
+    const pending = this.consentBroker.pending;
+    if (!pending) return;
+    if (scope === 'session') {
+      // Allow for Session: exact command(s) (terminal, batch-aware) or tool name.
+      if (pending.tool === 'run_terminal_command') {
+        addSessionCommandApproval(terminalCommandKey(pending.args));
+      } else {
+        addSessionToolApproval(pending.tool);
+      }
+    } else if (scope === 'permanent' && pending.tool === 'run_terminal_command') {
+      // Fire-and-forget: add EVERY command of a batch to the allowlist.
+      for (const cmd of terminalCommandList(pending.args)) {
+        addToTerminalAllowlist(cmd).catch(err =>
+          logger.error(`[tool-approval] failed to update allowlist: ${err}`),
+        );
+      }
+    }
+  }
+
+  /** Pending approvals — for a console that connects while a card is open. */
+  pendingApprovals(): RemoteDownstreamEvent[] {
+    const out: RemoteDownstreamEvent[] = [];
+    const consent = this.consentBroker.pending;
+    if (consent) {
+      out.push({
+        type: 'consentRequest',
+        requestId: consent.requestId,
+        tool: consent.tool,
+        args: consent.args ?? {},
+        expiresAt: consent.expiresAt,
+      });
+    }
+    const confirm = this.confirmBroker.pending as {
+      requestId: string;
+      title?: string;
+      description?: string;
+      options?: { label: string; value: string; isDangerous?: boolean }[];
+      expiresAt?: number;
+    } | null;
+    if (confirm) {
+      out.push({
+        type: 'confirmationRequest',
+        requestId: confirm.requestId,
+        title: confirm.title ?? '',
+        description: confirm.description ?? '',
+        options: confirm.options ?? [],
+        expiresAt: confirm.expiresAt,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Answer an in-flight consent request from the remote console.
+   *
+   * Race safety: the decision is applied only while the supplied requestId is
+   * STILL the pending one, so a duplicate tap, a second phone or a card that
+   * was already answered fails with 409 instead of deciding the next request.
+   */
+  async handleRemoteConsent(payload: {
+    requestId: string;
+    approved: boolean;
+    scope?: string;
+  }): Promise<{ status: number; body?: unknown }> {
+    const pending = this.consentBroker.pending;
+    if (!pending || pending.requestId !== payload.requestId) {
+      return { status: 409, body: { error: 'no longer pending' } };
+    }
+    const scope = payload.approved ? (payload.scope as RemoteConsentScope | undefined) : undefined;
+    this.applyConsentScope(scope);
+    this.consentBroker.resolve(payload.requestId, payload.approved);
+    this.broadcastResolved(payload.requestId, payload.approved ? 'approved' : 'denied', 'remote');
+    // Clear the desktop card too; `remote: true` keeps it out of the mirror.
+    this.postMessage({ type: 'promptExpired', requestId: payload.requestId, action: 'cancel', remote: true });
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** Answer an in-flight confirmation request from the remote console. */
+  async handleRemoteConfirmation(payload: {
+    requestId: string;
+    value?: string;
+  }): Promise<{ status: number; body?: unknown }> {
+    const value = payload.value ?? '';
+    const pending = this.confirmBroker.pending as {
+      requestId: string;
+      options?: { value: string }[];
+    } | null;
+    if (!pending || pending.requestId !== payload.requestId) {
+      return { status: 409, body: { error: 'no longer pending' } };
+    }
+    if (!value || !(pending.options ?? []).some(option => option.value === value)) {
+      return { status: 400, body: { error: 'unknown option value' } };
+    }
+    this.confirmBroker.resolve(payload.requestId, value);
+    this.broadcastResolved(payload.requestId, 'approved', 'remote');
+    this.postMessage({ type: 'promptExpired', requestId: payload.requestId, action: 'cancel', remote: true });
+    return { status: 200, body: { ok: true } };
+  }
+
   public postMessage(message: any) {
     this._view?.webview.postMessage(message);
     this._editorPanel?.webview.postMessage(message);
+    this.mirrorApproval(message);
   }
 
   /**

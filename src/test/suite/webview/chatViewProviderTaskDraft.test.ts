@@ -1,9 +1,8 @@
 import * as assert from 'assert';
-import * as os from 'os';
-import * as path from 'path';
 import * as nodeFs from 'fs';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
+import { makeScratchDir } from '../utils/scratchDir';
 
 function tick(ms = 10): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,7 +53,7 @@ suite('ChatViewProvider — task-draft concurrency', () => {
   let savedShow: any;
 
   suiteSetup(() => {
-    tmp = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'ado-draft-'));
+    tmp = makeScratchDir('ado-draft-');
     const ws: any = vscode.workspace;
     const win: any = vscode.window;
     savedFolders = ws.workspaceFolders;

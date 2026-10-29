@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   DEFAULT_MAX_IMAGE_BYTES,
@@ -10,6 +9,7 @@ import {
   type ImageIssue,
 } from '../../../webview/imageAssets';
 import { gifBytes, jpegBytes, pngBytes, svgWith } from '../shared/imageFixtures';
+import { makeScratchDir } from '../utils/scratchDir';
 
 /**
  * These tests drive a real temporary project on disk so the path resolution,
@@ -26,7 +26,7 @@ let docPath = '';
 const ref = (relative: string): string => `../assets/img/${relative}`;
 
 suiteSetup(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-imageassets-'));
+  root = makeScratchDir('adocode-imageassets-');
   fs.mkdirSync(path.join(root, 'assets', 'img'), { recursive: true });
   fs.mkdirSync(path.join(root, '04-user-docs'), { recursive: true });
 

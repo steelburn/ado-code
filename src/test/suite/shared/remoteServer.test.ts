@@ -80,12 +80,23 @@ interface Harness {
     dispose: () => Promise<void>;
 }
 
-async function harness(overrides: { bind?: 'loopback' | 'all'; page?: () => string } = {}): Promise<Harness> {
+interface ApprovalHooks {
+    bind?: 'loopback' | 'all';
+    page?: () => string;
+    onConsent?: (payload: { requestId: string; approved: boolean; scope?: string }) => Promise<{ status: number; body?: unknown }>;
+    onConfirm?: (payload: { requestId: string; value?: string }) => Promise<{ status: number; body?: unknown }>;
+    pendingApprovals?: () => unknown;
+}
+
+async function harness(overrides: ApprovalHooks = {}): Promise<Harness> {
     const server = new RemoteServer({
         verifyToken: (candidate) => candidate === TOKEN,
         port: 0,
         bind: overrides.bind ?? 'loopback',
         page: overrides.page,
+        onConsent: overrides.onConsent,
+        onConfirm: overrides.onConfirm,
+        pendingApprovals: overrides.pendingApprovals,
     });
     const port = await server.start();
     const login = async (): Promise<string> => {
@@ -137,6 +148,43 @@ suite('remote/RemoteServer', function () {
         }
     });
 
+    test('the tunnel public host is admitted only while that tunnel runs', async () => {
+        const h = await harness();
+        const tunnelHost = 'daily-cats-try.trycloudflare.com';
+        const viaTunnel = (): Promise<Reply> =>
+            call(h.port, 'GET', '/', { headers: { host: tunnelHost } });
+        try {
+            assert.strictEqual(
+                (await viaTunnel()).status,
+                403,
+                'a public host must stay rejected until a tunnel asks for it'
+            );
+
+            h.server.allowHost(`https://${tunnelHost}/`);
+            assert.strictEqual(
+                (await viaTunnel()).status,
+                200,
+                'cloudflared forwards the public Host header unchanged'
+            );
+
+            h.server.clearAllowedHosts();
+            assert.strictEqual(
+                (await viaTunnel()).status,
+                403,
+                'an exited tunnel must not stay reachable'
+            );
+
+            h.server.allowHost('https://other-words.trycloudflare.com/');
+            assert.strictEqual(
+                (await viaTunnel()).status,
+                403,
+                'allowHost replaces the previous tunnel host'
+            );
+        } finally {
+            await h.dispose();
+        }
+    });
+
     test('/events requires the session cookie', async () => {
         const h = await harness();
         try {
@@ -167,6 +215,41 @@ suite('remote/RemoteServer', function () {
                 body: JSON.stringify({ t: 'guess' }),
             });
             assert.strictEqual(wrong.status, 401);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /session reports whether an earlier scan is still signed in', async () => {
+        const h = await harness();
+        try {
+            assert.strictEqual((await call(h.port, 'GET', '/session')).status, 401, 'no cookie, no session');
+            assert.strictEqual(
+                (await call(h.port, 'GET', '/session', { headers: { cookie: `${REMOTE_COOKIE_NAME}=nope` } })).status,
+                401,
+                'an unknown cookie is not a session'
+            );
+
+            const login = await call(h.port, 'POST', '/session', {
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ t: TOKEN }),
+            });
+            const cookie = (login.headers['set-cookie']?.[0] ?? '').split(';')[0];
+            const live = await call(h.port, 'GET', '/session', { headers: { cookie } });
+            assert.strictEqual(live.status, 200, 'a reload must not need a re-scan');
+            assert.deepStrictEqual(JSON.parse(live.body), { ok: true });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('the console page resumes a live cookie when the fragment is gone', async () => {
+        const h = await harness();
+        try {
+            const page = await call(h.port, 'GET', '/');
+            assert.match(page.body, /function resumeSession\(\)/);
+            assert.match(page.body, /fetch\('\/session', \{ method: 'GET'/);
+            assert.match(page.body, /if \(ok\) \{ connect\(\); return; \}/);
         } finally {
             await h.dispose();
         }
@@ -292,4 +375,104 @@ suite('remote/RemoteServer', function () {
             await h.dispose();
         }
     });
+
+    test('the approval routes refuse anonymous callers', async () => {
+        const h = await harness({ onConsent: async () => ({ status: 200 }) });
+        try {
+            const consent = await call(h.port, 'POST', '/consent', {
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ requestId: 'r1', approved: true }),
+            });
+            assert.strictEqual(consent.status, 401);
+            const pending = await call(h.port, 'GET', '/pending');
+            assert.strictEqual(pending.status, 401);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('a consent decision is handed to the extension host', async () => {
+        const seen: { requestId: string; approved: boolean; scope?: string }[] = [];
+        const h = await harness({
+            onConsent: async (payload) => {
+                seen.push(payload);
+                return { status: 200, body: { ok: true } };
+            },
+        });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'POST', '/consent', {
+                headers: { 'content-type': 'application/json', cookie },
+                body: JSON.stringify({ requestId: 'req-1', approved: true, scope: 'session' }),
+            });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(seen, [{ requestId: 'req-1', approved: true, scope: 'session' }]);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('a stale decision surfaces as 409, not as a new answer', async () => {
+        const h = await harness({
+            onConsent: async () => ({ status: 409, body: { error: 'no longer pending' } }),
+        });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'POST', '/consent', {
+                headers: { 'content-type': 'application/json', cookie },
+                body: JSON.stringify({ requestId: 'gone', approved: false }),
+            });
+            assert.strictEqual(reply.status, 409);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('without a host handler the decision routes are unavailable', async () => {
+        const h = await harness();
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'POST', '/consent', {
+                headers: { 'content-type': 'application/json', cookie },
+                body: JSON.stringify({ requestId: 'r1', approved: true }),
+            });
+            assert.strictEqual(reply.status, 501);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /pending returns the open cards and nothing else', async () => {
+        const open = [
+            { type: 'consentRequest', requestId: 'p1', tool: 'edit_file', args: { path: 'a.ts' } },
+        ];
+        const h = await harness({ pendingApprovals: () => open });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/pending', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            const body = JSON.parse(reply.body) as { approvals: unknown };
+            assert.deepStrictEqual(body.approvals, open);
+            assert.match(String(reply.headers['cache-control'] ?? ''), /no-store/);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /pending degrades to an empty list when the host throws', async () => {
+        const h = await harness({
+            pendingApprovals: () => {
+                throw new Error('boom');
+            },
+        });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/pending', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { approvals: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
 });
+

@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -10,6 +9,7 @@ import {
   ExportDeps,
 } from '../../../webview/documentation/exportDocumentation';
 import { mdToDocBlocks } from '../../../shared/docBlocks';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const readFile: ExportDeps['readFile'] = (uri) => fs.promises.readFile(uri.fsPath);
 const deps: ExportDeps = { readFile };
@@ -59,7 +59,7 @@ function write(relativePath: string, content: string | Buffer): void {
 }
 
 suiteSetup(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-docexport-'));
+  root = makeScratchDir('ado-docexport-');
   projectPath = path.join(root, 'proj');
 
   write(

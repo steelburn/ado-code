@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   PRUNE_INTERVAL_MS,
@@ -19,6 +18,7 @@ import {
   buildContextCostReport,
   formatContextCostReport,
 } from '../../../services/artifacts/contextCost';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -80,7 +80,7 @@ suite('ArtifactStore — inventory', () => {
   let root: string;
 
   setup(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-artifacts-'));
+    root = makeScratchDir('ado-artifacts-');
   });
 
   teardown(() => {
@@ -131,7 +131,7 @@ suite('ArtifactStore — prune planning', () => {
   let root: string;
 
   setup(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-artifacts-'));
+    root = makeScratchDir('ado-artifacts-');
   });
 
   teardown(() => {
@@ -214,7 +214,7 @@ suite('ArtifactStore — prune execution', () => {
   let root: string;
 
   setup(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-artifacts-'));
+    root = makeScratchDir('ado-artifacts-');
   });
 
   teardown(() => {
@@ -324,7 +324,7 @@ suite('ArtifactStore — policy resolution and scheduling', () => {
   let root: string;
 
   setup(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-artifacts-'));
+    root = makeScratchDir('ado-artifacts-');
   });
 
   teardown(() => {
@@ -393,7 +393,7 @@ suite('Context cost report', () => {
   let root: string;
 
   setup(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-context-cost-'));
+    root = makeScratchDir('ado-context-cost-');
   });
 
   teardown(() => {

@@ -1,10 +1,10 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { cleanTempDir } from '../utils/cleanTempDir';
 import { parseMergeTreeOutput, getMergeConflicts } from '../../../git/mergeConflicts';
+import { makeScratchDir } from '../utils/scratchDir';
 
 // Real output captured from git 2.34.1 `git merge-tree <base^{tree}> main feature`
 // on a repo where both branches edited the same line of f.txt.
@@ -58,7 +58,7 @@ suite('mergeConflicts', () => {
   });
 
   test('getMergeConflicts returns the conflicted file with contents (real repo)', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-conflicts-'));
+    const tmp = makeScratchDir('adocode-conflicts-');
     try {
       const git = (cmd: string, cwd = tmp) => cp.execSync(cmd, { cwd, encoding: 'utf8' });
       git('git init -q -b main');
@@ -87,7 +87,7 @@ suite('mergeConflicts', () => {
   });
 
   test('getMergeConflicts returns [] when branches do not touch the same files', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-conflicts2-'));
+    const tmp = makeScratchDir('adocode-conflicts2-');
     try {
       const git = (cmd: string, cwd = tmp) => cp.execSync(cmd, { cwd, encoding: 'utf8' });
       git('git init -q -b main');

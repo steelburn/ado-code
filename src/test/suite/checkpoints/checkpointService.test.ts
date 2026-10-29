@@ -1,15 +1,15 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { CheckpointService } from '../../../services/checkpoints/CheckpointService';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('CheckpointService', () => {
   let tmpDir: string;
   let service: CheckpointService;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-checkpoint-'));
+    tmpDir = makeScratchDir('adocode-checkpoint-');
     service = new CheckpointService(tmpDir);
   });
 

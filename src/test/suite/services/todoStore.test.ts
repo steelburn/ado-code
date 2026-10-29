@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   TodoStore,
@@ -13,13 +12,14 @@ import {
   MAX_TODO_ITEM_CHARS,
   MAX_TODO_GOAL_CHARS,
 } from '../../../services/todo/TodoStore';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('TodoStore', () => {
   let tmpDir: string;
   let store: TodoStore;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-todos-'));
+    tmpDir = makeScratchDir('adocode-todos-');
     store = new TodoStore(tmpDir);
   });
 

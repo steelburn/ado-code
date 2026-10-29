@@ -1,7 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { TodoStore } from '../../../services/todo/TodoStore';
 import {
@@ -13,6 +11,7 @@ import {
   TodoArchivedItemNode,
   TodoArchiveEmptyNode,
 } from '../../../webview/TodoTreeProvider';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('TodoTreeProvider', () => {
   let tmpDir: string;
@@ -20,7 +19,7 @@ suite('TodoTreeProvider', () => {
   let provider: TodoTreeProvider;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-todotree-'));
+    tmpDir = makeScratchDir('adocode-todotree-');
     store = new TodoStore(tmpDir);
     provider = new TodoTreeProvider(store);
   });

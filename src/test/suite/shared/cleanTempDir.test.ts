@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { cleanTempDir } from '../utils/cleanTempDir';
+import { makeScratchDir } from '../utils/scratchDir';
 
 // Regression guard for the Windows temp-cleanup helper. It must reliably remove
 // the directories the suites create (including read-only git object files) and
@@ -12,7 +13,7 @@ import { cleanTempDir } from '../utils/cleanTempDir';
 
 suite('cleanTempDir', () => {
   test('removes a nested directory tree recursively', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-clean-test-'));
+    const dir = makeScratchDir('ado-clean-test-');
     fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'a', 'b', 'f.txt'), 'x');
 
@@ -22,7 +23,7 @@ suite('cleanTempDir', () => {
   });
 
   test('removes a read-only git-object-like tree', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-clean-ro-'));
+    const dir = makeScratchDir('ado-clean-ro-');
     const objDir = path.join(dir, '.git', 'objects', 'ab');
     fs.mkdirSync(objDir, { recursive: true });
     const objFile = path.join(objDir, 'cdef0123');

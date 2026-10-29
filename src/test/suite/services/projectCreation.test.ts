@@ -6,6 +6,7 @@ import { execFileSync } from 'child_process';
 import { ProjectCreationService } from '../../../webview/ProjectCreationService';
 import { PROJECT_TEMPLATES, ProjectCreationRequest } from '../../../webview-ui/src/components/ProjectCreationWizard/types';
 import { cleanTempDir } from '../utils/cleanTempDir';
+import { makeScratchDir } from '../utils/scratchDir';
 
 // ProjectCreationService is vscode-free — this suite runs under plain mocha
 // (npx mocha --ui tdd out/test/suite/services/projectCreation.test.js) AND
@@ -37,7 +38,7 @@ suite('ProjectCreationService', () => {
       gitInit: true,
       gitInitialCommit: true,
       gitBranchName: 'main',
-      targetPath: fs.mkdtempSync(path.join(os.tmpdir(), 'ado-project-test-')),
+      targetPath: makeScratchDir('ado-project-test-'),
       ...overrides,
     };
   }
@@ -334,7 +335,7 @@ suite('ProjectCreationService', () => {
 
   test('scaffolds in place when the target folder is blank', async () => {
     // Simulates: user opens a BLANK folder, wizard resolves targetPath = that folder.
-    const blankDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    const blankDir = makeScratchDir('ado-blank-dir-');
     const request = makeRequest({ targetPath: blankDir });
     const result = await service.createProject(request);
     assert.strictEqual(result.success, true, result.error);
@@ -345,7 +346,7 @@ suite('ProjectCreationService', () => {
   });
 
   test('still treats a folder as blank when it only holds benign metadata', async () => {
-    const blankDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    const blankDir = makeScratchDir('ado-blank-dir-');
     // Editor/OS/extension artefacts are not project content: this extension's
     // own .ado-code metadata, a .vscode settings file, node_modules.
     fs.mkdirSync(path.join(blankDir, '.ado-code', 'memory'), { recursive: true });
@@ -366,7 +367,7 @@ suite('ProjectCreationService', () => {
   });
 
   test('scaffolds in place into a folder that is already a fresh git repo', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    const dir = makeScratchDir('ado-blank-dir-');
     execFileSync('git', ['init', '-b', 'main'], { cwd: dir, stdio: 'ignore' });
     const result = await service.createProject(makeRequest({ targetPath: dir }));
     assert.strictEqual(result.success, true, result.error);
@@ -375,7 +376,7 @@ suite('ProjectCreationService', () => {
   });
 
   test('nests a project directory when the target folder already has content', async () => {
-    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    const target = makeScratchDir('ado-blank-dir-');
     fs.writeFileSync(path.join(target, 'notes.txt'), 'not a project');
     const result = await service.createProject(makeRequest({ targetPath: target }));
     assert.strictEqual(result.success, true, result.error);
@@ -386,7 +387,7 @@ suite('ProjectCreationService', () => {
 
   test('nests instead of clobbering a file a template would write', async () => {
     // Every template writes .gitignore, so a folder holding one is NOT blank.
-    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-blank-dir-'));
+    const target = makeScratchDir('ado-blank-dir-');
     fs.writeFileSync(path.join(target, '.gitignore'), '# mine');
     const result = await service.createProject(makeRequest({ targetPath: target }));
     assert.strictEqual(result.success, true, result.error);

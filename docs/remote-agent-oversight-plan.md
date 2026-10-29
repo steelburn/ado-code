@@ -147,8 +147,10 @@ custom URL regex; missing binary → `onError` only; `dispose()` asserts kill ca
 **Acceptance criteria**
 - Binds `127.0.0.1` by default; non-loopback bind requires `adoCode.remote.bind === 'all'` **and** logs
   a warning.
-- Routes: `GET /` (console), `GET /events` (SSE, `text/event-stream`), `POST /session` (fragment token →
-  HttpOnly/Secure/SameSite=Strict cookie), `POST /consent`, `POST /confirm`, `POST /cancel`.
+- Routes: `GET /` (console), `GET /events` (SSE, `text/event-stream`), `GET /session` (cookie
+  liveness probe — mints nothing), `POST /session` (fragment token →
+  HttpOnly/Secure/SameSite=Strict cookie), `GET /pending` (open approvals, read-only —
+  the SSE stream has no replay), `POST /consent`, `POST /confirm`, `POST /cancel`.
 - **Host/Origin guard** rejects foreign hosts; cookie auth required on `/events` and all POSTs.
 - `broadcast(event)` fans out to all SSE clients; viewer connect/disconnect updates a count and emits
   `viewerCount`.

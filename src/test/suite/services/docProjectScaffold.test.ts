@@ -17,6 +17,7 @@ import {
 } from '../../../shared/documentation/columns';
 import { KRISA_ARTEFACTS, krisaArtefactsForRole } from '../../../shared/documentation/krisa';
 import { cleanTempDir } from '../utils/cleanTempDir';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const DOC_TEMPLATES = ['doc-ba', 'doc-writer', 'doc-tester'] as const;
 type DocTemplateId = (typeof DOC_TEMPLATES)[number];
@@ -55,7 +56,7 @@ suite('Documentation project scaffolding', () => {
       gitInit: false,
       gitInitialCommit: false,
       gitBranchName: 'main',
-      targetPath: fs.mkdtempSync(path.join(os.tmpdir(), 'ado-doc-test-')),
+      targetPath: makeScratchDir('ado-doc-test-'),
     };
   }
 

@@ -47,13 +47,47 @@ suite('remote/consolePage', () => {
         );
     });
 
-    test('phase 1 is view-only: no buttons, no click handlers, no mutation calls', () => {
-        assert.ok(!/<button\b/i.test(CONSOLE_HTML), 'no buttons in P1');
+    test('approvals are answerable, but only through the guarded decision routes', () => {
         assert.ok(!/\bonclick=/i.test(CONSOLE_HTML), 'no inline click handlers');
-        assert.ok(!/addEventListener\(\s*'click'/i.test(CONSOLE_HTML), 'no click listeners');
-        for (const route of ['/consent', '/confirm', '/cancel']) {
-            assert.ok(!CONSOLE_HTML.includes(`'${route}'`), `${route} must not be called in P1`);
-        }
+        assert.strictEqual(
+            [...CONSOLE_HTML.matchAll(/addEventListener\(\s*'click'/g)].length,
+            1,
+            'exactly one delegated click listener'
+        );
+        assert.ok(CONSOLE_HTML.includes("'/consent'"), 'consent decisions post to /consent');
+        assert.ok(CONSOLE_HTML.includes("'/confirm'"), 'confirmations post to /confirm');
+        // Abort stays host-side: the phone never invents a cancel.
+        assert.ok(!CONSOLE_HTML.includes("'/cancel'"), 'no /cancel from the console');
+    });
+
+    test('a card cannot be answered twice', () => {
+        const clickAt = CONSOLE_HTML.indexOf("addEventListener('click'");
+        assert.ok(clickAt > 0, 'click handler present');
+        const handler = CONSOLE_HTML.slice(clickAt, CONSOLE_HTML.indexOf('function loadPending'));
+        // Optimistic lock before the request leaves…
+        assert.match(handler, /if \(!card \|\| card\.sent\) \{ return; \}/);
+        assert.match(handler, /card\.sent = true;/);
+        // …and every button of that card renders disabled while in flight.
+        assert.match(CONSOLE_HTML, /card\.sent \? ' disabled' : ''/);
+        // 409 = the other surface already decided. Gone is gone.
+        assert.match(handler, /response\.status === 409/);
+        // And a resolution broadcast from VS Code removes the card.
+        assert.match(CONSOLE_HTML, /case 'approvalResolved'/);
+    });
+
+    test('a page that loads mid-prompt picks up the open card', () => {
+        assert.match(CONSOLE_HTML, /fetch\('\/pending'/);
+        assert.match(CONSOLE_HTML, /credentials:\s*'same-origin'/);
+        // Re-sync on every SSE (re)connect: SSE has no replay of its own.
+        const openAt = CONSOLE_HTML.indexOf('source.onopen');
+        const openBody = CONSOLE_HTML.slice(openAt, CONSOLE_HTML.indexOf('source.onmessage'));
+        assert.ok(openBody.includes('loadPending()'), 'onopen must re-sync pending approvals');
+    });
+
+    test('the inline page script parses', () => {
+        const script = CONSOLE_HTML.slice(CONSOLE_HTML.indexOf('<script>') + 8, CONSOLE_HTML.indexOf('</script>'));
+        assert.ok(script.length > 1000, 'script body present');
+        assert.doesNotThrow(() => new Function(script));
     });
 
     test('renders run status, deltas and prompts from the protocol events', () => {

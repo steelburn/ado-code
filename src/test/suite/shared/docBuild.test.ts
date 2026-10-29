@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   DOC_TEMPLATE_IDS,
@@ -8,9 +7,10 @@ import {
   describeDocTemplates,
 } from '../../../shared/documentation/docBuild';
 import { DOC_PROJECT_SPECS, selectDocFiles } from '../../../shared/documentation/docTemplates';
+import { makeScratchDir } from '../utils/scratchDir';
 
 function makeRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'docbuild-'));
+  return makeScratchDir('docbuild-');
 }
 
 function removeRoot(root: string): void {

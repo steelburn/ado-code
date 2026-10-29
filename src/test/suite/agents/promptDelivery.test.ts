@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   PROMPT_ARGV_BUDGET,
@@ -13,12 +12,13 @@ import {
   promptPointerText,
 } from '../../../agents/promptDelivery';
 import { cleanTempDir } from '../utils/cleanTempDir';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('promptDelivery', () => {
   let tmpDir: string;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-prompt-'));
+    tmpDir = makeScratchDir('adocode-prompt-');
   });
 
   teardown(() => {

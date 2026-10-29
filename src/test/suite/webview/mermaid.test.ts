@@ -1,7 +1,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as os from 'os';
+import * as fs from 'fs';
+import { makeScratchDir } from '../utils/scratchDir';
 import { renderMarkdown } from '../../../webview/markdown';
 import { WorkItemDetailPanel } from '../../../webview/WorkItemDetailPanel';
 import { AgentSummaryPanel } from '../../../webview/AgentSummaryPanel';
@@ -95,7 +96,8 @@ suite('Mermaid Chart Rendering & Integration', () => {
     const { promptAndSaveSvg } = await import('../../../webview/svgExport');
     const origShowSaveDialog = vscode.window.showSaveDialog;
 
-    const tmpPath = path.join(os.tmpdir(), `test-diagram-${Date.now()}.svg`);
+    const svgDir = makeScratchDir('ado-svg-');
+    const tmpPath = path.join(svgDir, `test-diagram-${Date.now()}.svg`);
     const tmpUri = vscode.Uri.file(tmpPath);
     (vscode.window as any).showSaveDialog = async () => tmpUri;
 
@@ -110,11 +112,7 @@ suite('Mermaid Chart Rendering & Integration', () => {
       assert.ok(text.includes('<rect/>'), 'Written content should include SVG elements');
     } finally {
       (vscode.window as any).showSaveDialog = origShowSaveDialog;
-      try {
-        await vscode.workspace.fs.delete(tmpUri);
-      } catch {
-        // ignore cleanup error
-      }
+      fs.rmSync(svgDir, { recursive: true, force: true });
     }
   });
 

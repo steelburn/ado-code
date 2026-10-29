@@ -45,13 +45,24 @@ export interface RemoteServerOptions {
   page?: () => string;
   heartbeatMs?: number;
   logger?: { warn(message: string): void };
-  /** Wired in P2/P3; absent in P1, where the routes answer 501. */
+  /** Optional: when absent the approval routes answer 501 (observe-only console). */
   onConsent?: (payload: { requestId: string; approved: boolean; scope?: string }) => Promise<{ status: number; body?: unknown }>;
+  /** Pending approvals, for a console that connects while a card is open. */
+  pendingApprovals?: () => unknown;
   onConfirm?: (payload: { requestId: string; value?: string; approved?: boolean }) => Promise<{ status: number; body?: unknown }>;
   onCancel?: () => Promise<{ status: number; body?: unknown }>;
 }
 
 const PRIVATE_HOST = /^(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
+
+/** Hostname of an absolute URL, lowercased; empty when unparseable. */
+function hostFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
 
 export class RemoteServer {
   private server: Server | null = null;
@@ -60,6 +71,8 @@ export class RemoteServer {
   private boundPort = 0;
   private boundHost = '';
   private disposed = false;
+  /** Public tunnel hosts admitted past the rebinding guard (see `allowHost`). */
+  private allowedHosts = new Set<string>();
 
   constructor(private readonly options: RemoteServerOptions) {}
 
@@ -71,6 +84,31 @@ export class RemoteServer {
   /** The interface actually bound (`127.0.0.1` unless `bind: 'all'`). */
   get host(): string {
     return this.boundHost;
+  }
+
+  /**
+   * Admit the public host a tunnel forwards requests for.
+   *
+   * The DNS-rebinding guard only answers loopback, private-range and LAN hosts,
+   * which is right for a stray browser but wrong for a tunnel: cloudflared keeps
+   * the public `Host` (`<id>.trycloudflare.com`) on the request it hands us, so
+   * every tunneled request was rejected with 403 `forbidden host`. The tunnel URL
+   * only exists once the tunnel is up, hence a setter instead of a constructor
+   * option.
+   *
+   * Replaces any previous host: one tunnel is live at a time, and a restarted
+   * quick tunnel always gets a fresh random subdomain.
+   */
+  allowHost(url: string): void {
+    const host = hostFromUrl(url);
+    if (host) {
+      this.allowedHosts = new Set([host]);
+    }
+  }
+
+  /** Forget the admitted tunnel host — the tunnel exited. */
+  clearAllowedHosts(): void {
+    this.allowedHosts = new Set();
   }
 
   /** Number of connected consoles. */
@@ -186,6 +224,14 @@ export class RemoteServer {
         await this.handleEvents(req, res);
         return;
       }
+      if (method === 'GET' && pathname === '/session') {
+        await this.handleSessionStatus(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/pending') {
+        await this.handlePending(req, res);
+        return;
+      }
       if (method === 'POST' && pathname === '/session') {
         await this.handleSession(req, res);
         return;
@@ -215,6 +261,25 @@ export class RemoteServer {
       'X-Frame-Options': 'DENY',
     });
     res.end(html);
+  }
+
+  /**
+   * Pending approvals (GET /pending). A console that connects — or reloads —
+   * after a card was raised has no SSE replay of its own, so it asks here
+   * once and renders what is still open. Read-only: this mints no decision.
+   */
+  private async handlePending(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!(await this.authorized(req))) {
+      this.sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    let approvals: unknown = [];
+    try {
+      approvals = this.options.pendingApprovals ? await this.options.pendingApprovals() : [];
+    } catch {
+      approvals = [];
+    }
+    this.sendJson(res, 200, { approvals });
   }
 
   private async handleSession(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -321,6 +386,20 @@ export class RemoteServer {
     this.sendJson(res, result.status, result.body ?? { ok: result.status < 400 });
   }
 
+  /**
+   * `GET /session` — is the cookie from an earlier scan still valid? The console
+   * asks this when its URL fragment is gone (reload, tab restore, a link that
+   * lost its hash in transit), which is not the same as an unauthenticated
+   * visitor. Read-only: it never mints a session, it only confirms one.
+   */
+  private async handleSessionStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!(await this.authorized(req))) {
+      this.sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+    this.sendJson(res, 200, { ok: true });
+  }
+
   private async authorized(req: IncomingMessage): Promise<boolean> {
     const candidate = this.readCookie(req, REMOTE_COOKIE_NAME);
     if (!candidate) {
@@ -333,7 +412,10 @@ export class RemoteServer {
     }
   }
 
-  /** DNS-rebinding guard: only loopback, private-range or the LAN address may answer. */
+  /**
+   * DNS-rebinding guard: only loopback, private-range, the LAN address, or the
+   * host of the tunnel we started ourselves may answer.
+   */
   private hostAllowed(req: IncomingMessage): boolean {
     const header = req.headers.host;
     if (!header) {
@@ -344,6 +426,9 @@ export class RemoteServer {
       return true;
     }
     if (PRIVATE_HOST.test(host)) {
+      return true;
+    }
+    if (this.allowedHosts.has(host.toLowerCase())) {
       return true;
     }
     const lan = this.options.lanAddress?.trim().toLowerCase();

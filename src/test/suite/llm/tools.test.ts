@@ -1,11 +1,12 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as assert from 'assert';
+import { execFileSync } from 'child_process';
 import * as vscode from 'vscode';
 import { createToolExecutor, ToolExecutor, capToolResult, applyOrderedEdits, truncateMatchLine, grepLines, GREP_MAX_LINE_LENGTH, parseSearchRegex, MAX_READ_FILE_LINES, MAX_BATCH_READ_FILES, tokenizeCommandLine, WIN_CMD_BUILTINS } from '../../../llm/tools';
 import { hasUnquotedShellOperators } from '../../../llm/consent';
 import { TodoStore } from '../../../services/todo/TodoStore';
+import { isInsideCheckout, makeScratchDir, scratchRoot } from '../utils/scratchDir';
 
 function stubServices(): any {
   return {
@@ -575,10 +576,21 @@ suite('ToolExecutor · 0.6.5 consent & push gates', () => {
   // `git commit` additionally re-enters the pre-commit hook (compile + npm test),
   // which hangs the suite until mocha's 20s timeout whenever the index is dirty.
   // Run these commands in a throwaway dir so they fail fast with no side effects.
-  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-code-consent-cwd-'));
+  // Created in suiteSetup, never at registration: a throw while Mocha is still
+  // loading files aborts the entire run before a single test is reported.
+  let scratchDir = '';
   let originalWorkspaceFolders: typeof vscode.workspace.workspaceFolders;
 
   suiteSetup(() => {
+    scratchDir = makeScratchDir('ado-code-consent-cwd-');
+    if (isInsideCheckout(scratchDir)) {
+      // Hosts that sandbox extension writes only allow a scratch root under the
+      // checkout, which is still governed by the checkout's own .git. Make the
+      // dir its own throwaway repository so a real `git commit` from a test
+      // cannot mutate the developer repo or re-enter its pre-commit hook.
+      execFileSync('git', ['init', '-q'], { cwd: scratchDir, stdio: 'ignore' });
+      fs.writeFileSync(path.join(scratchDir, '.ado-scratch-repo'), '');
+    }
     originalWorkspaceFolders = vscode.workspace.workspaceFolders;
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
       value: [{ uri: vscode.Uri.file(scratchDir), name: 'consent-scratch', index: 0 }],
@@ -603,11 +615,13 @@ suite('ToolExecutor · 0.6.5 consent & push gates', () => {
   test('guard: consent-gate commands execute outside the repo (scratch cwd)', () => {
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     assert.ok(cwd, 'a workspace folder must be set for command execution');
+    // Either not a git repo at all, or the throwaway repo this suite created
+    // (a sandboxed host only permits a scratch root inside the checkout).
     assert.ok(
-      !fs.existsSync(path.join(cwd!, '.git')),
-      `terminal-execution cwd must not be a git repository (was ${cwd})`
+      !fs.existsSync(path.join(cwd!, '.git')) || fs.existsSync(path.join(cwd!, '.ado-scratch-repo')),
+      `terminal-execution cwd must not be the developer's repo (was ${cwd})`
     );
-    const rel = path.relative(path.resolve(os.tmpdir()), path.resolve(cwd!));
+    const rel = path.relative(scratchRoot(), path.resolve(cwd!));
     assert.ok(
       rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel),
       `terminal-execution cwd must live under the OS temp dir (was ${cwd})`
@@ -731,11 +745,14 @@ suite('ToolExecutor · 0.6.5 consent & push gates', () => {
 });
 
 suite('ToolExecutor read_file and list_workspace enhancements', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-code-tools-test-'));
-  const testDir = path.join(tmpDir, 'test-read-enhancements');
+  // Created in suiteSetup for the same reason as the consent scratch dir.
+  let tmpDir = '';
+  let testDir = '';
   let originalWorkspaceFolders: typeof vscode.workspace.workspaceFolders;
 
   suiteSetup(() => {
+    tmpDir = makeScratchDir('ado-code-tools-test-');
+    testDir = path.join(tmpDir, 'test-read-enhancements');
     fs.mkdirSync(testDir, { recursive: true });
     originalWorkspaceFolders = vscode.workspace.workspaceFolders;
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
@@ -937,7 +954,7 @@ suite('ToolExecutor · session to-do list', () => {
   let todos: TodoStore;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-todotool-'));
+    tmpDir = makeScratchDir('adocode-todotool-');
     todos = new TodoStore(tmpDir);
   });
 
@@ -1207,7 +1224,7 @@ suite('ToolExecutor · documentation building', () => {
   let workspaceRoot: string;
 
   suiteSetup(() => {
-    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-code-doc-tools-'));
+    workspaceRoot = makeScratchDir('ado-code-doc-tools-');
     originalWorkspaceFolders = vscode.workspace.workspaceFolders;
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
       value: [{ uri: vscode.Uri.file(workspaceRoot), name: 'ws', index: 0 }],

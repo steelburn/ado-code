@@ -1,14 +1,14 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { ChangelogService, buildCompletionEntry, isImplementingBranch } from '../../../changelog/ChangelogService';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('ChangelogService', () => {
   let tmpDir: string;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-changelog-'));
+    tmpDir = makeScratchDir('adocode-changelog-');
   });
 
   teardown(() => {
