@@ -96,6 +96,10 @@ suite('ProjectCreationService', () => {
     'dotnet-console': ['demo-app.csproj', 'Program.cs', '.gitignore'],
     'react-ts': ['package.json', 'index.html', 'vite.config.ts', 'tsconfig.json', 'src/main.tsx', 'src/App.tsx', '.gitignore'],
     nextjs: ['package.json', 'next.config.js', 'tsconfig.json', 'src/app/layout.tsx', 'src/app/page.tsx', '.gitignore'],
+    'react-native': ['package.json', 'app.json', 'app/_layout.tsx', 'app/index.tsx', 'src/screens/HomeScreen.tsx', 'tsconfig.json', '.gitignore', 'README.md'],
+    flutter: ['pubspec.yaml', 'analysis_options.yaml', 'lib/main.dart', 'lib/app.dart', 'lib/core/api_client.dart', 'lib/state/counter_provider.dart', 'test/widget_test.dart', '.gitignore'],
+    'dotnet-maui': ['DemoApp.csproj', 'App.xaml', 'AppShell.xaml', 'MainPage.xaml', 'MauiProgram.cs', 'ViewModels/MainViewModel.cs', 'Platforms/Android/MainActivity.cs', '.gitignore'],
+    'monorepo-microservices': ['package.json', 'tsconfig.base.json', 'ARCHITECTURE.md', 'docker-compose.yml', 'services/gateway/src/index.ts', 'services/users/Dockerfile', 'packages/shared/src/index.ts', '.github/workflows/ci.yml', '.gitignore'],
     empty: ['README.md', '.gitignore', 'LICENSE'],
     'doc-ba': ['README.md', '.gitignore', '00-project-control/project-charter.md', '01-business-analysis/brs.md', '05-traceability/rtm.md', '05-traceability/rtm.csv', '.ado-code/documentation.json'],
     'doc-writer': ['README.md', '.gitignore', '01-design/srs.md', '02-user-docs/user-manual.md', 'export/pandoc.yaml', '.ado-code/documentation.json'],
@@ -393,5 +397,145 @@ suite('ProjectCreationService', () => {
     assert.strictEqual(result.success, true, result.error);
     assert.strictEqual(result.path, path.join(target, 'demo-app'));
     assert.strictEqual(fs.readFileSync(path.join(target, '.gitignore'), 'utf8'), '# mine');
+  });
+
+  // ── Mobile templates ─────────────────────────────────────────────
+
+  test('react-native bare CLI honours the expo and navigation options', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'react-native',
+      templateOptions: { ...defaultsFor('react-native'), expo: false, navigation: 'expo-router', stateManagement: 'none', testing: false, eslint: false },
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    assert.strictEqual(pkg.main, 'index.js');
+    assert.ok(fs.existsSync(path.join(dir, 'index.js')), 'bare React Native needs an index.js entry');
+    assert.strictEqual(pkg.scripts.test, undefined);
+    // expo-router is an Expo-only option — a bare project must not depend on it.
+    assert.strictEqual(pkg.dependencies['expo-router'], undefined);
+    assert.ok(!fs.existsSync(path.join(dir, 'app')), 'bare project must not emit Expo Router routes');
+    assert.ok((result.warnings || []).some((warning) => warning.includes('Bare React Native')));
+  });
+
+  test('react-native Expo project wires expo-router and a zustand store', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'react-native',
+      templateOptions: defaultsFor('react-native'),
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    const appConfig = JSON.parse(fs.readFileSync(path.join(dir, 'app.json'), 'utf8'));
+    assert.deepStrictEqual(appConfig.expo.plugins, ['expo-router']);
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    assert.strictEqual(pkg.main, 'expo-router/entry');
+    assert.ok(pkg.dependencies.zustand);
+    assert.ok(fs.existsSync(path.join(dir, 'src/store/useAppStore.ts')));
+  });
+
+  test('flutter pubspec reflects the chosen state management and HTTP client', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'flutter',
+      templateOptions: { ...defaultsFor('flutter'), stateManagement: 'bloc', httpClient: 'http' },
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    const pubspec = fs.readFileSync(path.join(dir, 'pubspec.yaml'), 'utf8');
+    assert.ok(pubspec.includes('flutter_bloc'), 'bloc must be a dependency');
+    assert.ok(!pubspec.includes('flutter_riverpod'), 'riverpod must not leak in');
+    assert.ok(pubspec.includes('http: ^'), 'http client dependency');
+    const screen = fs.readFileSync(path.join(dir, 'lib/features/home/presentation/home_screen.dart'), 'utf8');
+    assert.ok(screen.includes('BlocBuilder<CounterCubit, int>'));
+    // Platform runners are SDK-generated — the wizard must surface the command
+    // as a "Next Steps" step, not a warning toast that scrolls away.
+    const steps = result.postCreateSteps || [];
+    const runnerStep = steps.find((step) => (step.command || '').includes('flutter create .'));
+    assert.ok(runnerStep, 'flutter create . missing from postCreateSteps');
+    assert.ok(runnerStep.command!.startsWith('flutter create . --platforms='));
+    assert.ok(!(result.warnings || []).some((warning) => warning.includes('flutter create')));
+  });
+
+  test('only Flutter reports post-create steps — the wizard closes silently otherwise', async () => {
+    const flutter = await service.createProject(
+      makeRequest({ templateId: 'flutter', templateOptions: defaultsFor('flutter') })
+    );
+    assert.ok(flutter.success, flutter.error);
+    const steps = flutter.postCreateSteps || [];
+    assert.strictEqual(steps.length, 1);
+    assert.strictEqual(steps[0].label, 'Generate the native runners');
+    assert.ok(steps[0].detail && steps[0].detail.includes('SDK'));
+
+    const plain = await service.createProject(
+      makeRequest({ templateId: 'react-native', templateOptions: defaultsFor('react-native') })
+    );
+    assert.ok(plain.success, plain.error);
+    assert.deepStrictEqual(plain.postCreateSteps, []);
+  });
+
+  test('dotnet-maui targets only the selected platforms', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'dotnet-maui',
+      templateOptions: { ...defaultsFor('dotnet-maui'), ios: false, windows: true, mvvm: false },
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    const csproj = fs.readFileSync(path.join(dir, 'DemoApp.csproj'), 'utf8');
+    assert.ok(csproj.includes('net8.0-android'));
+    assert.ok(!csproj.includes('net8.0-ios'), 'iOS target was disabled');
+    assert.ok(csproj.includes('net8.0-windows'));
+    assert.ok(!csproj.includes('CommunityToolkit.Mvvm'));
+    assert.ok(!fs.existsSync(path.join(dir, 'ViewModels/MainViewModel.cs')));
+    assert.ok(fs.existsSync(path.join(dir, 'Platforms/Windows/App.xaml')));
+  });
+
+  // ── Monorepo / microservices ─────────────────────────────────────
+
+  test('monorepo-microservices creates one service per name, with gateway routing', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'monorepo-microservices',
+      templateOptions: { ...defaultsFor('monorepo-microservices'), services: 'gateway, users, billing', docker: false, ci: false },
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    for (const name of ['gateway', 'users', 'billing']) {
+      assert.ok(fs.existsSync(path.join(dir, 'services', name, 'src', 'index.ts')), `missing service ${name}`);
+    }
+    const gateway = fs.readFileSync(path.join(dir, 'services/gateway/src/index.ts'), 'utf8');
+    assert.ok(gateway.includes("'/users'"), 'gateway must route /users');
+    assert.ok(gateway.includes("'/billing'"), 'gateway must route /billing');
+    // Deterministic ports: gateway 4000, then one port per domain service.
+    assert.ok(gateway.includes('http://localhost:4001'));
+    assert.ok(gateway.includes('http://localhost:4002'));
+    assert.ok(!fs.existsSync(path.join(dir, 'docker-compose.yml')), 'docker option was disabled');
+  });
+
+  test('monorepo-microservices sanitises service names (no path traversal)', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'monorepo-microservices',
+      templateOptions: { ...defaultsFor('monorepo-microservices'), services: 'api, ../escape, api', docker: false, ci: false },
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    const services = fs.readdirSync(path.join(dir, 'services')).sort();
+    assert.deepStrictEqual(services, ['api', 'escape']);
+    assert.ok(!fs.existsSync(path.join(dir, '..', 'escape')), 'must never write outside the project');
+  });
+
+  test('monorepo-microservices honours workspace tooling, broker and deployment options', async () => {
+    const result = await service.createProject(makeRequest({
+      templateId: 'monorepo-microservices',
+      templateOptions: { ...defaultsFor('monorepo-microservices'), workspaceTool: 'pnpm', messageBroker: 'kafka', k8s: true },
+    }));
+    assert.ok(result.success, result.error);
+    const dir = result.path!;
+    assert.ok(fs.existsSync(path.join(dir, 'pnpm-workspace.yaml')));
+    const rootPkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    assert.strictEqual(rootPkg.workspaces, undefined, 'pnpm uses pnpm-workspace.yaml, not a workspaces field');
+    assert.strictEqual(rootPkg.packageManager, 'pnpm@9.6.0');
+    const compose = fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf8');
+    assert.ok(compose.includes('bitnami/kafka'), 'selected broker must be in the compose stack');
+    assert.ok(fs.existsSync(path.join(dir, 'deploy/k8s/gateway.yaml')), 'k8s manifests per service');
+    const shared = fs.readFileSync(path.join(dir, 'packages/shared/src/broker.ts'), 'utf8');
+    assert.ok(shared.includes('localhost:9092'), 'broker URL must match the selection');
   });
 });

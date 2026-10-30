@@ -76,6 +76,66 @@ was in flight — the host answers `409 Conflict`, and the console drops the car
 instead of retrying. A blind retry would answer whatever the agent asks *next*, which is the
 one mistake this design refuses to make.
 
+## Watching a job that is already running
+
+The console is a live view: the event stream only carries what happens *after* it opens. A job
+that is already running writes nothing until its next chunk of output, so the page asks for the
+jobs that are progressing right now (`GET /runs`) every time it connects — the first load, a
+reload, and each automatic reconnect after the phone slept or the network dropped. The card is
+rendered immediately with its status, title and work item, then takes over from the stream.
+
+Only running jobs are replayed: a finished run's card arrives with its final status on the
+stream. So an empty list means nothing is running right now — not that nothing ever ran.
+
+### The built-in chat turn is not an agent run
+
+A delegated CLI run has an `AgentRun` record; a plain chat turn — the model streaming text and
+calling tools — has none, so it never appears in `GET /runs`. The page therefore also asks
+`GET /turn` on every (re)connect and renders a **Working now** card above the job list: the
+session's name, whether it is running in the background, and a ticking elapsed clock. The
+turn's start and end are pushed live as `turnStatus` events (`turn: null` when idle), so the
+card appears and disappears without a reload. If nothing is running on either side the page
+says *Nothing running right now.*
+
+## Following the conversation — and continuing it
+
+The console shows the same thread the chat shows, not just the cards: your own messages, the
+assistant's answers as they stream in, and any **choice block** at the end of an answer, rendered
+as tappable buttons. Tapping one sends that option as your next message, exactly as if you had
+clicked it on the machine, and the turn it starts is followed by the *Working now* card.
+
+A text box under the thread takes a free-form reply — the answer to a question the assistant asked
+in prose, or a new instruction. Sending from the phone is not a separate code path: the text goes
+through the same handler the webview uses, so tools, approvals and steering behave identically, and
+your message appears in the chat on the machine too.
+
+Both halves of the bridge have the usual failure behaviour:
+
+- **`GET /transcript`** replays the thread when the page opens, reloads, or reconnects — the console
+  never depends on having been listening at the right moment. An observe-only console gets an empty
+  thread rather than an error.
+- The thread is bounded (40 messages, 4000 characters each, oldest dropped first), so a long session
+  cannot flood a phone over a tunnel. The console shows a truncated cap with an ellipsis.
+- **`POST /chat`** answers `400` for empty text and `501` when the console is observe-only — a
+  read-only console cannot talk back.
+
+## The session plan
+
+The goal and the to-do list belong to the session, so the console shows them: a card above the
+thread carrying the goal in one line, a `3 of 6 steps done` summary and one row per step — `○`
+pending, `▸` in progress, `✔` done, the in-progress row also bolded. It is the same plan the To-do
+view on the machine shows, including the steps the agent ticks off by itself.
+
+- Every write to the to-do store is pushed as a `plan` event, whichever tool made it — `set_goal`,
+  `update_todo_list`, or the automatic tick when the agent finishes a step.
+- `GET /plan` replays it on every (re)connect, for the same reason `/runs` and `/transcript` exist:
+  the event stream has no replay of its own, and a phone that joins mid-run would otherwise show
+  nothing until the plan changed again.
+- The card is hidden entirely when the session has neither a goal nor a to-do list — an empty box
+  would only push the thread down. Long lists stop at eight rows (`+N more steps`), so the
+  conversation stays reachable one thumb-scroll away.
+- A read-only console sees the plan; it just cannot act on it.
+
 ## Security model
 
 - **Token.** A 256-bit random token lives in VS Code `SecretStorage`. The QR URL carries it

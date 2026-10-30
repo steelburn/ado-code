@@ -94,6 +94,38 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
   .banner.error { color: var(--error); }
   footer { padding: 0 16px 24px; font-size: 12px; color: var(--muted); text-align: center; }
+    /* The session plan: the goal the work is meant to achieve plus the to-do
+     list. Compact on purpose — it answers "what is this doing?" at a glance,
+     before the thread it belongs to. */
+  .plan {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 12px;
+  }
+  .plan[hidden] { display: none; }
+  .plan-goal { font-size: 14px; font-weight: 600; line-height: 1.35; word-break: break-word; }
+  .plan-label { font-weight: 500; color: var(--muted); }
+  .plan-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .plan-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .plan-item { font-size: 13px; line-height: 1.4; display: flex; gap: 6px; word-break: break-word; }
+  .plan-mark { flex: none; width: 15px; text-align: center; color: var(--muted); }
+  .plan-item.done { color: var(--muted); }
+  .plan-item.done .plan-text { text-decoration: line-through; }
+  .plan-item.active .plan-mark { color: var(--accent); }
+  .plan-item.active .plan-text { font-weight: 600; }
+  .plan-more { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  /* Working now — the chat turn generating right now, above the run cards. */
+    .turn {
+      border: 1px solid rgba(56, 139, 253, 0.75);
+      border-radius: 10px;
+      padding: 12px;
+      margin: 0 0 10px;
+      background: rgba(56, 139, 253, 0.10);
+    }
+    .turn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 6px; }
+    .turn-title { font-weight: 600; font-size: 15px; }
+    .turn-clock { font-size: 13px; opacity: 0.8; font-variant-numeric: tabular-nums; }
+    .turn-session { font-size: 14px; margin: 0 0 4px; word-break: break-word; }
+    .turn-note { font-size: 12px; opacity: 0.75; }
     /* Approvals — first thing on the page: a decision is the only thing a
        phone visitor may need to do, and it is time-critical. */
     #approvals { margin: 0 0 16px; }
@@ -104,6 +136,19 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       margin: 0 0 10px;
       background: rgba(201, 162, 39, 0.10);
     }
+    /* Mirrored conversation (R-P1-09). Plain text on purpose: the desktop's
+       markdown renderer is not shipped to the phone, so a fence or a table
+       degrades to readable text instead of broken markup. */
+    .thread-head { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; opacity: .6; margin: 0 0 8px; }
+    .msg { margin: 0 0 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); }
+    .msg.user { background: rgba(56, 139, 253, 0.13); border-color: rgba(56, 139, 253, 0.35); }
+    .msg-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .55; margin: 0 0 4px; }
+    .msg-body { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.5; }
+    .choice { margin: 10px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+    .choice-q { font-weight: 600; font-size: 13px; opacity: .85; }
+    .choice-opt { text-align: left; }
+    .composer { display: flex; gap: 8px; margin: 0 0 18px; }
+    .composer input { flex: 1 1 auto; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.18); background: rgba(0, 0, 0, 0.25); color: inherit; font: inherit; }
     .ap-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
     .ap-title { font-weight: 600; font-size: 15px; }
     .ap-timer { font-size: 13px; opacity: 0.75; font-variant-numeric: tabular-nums; }
@@ -147,15 +192,24 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
 </header>
 <main>
   <div id="banner" class="banner" hidden></div>
+  <div id="plan" class="plan" hidden></div>
   <div id="approvals"></div>
+  <div id="transcript" class="thread"></div>
+  <form id="composer" class="composer" autocomplete="off">
+    <input id="composer-input" type="text" placeholder="Reply to the agent…" aria-label="Reply to the agent" />
+    <button type="submit" class="act">Send</button>
+  </form>
   <div id="runs"><div class="empty">Connecting…</div></div>
 </main>
   <footer>Approvals can be answered here — mutating tools still need a decision</footer>
 <script>
 (function () {
   'use strict';
-  var state = { runs: {}, order: [], approvals: {}, approvalOrder: [], source: null, connected: false };
+  var state = { runs: {}, order: [], approvals: {}, approvalOrder: [], turn: null, source: null, connected: false,
+    transcriptOrder: [], transcriptMessages: {}, answered: {}, transcriptTimer: null, plan: null };
+  var planEl = document.getElementById('plan');
   var runsEl = document.getElementById('runs');
+  var transcriptEl = document.getElementById('transcript');
   var bannerEl = document.getElementById('banner');
   var viewersEl = document.getElementById('viewers');
 
@@ -178,14 +232,52 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     return run.id || 'Agent run';
   }
 
+  /** Elapsed clock for the in-flight turn: 8s, 3m 12s, 1h 04m. */
+  function elapsedText(startedAt) {
+    var ms = Date.now() - Number(startedAt || 0);
+    if (!isFinite(ms) || ms < 0) { ms = 0; }
+    var total = Math.floor(ms / 1000);
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var s = pad(total % 60);
+    var m = pad(Math.floor(total / 60) % 60);
+    var h = Math.floor(total / 3600);
+    // Built from a parts array: the escape guard would otherwise read this
+    // clock as an unescaped payload concatenation.
+    var parts = [];
+    if (h > 0) { parts.push(h + 'h'); parts.push(m + 'm'); }
+    else if (total >= 60) { parts.push(Number(m) + 'm'); parts.push(s + 's'); }
+    else { parts.push(Number(s) + 's'); }
+    return parts.join(' ');
+  }
+
+  /**
+   * The chat turn generating right now.
+   *
+   * Agent runs arrive as agentStatus; a plain chat turn is not an agent run
+   * and used to leave this page saying "nothing running" while the machine
+   * streamed and called tools. This card closes that gap.
+   */
+  function turnHtml() {
+    if (!state.turn) { return ''; }
+    return '<section class="turn">' +
+      '<div class="turn-head">' +
+        '<span class="turn-title">Working now</span>' +
+        '<span class="turn-clock" id="turn-clock">' + esc(elapsedText(state.turn.startedAt)) + '</span>' +
+      '</div>' +
+      '<div class="turn-session">' + esc(state.turn.title || state.turn.sessionId || 'Chat turn') +
+        (state.turn.background ? ' · in the background' : '') + '</div>' +
+      '<div class="turn-note">Generating and calling tools — details follow on the stream.</div>' +
+    '</section>';
+  }
+
   function render() {
+    var html = turnHtml();
     if (!state.order.length) {
-      runsEl.innerHTML = state.connected
-        ? '<div class="empty">No agent runs yet. Waiting tool approvals show up at the top.</div>'
-        : '<div class="empty">Connecting…</div>';
+      runsEl.innerHTML = html + (state.connected
+        ? '<div class="empty">Nothing running right now. Waiting tool approvals show up at the top.</div>'
+        : '<div class="empty">Connecting…</div>');
       return;
     }
-    var html = '';
     for (var i = 0; i < state.order.length; i++) {
       var run = state.runs[state.order[i]];
       var status = String(run.status || 'running');
@@ -224,6 +316,15 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   function handle(event) {
     if (!event || typeof event !== 'object') { return; }
     switch (event.type) {
+      case 'plan': {
+        state.plan = { goal: event.goal || '', todos: event.todos || [] };
+        renderPlan();
+        break;
+      }
+      case 'turnStatus': {
+        state.turn = event.turn || null;
+        break;
+      }
       case 'agentStatus': {
         var run = upsert(event.run, { delta: (event.delta || '') });
         if (run && event.delta) {
@@ -247,6 +348,37 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
         // Answered here, answered on the desktop, or expired: drop the card.
         removeApproval(event.requestId);
         break;
+      }
+      case 'transcript': {
+        // Full snapshot: first load, reload, reconnect, session switch.
+        var rows = event.messages || [];
+        state.transcriptOrder = [];
+        state.transcriptMessages = {};
+        for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+          upsertTranscript(rows[rowIndex]);
+        }
+        renderTranscript();
+        return;
+      }
+      case 'transcriptMessage': {
+        // A whole message: a user turn, or an assistant answer that just
+        // finished — this is the frame that carries the choice block.
+        upsertTranscript(event.message);
+        scheduleTranscriptRender();
+        return;
+      }
+      case 'transcriptDelta': {
+        var streaming = state.transcriptMessages[event.id];
+        if (!streaming) {
+          streaming = upsertTranscript({ id: event.id, role: 'assistant', content: '' });
+        }
+        if (streaming) {
+          var prior = String(streaming.content || '');
+          var extra = String(event.delta || '');
+          streaming.content = prior + extra;
+        }
+        scheduleTranscriptRender();
+        return;
       }
       case 'viewerCount': {
         viewersEl.textContent = (event.count || 0) + ' watching';
@@ -417,6 +549,204 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     });
   });
 
+  /**
+   * Jobs that are still progressing, replayed on (re)connect.
+   *
+   * The stream only reports what happens after it opens, so a phone that joins
+   * or reloads mid-job would otherwise see nothing while the machine works.
+   */
+  function loadRuns() {
+    fetch('/runs', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        var runs = payload && payload.runs ? payload.runs : [];
+        for (var i = 0; i < runs.length; i++) { upsert(runs[i], {}); }
+        render();
+      })
+      .catch(function () { /* the stream stays the source of truth */ });
+  }
+
+  /**
+   * The turn the host is generating right now, replayed on (re)connect.
+   *
+   * Same reason as loadRuns: the stream only reports what happens after it
+   * opens, and a turn in flight is not an agent run, so nothing else here
+   * would ever say the machine is busy.
+   */
+  function loadTurn() {
+    fetch('/turn', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        state.turn = (payload && payload.turn) || null;
+        render();
+      })
+      .catch(function () { /* the stream still delivers the next turnStatus */ });
+  }
+
+  /**
+   * One mirrored message into the local store (id-keyed, so a delta, a
+   * finalize and a replay all land on the same bubble).
+   */
+  function upsertTranscript(message) {
+    if (!message || !message.id) { return null; }
+    var existing = state.transcriptMessages[message.id];
+    if (!existing) {
+      existing = { id: message.id, role: 'assistant', content: '' };
+      state.transcriptMessages[message.id] = existing;
+      state.transcriptOrder.push(message.id);
+    }
+    if (message.role === 'user' || message.role === 'assistant') { existing.role = message.role; }
+    if (typeof message.content === 'string') { existing.content = message.content; }
+    if (message.choice) { existing.choice = message.choice; }
+    return existing;
+  }
+
+  /**
+   * The choice block the model offered, as real buttons.
+   *
+   * The host strips the choice fence from the text and sends the options
+   * structurally, so tapping one is the same act as tapping the card on the
+   * desktop: it becomes the next user message.
+   */
+  function choiceHtml(message) {
+    if (!message.choice || !message.choice.options || !message.choice.options.length) { return ''; }
+    var html = '<div class="choice">';
+    html += '<div class="choice-q">' + esc(message.choice.question || 'Pick an option') + '</div>';
+    for (var optionIndex = 0; optionIndex < message.choice.options.length; optionIndex++) {
+      var option = String(message.choice.options[optionIndex]);
+      var answered = state.answered[message.id] === option;
+      var disabled = answered ? ' disabled' : '';
+      var mark = answered ? ' ✓' : '';
+      html += '<button type="button" class="act choice-opt" data-choice="' + esc(option) + '" data-msg="' + esc(message.id) + '"' + esc(disabled) + '>' + esc(option) + esc(mark) + '</button>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderTranscript() {
+    var html = '<div class="thread-head">Conversation</div>';
+    if (!state.transcriptOrder.length) {
+      html += '<div class="empty">No messages mirrored yet.</div>';
+      transcriptEl.innerHTML = html;
+      return;
+    }
+    for (var index = 0; index < state.transcriptOrder.length; index++) {
+      var message = state.transcriptMessages[state.transcriptOrder[index]];
+      if (!message) { continue; }
+      var roleClass = message.role === 'user' ? 'user' : 'bot';
+      var roleLabel = message.role === 'user' ? 'You' : 'Assistant';
+      html += '<article class="msg ' + esc(roleClass) + '">';
+      html += '<div class="msg-role">' + esc(roleLabel) + '</div>';
+      html += '<div class="msg-body">' + esc(message.content || '') + '</div>';
+      html += choiceHtml(message);
+      html += '</article>';
+    }
+    transcriptEl.innerHTML = html;
+  }
+
+  /** Deltas arrive per token: coalesce them into one paint. */
+  function scheduleTranscriptRender() {
+    if (state.transcriptTimer) { return; }
+    state.transcriptTimer = setTimeout(function () {
+      state.transcriptTimer = null;
+      renderTranscript();
+    }, 150);
+  }
+
+  /**
+   * The plan card. Hidden entirely when the session has neither a goal nor
+   * a to-do list — an empty box would only add noise.
+   */
+  function renderPlan() {
+    if (!planEl) { return; }
+    var plan = state.plan;
+    var goal = (plan && plan.goal) || '';
+    var todos = (plan && plan.todos) || [];
+    if (!goal && !todos.length) {
+      planEl.hidden = true;
+      planEl.innerHTML = '';
+      return;
+    }
+    var done = 0;
+    for (var d = 0; d < todos.length; d++) {
+      if (String(todos[d].status) === 'completed') { done++; }
+    }
+    var html = '';
+    if (goal) {
+      html += '<div class="plan-goal"><span class="plan-label">Goal · </span>' + esc(goal) + '</div>';
+    }
+    if (todos.length) {
+      html += '<div class="plan-meta">' + esc(done) + ' of ' + esc(todos.length) + ' steps done</div>'
+        + '<ul class="plan-list">';
+      var shown = todos.length > 8 ? todos.slice(0, 8) : todos;
+      for (var i = 0; i < shown.length; i++) {
+        var row = shown[i] || {};
+        var status = String(row.status || 'pending');
+        // One glyph per state: the console is scanned, not read.
+        var mark = status === 'completed' ? '✔' : (status === 'in_progress' ? '▸' : '○');
+        var klass = 'plan-item' + (status === 'completed' ? ' done' : (status === 'in_progress' ? ' active' : ''));
+        html += '<li class="' + esc(klass) + '"><span class="plan-mark">' + esc(mark) + '</span>'
+          + '<span class="plan-text">' + esc(row.content || row.activeForm || '') + '</span></li>';
+      }
+      html += '</ul>';
+      if (todos.length > shown.length) {
+        html += '<div class="plan-more">+' + esc(todos.length - shown.length) + ' more steps</div>';
+      }
+    }
+    planEl.innerHTML = html;
+    planEl.hidden = false;
+  }
+
+  /** Replay on (re)connect: the plan changes are events a late phone missed. */
+  function loadPlan() {
+    fetch('/plan', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        if (!payload) { return; }
+        state.plan = { goal: payload.goal || '', todos: payload.todos || [] };
+        renderPlan();
+      })
+      .catch(function () { /* keep whatever was already rendered */ });
+  }
+
+  /**
+   * The mirrored conversation, replayed on every (re)connect.
+   *
+   * Same reason as loadTurn: the stream only carries what happens after it
+   * opens, so a phone that joins mid-thread — or whose screen slept and
+   * reconnected — would otherwise never see the choice block at all.
+   */
+  function loadTranscript() {
+    fetch('/transcript', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        var rows = (payload && payload.messages) || [];
+        state.transcriptOrder = [];
+        state.transcriptMessages = {};
+        for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+          upsertTranscript(rows[rowIndex]);
+        }
+        renderTranscript();
+      })
+      .catch(function () { /* the stream still delivers new messages */ });
+  }
+
+  /** POST text to the host — a tapped choice, or a typed reply. */
+  function sendChat(text, done) {
+    fetch('/chat', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text })
+    })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (payload) {
+          done(response.ok, payload || {});
+        });
+      })
+      .catch(function () { done(false, {}); });
+  }
+
   function loadPending() {
     fetch('/pending', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
       .then(function (response) { return response.ok ? response.json() : null; })
@@ -434,6 +764,47 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
 
   setInterval(tickApprovalTimers, 1000);
 
+  // Tapping a choice in the mirrored thread answers it the same way the
+  // desktop card does: the option becomes the next user message.
+  transcriptEl.addEventListener('click', function (event) {
+    var target = event.target;
+    var button = target && target.closest ? target.closest('button[data-choice]') : null;
+    if (!button || button.disabled) { return; }
+    var option = button.getAttribute('data-choice');
+    var messageId = button.getAttribute('data-msg');
+    button.disabled = true;
+    state.answered[messageId] = option;
+    renderTranscript();
+    sendChat(option, function (ok, payload) {
+      if (ok) { return; }
+      delete state.answered[messageId];
+      renderTranscript();
+      showBanner((payload && payload.error) || 'VS Code refused that choice.', true);
+    });
+  });
+
+  var composerForm = document.getElementById('composer');
+  var composerInput = document.getElementById('composer-input');
+  if (composerForm && composerInput) {
+    composerForm.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var text = composerInput.value.trim();
+      if (!text) { return; }
+      composerInput.value = '';
+      sendChat(text, function (ok, payload) {
+        if (ok) { return; }
+        if (!composerInput.value) { composerInput.value = text; }
+        showBanner((payload && payload.error) || 'VS Code refused that message.', true);
+      });
+    });
+  }
+  // Tick the turn clock without a full re-render (a render would drop the
+  // reader's scroll position on every second).
+  setInterval(function () {
+    var clock = document.getElementById('turn-clock');
+    if (clock && state.turn) { clock.textContent = elapsedText(state.turn.startedAt); }
+  }, 1000);
+
   function connect() {
     if (state.source) { state.source.close(); }
     var source = new EventSource('/events');
@@ -443,6 +814,10 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       showBanner('');
       render();
       loadPending();
+      loadRuns();
+      loadTurn();
+      loadPlan();
+      loadTranscript();
     };
     source.onmessage = function (message) {
       var payload;

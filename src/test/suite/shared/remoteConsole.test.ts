@@ -9,6 +9,51 @@ import { CONSOLE_HTML } from '../../../remote/consolePage';
  * external asset behind a tunnel interstitial, or the token leaking into a URL.
  */
 suite('remote/consolePage', () => {
+    test('replays the job that is still progressing on (re)connect', () => {
+        assert.ok(CONSOLE_HTML.includes("fetch('/runs'"), 'the console asks for in-flight runs');
+        // The replay has to sit in onopen, not in the initial load: the phone
+        // sleeps, the EventSource reconnects, and the job that started during
+        // that gap would otherwise never appear.
+        const openAt = CONSOLE_HTML.indexOf('source.onopen = function ()');
+        assert.ok(openAt > 0, 'onopen handler is present');
+        const openBody = CONSOLE_HTML.slice(openAt, CONSOLE_HTML.indexOf('};', openAt));
+        assert.ok(openBody.includes('loadRuns()'), 'in-flight runs are replayed on every reconnect');
+    });
+
+    test('replays the chat turn that is generating on (re)connect', () => {
+        // A chat turn is not an agent run, so `agentStatus` never mentions it:
+        // without this replay the page said "nothing running" while the loop
+        // streamed and called tools.
+        assert.ok(CONSOLE_HTML.includes("fetch('/turn'"), 'the console asks for the in-flight turn');
+        const openAt = CONSOLE_HTML.indexOf('source.onopen = function ()');
+        assert.ok(openAt > 0, 'onopen handler is present');
+        const openBody = CONSOLE_HTML.slice(openAt, CONSOLE_HTML.indexOf('};', openAt));
+        assert.ok(openBody.includes('loadTurn()'), 'the in-flight turn is replayed on every reconnect');
+        // Live updates for the turn arrive on the stream, and the card has to be
+        // re-rendered from them (otherwise only a reload would ever update it).
+        assert.ok(CONSOLE_HTML.includes("case 'turnStatus'"), 'turnStatus frames update the card');
+    });
+
+    test('mirrors the conversation, choices included, on (re)connect', () => {
+        assert.match(CONSOLE_HTML, /fetch\('\/transcript'/);
+        const openAt = CONSOLE_HTML.search(/source\.onopen\s*=/);
+        assert.ok(openAt > 0, 'the page opens an EventSource');
+        const openBody = CONSOLE_HTML.slice(openAt, CONSOLE_HTML.indexOf('};', openAt));
+        assert.ok(
+            openBody.includes('loadTranscript()'),
+            'the thread is replayed on every (re)connect, not only on first load',
+        );
+        for (const type of ['transcript', 'transcriptMessage', 'transcriptDelta']) {
+            assert.ok(CONSOLE_HTML.includes(`case '${type}'`), `missing handler for ${type}`);
+        }
+    });
+
+    test('a choice block renders as buttons that answer through /chat', () => {
+        assert.match(CONSOLE_HTML, /data-choice="/);
+        assert.match(CONSOLE_HTML, /fetch\('\/chat'/);
+        assert.match(CONSOLE_HTML, /JSON\.stringify\(\{ text: text \}\)/);
+    });
+
     test('page is self-contained — no external asset of any kind', () => {
         assert.ok(!/<script[^>]+src=/i.test(CONSOLE_HTML), 'no external <script src>');
         assert.ok(!/<link\b/i.test(CONSOLE_HTML), 'no <link> (no external stylesheet, no icon)');
@@ -51,8 +96,8 @@ suite('remote/consolePage', () => {
         assert.ok(!/\bonclick=/i.test(CONSOLE_HTML), 'no inline click handlers');
         assert.strictEqual(
             [...CONSOLE_HTML.matchAll(/addEventListener\(\s*'click'/g)].length,
-            1,
-            'exactly one delegated click listener'
+            2,
+            'two delegated click listeners — the approval cards and the mirrored thread — never inline handlers'
         );
         assert.ok(CONSOLE_HTML.includes("'/consent'"), 'consent decisions post to /consent');
         assert.ok(CONSOLE_HTML.includes("'/confirm'"), 'confirmations post to /confirm');
@@ -82,6 +127,23 @@ suite('remote/consolePage', () => {
         const openAt = CONSOLE_HTML.indexOf('source.onopen');
         const openBody = CONSOLE_HTML.slice(openAt, CONSOLE_HTML.indexOf('source.onmessage'));
         assert.ok(openBody.includes('loadPending()'), 'onopen must re-sync pending approvals');
+    });
+
+    test('the plan card shows the goal and the to-do list, and re-syncs on (re)connect', () => {
+        assert.match(CONSOLE_HTML, /id="plan"/);
+        assert.ok(CONSOLE_HTML.includes("case 'plan'"), 'plan events are handled');
+        assert.match(CONSOLE_HTML, /fetch\('\/plan'/);
+        // SSE carries no replay, so a page that joins or reloads mid-run re-reads
+        // the plan exactly the way it re-reads /runs, /transcript and /pending.
+        const openAt = CONSOLE_HTML.indexOf('source.onopen');
+        assert.ok(openAt > 0, 'the SSE source has an onopen handler');
+        const openBody = CONSOLE_HTML.slice(openAt, CONSOLE_HTML.indexOf('source.onmessage', openAt));
+        assert.ok(openBody.includes('loadPlan()'), 'onopen must re-sync the plan');
+        // One glyph per state: done, in progress, pending.
+        assert.ok(CONSOLE_HTML.includes('✔'), 'done glyph');
+        assert.ok(CONSOLE_HTML.includes('▸'), 'in-progress glyph');
+        assert.ok(CONSOLE_HTML.includes('○'), 'pending glyph');
+        assert.ok(CONSOLE_HTML.includes('steps done'), 'the card summarises progress');
     });
 
     test('the inline page script parses', () => {

@@ -1,6 +1,7 @@
 import { AdoWorkItem, WiqlResult, AdoComment } from './types';
 import { markdownToHtml } from './markdownToHtml';
 import { normalizeWorkItemContent } from '../shared/workItemContent';
+import { toFetchError } from '../shared/netErrors';
 
 const GA_VERSION = '7.1';
 const PREVIEW_VERSION = '7.1-preview.4';
@@ -903,7 +904,10 @@ export class AdoClient {
       if (controller.signal.aborted) {
         throw new Error(`ADO request timed out after ${Math.round(timeoutMs / 1000)}s`);
       }
-      throw err;
+      // A bare `fetch` failure is undici's opaque "fetch failed": the real
+      // reason (DNS, TLS, refused, dropped socket) hides on `error.cause`, so
+      // describe it instead of forwarding the useless wrapper verbatim.
+      throw toFetchError(err, { label: 'Azure DevOps', url, timeoutMs });
     } finally {
       clearTimeout(timer);
     }

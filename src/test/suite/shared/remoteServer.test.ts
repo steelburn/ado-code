@@ -86,6 +86,11 @@ interface ApprovalHooks {
     onConsent?: (payload: { requestId: string; approved: boolean; scope?: string }) => Promise<{ status: number; body?: unknown }>;
     onConfirm?: (payload: { requestId: string; value?: string }) => Promise<{ status: number; body?: unknown }>;
     pendingApprovals?: () => unknown;
+    runSnapshot?: () => unknown;
+    turnSnapshot?: () => unknown;
+    transcriptSnapshot?: () => unknown;
+    planSnapshot?: () => unknown;
+    onChat?: (text: string) => Promise<{ status: number; body?: unknown }>;
 }
 
 async function harness(overrides: ApprovalHooks = {}): Promise<Harness> {
@@ -97,6 +102,11 @@ async function harness(overrides: ApprovalHooks = {}): Promise<Harness> {
         onConsent: overrides.onConsent,
         onConfirm: overrides.onConfirm,
         pendingApprovals: overrides.pendingApprovals,
+        runSnapshot: overrides.runSnapshot,
+        turnSnapshot: overrides.turnSnapshot,
+        transcriptSnapshot: overrides.transcriptSnapshot,
+        planSnapshot: overrides.planSnapshot,
+        onChat: overrides.onChat,
     });
     const port = await server.start();
     const login = async (): Promise<string> => {
@@ -435,6 +445,260 @@ suite('remote/RemoteServer', function () {
             const reply = await call(h.port, 'POST', '/consent', {
                 headers: { 'content-type': 'application/json', cookie },
                 body: JSON.stringify({ requestId: 'r1', approved: true }),
+            });
+            assert.strictEqual(reply.status, 501);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /runs replays the jobs that are still progressing', async () => {
+        const progressing = [
+            { id: 'run-1', status: 'running', agent: 'codex', title: 'ADO 42 - fix the tree', startedAt: '2024-01-01T00:00:00.000Z' },
+        ];
+        const h = await harness({ runSnapshot: () => progressing });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/runs', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { runs: progressing });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /runs without a session is refused', async () => {
+        const h = await harness({ runSnapshot: () => [] });
+        try {
+            const reply = await call(h.port, 'GET', '/runs');
+            assert.strictEqual(reply.status, 401);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /runs degrades to an empty list when the snapshot throws', async () => {
+        const h = await harness({
+            runSnapshot: () => {
+                throw new Error('no runner');
+            },
+        });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/runs', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { runs: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /turn replays the chat turn that is generating right now', async () => {
+        const turn = { sessionId: 's-1', title: 'Fix the tree', startedAt: 1790000000000, background: false };
+        const h = await harness({ turnSnapshot: () => turn });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/turn', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { turn });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /turn without a session is refused', async () => {
+        const h = await harness({ turnSnapshot: () => null });
+        try {
+            const reply = await call(h.port, 'GET', '/turn');
+            assert.strictEqual(reply.status, 401);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /turn answers null when the host is idle or the snapshot throws', async () => {
+        const idle = await harness({});
+        try {
+            const cookie = await idle.login();
+            const reply = await call(idle.port, 'GET', '/turn', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { turn: null });
+        } finally {
+            await idle.dispose();
+        }
+        const broken = await harness({
+            turnSnapshot: () => {
+                throw new Error('no chat provider');
+            },
+        });
+        try {
+            const cookie = await broken.login();
+            const reply = await call(broken.port, 'GET', '/turn', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { turn: null });
+        } finally {
+            await broken.dispose();
+        }
+    });
+
+    test('GET /transcript replays the mirrored conversation', async () => {
+        const transcript = {
+            type: 'transcript',
+            sessionId: 's-1',
+            messages: [
+                { id: 'u1', role: 'user', content: 'Which layout?' },
+                {
+                    id: 'a2',
+                    role: 'assistant',
+                    content: 'Two ways to go:',
+                    choice: { question: 'Which layout?', options: ['grid', 'list'] },
+                },
+            ],
+        };
+        const h = await harness({ transcriptSnapshot: () => transcript });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/transcript', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), transcript, 'the thread replays verbatim, choice block included');
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /transcript needs the cookie and degrades to an empty thread', async () => {
+        const h = await harness({
+            transcriptSnapshot: () => {
+                throw new Error('chat provider not ready');
+            },
+        });
+        try {
+            const anonymous = await call(h.port, 'GET', '/transcript', {});
+            assert.strictEqual(anonymous.status, 401, 'the console cookie is the only credential');
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/transcript', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200, 'a failing mirror must not black out the console');
+            assert.deepStrictEqual(JSON.parse(reply.body), { type: 'transcript', sessionId: null, messages: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /plan replays the goal and the to-do list', async () => {
+        const h = await harness({
+            planSnapshot: () => ({
+                goal: 'Ship the remote plan',
+                todos: [
+                    { content: 'Map the flow', status: 'completed' },
+                    { content: 'Render it', status: 'in_progress', activeForm: 'Rendering it' },
+                ],
+            }),
+        });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/plan', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), {
+                goal: 'Ship the remote plan',
+                todos: [
+                    { content: 'Map the flow', status: 'completed' },
+                    { content: 'Render it', status: 'in_progress', activeForm: 'Rendering it' },
+                ],
+            });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /plan degrades to an empty plan when the host wires nothing', async () => {
+        const h = await harness();
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/plan', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { goal: '', todos: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /plan rejects an anonymous caller', async () => {
+        const h = await harness({ planSnapshot: () => ({ goal: 'secret', todos: [] }) });
+        try {
+            const reply = await call(h.port, 'GET', '/plan');
+            assert.strictEqual(reply.status, 401);
+            assert.ok(!reply.body.includes('secret'));
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /plan survives a snapshot that throws', async () => {
+        const h = await harness({
+            planSnapshot: () => {
+                throw new Error('todo store unavailable');
+            },
+        });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/plan', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { goal: '', todos: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /transcript answers an empty thread when the host wires nothing', async () => {
+        const h = await harness({});
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/transcript', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { type: 'transcript', sessionId: null, messages: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('POST /chat hands the text to the host and refuses an empty one', async () => {
+        const seen: string[] = [];
+        const h = await harness({
+            onChat: async (text) => {
+                seen.push(text);
+                return { status: 200, body: { ok: true } };
+            },
+        });
+        try {
+            const cookie = await h.login();
+            const ok = await call(h.port, 'POST', '/chat', {
+                headers: { cookie, 'content-type': 'application/json' },
+                body: JSON.stringify({ text: 'grid' }),
+            });
+            assert.strictEqual(ok.status, 200);
+            assert.deepStrictEqual(seen, ['grid'], 'a tapped choice becomes the next user message');
+
+            const empty = await call(h.port, 'POST', '/chat', {
+                headers: { cookie, 'content-type': 'application/json' },
+                body: JSON.stringify({ text: '   ' }),
+            });
+            assert.strictEqual(empty.status, 400);
+            assert.deepStrictEqual(seen, ['grid'], 'an empty message never reaches the chat loop');
+
+            const anonymous = await call(h.port, 'POST', '/chat', { body: JSON.stringify({ text: 'grid' }) });
+            assert.strictEqual(anonymous.status, 401);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('POST /chat answers 501 on an observe-only console', async () => {
+        const h = await harness({});
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'POST', '/chat', {
+                headers: { cookie, 'content-type': 'application/json' },
+                body: JSON.stringify({ text: 'hello' }),
             });
             assert.strictEqual(reply.status, 501);
         } finally {

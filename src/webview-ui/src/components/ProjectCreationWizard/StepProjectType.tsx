@@ -12,6 +12,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   fullstack: 'Full-Stack',
   cli: 'CLI',
   library: 'Library',
+  mobile: 'Mobile',
+  monorepo: 'Monorepo & Microservices',
   documentation: 'Documentation',
 };
 

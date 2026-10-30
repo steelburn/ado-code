@@ -2,6 +2,34 @@ import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall }
 import type { ContentBlockParam } from '../types';
 import { toModelInfo, ModelInfo } from '../modelCapabilities';
 import { ADO_CODE_USER_AGENT } from '../../shared/version';
+import { llmFetch } from './net';
+import { joinBaseUrl, withoutApiVersion } from './baseUrl';
+
+/**
+ * Single door for every request this provider makes.
+ *
+ * Bare `fetch` gave users a literal "fetch failed" with no detail (undici keeps
+ * the reason on `error.cause`), no retry and no bounded wait. `llmFetch` fixes
+ * all three: headers timeout, transient retry with backoff, described errors.
+ */
+function providerFetch(url: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+  return llmFetch(String(url), { ...init, label: 'Anthropic' });
+}
+
+/**
+ * Single door for the Anthropic endpoints.
+ *
+ * Every Anthropic path hangs off `/v1` and the base URL is documented both
+ * ways (`https://api.anthropic.com` and `.../v1`), so the version segment is
+ * stripped here and re-appended by the caller. `withoutApiVersion` goes through
+ * `normalizeBaseUrl`, which also trims whitespace and trailing slashes — the
+ * inline `.replace(/\/+$/, '')` this replaced did neither, so a pasted
+ * `' https://api.anthropic.com/v1/ '` reached the wire with a space or a doubled
+ * slash and came back as a 404 that read like a bad key.
+ */
+function anthropicUrl(config: LlmConfig, path: string): string {
+  return joinBaseUrl(withoutApiVersion(config.apiUrl), path);
+}
 
 /** Anthropic request headers — identifies ADO Code in every API request. */
 function anthropicHeaders(config: LlmConfig): Record<string, string> {
@@ -106,9 +134,6 @@ export class AnthropicProvider implements LlmProvider {
       }
     }
 
-    // Normalize base URL: accept https://api.anthropic.com OR .../v1
-    const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
-
     const body: Record<string, any> = {
       model: config.model,
       max_tokens: 4096,
@@ -120,7 +145,7 @@ export class AnthropicProvider implements LlmProvider {
       body.system = systemMessage.content;
     }
 
-    const response = await fetch(`${baseUrl}/v1/messages`, {
+    const response = await providerFetch(anthropicUrl(config, '/v1/messages'), {
       method: 'POST',
       headers: anthropicHeaders(config),
       signal,
@@ -194,7 +219,6 @@ export class AnthropicProvider implements LlmProvider {
     const systemMessage = messages.find(m => m.role === 'system');
     const anthropicMessages = formatAnthropicMessages(messages);
 
-    const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
     const body: Record<string, any> = {
       model: config.model,
       max_tokens: 4096,
@@ -205,7 +229,7 @@ export class AnthropicProvider implements LlmProvider {
       body.system = systemMessage.content;
     }
 
-    const response = await fetch(`${baseUrl}/v1/messages`, {
+    const response = await providerFetch(anthropicUrl(config, '/v1/messages'), {
       method: 'POST',
       headers: anthropicHeaders(config),
       signal,
@@ -243,14 +267,13 @@ export class AnthropicProvider implements LlmProvider {
       const systemMessage = messages.find(m => m.role === 'system');
       const convo = formatAnthropicMessages(messages);
 
-      const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
       const body: Record<string, any> = { model: config.model, messages: convo };
       if (systemMessage) body.system = systemMessage.content;
       if (tools && tools.length > 0) {
         body.tools = tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
       }
 
-      const response = await fetch(`${baseUrl}/v1/messages/count_tokens`, {
+      const response = await providerFetch(anthropicUrl(config, '/v1/messages/count_tokens'), {
         method: 'POST',
         headers: anthropicHeaders(config),
         body: JSON.stringify(body),
@@ -266,8 +289,7 @@ export class AnthropicProvider implements LlmProvider {
 
 /** Model ids (+ capability hints when the gateway exposes them) via Anthropic's GET /v1/models endpoint. */
 async function listModelsAnthropic(config: LlmConfig): Promise<ModelInfo[]> {
-  const baseUrl = config.apiUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
-  const response = await fetch(`${baseUrl}/v1/models`, {
+  const response = await providerFetch(anthropicUrl(config, '/v1/models'), {
     method: 'GET',
     headers: {
       'x-api-key': config.apiKey,

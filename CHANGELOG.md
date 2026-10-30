@@ -4,6 +4,106 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`/new-project` now scaffolds mobile apps and monorepo microservices.** Thirteen templates
+  instead of nine. Three mobile ones — **React Native (Expo)** (managed workflow or bare CLI,
+  expo-router or react-navigation, zustand or redux-toolkit, Jest, ESLint), **Flutter**
+  (Android/iOS/Web targets, provider/riverpod/bloc, dio or http, widget tests) and **.NET MAUI**
+  (Android/iOS/Windows targets, CommunityToolkit.Mvvm, an xUnit project) — and one architecture
+  template, **`monorepo-microservices`**, which emits npm/pnpm/yarn workspaces (optionally
+  Turborepo or Nx), one package per service name you type (a `gateway` service becomes a real
+  API-gateway router with the other services already routed), a shared contracts package, a
+  NATS/Kafka/RabbitMQ broker wired through the compose file, Docker Compose with a per-service
+  Dockerfile, Kubernetes manifests and a GitHub Actions pipeline. Service names are slugged and
+  de-duplicated, so a typed `../escape` becomes the folder `escape` and nothing can be written
+  outside the project. The Flutter template notes that the native runner directories still come
+  from `flutter create .`, so the wizard now ends on a **Next Steps** step that shows that command
+  with a Copy button instead of closing on a warning toast that scrolled away.
+- **Remote oversight shows the job that is still progressing when the phone joins.** The console is
+  a live SSE view, so a run already in flight emitted nothing until it wrote its next chunk: opening
+  the console (or reloading it after the phone screen slept) showed "No agent runs yet" while the
+  machine was busy — the one case oversight exists for. The host now keeps a snapshot of running
+  runs and the console replays it from `GET /runs` on every (re)connect, next to the
+  pending-approvals replay it already did. Finished jobs are not replayed; their card arrives from
+  the live stream when they end.
+- **The "Working now" card: oversight follows the built-in chat turn too.** A delegated CLI run has
+  an `AgentRun` record, but a plain chat turn — the model streaming text and calling tools — has
+  none, so it never appeared in `GET /runs` and a phone watching the machine work still read
+  "No agent runs yet". The chat provider now exposes the in-flight turn (session name, background
+  flag, start time) at `GET /turn`, replayed on every (re)connect like the other snapshots, and
+  pushes `turnStatus` events on the turn's start and end so the card appears and disappears live
+  without a reload. It shows a ticking elapsed clock; the empty state now reads
+  "Nothing running right now."
+- **The conversation itself is mirrored to the console — and can be continued from the phone.**
+  Oversight could show approvals and job cards but not the chat, so on a phone an assistant answer
+  asking you to pick an option was invisible, and its choice block — the one thing that needed an
+  answer — could not be tapped. The host now keeps a bounded mirror of the thread (40 messages,
+  4000 characters each) fed from the frames the webview already renders, so the console shows your
+  messages, the assistant's answers as they stream, and choice blocks as buttons that post the
+  chosen option to `POST /chat`. That route runs the *same* handler as the webview, so slash
+  commands, tool approvals and the busy/steering guard behave identically and the message appears
+  in the chat on the machine. A text composer covers free-form replies; `GET /transcript` replays
+  the thread on every (re)connect, and an observe-only console gets an empty thread and a `501`
+  from `POST /chat` instead of a silent failure.
+
+- **The session plan — goal and to-do list — is on the console too.** Oversight showed what the
+  agent was doing but not what it was meant to achieve: on a phone you could watch a run without
+  knowing the goal or which step was in progress. The console now renders a plan card above the
+  thread — the goal in one line, a `3 of 6 steps done` summary and one row per step (`○` pending,
+  `▸` in progress, `✔` done, the current step bolded). Every write to the to-do store is pushed as
+  a `plan` event, whichever tool made it — `set_goal`, `update_todo_list`, or the automatic tick
+  when the agent finishes a step — and `GET /plan` replays the plan on every (re)connect, so a page
+  that joins mid-run starts with the plan as it stands instead of waiting for the next change. The
+  card is hidden when the session has neither a goal nor a to-do list, and long lists stop at eight
+  rows (`+N more steps`) so the conversation stays reachable.
+
+### Fixed
+
+- **A message typed on the phone ran the turn but left no bubble in the desktop chat.** The webview
+  renders its own user message optimistically when the *desktop* sends, so a turn that entered
+  through `POST /chat` showed up only as an answer with no question above it — on the machine, the
+  screen you look at afterwards. The host now posts a `remoteUserMessage` frame from the same entry
+  point the webview uses (slash commands, the busy/steering guard and turn bookkeeping behave
+  identically) and the webview appends the bubble, so the transcript on the machine reads exactly
+  like the one on the phone.
+- **Choice blocks carried no options on the console.** The mirror re-parsed the *answer text* for a
+  `choice` fence, so a choice that reached the desktop as a `choicePrompt` frame — or came from a
+  numbered list or the detector model — arrived on the phone as an answer with nothing to tap;
+  passing the options through as `{ label, value }` objects then stringified every one of them and
+  the empty list was dropped. Options are now mirrored by value from the frame that created them.
+- **A network hiccup no longer ends a turn with "fetch failed".** That string is undici's
+  wrapper for *every* transport-level failure — it puts the real reason on `error.cause`, which
+  none of our callers read, so a wrong base URL, a DNS/VPN outage, a refused port, a dropped
+  socket and a TLS-inspecting proxy were all reported identically, and none were retried.
+  A new `src/shared/netErrors.ts` walks the cause chain (including `AggregateError`) and names
+  what actually failed and what to check — "DNS lookup failed for api.example.com (ENOTFOUND):
+  the API base URL is wrong, or DNS/VPN is unavailable", "TLS certificate verification failed:
+  point NODE_EXTRA_CA_CERTS at the proxy's root CA" — plus a proxy hint when one is configured
+  in the environment. LLM traffic now goes through one hardened `llmFetch`
+  (`src/llm/providers/net.ts`): a 120 s abortable *headers* timeout, so a blackholed request can
+  no longer hang the chat with no feedback (long streams are unaffected — the timer clears once
+  headers arrive), and 2 retries with backoff for transient socket errors and 408/425/429/5xx
+  (honouring `Retry-After`) before anything is surfaced. The ADO client and the "generate commit
+  message" command report through the same descriptions.
+- **A trailing slash in `adoCode.llmApiUrl` no longer turns every request into a 404.** The
+  OpenAI-compatible provider built its URLs as `<apiUrl>/chat/completions`, so the most common
+  paste artefact — `https://api.openai.com/v1/`, copied straight from a docs page — produced
+  `https://api.openai.com/v1//chat/completions`. Gateways answer that with a 404, which reads like
+  a wrong model or a wrong key and sent users chasing the wrong problem entirely. One
+  `joinBaseUrl` (`src/llm/providers/baseUrl.ts`) now trims surrounding whitespace and every
+  trailing slash and inserts exactly one separator; the streaming path, the native tool-call path,
+  token counting, the model listing, "generate commit message" and the URL quoted in the error
+  description all go through it, so the endpoint requested and the endpoint reported are the same
+  string. A bare scheme keeps its `//` (`https://` does not collapse to `https:`).
+  Anthropic goes through the same helper. Every one of its endpoints hangs off `/v1` while the
+  setting is documented both as `https://api.anthropic.com` and as `.../v1`, so `withoutApiVersion`
+  drops a trailing version segment and the versioned path is re-appended: `.../v1`, `.../v1/`, a
+  space-padded paste and a gateway prefix like `https://gw.local/anthropic/v1` all now reach
+  `/v1/messages`, `/v1/messages/count_tokens` and `/v1/models` exactly once — the old inline
+  `.replace(/\/+$/, '')` turned `.../v1` into `/v1/v1/messages` and left pasted whitespace in the
+  URL, both of which surfaced as a 404 that looked like a bad key.
+
 ## [0.8.3] - 2026-10-29
 
 ### Added

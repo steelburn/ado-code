@@ -17,6 +17,7 @@ import { ConfirmationCard, ConfirmationRequest } from './components/Confirmation
 import { SessionHistory } from './components/SessionHistory';
 import { ConfigurationPage } from './components/ConfigurationPage';
 import { ProjectCreationWizard } from './components/ProjectCreationWizard';
+import { PostCreateStep } from './components/ProjectCreationWizard/types';
 import { SkillCatalog } from './components/SkillCatalog';
 import { vscode } from './vscode';
 import { ErrorBanner } from './components/common/ErrorBanner';
@@ -250,8 +251,41 @@ function App() {
   // Creation failure shown INSIDE the wizard (App-level, so it survives the
   // fixed overlay that would hide the global error banner).
   const [projectWizardError, setProjectWizardError] = useState<string | null>(null);
+  // A created project that still needs a manual step (Flutter's native runners).
+  // While set, the wizard stays open on its "Next Steps" step; the follow-ups
+  // (opening the documentation project) run only once the user dismisses it.
+  const [projectWizardCreated, setProjectWizardCreated] = useState<{
+    path: string;
+    templateId?: string;
+    projectName?: string;
+    documents: string[];
+    steps: PostCreateStep[];
+  } | null>(null);
   // Documentation project just created — the export bar needs its folder and the
   // documents the scaffolder wrote (both arrive with `projectWizardCreated`).
+  // Dismissing the wizard clears every trace of the run — including the
+  // "Next Steps" payload, so a later wizard starts clean.
+  const closeProjectWizard = useCallback(() => {
+    setProjectWizardError(null);
+    setShowProjectWizard(false);
+    setProjectWizardCreated(null);
+  }, []);
+
+  // "Done" on the Next Steps step: now that the user has seen the commands, run
+  // the post-creation follow-ups the plain success path would have run.
+  const finishProjectWizard = useCallback(() => {
+    const created = projectWizardCreated;
+    setShowProjectWizard(false);
+    setProjectWizardCreated(null);
+    if (created?.templateId && created.templateId.indexOf('doc-') === 0) {
+      setDocProject({
+        name: created.projectName || created.path.split(/[\\/]/).pop() || 'documentation',
+        path: created.path,
+        documents: created.documents,
+      });
+    }
+  }, [projectWizardCreated]);
+
   const [docProject, setDocProject] = useState<{
     name: string;
     path: string;
@@ -286,6 +320,19 @@ function App() {
         case 'steeringQueued':
           // Ack only — the bubble is already rendered optimistically.
           break;
+        case 'remoteUserMessage': {
+          // A turn typed on the phone. There is no local echo for it — the
+          // desktop only renders a bubble when IT sends — so the host posts this
+          // frame and the bubble is appended here, mirroring the optimistic
+          // append in sendNow. Without it the desktop showed the answer with no
+          // question above it.
+          const remoteText = (msg.content || '').trim();
+          if (remoteText) {
+            setMessages(prev => [...prev, { role: 'user', content: remoteText }]);
+            setLoading(true);
+          }
+          break;
+        }
         case 'assistantMessage':
           // ── ID-stamped bubbles (evolving run card) ─────────────────────
           // A done message carrying `id` updates an EXISTING bubble in place
@@ -731,13 +778,27 @@ function App() {
         case 'projectWizardCreated':
           if (msg.success) {
             setProjectWizardError(null);
-            setShowProjectWizard(false);
-            if (msg.templateId && msg.templateId.indexOf('doc-') === 0) {
-              setDocProject({
-                name: msg.projectName || msg.path.split(/[\\/]/).pop() || 'documentation',
+            const steps = msg.postCreateSteps ?? [];
+            if (steps.length > 0) {
+              // The scaffold is not runnable yet (Flutter's native runners come
+              // from the SDK), so keep the wizard open on a "Next Steps" step
+              // instead of dropping the note into a toast that scrolls away.
+              setProjectWizardCreated({
                 path: msg.path,
+                templateId: msg.templateId,
+                projectName: msg.projectName,
                 documents: msg.documents || [],
+                steps,
               });
+            } else {
+              setShowProjectWizard(false);
+              if (msg.templateId && msg.templateId.indexOf('doc-') === 0) {
+                setDocProject({
+                  name: msg.projectName || msg.path.split(/[\\/]/).pop() || 'documentation',
+                  path: msg.path,
+                  documents: msg.documents || [],
+                });
+              }
             }
           } else {
             setProjectWizardError(msg.error || 'Failed to create project');
@@ -1455,12 +1516,15 @@ function App() {
       {/* Project creation wizard */}
       {showProjectWizard && (
         <ProjectCreationWizard
-          onClose={() => {
-            setProjectWizardError(null);
-            setShowProjectWizard(false);
-          }}
+          onClose={closeProjectWizard}
           error={projectWizardError}
           onClearError={() => setProjectWizardError(null)}
+          result={
+            projectWizardCreated
+              ? { path: projectWizardCreated.path, steps: projectWizardCreated.steps }
+              : null
+          }
+          onDone={finishProjectWizard}
         />
       )}
     </div>

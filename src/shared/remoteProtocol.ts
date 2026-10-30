@@ -88,13 +88,112 @@ export interface RemoteApprovalResolvedEvent {
   source: 'host' | 'remote';
 }
 
+/**
+ * The host's own chat turn — the built-in agentic loop — as opposed to a
+ * delegated CLI run. A turn produces no AgentRun, so `agentStatus` alone left
+ * the console looking idle while the machine was streaming and calling tools.
+ */
+export interface RemoteTurnInfo {
+  /** Session the turn belongs to. */
+  sessionId: string;
+  /** Session name, or the generating label when the session has none yet. */
+  title: string;
+  /** Epoch ms the turn started — the console runs its own elapsed clock. */
+  startedAt: number;
+  /** True while the turn keeps running although another session is on screen. */
+  background: boolean;
+}
+
+/**
+ * One mirrored chat message (R-P1-09).
+ *
+ * The console mirrors the chat thread the desktop webview is showing so the
+ * phone can follow the conversation instead of only the approval cards. Only
+ * what a reader needs travels: the role, the text, and — when the assistant
+ * offered a choice — the parsed options, so the phone renders real buttons
+ * instead of a raw ```choice fence. Reasoning traces and tool cards stay in the
+ * webview: they are noise on a phone and would multiply the payload.
+ */
+export interface RemoteTranscriptChoice {
+  question: string;
+  options: string[];
+}
+
+export interface RemoteTranscriptMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  /** Message text with any ```choice fence already removed. */
+  content: string;
+  choice?: RemoteTranscriptChoice;
+}
+
+/** Full transcript — replay on connect, and after a reset (session switch). */
+export interface RemoteTranscriptEvent {
+  type: 'transcript';
+  sessionId: string | null;
+  messages: RemoteTranscriptMessage[];
+}
+
+/** One message appeared or was finalized (assistant answer done). */
+export interface RemoteTranscriptMessageEvent {
+  type: 'transcriptMessage';
+  message: RemoteTranscriptMessage;
+}
+
+/** The streaming assistant message grew by `delta`. */
+export interface RemoteTranscriptDeltaEvent {
+  type: 'transcriptDelta';
+  id: string;
+  delta: string;
+}
+
+export interface RemoteTurnStatusEvent {
+  type: 'turnStatus';
+  /** null once the turn finished, failed or was stopped. */
+  turn: RemoteTurnInfo | null;
+}
+
 export type RemoteDownstreamEvent =
   | RemoteAgentStatusEvent
   | RemoteAgentResultEvent
+  | RemoteTurnStatusEvent
   | RemoteConsentRequestEvent
   | RemoteConfirmationRequestEvent
   | RemoteApprovalResolvedEvent
-  | RemoteViewerCountEvent;
+  | RemoteViewerCountEvent
+  | RemoteTranscriptEvent
+  | RemoteTranscriptMessageEvent
+  | RemoteTranscriptDeltaEvent
+  | RemotePlanEvent;
+
+/**
+ * The session plan: the goal the work is meant to achieve plus the to-do list
+ * the agent keeps while it works (R-P1-11).
+ *
+ * Same two surfaces the desktop's To-do view shows. A phone that joins
+ * mid-turn has to see what the machine is DOING, not only what it is asking —
+ * goal and to-dos are the cheapest honest answer to "what is going on?".
+ *
+ * `goal` is '' when the session has none yet; `todos` is [] rather than
+ * undefined, so the console renders "no plan yet" without a special case.
+ */
+export interface RemotePlanTodo {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  /** Present-participle label the desktop shows while the item runs. */
+  activeForm?: string;
+}
+
+export interface RemotePlanEvent {
+  type: 'plan';
+  /** Session the plan belongs to; null when no session is active. */
+  sessionId: string | null;
+  goal: string;
+  todos: RemotePlanTodo[];
+  total: number;
+  completed: number;
+  inProgress: number;
+}
 
 /** Upstream endpoint kinds map 1:1 onto the POST routes. */
 export type RemoteUpstreamKind = 'session' | 'consent' | 'confirm';
@@ -165,6 +264,36 @@ export function parseDownstream(input: unknown): RemoteParseResult<RemoteDownstr
       }
       return { ok: true, value: { type: 'agentResult', run: body.run as unknown as AgentRunLike, summary: body.summary } };
     }
+    case 'turnStatus': {
+      if (body.turn === null) {
+        return { ok: true, value: { type: 'turnStatus', turn: null } };
+      }
+      if (!isRecord(body.turn)) {
+        return reject('turnStatus.turn must be an object or null');
+      }
+      const sessionId = readId(body.turn.sessionId);
+      if (sessionId === null) {
+        return reject('turnStatus.turn.sessionId must be a non-empty string');
+      }
+      if (typeof body.turn.title !== 'string') {
+        return reject('turnStatus.turn.title must be a string');
+      }
+      if (typeof body.turn.startedAt !== 'number' || !Number.isFinite(body.turn.startedAt)) {
+        return reject('turnStatus.turn.startedAt must be a finite number');
+      }
+      return {
+        ok: true,
+        value: {
+          type: 'turnStatus',
+          turn: {
+            sessionId,
+            title: body.turn.title.slice(0, MAX_REQUEST_ID_LENGTH),
+            startedAt: body.turn.startedAt,
+            background: body.turn.background === true,
+          },
+        },
+      };
+    }
     case 'consentRequest': {
       const requestId = readId(body.requestId);
       if (requestId === null) {
@@ -229,6 +358,38 @@ export function parseDownstream(input: unknown): RemoteParseResult<RemoteDownstr
         event.expiresAt = expiresAt;
       }
       return { ok: true, value: event };
+    }
+    case 'transcript': {
+      const sessionId = body.sessionId === null || body.sessionId === undefined ? null : readId(body.sessionId);
+      if (!Array.isArray(body.messages)) {
+        return reject('transcript.messages must be an array');
+      }
+      const messages: RemoteTranscriptMessage[] = [];
+      for (const raw of body.messages) {
+        const message = readTranscriptMessage(raw);
+        if (!message) {
+          return reject('transcript.messages[] entries must be { id, role, content }');
+        }
+        messages.push(message);
+      }
+      return { ok: true, value: { type: 'transcript', sessionId, messages } };
+    }
+    case 'transcriptMessage': {
+      const message = readTranscriptMessage(body.message);
+      if (!message) {
+        return reject('transcriptMessage.message must be { id, role, content }');
+      }
+      return { ok: true, value: { type: 'transcriptMessage', message } };
+    }
+    case 'transcriptDelta': {
+      const id = readId(body.id);
+      if (id === null) {
+        return reject('transcriptDelta.id must be a non-empty string');
+      }
+      if (typeof body.delta !== 'string') {
+        return reject('transcriptDelta.delta must be a string');
+      }
+      return { ok: true, value: { type: 'transcriptDelta', id, delta: body.delta } };
     }
     case 'viewerCount': {
       const count = readOptionalNumber(body.count);
@@ -361,6 +522,31 @@ function readId(value: unknown): string | null {
 
 function readOptionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readTranscriptMessage(value: unknown): RemoteTranscriptMessage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = readId(value.id);
+  if (id === null) {
+    return null;
+  }
+  if (value.role !== 'user' && value.role !== 'assistant') {
+    return null;
+  }
+  if (typeof value.content !== 'string') {
+    return null;
+  }
+  const message: RemoteTranscriptMessage = { id, role: value.role, content: value.content };
+  const choice = value.choice;
+  if (isRecord(choice) && typeof choice.question === 'string' && Array.isArray(choice.options)) {
+    const options = choice.options.filter((option): option is string => typeof option === 'string');
+    if (options.length > 0) {
+      message.choice = { question: choice.question, options };
+    }
+  }
+  return message;
 }
 
 function reject(error: string): { ok: false; error: string } {

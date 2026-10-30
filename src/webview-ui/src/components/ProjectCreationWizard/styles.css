@@ -290,3 +290,67 @@
   color: var(--vscode-inputValidation-errorForeground);
   font-size: 0.85em;
 }
+
+/* Next steps — commands that still have to run after scaffolding (Flutter's
+   native runners are SDK-generated, so the scaffold alone is not runnable). */
+.wizard-next-step {
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.wizard-next-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wizard-next-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-size: 0.75em;
+}
+
+.wizard-next-step-label {
+  font-weight: 600;
+}
+
+.wizard-next-step-detail {
+  margin: 6px 0 0 28px;
+  font-size: 0.85em;
+  line-height: 1.45;
+  color: var(--vscode-descriptionForeground);
+}
+
+.wizard-next-step-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0 28px;
+}
+
+.wizard-next-step-command code {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.wizard-copy-btn {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 0.85em;
+}
