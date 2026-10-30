@@ -6,10 +6,12 @@
  * (`webpack.config.js`) is untouched.
  *
  * Rebuild with:
- *   node C:/nvm4w/nodejs/node_modules/npm/bin/npm-cli.js --prefix src/webview-ui exec -- webpack --config webpack.probe.config.js
+ *   npm --prefix src/webview-ui run build:probe
  *
  * Then run the Extension Development Host test:
- *   npm test -- --grep "mermaid renders"
+ *   MOCHA_GREP="mermaid renders in a real webview" npm test
+ * (`runTest.ts` takes no argv — the filter is the MOCHA_GREP env var read by
+ * `src/test/suite/index.ts`. Without it the whole Electron suite runs.)
  */
 
 const path = require('path');
