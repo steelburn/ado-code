@@ -46,22 +46,33 @@ try {
 }
 
 /**
- * Fail the build if the bundle requires anything other than `vscode` / Node
- * built-ins. This replaces the old comment-based "no bundler, zero runtime deps"
+ * Fail the build if anything other than `vscode` / Node built-ins ends up in the
+ * bundle. This replaces the old comment-based "no bundler, zero runtime deps"
  * promise with a mechanical guarantee.
+ *
+ * The check reads esbuild's metafile — the module graph esbuild actually
+ * resolved — instead of grepping the emitted code for `require(...)` calls: the
+ * bundle legitimately carries string *data* that looks like one (the project
+ * scaffolder writes a `metro.config.js` that requires
+ * `@react-native/metro-config`), and a regex over minified output cannot tell
+ * code from data. Two checks cover the invariant from both ends:
+ *   1. no input may come from `node_modules` — an inlined npm package would need
+ *      files the packaged extension does not ship;
+ *   2. every import left in the output must be an allowed external.
  */
-function verifyExternals(file) {
-  const code = fs.readFileSync(file, 'utf8');
+function verifyBundle(metafile) {
   const offenders = new Set();
-  const re = /require\(\s*(["'])([^"']+)\1\s*\)/g;
-  let m;
-  while ((m = re.exec(code)) !== null) {
-    const spec = m[2];
-    if (!ALLOWED_EXTERNALS.has(spec)) offenders.add(spec);
+  for (const input of Object.keys(metafile.inputs || {})) {
+    if (input.split(/[\\/]/).includes('node_modules')) offenders.add(input);
+  }
+  for (const out of Object.values(metafile.outputs || {})) {
+    for (const imp of out.imports || []) {
+      if (imp.external && !ALLOWED_EXTERNALS.has(imp.path)) offenders.add(imp.path);
+    }
   }
   if (offenders.size > 0) {
-    console.error(`❌ bundle requires unexpected modules: ${[...offenders].join(', ')}`);
-    console.error('   Only "vscode" and Node built-ins may remain external.');
+    console.error(`❌ bundle pulls in unexpected modules: ${[...offenders].join(', ')}`);
+    console.error('   No npm package may be bundled; only "vscode" and Node built-ins may stay external.');
     process.exit(1);
   }
   console.log('✅ dependency guard: bundle only requires vscode + Node built-ins');
@@ -81,7 +92,7 @@ const options = {
   keepNames: true,
   legalComments: 'none',
   logLevel: 'info',
-  metafile: METAFILE,
+  metafile: true,
 };
 
 function reportSize() {
@@ -110,10 +121,10 @@ async function main() {
     return;
   }
   const result = await esbuild.build(options);
-  if (result.metafile) {
+  if (METAFILE) {
     fs.writeFileSync(path.join(ROOT, 'dist', 'meta.json'), JSON.stringify(result.metafile, null, 2));
   }
-  verifyExternals(OUTFILE);
+  verifyBundle(result.metafile);
   reportSize();
   console.log('✅ bundled dist/extension.js');
 }
@@ -124,8 +135,8 @@ function guardPlugin() {
     name: 'ado-code-guard',
     setup(build) {
       build.onEnd((result) => {
-        if (result.errors.length > 0) return;
-        try { verifyExternals(OUTFILE); reportSize(); } catch (err) { console.error(err); }
+        if (result.errors.length > 0 || !result.metafile) return;
+        try { verifyBundle(result.metafile); reportSize(); } catch (err) { console.error(err); }
       });
     },
   };
