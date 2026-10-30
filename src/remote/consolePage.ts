@@ -349,6 +349,13 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
         removeApproval(event.requestId);
         break;
       }
+      case 'choiceResolved': {
+        // The answer was given on the OTHER surface (a desktop click or a
+        // second console) — close the block here so its buttons cannot be
+        // tapped a second time.
+        markChoiceAnswered(event.requestId, event.answer);
+        break;
+      }
       case 'transcript': {
         // Full snapshot: first load, reload, reconnect, session switch.
         var rows = event.messages || [];
@@ -602,6 +609,28 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   /**
+   * Close the mirrored block the given requestId names.
+   *
+   * By requestId and not by option text: the same label can appear in two
+   * cards, and the host names WHICH card closed. Matching on text would close
+   * both and let the user answer the wrong one.
+   */
+  function markChoiceAnswered(requestId, answer) {
+    if (!requestId) { return; }
+    for (var orderIndex = 0; orderIndex < state.transcriptOrder.length; orderIndex++) {
+      var messageId = state.transcriptOrder[orderIndex];
+      var message = state.transcriptMessages[messageId];
+      if (!message || !message.choice || message.choice.requestId !== requestId) { continue; }
+      message.choice.answered = true;
+      message.choice.answer = answer;
+      // A tap of our own already recorded it; the host frame only confirms it.
+      state.answered[messageId] = answer;
+      scheduleTranscriptRender();
+      return;
+    }
+  }
+
+  /**
    * The choice block the model offered, as real buttons.
    *
    * The host strips the choice fence from the text and sends the options
@@ -610,12 +639,20 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
    */
   function choiceHtml(message) {
     if (!message.choice || !message.choice.options || !message.choice.options.length) { return ''; }
+    // A block is closed when an answer EXISTS: tapped here (state.answered) or
+    // given on the desktop and mirrored back (choice.answered on the block).
+    // Deriving it from the answer is what keeps an unanswered block live across
+    // a reconnect instead of freezing it into a dead one.
+    var picked = state.answered[message.id] !== undefined
+      ? state.answered[message.id]
+      : (message.choice.answered ? message.choice.answer : undefined);
+    var closed = picked !== undefined;
     var html = '<div class="choice">';
     html += '<div class="choice-q">' + esc(message.choice.question || 'Pick an option') + '</div>';
     for (var optionIndex = 0; optionIndex < message.choice.options.length; optionIndex++) {
       var option = String(message.choice.options[optionIndex]);
-      var answered = state.answered[message.id] === option;
-      var disabled = answered ? ' disabled' : '';
+      var answered = closed && String(picked) === option;
+      var disabled = closed ? ' disabled' : '';
       var mark = answered ? ' ✓' : '';
       html += '<button type="button" class="act choice-opt" data-choice="' + esc(option) + '" data-msg="' + esc(message.id) + '"' + esc(disabled) + '>' + esc(option) + esc(mark) + '</button>';
     }
@@ -732,12 +769,12 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   /** POST text to the host — a tapped choice, or a typed reply. */
-  function sendChat(text, done) {
+  function sendChat(text, done, choiceRequestId) {
     fetch('/chat', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text })
+      body: JSON.stringify({ text: text, choiceRequestId: choiceRequestId })
     })
       .then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (payload) {
@@ -775,12 +812,18 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     button.disabled = true;
     state.answered[messageId] = option;
     renderTranscript();
+    // NAME the card we answered. The host closes the desktop card from this id,
+    // so a phone that tapped an older card cannot close the newest one.
+    var answeredMessage = state.transcriptMessages[messageId];
+    var choiceRequestId = answeredMessage && answeredMessage.choice
+      ? answeredMessage.choice.requestId
+      : undefined;
     sendChat(option, function (ok, payload) {
       if (ok) { return; }
       delete state.answered[messageId];
       renderTranscript();
       showBanner((payload && payload.error) || 'VS Code refused that choice.', true);
-    });
+    }, choiceRequestId);
   });
 
   var composerForm = document.getElementById('composer');

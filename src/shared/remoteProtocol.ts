@@ -89,6 +89,23 @@ export interface RemoteApprovalResolvedEvent {
 }
 
 /**
+ * A choice block was answered — on the desktop or on a console.
+ *
+ * Both surfaces mirror the same thread, so the answer has to travel to the
+ * OTHER one: the phone that tapped is already closed by its own optimistic
+ * render, but a desktop card only closes when the host says so, and a second
+ * phone must not keep buttons that can no longer land.
+ */
+export interface RemoteChoiceResolvedEvent {
+  type: 'choiceResolved';
+  requestId: string;
+  /** Mirrored message the block belongs to, when the host knows it. */
+  messageId?: string;
+  answer: string;
+  source: 'host' | 'remote';
+}
+
+/**
  * The host's own chat turn — the built-in agentic loop — as opposed to a
  * delegated CLI run. A turn produces no AgentRun, so `agentStatus` alone left
  * the console looking idle while the machine was streaming and calling tools.
@@ -117,6 +134,16 @@ export interface RemoteTurnInfo {
 export interface RemoteTranscriptChoice {
   question: string;
   options: string[];
+  /**
+   * Identifies the card, so an answer given on EITHER surface can name the
+   * block it closes (see `choiceResolved`). Absent on history restored from a
+   * session persisted before this field existed.
+   */
+  requestId?: string;
+  /** The answer that closed the block, whichever surface gave it. */
+  answer?: string;
+  /** True once answered: the console renders the block closed, not live. */
+  answered?: boolean;
 }
 
 export interface RemoteTranscriptMessage {
@@ -160,6 +187,7 @@ export type RemoteDownstreamEvent =
   | RemoteConsentRequestEvent
   | RemoteConfirmationRequestEvent
   | RemoteApprovalResolvedEvent
+  | RemoteChoiceResolvedEvent
   | RemoteViewerCountEvent
   | RemoteTranscriptEvent
   | RemoteTranscriptMessageEvent
@@ -398,6 +426,24 @@ export function parseDownstream(input: unknown): RemoteParseResult<RemoteDownstr
       }
       return { ok: true, value: { type: 'viewerCount', count } };
     }
+    case 'choiceResolved': {
+      const requestId = readId(body.requestId);
+      if (requestId === null) {
+        return reject('choiceResolved.requestId must be a short non-empty string');
+      }
+      const answer = readId(body.answer);
+      if (answer === null) {
+        return reject('choiceResolved.answer must be a short non-empty string');
+      }
+      if (body.source !== 'host' && body.source !== 'remote') {
+        return reject("choiceResolved.source must be 'host' or 'remote'");
+      }
+      const messageId = readId(body.messageId) ?? undefined;
+      return {
+        ok: true,
+        value: { type: 'choiceResolved', requestId, messageId, answer, source: body.source },
+      };
+    }
     case 'approvalResolved': {
       const requestId = readId(body.requestId);
       if (requestId === null) {
@@ -543,7 +589,19 @@ function readTranscriptMessage(value: unknown): RemoteTranscriptMessage | null {
   if (isRecord(choice) && typeof choice.question === 'string' && Array.isArray(choice.options)) {
     const options = choice.options.filter((option): option is string => typeof option === 'string');
     if (options.length > 0) {
-      message.choice = { question: choice.question, options };
+      const parsed: RemoteTranscriptChoice = { question: choice.question, options };
+      const choiceRequestId = readId(choice.requestId);
+      if (choiceRequestId !== null) {
+        parsed.requestId = choiceRequestId;
+      }
+      const choiceAnswer = readId(choice.answer);
+      if (choiceAnswer !== null) {
+        parsed.answer = choiceAnswer;
+      }
+      if (choice.answered === true) {
+        parsed.answered = true;
+      }
+      message.choice = parsed;
     }
   }
   return message;

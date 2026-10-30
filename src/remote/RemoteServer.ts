@@ -75,7 +75,7 @@ export interface RemoteServerOptions {
    */
   planSnapshot?: () => unknown;
   /** A message typed on the phone. Absent = read-only console (501). */
-  onChat?: (text: string) => Promise<{ status: number; body?: unknown }>;
+  onChat?: (text: string, choiceRequestId?: string) => Promise<{ status: number; body?: unknown }>;
   onConfirm?: (payload: { requestId: string; value?: string; approved?: boolean }) => Promise<{ status: number; body?: unknown }>;
   onCancel?: () => Promise<{ status: number; body?: unknown }>;
 }
@@ -363,7 +363,13 @@ export class RemoteServer {
       this.sendJson(res, 400, { error: 'text must be a non-empty string' });
       return;
     }
-    const result = await this.options.onChat(text);
+    // The card this text answers, when the phone tapped an option. Optional:
+    // a typed message answers nothing, and a console that does not send it
+    // still works (the host falls back to its own pending card).
+    const rawChoice = (body as Record<string, unknown>).choiceRequestId;
+    const choiceRequestId =
+      typeof rawChoice === 'string' && rawChoice.trim() ? rawChoice.trim() : undefined;
+    const result = await this.options.onChat(text, choiceRequestId);
     this.sendJson(res, result.status, result.body ?? { ok: result.status < 400 });
   }
 

@@ -51,7 +51,14 @@ suite('remote/consolePage', () => {
     test('a choice block renders as buttons that answer through /chat', () => {
         assert.match(CONSOLE_HTML, /data-choice="/);
         assert.match(CONSOLE_HTML, /fetch\('\/chat'/);
-        assert.match(CONSOLE_HTML, /JSON\.stringify\(\{ text: text \}\)/);
+        // The request id rides along with the answer: without it the host
+        // cannot tell which card on screen was answered, and two open cards
+        // with a shared option label would both close.
+        assert.match(
+            CONSOLE_HTML,
+            /JSON\.stringify\(\{ text: text, choiceRequestId: choiceRequestId \}\)/
+        );
+        assert.match(CONSOLE_HTML, /markChoiceAnswered\(/);
     });
 
     test('page is self-contained — no external asset of any kind', () => {

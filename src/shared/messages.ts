@@ -43,7 +43,7 @@ export type WebviewToExtensionMessage =
   | { type: 'userMessage'; content: string; context?: MessageContext; images?: ImageAttachment[] }
   // Choice-card answers: the user picked an option on an AI-posed question.
   // Routed to the same turn path as userMessage (host must handle BOTH).
-  | { type: 'sendMessage'; content: string }
+  | { type: 'sendMessage'; content: string; choiceRequestId?: string }
   // Steer mode: typed while a turn is running. The host buffers it and the
   // active agentic loop injects it on its NEXT iteration (never aborts).
   | { type: 'steerMessage'; content: string; images?: ImageAttachment[] }
@@ -230,6 +230,21 @@ export type ExtensionToWebviewMessage =
   // so cards never linger as zombies even when they were hidden behind a
   // full-page wizard/config at the moment of expiry.
   | { type: 'promptExpired'; requestId: string; action: 'approve' | 'deny' | 'cancel' }
+  // A choice card was answered on the REMOTE console. The webview has to drop
+  // its own copy of the card: only one surface may keep a live button, or the
+  // next turn starts from an answer the user already gave elsewhere.
+  | { type: 'choiceAnswered'; requestId: string; answer?: string; source?: 'host' | 'remote'; remote?: boolean }
+  // A consent/confirmation card was answered on the remote console (or
+  // expired there). Distinct from `promptExpired` because the decision is a
+  // real answer, not a timeout: the card closes and the tool proceeds.
+  | {
+      type: 'approvalResolved';
+      requestId: string;
+      outcome: 'approved' | 'denied' | 'expired';
+      answer?: string;
+      source?: 'host' | 'remote';
+      remote?: boolean;
+    }
   // File search results for @ mentions
   | { type: 'fileSearchResults'; results: Array<{ path: string; name: string }> }
   // Session history

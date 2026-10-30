@@ -110,6 +110,7 @@ export class TranscriptMirror {
   noteChoice(
     question: string,
     options: ReadonlyArray<string | { label?: string; value?: string }>,
+    requestId?: string,
   ): void {
     const labels = (options ?? [])
       .map(option => {
@@ -128,7 +129,51 @@ export class TranscriptMirror {
       question: this.cap((question ?? '').trim() || 'Choose an option'),
       options: labels,
     };
+    const id = (requestId ?? '').trim();
+    if (id) {
+      // The id is what lets an answer from EITHER surface name this block,
+      // so the console's `choiceResolved` can find it later.
+      target.choice.requestId = id;
+    }
     this.sink({ type: 'transcriptMessage', message: { ...target } });
+  }
+
+  /**
+   * Close the choice block `requestId` names with the answer that closed it.
+   *
+   * Returns true when THIS call closed the block. A second answer — the other
+   * surface racing the first — changes nothing and announces nothing: the
+   * first answer wins, because the host already started the turn from it.
+   */
+  resolveChoice(requestId: string, answer: string, source: 'host' | 'remote'): boolean {
+    const id = (requestId ?? '').trim();
+    const picked = this.cap((answer ?? '').trim());
+    if (!id || !picked) {
+      return false;
+    }
+    for (const key of this.order) {
+      const message = this.entries.get(key);
+      if (!message?.choice || message.choice.requestId !== id || message.choice.answered) {
+        continue;
+      }
+      message.choice.answer = picked;
+      message.choice.answered = true;
+      // Re-publish first so a console that missed the tap swaps the live
+      // buttons for the answered block, then announce the closure.
+      this.sink({
+        type: 'transcriptMessage',
+        message: { ...message, choice: { ...message.choice } },
+      });
+      this.sink({
+        type: 'choiceResolved',
+        requestId: id,
+        messageId: message.id,
+        answer: picked,
+        source,
+      });
+      return true;
+    }
+    return false;
   }
 
   /** The message a choice belongs to: the live stream, else the newest answer. */

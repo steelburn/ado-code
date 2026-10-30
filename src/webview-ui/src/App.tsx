@@ -585,6 +585,32 @@ function App() {
           }
           break;
 
+        case 'approvalResolved':
+        case 'choiceAnswered':
+          // The answer was given on ANOTHER surface: a consent/confirmation
+          // card answered on the phone (`approvalResolved`), or a mirrored
+          // choice card closed there — by this same user on a second phone
+          // (`choiceAnswered`). Drop the card so it cannot be answered twice.
+          // `promptExpired` could not express this: it means "timed out", and
+          // closing on a real answer is the whole point.
+          setConsent(prev => (prev?.requestId === msg.requestId ? null : prev));
+          setConfirmationsBySession(prev => {
+            let changed = false;
+            const next = { ...prev };
+            for (const [k, v] of Object.entries(next)) {
+              if (v?.requestId === msg.requestId) {
+                delete next[k];
+                changed = true;
+              }
+            }
+            if (changed) {
+              confirmationsBySessionRef.current = next;
+              return next;
+            }
+            return prev;
+          });
+          break;
+
         case 'choicePrompt': {
           // AI detected a choice prompt — show as inline confirmation card.
           // isChoice marks it: clicking an option sends the choice as a user
@@ -983,7 +1009,9 @@ function App() {
     if (wasChoice) {
       setMessages(prev => [...prev, { role: 'user', content: value }]);
       setLoading(true);
-      vscode.postMessage({ type: 'sendMessage', content: value });
+      // Name the card: the host closes the mirrored phone card from this id,
+      // so the console drops an answer it can no longer give.
+      vscode.postMessage({ type: 'sendMessage', content: value, choiceRequestId: requestId });
       return;
     }
     vscode.postMessage({ type: 'confirmationResponse', requestId, value });

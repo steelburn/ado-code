@@ -2212,6 +2212,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // case the message was silently dropped and the chat went stale
             // (spinner on, no LLM turn ever started).
             this.touchIdle();
+            if (typeof message.choiceRequestId === 'string' && message.choiceRequestId) {
+              // The desktop answered a mirrored card: close it on the phone
+              // too, or the console keeps offering an answer already given.
+              this.resolveChoiceCard(message.choiceRequestId, message.content, 'host');
+            }
             await this.handleUserMessage(message.content);
             break;
           case 'fetchWorkItems':
@@ -3086,6 +3091,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private remoteBridge: ((event: RemoteDownstreamEvent) => void) | null = null;
 
   /**
+   * The choice card waiting for an answer, if any.
+   *
+   * A console answers a card by posting plain text (POST /chat): the phone does
+   * not have to prove which card it tapped. Remembering the id here lets that
+   * plain text close the right desktop card — while a console that names an
+   * OLDER card still wins, because it knows better than this field does.
+   */
+  private pendingChoiceRequestId: string | null = null;
+
+  /**
    * Install the sink that mirrors approval cards to the mobile console.
    * Null when remote access is off: no bridge, no mirroring, no surface.
    */
@@ -3289,8 +3304,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.applyConsentScope(scope);
     this.consentBroker.resolve(payload.requestId, payload.approved);
     this.broadcastResolved(payload.requestId, payload.approved ? 'approved' : 'denied', 'remote');
-    // Clear the desktop card too; `remote: true` keeps it out of the mirror.
-    this.postMessage({ type: 'promptExpired', requestId: payload.requestId, action: 'cancel', remote: true });
+    // Close the desktop card with the DECISION, not a timeout. `promptExpired`
+    // only cleared the confirmation map and left the card on screen, so the
+    // same question could be answered a second time (or linger forever).
+    this.postMessage({
+      type: 'approvalResolved',
+      requestId: payload.requestId,
+      outcome: payload.approved ? 'approved' : 'denied',
+      source: 'remote',
+      remote: true,
+    });
     return { status: 200, body: { ok: true } };
   }
 
@@ -3312,7 +3335,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.confirmBroker.resolve(payload.requestId, value);
     this.broadcastResolved(payload.requestId, 'approved', 'remote');
-    this.postMessage({ type: 'promptExpired', requestId: payload.requestId, action: 'cancel', remote: true });
+    // Same reason as the consent path: the card closes on a decision. The
+    // picked value travels along, because "approved" alone cannot render what
+    // the user chose on the other surface.
+    this.postMessage({
+      type: 'approvalResolved',
+      requestId: payload.requestId,
+      outcome: 'approved',
+      answer: value,
+      source: 'remote',
+      remote: true,
+    });
     return { status: 200, body: { ok: true } };
   }
 
@@ -3335,11 +3368,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Close the choice card `requestId` names — or the pending one when the
+   * answer arrived as bare text from the phone.
+   *
+   * `source` decides whether the webview hears about it. A DESKTOP answer is
+   * already on screen there: echoing it back would re-close a card the user
+   * has just dismissed. A CONSOLE answer must reach it, because otherwise the
+   * desktop card stays live for a question that was already answered.
+   */
+  public resolveChoiceCard(
+    requestId: string | undefined,
+    answer: string,
+    source: 'host' | 'remote',
+  ): void {
+    const id = (requestId ?? this.pendingChoiceRequestId ?? '').trim();
+    if (id) {
+      // The mirror is the phone's copy of the thread: closing the block there
+      // is what makes a SECOND console drop buttons that can no longer land.
+      this.transcriptMirror.resolveChoice(id, answer, source);
+    }
+    if (id && source === 'remote') {
+      this.postMessage({ type: 'choiceAnswered', requestId: id, answer, source, remote: true });
+    }
+    if (!id || id === this.pendingChoiceRequestId) {
+      this.pendingChoiceRequestId = null;
+    }
+  }
+
+  /**
    * A message typed on the phone. Deliberately the SAME entry point as the
    * webview's `sendMessage`, so slash commands, the busy/steering guard and
    * turn bookkeeping behave exactly as they do on the desktop.
    */
-  public async remoteSendMessage(text: string): Promise<{ status: number; body?: unknown }> {
+  public async remoteSendMessage(
+    text: string,
+    choiceRequestId?: string,
+  ): Promise<{ status: number; body?: unknown }> {
     const trimmed = (text ?? '').trim();
     if (!trimmed) {
       return { status: 400, body: { error: 'text must be a non-empty string' } };
@@ -3352,6 +3416,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // behind a desktop modal nobody can answer from a phone.
         return { status: 409, body: { error: result.error ?? 'the message was not accepted' } };
       }
+      // The console answers by sending text, and that text IS the answer to
+      // the card it showed — so close that card on every surface. Nothing here
+      // is announced when the host refused the turn: a refused answer must
+      // leave the card answerable on both sides.
+      this.resolveChoiceCard(choiceRequestId, trimmed, 'remote');
     } catch (error) {
       return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
     }
@@ -5769,7 +5838,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // The fence (and the numbered list it may have come from) is stripped
         // from `cleanText` BEFORE the mirror sees it, so the console cannot
         // re-parse the options — hand the parsed prompt over explicitly.
-        this.transcriptMirror.noteChoice(choicePrompt.question, choicePrompt.options);
+        this.transcriptMirror.noteChoice(
+          choicePrompt.question,
+          choicePrompt.options,
+          requestId,
+        );
+        this.pendingChoiceRequestId = requestId;
         this.postMessage({
           type: 'choicePrompt',
           requestId,

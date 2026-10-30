@@ -26,6 +26,22 @@ All notable changes to ADO Code will be documented in this file.
   PATH (injectable runner, so the tests never spawn a process) and the whole path is covered by
   `shared/projectDependencies` tests.
 
+- **Choice cards answered on either surface now close on both.** A choice block used to be a
+  one-way prompt: tapping an option on the phone fed the answer into the next turn, but the
+  card stayed live on the desktop (and on a second console), so the same question could be
+  answered twice. The remote protocol gained a `choiceResolved` event carrying the
+  `requestId`, the chosen answer and its `source` — a desktop click posts it to every
+  connected console, a phone tap closes the desktop card through the existing
+  `choiceAnswered` frame — and `POST /chat` accepts a `choiceRequestId`, so an answer closes
+  the exact block it came from rather than every card that happens to share an option label.
+  Blocks are keyed by request id and *the first answer wins*: a late second tap is ignored
+  rather than overwriting the answer already in the transcript. An answered block also
+  survives a reconnect now — `readTranscriptMessage` carries `requestId`, `answer` and
+  `answered` — instead of re-rendering as live after the phone reloads.
+  Consent and confirmation cards answered on the phone get the same treatment: they are
+  resolved with `approvalResolved` (which the desktop already understands) instead of
+  `promptExpired`, which only cleared the host's confirmation map and left the card on
+  screen forever.
 ### Removed
 
 - **Obsolete plan and promo documents.** `docs/` no longer carries executed implementation
