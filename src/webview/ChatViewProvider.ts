@@ -3,6 +3,8 @@ import { TranscriptMirror } from './TranscriptMirror';
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
+import { checkProjectDependencies, runAutoInstalls, autoInstallWarnings } from './projectDependencyProbe';
+import { planForTemplate } from '../shared/projectDependencies';
 import * as os from 'os';
 import * as fs from 'fs';
 import { splitAcceptanceCriteria } from '../shared/workItemContent';
@@ -2950,6 +2952,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await promptAndSaveSvg(message.content, message.defaultName);
             break;
           // Project creation wizard
+          case 'dependencyCheck': {
+            // Wizard "Dependencies" step: probe this machine for the toolchain the
+            // selected template needs. Never throws — a broken probe rides the
+            // report's `error` field so the wizard degrades to a soft warning.
+            logger.info('ChatViewProvider: dependencyCheck received');
+            const report = await checkProjectDependencies(
+              message.templateId,
+              message.templateOptions ?? {},
+              { gitInit: message.gitInit !== false },
+            );
+            this.postMessage({ type: 'dependencyCheckResult', requestId: message.requestId, report });
+            break;
+          }
           case 'projectWizardCreate': {
             logger.info('ChatViewProvider: projectWizardCreate received');
             const request = message.request;
@@ -2980,6 +2995,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               break;
             }
             const projectResult = await this.services.projectCreation.createProject({ ...request, targetPath });
+            // Dependencies, autonomous half: the wizard already probed the
+            // machine, so when the user left "install project dependencies"
+            // ticked the host runs the template's package install itself
+            // (npm/pip/composer/…). A failure becomes a warning, never a
+            // creation failure — the scaffold is already on disk.
+            if (projectResult.success && request.installDependencies) {
+              if (!projectResult.warnings) projectResult.warnings = [];
+              const projectWarnings: string[] = projectResult.warnings;
+              try {
+                const plan = planForTemplate(request.templateId, request.templateOptions as any, {
+                  gitInit: request.gitInit,
+                });
+                const outcomes = await runAutoInstalls(projectResult.path, plan.autoInstall, {
+                  fileExists: (rel: string) => fs.existsSync(path.join(projectResult.path, rel)),
+                });
+                projectWarnings.push(...autoInstallWarnings(outcomes));
+              } catch (err) {
+                projectWarnings.push(
+                  `Dependency install skipped: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            }
             // ADO integration: create a work item for the scaffolded project.
             // Non-fatal — the project is already on disk; failures become a note.
             let adoNote = '';

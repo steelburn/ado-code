@@ -7,6 +7,9 @@ import { StepTemplateOptions } from './StepTemplateOptions';
 import { StepAdoIntegration } from './StepAdoIntegration';
 import { StepGitSetup } from './StepGitSetup';
 import { StepReview } from './StepReview';
+import { StepDependencies } from './StepDependencies';
+import type { DependencyReport } from '../../../../shared/projectDependencies';
+import { dependencyGate } from '../../../../shared/projectDependencies';
 import { StepNextSteps } from './StepNextSteps';
 import './styles.css';
 
@@ -29,6 +32,7 @@ const STEPS = [
   'Project Type',
   'Project Details',
   'Template Options',
+  'Dependencies',
   'ADO Integration',
   'Git Setup',
   'Review & Create',
@@ -61,6 +65,13 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
 
   const [creating, setCreating] = useState(false);
 
+  // Dependency check (step 3): the host probes PATH for the template's
+  // toolchain. A missing runtime/SDK is guidance, not a veto — but the user has
+  // to tick "I will install it myself" before the wizard moves on.
+  const [dependencyReport, setDependencyReport] = useState<DependencyReport | null>(null);
+  const [dependenciesAcknowledged, setDependenciesAcknowledged] = useState(false);
+  const [installDependencies, setInstallDependencies] = useState(true);
+
   // A host-reported failure re-enables the Create button (it stays "Creating…"
   // and disabled otherwise, since the wizard never unmounts on failure).
   useEffect(() => {
@@ -88,9 +99,13 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
       case 0: return state.templateId !== null;
       case 1: return state.projectName.trim().length > 0;
       case 2: return true;
-      case 3: return true;
+      case 3:
+        // Nothing missing is the happy path; a missing *required* runtime or SDK
+        // needs an explicit acknowledgement instead of blocking the user.
+        return !dependencyGate(dependencyReport, dependenciesAcknowledged).blocked;
       case 4: return true;
       case 5: return true;
+      case 6: return true;
       default: return false;
     }
   };
@@ -126,6 +141,9 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
         gitInitialCommit: state.gitInitialCommit,
         gitBranchName: state.gitBranchName,
         targetPath: '', // Host will resolve (workspace root or folder picker)
+        // Autonomous half of the dependency check: the host runs the template's
+        // package install (npm/pip/composer/…) once the scaffold exists.
+        installDependencies,
       },
     });
   };
@@ -162,6 +180,20 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
           />
         ) : null;
       case 3:
+        return state.templateId ? (
+          <StepDependencies
+            templateId={state.templateId}
+            templateOptions={state.templateOptions}
+            gitInit={state.gitInit}
+            report={dependencyReport}
+            onReport={setDependencyReport}
+            installDependencies={installDependencies}
+            onInstallDependenciesChange={setInstallDependencies}
+            acknowledged={dependenciesAcknowledged}
+            onAcknowledge={setDependenciesAcknowledged}
+          />
+        ) : null;
+      case 4:
         return (
           <StepAdoIntegration
             adoIntegration={state.adoIntegration}
@@ -170,7 +202,7 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
             onChange={(field, value) => updateState({ [field]: value })}
           />
         );
-      case 4:
+      case 5:
         return (
           <StepGitSetup
             init={state.gitInit}
@@ -179,11 +211,13 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
             onChange={(updates) => updateState(updates)}
           />
         );
-      case 5:
+      case 6:
         return (
           <StepReview
             state={state}
             template={PROJECT_TEMPLATES.find(t => t.id === state.templateId)!}
+            missingDependencies={dependencyReport?.missingRequired ?? []}
+            installsDependencies={installDependencies && (dependencyReport?.autoInstall?.length ?? 0) > 0}
           />
         );
       default:

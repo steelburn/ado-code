@@ -4,9 +4,13 @@ import { WizardState, PROJECT_TEMPLATES } from './types';
 interface Props {
   state: WizardState;
   template: typeof PROJECT_TEMPLATES[number];
+  /** Required dependencies the machine is missing (step 3 acknowledgement). */
+  missingDependencies?: string[];
+  /** Host will run the template's package install after scaffolding. */
+  installsDependencies?: boolean;
 }
 
-export function StepReview({ state, template }: Props) {
+export function StepReview({ state, template, missingDependencies = [], installsDependencies = false }: Props) {
   return (
     <div className="wizard-step">
       <h3 className="wizard-step-title">Review & Create</h3>
@@ -88,6 +92,27 @@ export function StepReview({ state, template }: Props) {
               <span className="wizard-review-value">{state.gitBranchName}</span>
             </div>
           </>
+        )}
+      </div>
+
+      <div className="wizard-review-section">
+        <h4 className="wizard-review-heading">Dependencies</h4>
+        <div className="wizard-review-row">
+          <span className="wizard-review-label">Missing:</span>
+          <span className="wizard-review-value">
+            {missingDependencies.length > 0 ? missingDependencies.join(', ') : 'None'}
+          </span>
+        </div>
+        <div className="wizard-review-row">
+          <span className="wizard-review-label">Auto-install:</span>
+          <span className="wizard-review-value">{installsDependencies ? 'Yes, after creation' : 'No'}</span>
+        </div>
+        {missingDependencies.length > 0 && (
+          <div className="wizard-dep-note wizard-dep-warn">
+            {missingDependencies.join(', ')} will still be missing after creation — install
+            {missingDependencies.length === 1 ? ' it' : ' them'} to build or run the project. Creation itself
+            only writes files, so this is not blocking.
+          </div>
         )}
       </div>
     </div>

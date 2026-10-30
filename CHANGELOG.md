@@ -4,6 +4,28 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The project wizard now checks dependencies before it scaffolds.** A new **Dependencies** step
+  (between *Template Options* and *ADO Integration*) probes the machine for what the selected
+  template actually needs — Node.js 18+/npm 9+, Python 3.9+/pip, the .NET SDK 8+, the Flutter SDK
+  (+ optional JDK), PHP 8.1+/Composer, Git, and Pandoc for the documentation templates — with a
+  version floor per tool (`python` *or* `python3` both count, a v17 Node is reported as missing).
+- **Guidance when the host cannot comply on its own.** Installing a runtime or an SDK needs
+  elevation, a licence or a multi-GB download, so ADO Code never attempts it: a missing tool shows
+  its paste-ready per-OS command (`winget`/`brew`/`apt`), a Copy button, the download URL and what
+  breaks without it, plus a **Re-check** button for after the install. A missing *required* tool
+  never blocks creation — the scaffold only writes files — but the user has to tick "I will install
+  it myself" before the wizard moves on, and *Review & Create* repeats the warning.
+- **Autonomous half of the check.** What the host *can* fulfil itself — project packages
+  (`npm install`, `pip install -r requirements.txt`, `composer install`, `dotnet restore`,
+  `flutter pub get`) — rides a ticked-by-default checkbox and runs inside the new project right
+  after scaffolding; a failure lands as a warning on the result instead of failing the creation,
+  and a step whose manifest is absent (`requirements.txt`) is skipped silently.
+  `planForTemplate()` maps every template to its toolchain, `checkProjectDependencies()` probes
+  PATH (injectable runner, so the tests never spawn a process) and the whole path is covered by
+  `shared/projectDependencies` tests.
+
 ### Removed
 
 - **Obsolete plan and promo documents.** `docs/` no longer carries executed implementation

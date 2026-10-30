@@ -354,3 +354,121 @@
   padding: 4px 10px;
   font-size: 0.85em;
 }
+
+/* Dependencies step */
+.wizard-dep-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.wizard-dep-card {
+  border: 1px solid var(--vscode-widget-border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.wizard-dep-card.is-ok {
+  border-left-color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.wizard-dep-card.is-missing {
+  border-left-color: var(--vscode-errorForeground);
+}
+
+.wizard-dep-card.is-optional {
+  border-left-color: var(--vscode-editorWarning-foreground);
+}
+
+.wizard-dep-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wizard-dep-name {
+  font-weight: 600;
+  font-size: 0.9em;
+}
+
+.wizard-dep-badge {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.wizard-dep-badge.is-missing {
+  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+  color: var(--vscode-errorForeground);
+}
+
+.wizard-dep-badge.is-optional {
+  background: var(--vscode-inputValidation-warningBackground, #352a05);
+  color: var(--vscode-editorWarning-foreground);
+}
+
+.wizard-dep-why,
+.wizard-dep-error,
+.wizard-dep-url,
+.wizard-dep-note-inline {
+  margin-top: 4px;
+  font-size: 0.8em;
+  line-height: 1.45;
+  color: var(--vscode-descriptionForeground);
+}
+
+.wizard-dep-error {
+  color: var(--vscode-errorForeground);
+}
+
+.wizard-dep-url code {
+  user-select: text;
+  word-break: break-all;
+}
+
+.wizard-dep-note {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.8em;
+  background: var(--vscode-sideBar-background);
+  color: var(--vscode-descriptionForeground);
+}
+
+.wizard-dep-ok {
+  color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.wizard-dep-warn {
+  background: var(--vscode-inputValidation-warningBackground, #352a05);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+  color: var(--vscode-foreground);
+}
+
+.wizard-dep-auto {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 0.85em;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.wizard-dep-auto input {
+  margin-top: 2px;
+}
+
+.wizard-dep-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}

@@ -6,6 +6,7 @@ import {
 import { BinarySaveRequest } from './binaryExport';
 import { AgentRun, AgentCapability } from '../agents/types';
 import { PostCreateStep, ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
+import { DependencyReport } from './projectDependencies';
 import { ChatDensity } from './chatDensity';
 import { SessionRunInfo } from './sessionRun';
 import { Skill, SkillExecutionRequest, SkillExecutionResult } from './skillTypes';
@@ -113,6 +114,16 @@ export type WebviewToExtensionMessage =
   | { type: 'listAgentRuns' }
   // Project creation wizard
   | { type: 'projectWizardCreate'; request: ProjectCreationRequest }
+  // Wizard dependency check: probe this machine for the toolchain the selected
+  // template needs. Runtimes/SDKs are reported back as guidance; project
+  // packages are installed autonomously after scaffolding.
+  | {
+      type: 'dependencyCheck';
+      requestId: string;
+      templateId: string;
+      templateOptions?: Record<string, unknown>;
+      gitInit?: boolean;
+    }
   // Wizard focus: a full-page wizard (Configuration page / project creation)
   // opened or closed in the chat webview — the host collapses the sibling
   // sidebar views so the wizard gets the whole view container.
@@ -228,6 +239,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'fullConfig'; config: Record<string, unknown> }
   // Proposed tasks created in ADO after user review
   | { type: 'proposedTasksCreated'; count: number; parentId: number }
+  // Wizard dependency check result (probe failures ride the report's `error`
+  // field instead of failing the request, so the wizard can warn softly).
+  | { type: 'dependencyCheckResult'; requestId: string; report: DependencyReport }
   // Project creation wizard result
   | {
       type: 'projectWizardCreated';

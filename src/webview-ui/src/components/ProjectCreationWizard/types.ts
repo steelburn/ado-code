@@ -59,6 +59,8 @@ export interface ProjectCreationRequest {
   gitInitialCommit: boolean;
   gitBranchName: string;
   targetPath: string;
+  /** Host runs the template's package install (npm/pip/composer/…) itself. */
+  installDependencies?: boolean;
 }
 
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
