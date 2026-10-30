@@ -4,7 +4,26 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-30
+
 ### Added
+
+- **Choice cards answered on either surface now close on both.** A choice block used to be a
+  one-way prompt: tapping an option on the phone fed the answer into the next turn, but the
+  card stayed live on the desktop (and on a second console), so the same question could be
+  answered twice. The remote protocol gained a `choiceResolved` event carrying the
+  `requestId`, the chosen answer and its `source` — a desktop click posts it to every
+  connected console, a phone tap closes the desktop card through the existing
+  `choiceAnswered` frame — and `POST /chat` accepts a `choiceRequestId`, so an answer closes
+  the exact block it came from rather than every card that happens to share an option label.
+  Blocks are keyed by request id and *the first answer wins*: a late second tap is ignored
+  rather than overwriting the answer already in the transcript. An answered block also
+  survives a reconnect now — `readTranscriptMessage` carries `requestId`, `answer` and
+  `answered` — instead of re-rendering as live after the phone reloads.
+  Consent and confirmation cards answered on the phone get the same treatment: they are
+  resolved with `approvalResolved` (which the desktop already understands) instead of
+  `promptExpired`, which only cleared the host's confirmation map and left the card on
+  screen forever.
 
 - **The project wizard now checks dependencies before it scaffolds.** A new **Dependencies** step
   (between *Template Options* and *ADO Integration*) probes the machine for what the selected
@@ -25,39 +44,6 @@ All notable changes to ADO Code will be documented in this file.
   `planForTemplate()` maps every template to its toolchain, `checkProjectDependencies()` probes
   PATH (injectable runner, so the tests never spawn a process) and the whole path is covered by
   `shared/projectDependencies` tests.
-
-- **Choice cards answered on either surface now close on both.** A choice block used to be a
-  one-way prompt: tapping an option on the phone fed the answer into the next turn, but the
-  card stayed live on the desktop (and on a second console), so the same question could be
-  answered twice. The remote protocol gained a `choiceResolved` event carrying the
-  `requestId`, the chosen answer and its `source` — a desktop click posts it to every
-  connected console, a phone tap closes the desktop card through the existing
-  `choiceAnswered` frame — and `POST /chat` accepts a `choiceRequestId`, so an answer closes
-  the exact block it came from rather than every card that happens to share an option label.
-  Blocks are keyed by request id and *the first answer wins*: a late second tap is ignored
-  rather than overwriting the answer already in the transcript. An answered block also
-  survives a reconnect now — `readTranscriptMessage` carries `requestId`, `answer` and
-  `answered` — instead of re-rendering as live after the phone reloads.
-  Consent and confirmation cards answered on the phone get the same treatment: they are
-  resolved with `approvalResolved` (which the desktop already understands) instead of
-  `promptExpired`, which only cleared the host's confirmation map and left the card on
-  screen forever.
-### Removed
-
-- **Obsolete plan and promo documents.** `docs/` no longer carries executed implementation
-  plans: `remote-agent-oversight-plan.md` (superseded by `docs/remote.md`, which documents the
-  shipped console), `chat-declutter-strategy.md` and `chat-token-optimization.md` (every item
-  shipped across 0.6.x—0.8.x and recorded in this file). The whole `.hermes/` plan set went
-  with them, including its generated `STRUCTURE.md` module map (superseded by the repository-
-  understanding digest), the orphan `scripts/update-structure.js` generator, the two superseded
-  `docs/promo/` release kits (0.8.0, 0.8.1) and their `.vscodeignore` entries. Live documentation
-  — `README.md`, `AGENTS.md`, `docs/remote.md`, `docs/documentation-projects.md` and
-  `docs/playbooks/` — stays, and `AGENTS.md` now states that an executed plan lands in this
-  file, the code and the work item rather than in a plan document.
-
-## [0.8.3] - 2026-10-30
-
-### Added
 
 - **Tool approvals are answerable from the phone.** The remote console now renders the consent
   and confirmation cards the desktop chat shows — **Allow once / Allow for session / Always /
@@ -122,6 +108,19 @@ All notable changes to ADO Code will be documented in this file.
   that joins mid-run starts with the plan as it stands instead of waiting for the next change. The
   card is hidden when the session has neither a goal nor a to-do list, and long lists stop at eight
   rows (`+N more steps`) so the conversation stays reachable.
+
+### Removed
+
+- **Obsolete plan and promo documents.** `docs/` no longer carries executed implementation
+  plans: `remote-agent-oversight-plan.md` (superseded by `docs/remote.md`, which documents the
+  shipped console), `chat-declutter-strategy.md` and `chat-token-optimization.md` (every item
+  shipped across 0.6.x—0.8.x and recorded in this file). The whole `.hermes/` plan set went
+  with them, including its generated `STRUCTURE.md` module map (superseded by the repository-
+  understanding digest), the orphan `scripts/update-structure.js` generator, the two superseded
+  `docs/promo/` release kits (0.8.0, 0.8.1) and their `.vscodeignore` entries. Live documentation
+  — `README.md`, `AGENTS.md`, `docs/remote.md`, `docs/documentation-projects.md` and
+  `docs/playbooks/` — stays, and `AGENTS.md` now states that an executed plan lands in this
+  file, the code and the work item rather than in a plan document.
 
 ### Fixed
 
