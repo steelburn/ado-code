@@ -1,11 +1,11 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { cleanupMergedRun, hasMergedPullRequest, MergeCleanupDeps } from '../../../git/mergeCleanup';
 import { GitService } from '../../../git/GitService';
 import { cleanTempDir } from '../utils/cleanTempDir';
+import { makeScratchDir } from '../utils/scratchDir';
 
 function makeDeps(overrides?: Partial<MergeCleanupDeps>): {
   deps: MergeCleanupDeps;
@@ -109,7 +109,7 @@ suite('mergeCleanup', () => {
   // ── Real-repo integration (round-2 plan: "verify with a real bare remote
   //    + fake ADO fetch") ───────────────────────────────────────────────
   test('cleanupMergedRun removes the worktree and deletes a merged branch (real repo)', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-cleanup-'));
+    const tmp = makeScratchDir('adocode-cleanup-');
     try {
       const git = new GitService(tmp);
       cp.execSync('git init', { cwd: tmp });
@@ -155,7 +155,7 @@ suite('mergeCleanup', () => {
   });
 
   test('cleanupMergedRun keeps an unmerged branch and reports it (real repo)', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-cleanup2-'));
+    const tmp = makeScratchDir('adocode-cleanup2-');
     try {
       const git = new GitService(tmp);
       cp.execSync('git init', { cwd: tmp });

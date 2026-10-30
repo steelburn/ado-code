@@ -30,7 +30,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 - **Iteration budget = model round-trips, and maxed-out turns conclude**: `adoCode.act.toolBudget` counts model round-trips (a thinking step that fires several parallel tools is one iteration, not one per tool), and a turn that exhausts the budget ends with the AI explaining in the chat that it hit the limit and summarizing progress — never a bare error
 - **AI choice detection**: When the AI asks you to choose, options appear as clickable buttons — clicking one sends the option as a follow-up message; natural-language offers ("Want me to …?") are parsed via an optional cheap model (`adoCode.llm.choiceDetectionModel`), and long options stack as full-width rows
 - **Reorganized Configuration UI**: Settings are grouped into navigable sidebar categories — Connection, AI & Modes, Permissions, Workflow, and Integrations — each with a setting-count badge, so you can jump straight to what you need instead of scrolling. The Advanced toggle gates a dedicated **Advanced** category: per-mode model selection, capability overrides, the choice detection model, and native token counting
-- **Project Creation Wizard**: Multi-step UI for creating new projects with 9 templates (Node.js, Python, React, Next.js, Laravel, .NET) — configure options, ADO integration, and git setup before creation (`/new-project`); in a blank folder the wizard scaffolds into that folder itself, otherwise it creates a `<projectName>` subfolder
+- **Project Creation Wizard**: Multi-step UI for creating new projects with 13 code templates (Node.js, Python, React, Next.js, Laravel, .NET, React Native/Expo, Flutter, .NET MAUI, and a TypeScript microservices monorepo) plus empty and documentation starters — configure options, ADO integration, and git setup before creation (`/new-project`); in a blank folder the wizard scaffolds into that folder itself, otherwise it creates a `<projectName>` subfolder — and a template that leaves manual work (Flutter's native runners) ends on a **Next Steps** step with the copyable command
 - **Documentation projects**: three role templates — Business Analysis, IT Documentation, Test & UAT — that scaffold requirements, design, user, test and UAT documentation with a shared `REQ/TC/EX/EVD` identifier vocabulary and joinable registers; optional **KRiSA** governance adds the compliance matrix, change control and security evidence, and every document exports to Word (in-product or via generated Pandoc scripts), registers to Excel, and Mermaid diagrams to PNG. The assistant can build these projects itself: `list_doc_templates` enumerates the templates and their files, and `build_documentation` scaffolds one into the workspace in a single guarded call (path-confined, refuses a non-empty folder unless overwrite is requested) ([docs](docs/documentation-projects.md))
 - **Wizard focus**: The Configuration page, project-creation wizard, and first-run setup take over the whole sidebar while open — the sibling views (Work Items / Status / Worktrees) collapse automatically and are restored when the wizard closes, so wizards never share space with the trees. The chat kebab's "Configuration…" opens the in-app Configuration page
 - **Skill Management System**: Browse, install, and manage reusable AI skills — 10 built-in skills (Code Review, Documentation, Testing, Refactoring, Security Audit, Performance Profiler, Deployment Checklist, Database Schema Review, Accessibility Audit) with search, filtering, and enable/disable toggle (`/skills`)
@@ -69,7 +69,7 @@ Mode quick-cycle: Right-click the Mode item in the Status Panel to cycle through
 - **Work item selection**: Selected items show a green badge; deselect via the row context menu
 - Agent delegation injects AGENTS.md project context so all agents understand the codebase
 - **Agent summary panel**: Completion summaries open in a styled HTML panel with metadata and duration
-- Workspace scaffolding: new project wizard for Node.js, Python, PHP (Laravel), .NET C# with auto-generated files
+- Workspace scaffolding: new project wizard for Node.js, Python, PHP (Laravel), .NET C#, React Native/Expo, Flutter, .NET MAUI and microservices monorepos with auto-generated files
 - Workspace-to-ADO project binding: prevents working on items from the wrong project
 - **Standalone / unattached project mode**: Choose `None (no project)` in the header project dropdown to work independently with the AI assistant without attaching to an Azure DevOps project, or when ADO connectivity is not configured
 - **Interactive Mermaid diagram rendering & SVG export**: Mermaid diagrams (flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, etc.) render interactively across Chat, Task Details, Work Item Details, and Agent Run Summaries — with instant `[ 📊 Diagram | </> Code ]` view switching, `📋 Copy Code`, `🖼️ Copy SVG`, and `💾 Save SVG` (native file save dialog with auto-named `.svg` file export)
@@ -282,6 +282,15 @@ The extension infers the active model's capabilities from its id:
 - **Tool calling**: models without it show a persistent warning that agentic modes degrade to plain chat
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [docs/remote.md](docs/remote.md) | Remote console: setup, QR and token, answering approvals, sessions, tunnels, troubleshooting |
+| [docs/documentation-projects.md](docs/documentation-projects.md) | Role-based documentation projects (doc-ba, doc-writer, doc-tester) and the export flow |
+| [docs/playbooks/](docs/playbooks) | Task recipes: add a tool, a message type, an MCP server or an agent adapter; release bump; user and workspace memory |
+| [AGENTS.md](AGENTS.md) | Repository conventions, build commands and constraints for contributors |
 
 ## Release Notes
 

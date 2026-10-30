@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   UnderstandingIndex,
@@ -9,6 +8,7 @@ import {
   DEFAULT_MAX_ENTRIES,
   INDEX_FILE,
 } from '../../../services/understanding/UnderstandingIndex';
+import { makeScratchDir } from '../utils/scratchDir';
 
 /**
  * ADO-27358 — the understanding cache keeps markdown as its payload but gains
@@ -19,7 +19,7 @@ suite('UnderstandingIndex — JSON index, LRU eviction and markdown export', () 
   let dir: string;
 
   setup(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-uidx-'));
+    dir = makeScratchDir('ado-uidx-');
   });
 
   teardown(() => {

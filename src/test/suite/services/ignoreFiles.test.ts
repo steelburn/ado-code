@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import {
   DOT_ADO_CODE,
@@ -10,12 +9,13 @@ import {
   isEntryIgnored,
   missingIgnoreTargets,
 } from '../../../services/ignoreFiles';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('ignoreFiles', () => {
   let tmpDir: string;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-ignore-'));
+    tmpDir = makeScratchDir('adocode-ignore-');
   });
 
   teardown(() => {

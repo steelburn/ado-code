@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChatViewProvider, capTurnTrace, withStoredTraces } from '../../../webview/ChatViewProvider';
@@ -13,6 +12,7 @@ import {
   addSessionCommandApproval,
   clearSessionAutoApprovals,
 } from '../../../llm/tool-approval-ui';
+import { makeScratchDir } from '../utils/scratchDir';
 
 /** Fake ExtensionContext whose workspaceState backs a Map (like the real one). */
 function makeSessionContext(): any {
@@ -903,6 +903,114 @@ suite('ChatViewProvider · chat in the editor area', () => {
     assert.strictEqual(await decision, true);
   });
 
+
+  test('a phone decision resolves the same consent broker the desktop card uses', async () => {
+    const { provider } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const events: any[] = [];
+    provider.setRemoteBridge((event: any) => {
+      events.push(event);
+    });
+
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const requestId = (provider as any).consentBroker.pending.requestId;
+
+    const mirrored = events.filter((e: any) => e.type === 'consentRequest');
+    assert.strictEqual(mirrored.length, 1, 'the card is mirrored to the console exactly once');
+    assert.strictEqual(mirrored[0].requestId, requestId);
+    assert.strictEqual(mirrored[0].tool, 'edit_file');
+
+    const result = await provider.handleRemoteConsent({ requestId, approved: true });
+    assert.strictEqual(result.status, 200);
+    assert.strictEqual(await decision, true);
+    assert.deepStrictEqual(
+      events.filter((e: any) => e.type === 'approvalResolved'),
+      [{ type: 'approvalResolved', requestId, outcome: 'approved', source: 'remote' }],
+    );
+  });
+
+  test('a second decision for the same request is refused, the first one stands', async () => {
+    const { provider } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const requestId = (provider as any).consentBroker.pending.requestId;
+
+    assert.strictEqual((await provider.handleRemoteConsent({ requestId, approved: true })).status, 200);
+    assert.strictEqual(
+      (await provider.handleRemoteConsent({ requestId, approved: false })).status,
+      409,
+      'a duplicate tap or a second phone must not re-decide',
+    );
+    assert.strictEqual(await decision, true);
+  });
+
+  test('a decision for an unknown request never touches the open one', async () => {
+    const { provider } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const decision = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const requestId = (provider as any).consentBroker.pending.requestId;
+
+    assert.strictEqual(
+      (await provider.handleRemoteConsent({ requestId: 'someone-elses', approved: true })).status,
+      409,
+    );
+    assert.strictEqual(provider.pendingApprovals().length, 1, 'the real request is untouched');
+
+    assert.strictEqual((await provider.handleRemoteConsent({ requestId, approved: false })).status, 200);
+    assert.strictEqual(await decision, false);
+  });
+
+  test('a console that connects mid-prompt learns about the open cards', async () => {
+    const { provider } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const consent = provider.requestConsent('edit_file', { path: 'a.ts' });
+    const confirmation = provider.requestConfirmation('Start task?', 'underspecified', [
+      { label: 'Start anyway', value: 'start' },
+    ]);
+
+    const pending = provider.pendingApprovals();
+    assert.strictEqual(pending.length, 2, 'both open cards are reported');
+    assert.ok(pending.some((e: any) => e.type === 'consentRequest' && e.tool === 'edit_file'));
+    assert.ok(pending.some((e: any) => e.type === 'confirmationRequest' && e.title === 'Start task?'));
+
+    (provider as any).consentBroker.resolve((provider as any).consentBroker.pending.requestId, false);
+    (provider as any).confirmBroker.resolve((provider as any).confirmBroker.pending.requestId, 'start');
+    await Promise.all([consent, confirmation]);
+    assert.deepStrictEqual(provider.pendingApprovals(), [], 'nothing is left to answer');
+  });
+
+  test('a remote confirmation must name an option the host actually offered', async () => {
+    const { provider } = makeProvider();
+    const sidebar = makeSidebarView();
+    await (provider as any).resolveWebviewView(sidebar.webviewView, {}, {});
+
+    const decision = provider.requestConfirmation('Start task?', 'underspecified', [
+      { label: 'Start anyway', value: 'start' },
+      { label: 'Cancel', value: 'cancel' },
+    ]);
+    const requestId = (provider as any).confirmBroker.pending.requestId;
+
+    assert.strictEqual(
+      (await provider.handleRemoteConfirmation({ requestId, value: 'rm -rf /' })).status,
+      400,
+      'an option the host never offered is rejected',
+    );
+    assert.strictEqual(
+      (await provider.handleRemoteConfirmation({ requestId: 'nope', value: 'start' })).status,
+      409,
+    );
+    assert.strictEqual((await provider.handleRemoteConfirmation({ requestId, value: 'start' })).status, 200);
+    assert.strictEqual(await decision, 'start');
+  });
+
   test('restoreChatInEditor re-adopts a restored tab as the live editor chat', () => {
     const { provider } = makeProvider();
     const restored = makeFakePanel();
@@ -979,7 +1087,7 @@ suite('ChatViewProvider · AGENTS.md sync', () => {
   const tmpDirs: string[] = [];
 
   function makeWorkspace(pkg: Record<string, any>, extra: Record<string, string> = {}): string {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-agentsmd-flow-'));
+    const root = makeScratchDir('ado-agentsmd-flow-');
     tmpDirs.push(root);
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg), 'utf8');
     for (const [rel, content] of Object.entries(extra)) {
@@ -1482,7 +1590,7 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
   });
 
   test('restoreFromMirror adopts a mid-turn transcript the Memento lost', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-restore-'));
+    const root = makeScratchDir('ado-session-restore-');
     const workspace = vscode.workspace as any;
     const previousFolders = workspace.workspaceFolders;
     workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
@@ -1524,7 +1632,7 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
   });
 
   test('flushPendingWrites mirrors the in-flight turn and drains queued writes', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-flush-'));
+    const root = makeScratchDir('ado-session-flush-');
     const workspace = vscode.workspace as any;
     const previousFolders = workspace.workspaceFolders;
     workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
@@ -1580,7 +1688,7 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
   });
 
   test('registerSaveStateFlush flushes on window blur and ignores focus gain', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-blur-'));
+    const root = makeScratchDir('ado-session-blur-');
     const workspace = vscode.workspace as any;
     const win = vscode.window as any;
     const previousFolders = workspace.workspaceFolders;
@@ -1644,7 +1752,7 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
   });
 
   test('the process-exit hook mirrors an in-flight turn synchronously', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-exit-'));
+    const root = makeScratchDir('ado-session-exit-');
     const workspace = vscode.workspace as any;
     const previousFolders = workspace.workspaceFolders;
     workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
@@ -1684,4 +1792,5 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
       }
     }
   });
+
 });

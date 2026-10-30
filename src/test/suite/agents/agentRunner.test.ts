@@ -1,10 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { AgentRunner } from '../../../agents/AgentRunner';
 import { AgentRegistry } from '../../../agents/registry';
 import { AgentRun, AgentName } from '../../../agents/types';
+import { makeScratchDir } from '../utils/scratchDir';
 
 // ── Fakes ───────────────────────────────────────────────────────────
 function fakeRegistry(installed: AgentName[] = ['claude']): AgentRegistry {
@@ -284,7 +283,7 @@ suite('AgentRunner', () => {
   });
 
   test('runs the memory-driven pre-agent hook and streams its output', async () => {
-    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-hook-'));
+    const workdir = makeScratchDir('adocode-hook-');
     try {
       const events: string[] = [];
       const git = {
@@ -308,7 +307,7 @@ suite('AgentRunner', () => {
   });
 
   test('skips the pre-agent hook when memory has none', async () => {
-    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-hook-'));
+    const workdir = makeScratchDir('adocode-hook-');
     try {
       const events: string[] = [];
       const git = {
@@ -332,7 +331,7 @@ suite('AgentRunner', () => {
   });
 
   test('appends the memory-driven post-agent hook output to the summary', async () => {
-    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-hook-'));
+    const workdir = makeScratchDir('adocode-hook-');
     try {
       let summary = '';
       const git = {

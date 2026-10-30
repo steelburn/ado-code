@@ -1,10 +1,10 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { SessionMirror } from '../../../webview/SessionMirror';
 import type { Session } from '../../../shared/messages';
+import { makeScratchDir } from '../utils/scratchDir';
 
 /** A session whose transcript is the supplied texts, alternating user/assistant. */
 function makeSession(id: string, texts: string[], createdAt = '2025-01-01T00:00:00.000Z'): Session {
@@ -17,7 +17,7 @@ function makeSession(id: string, texts: string[], createdAt = '2025-01-01T00:00:
 }
 
 function tempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ado-session-mirror-'));
+  return makeScratchDir('ado-session-mirror-');
 }
 
 function cleanup(dir: string): void {

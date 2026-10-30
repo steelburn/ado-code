@@ -3,7 +3,7 @@ export interface ProjectTemplate {
   name: string;
   description: string;
   icon: string;
-  category: 'frontend' | 'backend' | 'fullstack' | 'cli' | 'library' | 'documentation';
+  category: 'frontend' | 'backend' | 'fullstack' | 'cli' | 'library' | 'documentation' | 'mobile' | 'monorepo';
   options: TemplateOption[];
 }
 
@@ -14,6 +14,21 @@ export interface TemplateOption {
   default: any;
   options?: string[];  // For select type
   description?: string;
+}
+
+/**
+ * A command the user still has to run after scaffolding — surfaced as the
+ * wizard's final "Next Steps" step instead of a throwaway warning toast.
+ * Flutter is the canonical case: the SDK, not the scaffold, owns the native
+ * `android/`/`ios/` runners.
+ */
+export interface PostCreateStep {
+  /** Short imperative title, e.g. "Generate the native runners". */
+  label: string;
+  /** Command to run in the project root (copyable in the wizard). */
+  command?: string;
+  /** Why the step is needed / what it produces. */
+  detail?: string;
 }
 
 export interface WizardState {
@@ -136,6 +151,67 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '🔷',
     category: 'cli',
     options: [],
+  },
+  {
+    id: 'react-native',
+    name: 'React Native (Expo)',
+    description: 'Cross-platform iOS/Android app with Expo',
+    icon: '📱',
+    category: 'mobile',
+    options: [
+      { id: 'expo', label: 'Expo managed workflow', type: 'boolean', default: true, description: 'Expo Router + EAS layout; disable for a bare React Native CLI app' },
+      { id: 'typescript', label: 'Use TypeScript', type: 'boolean', default: true },
+      { id: 'navigation', label: 'Navigation', type: 'select', default: 'expo-router', options: ['expo-router', 'react-navigation', 'none'], description: 'Only used by the Expo workflow' },
+      { id: 'stateManagement', label: 'State management', type: 'select', default: 'zustand', options: ['none', 'zustand', 'redux-toolkit'] },
+      { id: 'testing', label: 'Add Jest + Testing Library', type: 'boolean', default: true },
+      { id: 'eslint', label: 'Add ESLint + Prettier', type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'flutter',
+    name: 'Flutter (Dart)',
+    description: 'Cross-platform iOS/Android app with Flutter',
+    icon: '🐦',
+    category: 'mobile',
+    options: [
+      { id: 'android', label: 'Android target', type: 'boolean', default: true },
+      { id: 'ios', label: 'iOS target', type: 'boolean', default: true },
+      { id: 'web', label: 'Web target', type: 'boolean', default: false },
+      { id: 'stateManagement', label: 'State management', type: 'select', default: 'riverpod', options: ['none', 'provider', 'riverpod', 'bloc'] },
+      { id: 'httpClient', label: 'HTTP client', type: 'select', default: 'dio', options: ['dio', 'http'] },
+      { id: 'testing', label: 'Add widget tests', type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'dotnet-maui',
+    name: '.NET MAUI (C# Mobile)',
+    description: '.NET MAUI app for Android, iOS and desktop',
+    icon: '📲',
+    category: 'mobile',
+    options: [
+      { id: 'android', label: 'Android target', type: 'boolean', default: true },
+      { id: 'ios', label: 'iOS target', type: 'boolean', default: true },
+      { id: 'windows', label: 'Windows target', type: 'boolean', default: false },
+      { id: 'mvvm', label: 'Add CommunityToolkit.Mvvm', type: 'boolean', default: true },
+      { id: 'testing', label: 'Add xUnit test project', type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'monorepo-microservices',
+    name: 'Monorepo (Microservices)',
+    description: 'TypeScript microservices monorepo — shared packages, one folder per service, Docker Compose',
+    icon: '🧩',
+    category: 'monorepo',
+    options: [
+      { id: 'workspaceTool', label: 'Workspace tooling', type: 'select', default: 'npm', options: ['npm', 'pnpm', 'yarn', 'turborepo', 'nx'], description: 'npm/pnpm/yarn workspaces, optionally orchestrated by Turborepo or Nx' },
+      { id: 'services', label: 'Services (comma-separated)', type: 'input', default: 'gateway,users,orders,notifications', description: 'One folder per service under services/; a service named gateway gets API-gateway proxying' },
+      { id: 'sharedPackage', label: 'Shared contracts package', type: 'boolean', default: true, description: 'packages/shared: DTOs, event schemas, health and error types' },
+      { id: 'messageBroker', label: 'Message broker', type: 'select', default: 'nats', options: ['none', 'nats', 'kafka', 'rabbitmq'] },
+      { id: 'docker', label: 'Add Docker Compose + per-service Dockerfile', type: 'boolean', default: true },
+      { id: 'k8s', label: 'Add Kubernetes manifests', type: 'boolean', default: false },
+      { id: 'ci', label: 'Add GitHub Actions CI', type: 'boolean', default: true },
+      { id: 'tooling', label: 'Add ESLint + Prettier + shared tsconfig', type: 'boolean', default: true },
+    ],
   },
   {
     id: 'empty',

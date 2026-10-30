@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -10,13 +9,14 @@ import {
   workbookFileName,
 } from '../../../webview/documentation/registerSources';
 import { buildRegisterWorkbook } from '../../../shared/documentation/registerWorkbook';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const RTM_CSV = ['REQ-ID,TITLE,SOURCE,ADO-WORK-ITEM,DESIGN-REF,TEST-CASE,UAT-STATUS,STATUS', 'REQ-001,Submit,BRD 3,,SRS 4.2,TC-001,Pass,Approved'].join('\r\n');
 
 const tempDirs: string[] = [];
 
 function makeProject(files: Record<string, string>): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-docs-reg-'));
+  const root = makeScratchDir('ado-docs-reg-');
   tempDirs.push(root);
   for (const [relative, content] of Object.entries(files)) {
     const target = path.join(root, ...relative.split('/'));

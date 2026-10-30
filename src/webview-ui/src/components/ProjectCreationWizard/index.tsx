@@ -1,12 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { vscode } from '../../vscode';
-import { WizardState, PROJECT_TEMPLATES } from './types';
+import { PostCreateStep, WizardState, PROJECT_TEMPLATES } from './types';
 import { StepProjectType } from './StepProjectType';
 import { StepProjectDetails } from './StepProjectDetails';
 import { StepTemplateOptions } from './StepTemplateOptions';
 import { StepAdoIntegration } from './StepAdoIntegration';
 import { StepGitSetup } from './StepGitSetup';
 import { StepReview } from './StepReview';
+import { StepNextSteps } from './StepNextSteps';
 import './styles.css';
 
 interface Props {
@@ -14,6 +15,14 @@ interface Props {
   /** Creation failure surfaced by the host (App-level, so it survives the overlay). */
   error?: string | null;
   onClearError?: () => void;
+  /**
+   * Set by the host once the project exists AND the scaffolder reported
+   * post-create work (Flutter's native runners). The wizard then keeps itself
+   * open on a final "Next Steps" step instead of vanishing on a warning toast.
+   */
+  result?: { path: string; steps: PostCreateStep[] } | null;
+  /** Dismisses the wizard after the Next Steps step (App runs the follow-ups). */
+  onDone?: () => void;
 }
 
 const STEPS = [
@@ -34,7 +43,7 @@ function defaultsFor(templateId: string): Record<string, any> {
   return defaults;
 }
 
-export function ProjectCreationWizard({ onClose, error, onClearError }: Props) {
+export function ProjectCreationWizard({ onClose, error, onClearError, result, onDone }: Props) {
   const [state, setState] = useState<WizardState>({
     step: 0,
     templateId: null,
@@ -61,6 +70,18 @@ export function ProjectCreationWizard({ onClose, error, onClearError }: Props) {
   const updateState = useCallback((updates: Partial<WizardState>) => {
     setState(prev => ({ ...prev, ...updates }));
   }, []);
+
+  // The "Next Steps" step only exists when the scaffolder reported work that
+  // still has to run (it is appended, so its index is STEPS.length).
+  const nextSteps = result?.steps ?? [];
+  const onNextSteps = nextSteps.length > 0 && state.step >= STEPS.length;
+  const progressSteps = nextSteps.length > 0 ? [...STEPS, 'Next Steps'] : STEPS;
+
+  useEffect(() => {
+    if (!result || result.steps.length === 0) return;
+    setCreating(false);
+    setState(prev => (prev.step === STEPS.length ? prev : { ...prev, step: STEPS.length }));
+  }, [result]);
 
   const canProceed = (): boolean => {
     switch (state.step) {
@@ -110,6 +131,9 @@ export function ProjectCreationWizard({ onClose, error, onClearError }: Props) {
   };
 
   const renderStep = () => {
+    if (onNextSteps) {
+      return <StepNextSteps steps={nextSteps} projectPath={result?.path ?? ''} />;
+    }
     switch (state.step) {
       case 0:
         return (
@@ -176,7 +200,7 @@ export function ProjectCreationWizard({ onClose, error, onClearError }: Props) {
         </div>
 
         <div className="wizard-progress">
-          {STEPS.map((step, index) => (
+          {progressSteps.map((step, index) => (
             <div
               key={step}
               className={`wizard-progress-step ${index === state.step ? 'wizard-progress-active' : ''} ${index < state.step ? 'wizard-progress-complete' : ''}`}
@@ -193,30 +217,43 @@ export function ProjectCreationWizard({ onClose, error, onClearError }: Props) {
         </div>
 
         <div className="wizard-footer">
-          <button className="wizard-btn wizard-btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-          {state.step > 0 && (
-            <button className="wizard-btn wizard-btn-secondary" onClick={handleBack}>
-              Back
-            </button>
-          )}
-          {state.step < STEPS.length - 1 ? (
-            <button
-              className="wizard-btn wizard-btn-primary"
-              onClick={handleNext}
-              disabled={!canProceed()}
-            >
-              Next
-            </button>
+          {onNextSteps ? (
+            <>
+              <button className="wizard-btn wizard-btn-secondary" onClick={onClose}>
+                Close
+              </button>
+              <button className="wizard-btn wizard-btn-primary" onClick={onDone ?? onClose}>
+                Done
+              </button>
+            </>
           ) : (
-            <button
-              className="wizard-btn wizard-btn-primary"
-              onClick={handleCreate}
-              disabled={creating}
-            >
-              {creating ? 'Creating...' : 'Create Project'}
-            </button>
+            <>
+              <button className="wizard-btn wizard-btn-secondary" onClick={onClose}>
+                Cancel
+              </button>
+              {state.step > 0 && (
+                <button className="wizard-btn wizard-btn-secondary" onClick={handleBack}>
+                  Back
+                </button>
+              )}
+              {state.step < STEPS.length - 1 ? (
+                <button
+                  className="wizard-btn wizard-btn-primary"
+                  onClick={handleNext}
+                  disabled={!canProceed()}
+                >
+                  Next
+                </button>
+              ) : (
+                <button
+                  className="wizard-btn wizard-btn-primary"
+                  onClick={handleCreate}
+                  disabled={creating}
+                >
+                  {creating ? 'Creating...' : 'Create Project'}
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -5,7 +5,7 @@ import {
 } from './documentation/exportPayload';
 import { BinarySaveRequest } from './binaryExport';
 import { AgentRun, AgentCapability } from '../agents/types';
-import { ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
+import { PostCreateStep, ProjectCreationRequest } from '../webview-ui/src/components/ProjectCreationWizard/types';
 import { ChatDensity } from './chatDensity';
 import { SessionRunInfo } from './sessionRun';
 import { Skill, SkillExecutionRequest, SkillExecutionResult } from './skillTypes';
@@ -159,6 +159,12 @@ export type ExtensionToWebviewMessage =
   // it into the answer: doing so merges reasoning into the reply and duplicates
   // it when the terminal answer arrives.
   | { type: 'assistantMessage'; content: string; done: boolean; id?: string; replace?: boolean; isThinking?: boolean }
+  // A turn typed on the REMOTE console. The webview renders its own user bubble
+  // optimistically when the DESKTOP sends, so a phone-typed turn has no bubble
+  // of its own — without this frame the desktop showed the answer with no
+  // question above it. `sessionId` is diagnostic only (the host resolves the
+  // active session when the turn enters, and the phone can only see that one).
+  | { type: 'remoteUserMessage'; content: string; sessionId?: string | null }
   // AI thinking/reasoning text (o1/o3 reasoning_content, Claude extended
   // thinking). `newBlock` marks the start of a DISTINCT reasoning step — the
   // agentic loop posts one complete pre-tool message per iteration — so the
@@ -234,6 +240,12 @@ export type ExtensionToWebviewMessage =
       projectName?: string;
       /** Project-relative document paths the scaffolder wrote (documentation templates). */
       documents?: string[];
+      /**
+       * Commands the user still has to run after scaffolding (e.g. Flutter's
+       * `flutter create .`). The wizard shows them as a final "Next Steps" step
+       * instead of closing on a warning toast.
+       */
+      postCreateSteps?: PostCreateStep[];
     }
   // Open the project-creation wizard in the webview (host-initiated)
   | { type: 'openProjectWizard' }

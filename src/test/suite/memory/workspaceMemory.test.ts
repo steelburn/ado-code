@@ -1,15 +1,15 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { WorkspaceMemory } from '../../../memory/WorkspaceMemory';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('WorkspaceMemory', () => {
   let tmpDir: string;
   let memory: WorkspaceMemory;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-memory-'));
+    tmpDir = makeScratchDir('adocode-memory-');
     memory = new WorkspaceMemory(tmpDir);
   });
 

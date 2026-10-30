@@ -13,7 +13,6 @@
  */
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import {
@@ -56,6 +55,7 @@ import {
   pruneArtifacts,
   scanArtifacts,
 } from '../../../services/artifacts/ArtifactStore';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const DIGEST_START = '<!-- ado-code:digest:start -->';
 const DIGEST_END = '<!-- ado-code:digest:end -->';
@@ -63,7 +63,8 @@ const DIGEST_END = '<!-- ado-code:digest:end -->';
 const tempDirs: string[] = [];
 
 function tempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  // Through the shared helper: %TEMP% answers EPERM under the Electron host.
+  const dir = makeScratchDir(prefix);
   tempDirs.push(dir);
   return dir;
 }

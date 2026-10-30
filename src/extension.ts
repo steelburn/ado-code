@@ -18,6 +18,9 @@ import { WorkItemsTreeProvider, WorkItemNode } from './ado/WorkItemsTreeProvider
 import { createServices, Services } from './services';
 import { selectActiveOrganization, getSettings, getActiveOrg, llmConfigFromSettings, updateSettingRespectingScope, isUnregisteredSettingError } from './config/settings';
 import { LlmClient } from './llm/client';
+import { llmFetch } from './llm/providers/net';
+import { joinBaseUrl } from './llm/providers/baseUrl';
+import { describeFetchFailure } from './shared/netErrors';
 import { WorkItemStatesCache } from './ado/WorkItemStatesCache';
 import { GitService } from './git/GitService';
 import { cleanupMergedRun, hasMergedPullRequest } from './git/mergeCleanup';
@@ -673,7 +676,8 @@ ${diff.substring(0, 8000)}
 Generate ONLY the commit message, nothing else.`;
 
         try {
-          const response = await fetch(`${apiUrl}/chat/completions`, {
+          const response = await llmFetch(joinBaseUrl(apiUrl, '/chat/completions'), {
+            label: 'OpenAI',
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -699,7 +703,14 @@ Generate ONLY the commit message, nothing else.`;
             vscode.window.showInformationMessage(`ADO Code: Commit message copied to clipboard: ${message}`);
           }
         } catch (err) {
-          vscode.window.showErrorMessage(`ADO Code: Failed to generate commit message: ${err instanceof Error ? err.message : err}`);
+          // undici reports every network failure as a bare "fetch failed" and
+          // hides the reason on `error.cause` — describe it; other errors (HTTP
+          // status, bad JSON) keep their own message.
+          const reason =
+            err instanceof Error && !/^fetch failed$/i.test(err.message)
+              ? err.message
+              : describeFetchFailure(err, { label: 'OpenAI', url: joinBaseUrl(apiUrl, '/chat/completions') }).message;
+          vscode.window.showErrorMessage(`ADO Code: Failed to generate commit message: ${reason}`);
         }
       });
     })
@@ -1456,6 +1467,37 @@ const remoteControl = new RemoteControl({
       bind: settings.bind,
       lanAddress: settings.bind === 'all' ? lanAddress() : undefined,
       page: () => CONSOLE_HTML,
+      // Remote approvals: the console answers the same brokers the cards do.
+      onConsent: payload => chatProvider.handleRemoteConsent(payload),
+      onConfirm: payload => chatProvider.handleRemoteConfirmation(payload),
+      pendingApprovals: () => chatProvider.pendingApprovals(),
+      // Remote oversight: jobs that are progressing right now. A run in flight
+      // emits nothing until its next chunk, so a phone that joins (or reloads)
+      // mid-job would otherwise show an idle console while the machine works.
+      runSnapshot: () =>
+        agentRunner
+          .listRuns()
+          .filter(run => run.status === 'running')
+          .map(run => ({
+            id: run.id,
+            status: run.status,
+            agent: run.agent,
+            title: run.title,
+            workItemId: run.workItemId,
+            branch: run.branch,
+            startedAt: run.startedAt,
+          })),
+      // The built-in loop's turn is not an AgentRun, so the console needs its
+      // own replay handle for "the machine is working right now".
+      turnSnapshot: () => chatProvider.activeTurnSnapshot(),
+      // The conversation itself. A phone that opens mid-thread (or wakes after
+      // the screen slept) replays the transcript the webview is showing — the
+      // choice block included — and can answer it from here.
+      transcriptSnapshot: () => chatProvider.transcriptSnapshot(),
+      // The plan — session goal plus to-do list. Pushed on every change, but
+      // a console connecting later has missed those events.
+      planSnapshot: () => chatProvider.planSnapshot(),
+      onChat: text => chatProvider.remoteSendMessage(text),
       logger,
     });
     return remoteServer;
@@ -1501,6 +1543,11 @@ const remoteControl = new RemoteControl({
   createTooltip: markdown => new vscode.MarkdownString(markdown),
   logger,
 });
+
+// Mirror every approval card raised in the chat to the mobile console, so the
+// same decision can be taken from the phone; the answer lands in the same
+// brokers (handleRemoteConsent / handleRemoteConfirmation).
+chatProvider.setRemoteBridge(event => remoteControl?.broadcast(event));
 remoteControl.activate();
 context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose() });
 

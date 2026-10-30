@@ -65,6 +65,34 @@ suite('OpenAiProvider', () => {
     assert.strictEqual(chunks[chunks.length - 1].done, true);
   });
 
+  test('normalises a trailing slash in the base URL instead of requesting //chat/completions', async () => {
+    const requested: string[] = [];
+    (globalThis as any).fetch = async (url: string) => {
+      requested.push(String(url));
+      return { ok: true, body: sseStream(['data: [DONE]\n\n']) };
+    };
+
+    const provider = new OpenAiProvider();
+    const chunks = [];
+    for await (const c of provider.streamChat([], { ...config, apiUrl: 'https://api.example.com/v1/' })) {
+      chunks.push(c);
+    }
+
+    assert.deepStrictEqual(requested, ['https://api.example.com/v1/chat/completions']);
+  });
+
+  test('listModels normalises a trailing slash in the base URL', async () => {
+    const requested: string[] = [];
+    (globalThis as any).fetch = async (url: string) => {
+      requested.push(String(url));
+      return { ok: true, json: async () => ({ data: [{ id: 'gpt-4o' }] }) };
+    };
+
+    await listModelsOpenAi({ ...config, apiUrl: 'https://api.example.com/v1/' });
+
+    assert.deepStrictEqual(requested, ['https://api.example.com/v1/models']);
+  });
+
   test('listModels parses ids + OpenRouter/Ollama capability hints', async () => {
     const fetchStub = async () => ({
       ok: true,
@@ -140,6 +168,51 @@ suite('AnthropicProvider', () => {
     const body = JSON.parse(captured.body);
     assert.strictEqual(body.messages.length, 1);
     assert.strictEqual(body.messages[0].content, 'a\n\nb');
+  });
+
+  // The base URL is documented both as the bare host and with `/v1`, and a paste
+  // usually adds a slash — every spelling must reach one /v1/messages, and a
+  // gateway prefix that itself ends in /v1 must survive the strip/re-append.
+  test('normalises every spelling of the Anthropic base URL to a single /v1', async () => {
+    const requested: string[] = [];
+    (globalThis as any).fetch = async (url: any) => {
+      requested.push(String(url));
+      return { ok: true, body: sseStream(['data: {"type":"message_stop"}\n\n']) };
+    };
+
+    const provider = new AnthropicProvider();
+    const apiUrls = [
+      'https://api.anthropic.com',
+      'https://api.anthropic.com/',
+      'https://api.anthropic.com/v1',
+      'https://api.anthropic.com/v1/',
+      '  https://api.anthropic.com/v1//  ',
+      'https://gw.local/anthropic/v1',
+    ];
+    for (const apiUrl of apiUrls) {
+      for await (const chunk of provider.streamChat(messages, { ...anthropicConfig, apiUrl })) {
+        void chunk;
+      }
+    }
+
+    assert.deepStrictEqual(requested, apiUrls.map(apiUrl => (apiUrl.includes('gw.local')
+      ? 'https://gw.local/anthropic/v1/messages'
+      : 'https://api.anthropic.com/v1/messages')));
+  });
+
+  test('count_tokens normalises a pasted /v1 base URL instead of doubling it', async () => {
+    let capturedUrl = '';
+    (globalThis as any).fetch = async (url: any) => {
+      capturedUrl = String(url);
+      return { ok: true, json: async () => ({ input_tokens: 5 }) };
+    };
+
+    const provider = new AnthropicProvider();
+    const tokens = await provider.countTokens!([{ role: 'user', content: 'hi' }],
+      { ...anthropicConfig, apiUrl: ' https://api.anthropic.com/v1/ ' });
+
+    assert.strictEqual(tokens, 5);
+    assert.strictEqual(capturedUrl, 'https://api.anthropic.com/v1/messages/count_tokens');
   });
 });
 

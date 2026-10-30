@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { promptAndSaveBinary } from '../../../webview/saveBinary';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -80,7 +80,7 @@ function installHarness(targetFolder: string, options: { cancel?: boolean; infoA
 }
 
 function makeTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ado-savebinary-'));
+  return makeScratchDir('ado-savebinary-');
 }
 
 function cleanup(dir: string): void {

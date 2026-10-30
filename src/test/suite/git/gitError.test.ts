@@ -1,12 +1,12 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { gitErrorMessage } from '../../../git/gitError';
+import { makeScratchDir } from '../utils/scratchDir';
 
 suite('gitErrorMessage', () => {
   test('reports missing cwd distinctly from missing binary', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-giterr-'));
+    const tmp = makeScratchDir('adocode-giterr-');
     try {
       const missingDir = path.join(tmp, 'does-not-exist');
       const err = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
@@ -19,7 +19,7 @@ suite('gitErrorMessage', () => {
   });
 
   test('reports missing PATH binary when cwd exists', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-giterr2-'));
+    const tmp = makeScratchDir('adocode-giterr2-');
     try {
       const err = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
       const msg = gitErrorMessage(err, tmp);

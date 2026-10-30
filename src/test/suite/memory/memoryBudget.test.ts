@@ -1,7 +1,5 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   DEFAULT_MEMORY_BUDGET,
@@ -15,6 +13,7 @@ import {
 } from '../../../memory/memoryBudget';
 import { WorkspaceMemory } from '../../../memory/WorkspaceMemory';
 import { createToolExecutor } from '../../../llm/tools';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const HEADER = '## Workspace Memory';
 
@@ -255,7 +254,7 @@ suite('memory budgets', () => {
     let executor: ReturnType<typeof createToolExecutor>;
 
     setup(() => {
-      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-memory-tool-'));
+      dir = makeScratchDir('ado-memory-tool-');
       memory = new WorkspaceMemory(dir);
       userCalls = [];
       executor = createToolExecutor(
@@ -331,7 +330,7 @@ suite('memory budgets', () => {
     let memory: WorkspaceMemory;
 
     setup(() => {
-      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-memory-budget-'));
+      dir = makeScratchDir('ado-memory-budget-');
       memory = new WorkspaceMemory(dir);
     });
 

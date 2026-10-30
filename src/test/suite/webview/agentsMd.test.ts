@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { buildAgentsMdContent, computeManagedBlock, extractManagedBlock, replaceManagedBlock, evaluateAgentsMdSync, hashBlock, MANAGED_START, MANAGED_END, MAX_MANAGED_BLOCK_CHARS, stripManagedBlock, writeManagedFileIfChanged } from '../../../webview/agentsMd';
+import { makeScratchDir } from '../utils/scratchDir';
 
 const roots: string[] = [];
 
@@ -11,7 +11,7 @@ const roots: string[] = [];
  * "Fixture project", optional scripts) plus optional extra files.
  */
 function makeRoot(opts: { scripts?: Record<string, string>; files?: Record<string, string> } = {}): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-agentsmd-'));
+  const root = makeScratchDir('ado-agentsmd-');
   roots.push(root);
   const pkg: Record<string, unknown> = { name: 'fixture', description: 'Fixture project', version: '1.0.0' };
   if (opts.scripts) pkg.scripts = opts.scripts;
@@ -192,7 +192,7 @@ suite('agentsMd', () => {
   });
 
   test('honest fallback without any package.json', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ado-agentsmd-'));
+    const root = makeScratchDir('ado-agentsmd-');
     roots.push(root);
     fs.mkdirSync(path.join(root, 'src'));
     const md = buildAgentsMdContent(root);

@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { runTests } from '@vscode/test-electron';
@@ -22,8 +23,23 @@ async function main() {
     });
   } catch (err) {
     console.error('Failed to run tests:', err);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
-main();
+// The suites create their throwaway dirs under <checkout>/.ado-code/test-scratch
+// (the only writable place under the extension-host write sandbox). One dir per
+// mkdtemp means a run leaves hundreds behind, so wipe the slate on both ends;
+// `.ado-code/` is gitignored, so nothing here can reach the repo.
+const SCRATCH_ROOT = path.join(path.resolve(__dirname, '../../'), '.ado-code', 'test-scratch');
+function resetScratch(): void {
+  fs.rmSync(SCRATCH_ROOT, { recursive: true, force: true });
+}
+
+resetScratch();
+main()
+  .catch((err) => {
+    console.error('Failed to run tests:', err);
+    process.exitCode = 1;
+  })
+  .finally(resetScratch);

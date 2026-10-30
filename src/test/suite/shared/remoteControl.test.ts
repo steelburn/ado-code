@@ -49,12 +49,19 @@ class FakeServer implements RemoteServerLike {
     starts = 0;
     disposals = 0;
     broadcasts: RemoteDownstreamEvent[] = [];
+    allowedHosts: string[] = [];
     async start(): Promise<number> {
         this.starts++;
         return this.port;
     }
     broadcast(event: RemoteDownstreamEvent): void {
         this.broadcasts.push(event);
+    }
+    allowHost(url: string): void {
+        this.allowedHosts = [url];
+    }
+    clearAllowedHosts(): void {
+        this.allowedHosts = [];
     }
     async dispose(): Promise<void> {
         this.disposals++;
@@ -82,6 +89,7 @@ interface Rig {
     status: FakeStatusBar;
     servers: FakeServer[];
     tunnels: FakeTunnel[];
+    tunnelOptions: Array<{ onUrl: (url: string) => void }>;
     settings: RemoteSettings;
     contexts: Record<string, unknown>;
     notifications: Array<{ message: string; kind?: string }>;
@@ -98,6 +106,7 @@ interface Rig {
 function createRig(
     options: { settings?: Partial<RemoteSettings>; tunnelAvailable?: boolean; secrets?: FakeSecrets } = {}
 ): Rig {
+    const tunnelOptions: Array<{ onUrl: (url: string) => void }> = [];
     const settings: RemoteSettings = {
         enabled: false,
         bind: 'loopback',
@@ -156,9 +165,10 @@ function createRig(
             servers.push(server);
             return server;
         },
-        tunnelFactory: () => {
+        tunnelFactory: (opts) => {
             const tunnel = new FakeTunnel();
             tunnels.push(tunnel);
+            tunnelOptions.push(opts);
             return tunnel;
         },
         tunnelAvailable: () => options.tunnelAvailable !== false,
@@ -184,6 +194,7 @@ function createRig(
         status,
         servers,
         tunnels,
+        tunnelOptions,
         settings,
         contexts,
         notifications,
@@ -262,6 +273,8 @@ suite('remote/RemoteControl', () => {
                 throw new Error('EADDRINUSE');
             },
             broadcast: () => undefined,
+            allowHost: () => undefined,
+            clearAllowedHosts: () => undefined,
             dispose: async () => undefined,
         }));
         rig.control.activate();
@@ -295,6 +308,29 @@ suite('remote/RemoteControl', () => {
         assert.strictEqual(pick.activeItem?.label, 'cloudflared');
         assert.strictEqual(rig.tunnels.length, 1);
         assert.strictEqual(rig.tunnels[0]!.starts, 1);
+    });
+
+    test('the tunnel public host is admitted before the QR panel opens', async () => {
+        const rig = createRig({ settings: { enabled: true } });
+        rig.control.activate();
+        await rig.control.reconcile();
+        await rig.control.startTunnel();
+
+        const tunnelUrl = 'https://daily-cats-try.trycloudflare.com/';
+        rig.tunnelOptions[0]!.onUrl(tunnelUrl);
+        // The panel URL is tokenised asynchronously before it is rendered.
+        await new Promise((resolve) => setImmediate(resolve));
+
+        assert.deepStrictEqual(
+            rig.servers[0]!.allowedHosts,
+            [tunnelUrl],
+            'the Host cloudflared forwards must survive the rebinding guard'
+        );
+        assert.match(
+            rig.lastPanelUrl()!,
+            /^https:\/\/daily-cats-try\.trycloudflare\.com\/#t=.+$/,
+            'the QR must carry the #t= token fragment or the phone cannot authenticate'
+        );
     });
 
     test('a missing cloudflared neither spawns nor throws', async () => {

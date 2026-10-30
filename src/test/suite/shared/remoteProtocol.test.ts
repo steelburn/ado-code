@@ -43,6 +43,11 @@ suite('shared/remoteProtocol', () => {
                 options: [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no', isDangerous: true }],
             },
             { type: 'viewerCount' as const, count: 2 },
+            {
+                type: 'turnStatus' as const,
+                turn: { sessionId: 's-1', title: 'Wire the console', startedAt: 1790000000000, background: false },
+            },
+            { type: 'turnStatus' as const, turn: null },
         ];
 
         for (const event of events) {
@@ -71,6 +76,59 @@ suite('shared/remoteProtocol', () => {
             parseDownstream({ type: 'consentRequest', requestId: 'r', tool: 'x' }).ok,
             false
         );
+    });
+
+    test('turnStatus requires a session, a title and a finite start time', () => {
+        assert.strictEqual(parseDownstream({ type: 'turnStatus' }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'turnStatus', turn: 'running' }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'turnStatus', turn: { title: 't', startedAt: 1 } }).ok, false);
+        assert.strictEqual(
+            parseDownstream({ type: 'turnStatus', turn: { sessionId: 's', title: 't', startedAt: 'now' } }).ok,
+            false
+        );
+        // A finished turn is `null`, and background is coerced to a boolean.
+        const stopped = parseDownstream({ type: 'turnStatus', turn: null });
+        assert.strictEqual(stopped.ok, true);
+        const running = parseDownstream({
+            type: 'turnStatus',
+            turn: { sessionId: 's', title: 't', startedAt: 1, background: 'yes' },
+        });
+        assert.strictEqual(running.ok, true);
+        if (running.ok && running.value.type === 'turnStatus') {
+            assert.strictEqual(running.value.turn?.background, false);
+        }
+    });
+
+    test('transcript frames validate and keep the choice block', () => {
+        const snapshot = parseDownstream({
+            type: 'transcript',
+            sessionId: 's-1',
+            messages: [
+                { id: 'u1', role: 'user', content: 'go' },
+                { id: 'a2', role: 'assistant', content: 'pick', choice: { question: 'q', options: ['a', 'b', 3] } },
+            ],
+        });
+        assert.strictEqual(snapshot.ok, true);
+        if (snapshot.ok && snapshot.value.type === 'transcript') {
+            assert.strictEqual(snapshot.value.sessionId, 's-1');
+            assert.strictEqual(snapshot.value.messages.length, 2);
+            assert.deepStrictEqual(
+                snapshot.value.messages[1].choice,
+                { question: 'q', options: ['a', 'b'] },
+                'non-string options are dropped rather than rendered',
+            );
+        }
+        const noSession = parseDownstream({ type: 'transcript', messages: [] });
+        assert.ok(noSession.ok, 'an idle transcript is legal — messages is the only required field');
+    });
+
+    test('a transcript message needs an id, a known role and text', () => {
+        assert.strictEqual(parseDownstream({ type: 'transcriptMessage', message: { role: 'user', content: 'x' } }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'transcriptMessage', message: { id: 'm', role: 'system', content: 'x' } }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'transcriptMessage', message: { id: 'm', role: 'user', content: 7 } }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'transcript', messages: 'nope' }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'transcriptDelta', id: 'm' }).ok, false);
+        assert.strictEqual(parseDownstream({ type: 'transcriptDelta', id: 'm', delta: 'more' }).ok, true);
     });
 
     test('upstream session payload requires the fragment token', () => {

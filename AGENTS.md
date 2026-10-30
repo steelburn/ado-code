@@ -12,59 +12,55 @@ AI coding assistant with Azure DevOps integration
 
 ## Project Structure
 - `dist/` — project directory
-- `docs/` — documentation
+- `docs/` — supporting documentation
 - `out/` — project directory
-- `resources/` — extension icons/assets
-- `scripts/` — build, version, publish helpers; vscode-stub.js
-- `src/` — TypeScript VS Code extension source
-- `webview-ui-dist/` — referenced by AGENTS; webview-ui-dist/ is generated output and must not be edited directly
+- `resources/` — static resources
+- `scripts/` — build, version check, Open VSX publish, and VS Code stub for unit tests
+- `src/` — extension source and webview UI
+- `webview-ui-dist/` — project directory
+
+## Documentation Conventions
+- Extend an existing document instead of adding a per-step or per-turn .md file.
+- Record progress in the chat or the work item, never in a new markdown file.
+- One new doc per change, and only when documentation was requested.
+- Reference `.ado-code/understanding/` and this file instead of duplicating them.
+- Do not add files under `.ado-code/`; that tree is garbage-collected.
 
 ## Repository Understanding
-> Distilled from the ADO Code repository-understanding cache (`.ado-code/understanding/`).
-> Refreshed automatically as the repository changes and via "ADO Code: Refresh Repository Understanding".
-> This section and the other generated sections above are rewritten when ADO Code syncs AGENTS.md — edits anywhere else are preserved.
+> Digest of the ADO Code repository-understanding cache; refreshed automatically
+> as the repository changes and via "ADO Code: Refresh Repository Understanding".
+> The managed sections above and this digest are rewritten when ADO Code syncs
+> AGENTS.md — everything outside the managed block is preserved.
 
-# ADO Code — Repository Quick Map
+# ADO Code — Repository Map
 
-Docs live in `README.md`, `AGENTS.md`, and `docs/`. `AGENTS.md` contains build/test/structure plus generated repository-understanding sections that ADO Code rewrites on sync; edits outside those managed sections are preserved.
+Repo root: `d:\Development\vscode\ado-code`  
+Branch: `main` · HEAD: `a6dae09` · Remote: `https://github.com/steelburn/ado-code.git`
 
-### Layout
-- `src/` — TypeScript VS Code extension source.
-- `src/webview-ui/` — separate webview app; has its own build.
-- `scripts/` — build, version, publish helpers; `vscode-stub.js`.
-- `resources/` — extension icons/assets.
-- `docs/` — documentation.
-- `.github/` — GitHub config.
-- `out/`, `dist/`, `webview-ui-dist/` — referenced by AGENTS; `webview-ui-dist/` is generated output and must not be edited directly.
-- Root configs/artifacts: `package.json`, `tsconfig.json`, `.eslintrc.json`, `.env`, `.vscodeignore`, `.gitignore`, several `.vsix` files.
+### Structure & docs
 
-### Read First
-`README.md`, `AGENTS.md`, `package.json`, `tsconfig.json`, `.eslintrc.json`, `scripts/build.js`, `scripts/check-version.js`, `scripts/vscode-stub.js`, `src/` extension source, `src/webview-ui/package.json`.
+```
+.github/
+docs/
+resources/
+scripts/
+src/
+  webview-ui/        # separate webview build target
+AGENTS.md
+README.md
+CHANGELOG.md
+package.json
+tsconfig.json
+.eslintrc.json
+```
 
-### Architecture
-VS Code extension: AI coding assistant with Azure DevOps work-item integration. README features include one tree view for work items with My Work Items / All Work Items / Unassigned modes, rendered as Epic → Feature → User Story → Task, plus an AI chat assistant. Main extension is TypeScript in `src/`, compiled with `tsc -p ./`; tests run from `out/`. Bundling is via `scripts/build.js`. The webview UI is a separate app under `src/webview-ui/`, built separately.
+Documentation lives in:
+- `README.md` — feature overview and behavior.
+- `AGENTS.md` — conventions, constraints, “What NOT to Do.”
+- `docs/` — supporting documentation.
 
-### Build / Test / Lint
-- Compile: `npm run compile`
-- Full build: `npm run build:all` = compile + bundle + webview build
-- Bundle: `npm run bundle`; watch: `npm run watch:bundle`
-- TypeScript watch: `npm run watch`
-- Webview build: `npm run build:webview`; watch: `npm run watch:webview`
-- Test: `npm test` → `node ./out/test/runTest.js`
-- Unit test: `npm run test:unit` → Mocha TDD + `scripts/vscode-stub.js`
-- Lint: `npm run lint` → `eslint src --ext ts`
-- Version check: `npm run check:version`
-- Pre-publish: `npm run vscode:prepublish` = check version + compile + bundle
-- Publish Open VSX: `npm run publish:open-vsx`
-
-### Conventions & Gotchas
-- Structure split: extension code in `src/`; webview app in `src/webview-ui/`; helpers in `scripts/`.
-- Generated outputs (`webview-ui-dist/`; `out/`, `dist/` per AGENTS) should not be hand-edited.
-- `AGENTS.md` managed sections are auto-rewritten on sync.
-- `npm test` uses VS Code test Electron; unit tests use Mocha TDD and a VS Code stub.
-- Dev tooling includes TypeScript, ESLint, esbuild, Mocha, `@vscode/test-electron`, and zod; Husky `prepare` and lint-staged are present.
-- No explicit error-handling convention is visible in the supplied facts; follow existing patterns in `src/`.
-- `package.json` version is `0.7.
+_…digest cut at 600 characters._
+> Full map: `.ado-code/understanding/repo.md` — read the line ranges you need instead of copying it here.
 <!-- ado-code:managed-end -->
 
 ## Conventions
@@ -77,7 +73,8 @@ VS Code extension: AI coding assistant with Azure DevOps work-item integration. 
 - Docs budget: extend an existing document; never a .md per step or per turn
 - Progress lives in the chat and the work item, not in a new markdown file
 - Reference .ado-code/understanding/ and AGENTS.md; do not duplicate them
-- Do not add ad-hoc files under .ado-code/ (it is garbage-collected)
+- Keep `docs/` to live references (`remote.md`, `documentation-projects.md`, `playbooks/`); an executed plan ends up in CHANGELOG.md, the code and the work item, never in a plan file
+- Do not add ad-hoc files under .ado-code/ (it is garbage-collected) — the one exception is .ado-code/test-scratch, the suites' throwaway root (gitignored, wiped by every Electron run)
 
 ## What NOT to Do
 - Do not add runtime dependencies without approval

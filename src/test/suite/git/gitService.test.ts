@@ -1,16 +1,16 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { GitService } from '../../../git/GitService';
 import { cleanTempDir } from '../utils/cleanTempDir';
+import { makeDirOutsideRepo, makeScratchDir } from '../utils/scratchDir';
 
 suite('GitService', () => {
   let tmpDir: string;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-git-'));
+    tmpDir = makeScratchDir('adocode-git-');
     // Deterministic default branch (git >= 2.28): some machines have no
     // init.defaultBranch config, where plain `git init` defaults to master and
     // the protected-branch test's `git checkout -b master` then fails.
@@ -28,8 +28,13 @@ suite('GitService', () => {
     assert.strictEqual(await service.isGitRepo(), true);
   });
 
-  test('rejects a non-git directory', async () => {
-    const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-plain-'));
+  test('rejects a non-git directory', async function (this: Mocha.Context) {
+    const plainDir = makeDirOutsideRepo('adocode-plain-');
+    if (!plainDir) {
+      console.log('SKIP: this host forbids writing outside the checkout, so a non-repo dir cannot be created here');
+      this.skip();
+      return;
+    }
     try {
       const service = new GitService(plainDir);
       assert.strictEqual(await service.isGitRepo(), false);
@@ -75,8 +80,13 @@ suite('GitService', () => {
     assert.strictEqual(info.changedFiles, 2);
   });
 
-  test('getWorktreeInfo returns defaults for a non-git directory', async () => {
-    const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-plain-'));
+  test('getWorktreeInfo returns defaults for a non-git directory', async function (this: Mocha.Context) {
+    const plainDir = makeDirOutsideRepo('adocode-plain-');
+    if (!plainDir) {
+      console.log('SKIP: this host forbids writing outside the checkout, so a non-repo dir cannot be created here');
+      this.skip();
+      return;
+    }
     try {
       const service = new GitService(tmpDir);
       const info = await service.getWorktreeInfo(plainDir);
@@ -151,7 +161,7 @@ suite('GitService', () => {
     const service = new GitService(tmpDir);
     fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hi\n');
     cp.execSync('git add . && git commit -m "initial"', { cwd: tmpDir });
-    const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-bare-'));
+    const bareDir = makeScratchDir('adocode-bare-');
     cp.execSync('git init --bare', { cwd: bareDir });
     cp.execSync(`git remote add origin ${bareDir}`, { cwd: tmpDir });
 

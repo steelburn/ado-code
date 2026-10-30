@@ -1,3 +1,5 @@
+import type { RemoteConsentScope, RemoteDownstreamEvent, RemotePlanEvent, RemoteTranscriptEvent, RemoteTurnInfo } from '../shared/remoteProtocol';
+import { TranscriptMirror } from './TranscriptMirror';
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
@@ -335,6 +337,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private workingBar?: vscode.StatusBarItem;
   private workingDepth = 0;
   private workingActive = false;
+  /** Epoch ms the in-flight chat turn started — remote oversight clock. */
+  private turnStartedAt: number | undefined;
   // Priority-based context manager — prevents context window overflow by
   // dropping older low-priority messages when the budget is exceeded.
   private contextManager = new ContextManager(128_000);
@@ -613,6 +617,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // mid-turn is exactly when the mirror must be consulted before ANYTHING
     // reads the session list.
     void this.restoreFromMirror().catch(() => undefined);
+    // The console mirrors the plan (goal + to-do list) — every store write,
+    // whether it came from `set_goal`, `update_todo_list` or an automatic tick,
+    // reaches the phone without the turn loop having to remember to forward it.
+    // Optional call: a lightweight caller (test harness, embedded host) may hand
+    // over a bare TodoStore stub, and a missing mirror must never stop the chat
+    // provider from being constructed.
+    this.services.todos?.onDidChange?.(() => this.broadcastPlan());
   }
 
   /** Which dataset the merged work items tree shows. */
@@ -647,6 +658,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private syncTodoSession(): void {
     const id = this.getActiveSessionId();
     this.services.todos.setActiveSession(id || null, id ? this.activeSessionName() : undefined);
+    // A different session means a different plan; push it so the console does
+    // not keep showing the previous session's goal and to-dos.
+    this.broadcastPlan();
   }
 
   /** Display name of the active chat session (used for the to-do file record). */
@@ -2478,31 +2492,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'consentResponse': {
-            // Process scope before resolving — the broker clears pending on resolve.
-            if (message.approved && message.scope && this.consentBroker.pending) {
-              const pending = this.consentBroker.pending;
-              if (message.scope === 'session') {
-                // Allow for Session: exact command(s) (terminal, batch-aware)
-                // or tool name.
-                if (pending.tool === 'run_terminal_command') {
-                  addSessionCommandApproval(terminalCommandKey(pending.args));
-                } else {
-                  addSessionToolApproval(pending.tool);
-                }
-              } else if (message.scope === 'permanent' && pending.tool === 'run_terminal_command') {
-                // Fire-and-forget: add EVERY command of a batch to the allowlist.
-                for (const cmd of terminalCommandList(pending.args)) {
-                  addToTerminalAllowlist(cmd).catch(err =>
-                    logger.error(`[tool-approval] failed to update allowlist: ${err}`),
-                  );
-                }
-              }
-            }
+            this.applyConsentScope(message.approved ? message.scope : undefined);
             this.consentBroker.resolve(message.requestId, message.approved);
+            this.broadcastResolved(message.requestId, message.approved ? 'approved' : 'denied', 'host');
             break;
           }
           case 'confirmationResponse': {
             this.confirmBroker.resolve(message.requestId, message.value);
+            this.broadcastResolved(message.requestId, 'approved', 'host');
             break;
           }
           // Task 2: session management
@@ -3016,10 +3013,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               templateId: request.templateId,
               projectName: request.projectName,
               documents: projectResult.documents,
+              postCreateSteps: projectResult.postCreateSteps,
             });
             if (projectResult.success && projectResult.warnings?.length) {
-              // The wizard closes on success, so the scaffolder's notes (KRiSA
-              // coercions, skipped arming) would otherwise be lost.
+              // Post-create steps (Flutter's native runners) get their own
+              // wizard step; the remaining notes (KRiSA coercions, skipped
+              // arming) still ride a toast so they survive the wizard closing.
               void vscode.window.showWarningMessage(
                 `ADO Code: documentation project created with ${projectResult.warnings.length} note(s) — ${projectResult.warnings
                   .slice(0, 3)
@@ -3045,9 +3044,303 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+  // ── Remote approval bridge (mobile console) ──────────────────────────
+  /** Downstream sink into the remote console (SSE). Installed by activate(). */
+  private remoteBridge: ((event: RemoteDownstreamEvent) => void) | null = null;
+
+  /**
+   * Install the sink that mirrors approval cards to the mobile console.
+   * Null when remote access is off: no bridge, no mirroring, no surface.
+   */
+  setRemoteBridge(sink: ((event: RemoteDownstreamEvent) => void) | null): void {
+    this.remoteBridge = sink;
+  }
+
+  /**
+   * The chat turn that is generating right now — the built-in agentic loop.
+   *
+   * Agent runs reach the console as `agentStatus`; a plain chat turn is not an
+   * AgentRun at all, so without this the phone showed "no agent runs" while
+   * the loop was streaming and calling tools. Snapshot form, for consoles that
+   * join or reload mid-turn (`GET /turn`); live changes go out as `turnStatus`.
+   */
+  activeTurnSnapshot(): RemoteTurnInfo | null {
+    const info = sessionRunInfo(this.runningTurnSession, this.getActiveSessionId());
+    if (!info) {
+      return null;
+    }
+    const session = this.getSessions().find(s => s.id === info.id);
+    const name = session?.name?.trim();
+    return {
+      sessionId: info.id,
+      title: (name || info.title).slice(0, 120),
+      startedAt: this.turnStartedAt ?? Date.now(),
+      background: info.background,
+    };
+  }
+
+  /** Push the current turn state to every connected console (live, not replay). */
+  private broadcastTurnStatus(): void {
+    this.remoteBridge?.({ type: 'turnStatus', turn: this.activeTurnSnapshot() });
+  }
+
+  /**
+   * The active session's goal + to-do list — the two surfaces the To-do view
+   * shows on the desktop, mirrored to the phone.
+   *
+   * Read straight from the TodoStore instead of keeping a copy: the console
+   * must never show a plan the desktop has already moved past.
+   */
+  public planSnapshot(): RemotePlanEvent {
+    const sessionId = this.getActiveSessionId() || null;
+    let list: { goal?: { text?: string }; items?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm?: string }> } | null = null;
+    try {
+      list = sessionId ? this.services.todos.read(sessionId) : null;
+    } catch {
+      list = null;
+    }
+    const todos = (list?.items ?? []).map(item => ({
+      content: item.content,
+      status: item.status,
+      ...(item.activeForm ? { activeForm: item.activeForm } : {}),
+    }));
+    return {
+      type: 'plan',
+      sessionId,
+      goal: (list?.goal?.text ?? '').trim(),
+      todos,
+      total: todos.length,
+      completed: todos.filter(item => item.status === 'completed').length,
+      inProgress: todos.filter(item => item.status === 'in_progress').length,
+    };
+  }
+
+  /**
+   * Mirror the plan to every connected console.
+   *
+   * Fires on every store write (`set_goal` / `update_todo_list` plus each
+   * automatic tick) — an SSE frame is tiny and the console patches in place.
+   */
+  private broadcastPlan(): void {
+    const sink = this.remoteBridge;
+    if (!sink) {
+      return;
+    }
+    try {
+      sink(this.planSnapshot());
+    } catch (err) {
+      logger.error('remote plan mirror failed', err);
+    }
+  }
+
+  /** Mirror a card-creating (or card-clearing) webview message to the phone. */
+  private mirrorApproval(message: any): void {
+    const sink = this.remoteBridge;
+    if (!sink || !message || typeof message !== 'object') return;
+    // `remote: true` marks messages we posted ourselves after answering on
+    // the phone: they clear the desktop card but must not be mirrored back
+    // (the resolution was already broadcast with source: remote).
+    if (message.remote === true) return;
+    switch (message.type) {
+      case 'consentRequest':
+        sink({
+          type: 'consentRequest',
+          requestId: message.requestId,
+          tool: message.tool,
+          args: message.args ?? {},
+          expiresAt: message.expiresAt,
+        });
+        break;
+      case 'confirmationRequest':
+        sink({
+          type: 'confirmationRequest',
+          requestId: message.requestId,
+          title: message.title ?? '',
+          description: message.description ?? '',
+          options: message.options ?? [],
+          expiresAt: message.expiresAt,
+        });
+        break;
+      case 'promptExpired':
+        sink({ type: 'approvalResolved', requestId: message.requestId, outcome: 'expired', source: 'host' });
+        break;
+    }
+  }
+
+  /** Broadcast a resolution so every surface drops the card. */
+  private broadcastResolved(requestId: string, outcome: 'approved' | 'denied' | 'expired', source: 'host' | 'remote'): void {
+    this.remoteBridge?.({ type: 'approvalResolved', requestId, outcome, source });
+  }
+
+  /**
+   * Apply an approved scope to the in-flight consent request. Must run BEFORE
+   * resolving, because the broker clears `pending` on resolve. Shared by the
+   * desktop card and the phone card, so a remote approval widens exactly the
+   * same allowlists a desktop approval would.
+   */
+  private applyConsentScope(scope?: string): void {
+    if (!scope || scope === 'once') return;
+    const pending = this.consentBroker.pending;
+    if (!pending) return;
+    if (scope === 'session') {
+      // Allow for Session: exact command(s) (terminal, batch-aware) or tool name.
+      if (pending.tool === 'run_terminal_command') {
+        addSessionCommandApproval(terminalCommandKey(pending.args));
+      } else {
+        addSessionToolApproval(pending.tool);
+      }
+    } else if (scope === 'permanent' && pending.tool === 'run_terminal_command') {
+      // Fire-and-forget: add EVERY command of a batch to the allowlist.
+      for (const cmd of terminalCommandList(pending.args)) {
+        addToTerminalAllowlist(cmd).catch(err =>
+          logger.error(`[tool-approval] failed to update allowlist: ${err}`),
+        );
+      }
+    }
+  }
+
+  /** Pending approvals — for a console that connects while a card is open. */
+  pendingApprovals(): RemoteDownstreamEvent[] {
+    const out: RemoteDownstreamEvent[] = [];
+    const consent = this.consentBroker.pending;
+    if (consent) {
+      out.push({
+        type: 'consentRequest',
+        requestId: consent.requestId,
+        tool: consent.tool,
+        args: consent.args ?? {},
+        expiresAt: consent.expiresAt,
+      });
+    }
+    const confirm = this.confirmBroker.pending as {
+      requestId: string;
+      title?: string;
+      description?: string;
+      options?: { label: string; value: string; isDangerous?: boolean }[];
+      expiresAt?: number;
+    } | null;
+    if (confirm) {
+      out.push({
+        type: 'confirmationRequest',
+        requestId: confirm.requestId,
+        title: confirm.title ?? '',
+        description: confirm.description ?? '',
+        options: confirm.options ?? [],
+        expiresAt: confirm.expiresAt,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Answer an in-flight consent request from the remote console.
+   *
+   * Race safety: the decision is applied only while the supplied requestId is
+   * STILL the pending one, so a duplicate tap, a second phone or a card that
+   * was already answered fails with 409 instead of deciding the next request.
+   */
+  async handleRemoteConsent(payload: {
+    requestId: string;
+    approved: boolean;
+    scope?: string;
+  }): Promise<{ status: number; body?: unknown }> {
+    const pending = this.consentBroker.pending;
+    if (!pending || pending.requestId !== payload.requestId) {
+      return { status: 409, body: { error: 'no longer pending' } };
+    }
+    const scope = payload.approved ? (payload.scope as RemoteConsentScope | undefined) : undefined;
+    this.applyConsentScope(scope);
+    this.consentBroker.resolve(payload.requestId, payload.approved);
+    this.broadcastResolved(payload.requestId, payload.approved ? 'approved' : 'denied', 'remote');
+    // Clear the desktop card too; `remote: true` keeps it out of the mirror.
+    this.postMessage({ type: 'promptExpired', requestId: payload.requestId, action: 'cancel', remote: true });
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** Answer an in-flight confirmation request from the remote console. */
+  async handleRemoteConfirmation(payload: {
+    requestId: string;
+    value?: string;
+  }): Promise<{ status: number; body?: unknown }> {
+    const value = payload.value ?? '';
+    const pending = this.confirmBroker.pending as {
+      requestId: string;
+      options?: { value: string }[];
+    } | null;
+    if (!pending || pending.requestId !== payload.requestId) {
+      return { status: 409, body: { error: 'no longer pending' } };
+    }
+    if (!value || !(pending.options ?? []).some(option => option.value === value)) {
+      return { status: 400, body: { error: 'unknown option value' } };
+    }
+    this.confirmBroker.resolve(payload.requestId, value);
+    this.broadcastResolved(payload.requestId, 'approved', 'remote');
+    this.postMessage({ type: 'promptExpired', requestId: payload.requestId, action: 'cancel', remote: true });
+    return { status: 200, body: { ok: true } };
+  }
+
+  /**
+   * The chat thread as the desktop webview shows it, mirrored for the phone.
+   *
+   * Fed from `postMessage` (one choke point for everything the webview
+   * receives) and from `handleUserMessage` (where a user turn enters), so the
+   * console renders the choice block the model just emitted instead of a
+   * stream of approvals with no conversation around them.
+   */
+  private readonly transcriptMirror = new TranscriptMirror(
+    event => this.remoteBridge?.(event),
+    () => this.getActiveSessionId(),
+  );
+
+  /** Full transcript for `GET /transcript` — replay on every (re)connect. */
+  public transcriptSnapshot(): RemoteTranscriptEvent {
+    return this.transcriptMirror.snapshot();
+  }
+
+  /**
+   * A message typed on the phone. Deliberately the SAME entry point as the
+   * webview's `sendMessage`, so slash commands, the busy/steering guard and
+   * turn bookkeeping behave exactly as they do on the desktop.
+   */
+  public async remoteSendMessage(text: string): Promise<{ status: number; body?: unknown }> {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed) {
+      return { status: 400, body: { error: 'text must be a non-empty string' } };
+    }
+    try {
+      const result = await this.handleUserMessage(trimmed, undefined, 'remote');
+      if (!result.ok) {
+        // 409: the host refused (a turn is still running elsewhere) — the
+        // console shows the reason in its banner instead of parking the POST
+        // behind a desktop modal nobody can answer from a phone.
+        return { status: 409, body: { error: result.error ?? 'the message was not accepted' } };
+      }
+    } catch (error) {
+      return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
+    }
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** Webview frames that carry chat text (everything else is local to the UI). */
+  private mirrorTranscript(message: any): void {
+    if (message?.type === 'assistantMessage' && typeof message.content === 'string') {
+      this.transcriptMirror.noteAssistant(
+        typeof message.id === 'string' ? message.id : undefined,
+        message.content,
+        message.done === true,
+      );
+      return;
+    }
+    if (message?.type === 'historyRestored' && Array.isArray(message.messages)) {
+      this.transcriptMirror.reset(message.messages);
+    }
+  }
+
   public postMessage(message: any) {
     this._view?.webview.postMessage(message);
     this._editorPanel?.webview.postMessage(message);
+    this.mirrorApproval(message);
+    this.mirrorTranscript(message);
   }
 
   /**
@@ -4982,7 +5275,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return drained;
   }
 
-  private async handleUserMessage(content: string, images?: ImageAttachment[]): Promise<void> {
+  private async handleUserMessage(
+    content: string,
+    images?: ImageAttachment[],
+    /** 'remote' = typed on the phone: no desktop modal may block the request. */
+    origin: 'local' | 'remote' = 'local',
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.transcriptMirror.noteUser(content);
     // Task 14: slash-command parsing BEFORE sending to the LLM.
     // Delegates to executeSlashCommand() which handles all commands.
     const parsed = parseSlashCommand(content);
@@ -4991,7 +5290,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Clear the loading spinner — slash commands are not LLM calls, so the
       // "Thinking…" state set by the webview on send must be resolved here.
       this.postMessage({ type: 'loading', loading: false });
-      return; // do not send slash command to the LLM
+      return { ok: true }; // do not send slash command to the LLM
     }
 
     // Task 16: inject active file + selection context into the user message.
@@ -5007,6 +5306,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const foreignTurn = foreignRunningTurn(this.runningTurnSession, this.getActiveSessionId());
     if (foreignTurn) {
       const otherName = this.getSessions().find(s => s.id === foreignTurn)?.name;
+      if (origin === 'remote') {
+        // A phone cannot see or answer a desktop modal. Refuse with a reason
+        // the console can show instead of parking the POST behind a dialog
+        // nobody is looking at.
+        return {
+          ok: false,
+          error: `${runningElsewhereNotice(otherName)} Send again once it finishes.`,
+        };
+      }
       const decision = await this.requestConfirmation(
         'Response still running',
         `${runningElsewhereNotice(otherName)} Sending a message here would stop that run.`,
@@ -5021,11 +5329,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const activeId = this.getActiveSessionId();
         if (activeId) await this.loadSession(activeId);
         this.postMessage({ type: 'loading', loading: false });
-        return;
+        return { ok: false };
       }
       // Explicit stop: the foreign turn reconciles + persists into its own
       // session (reconcileStoppedTurn), then this one starts.
       this.stopRunningTurn();
+    }
+
+    if (origin === 'remote') {
+      // ONE thread, two screens: a turn typed on the phone has to show up in
+      // the desktop webview too. The webview adds its own bubble when IT is the
+      // sender, so a remote turn needs an explicit frame — without it the
+      // desktop showed the answer with no question above it.
+      this.postMessage({
+        type: 'remoteUserMessage',
+        content,
+        sessionId: this.getActiveSessionId() ?? null,
+      });
     }
 
     // Build LLM content: string or ContentBlockParam[] if images present
@@ -5063,6 +5383,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // host-initiated turns (AI "Review Task Detail") share the exact same
     // session/system-prompt/agentic-loop pipeline as user sends.
     await this.runChatTurn(llmContent);
+    return { ok: true };
   }
 
   /**
@@ -5121,11 +5442,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.conversation = this.sessionConversationFor(turnSessionId);
     this.runningTurnSession = turnSessionId;
+    this.turnStartedAt = Date.now();
     this.runningTurnAbort = abort;
     // Fresh per-turn interrupt controller for the in-flight tool.
     this.toolInterrupt = new AbortController();
     // Flag the owning session as running in the list straight away.
     this.postSessionRunState();
+    // …and tell any console watching from a phone that the machine is working
+    // (a turn is not an AgentRun, so no agentStatus frame would ever say so).
+    this.broadcastTurnStatus();
     // Turn-owned posts: reach the webview only while THIS turn's session is
     // the one displayed — late chunks from a stopped turn (session switch /
     // new message) can never land in another session's thread.
@@ -5404,6 +5729,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (choicePrompt) {
         const requestId = `choice-${Date.now()}`;
+        // The fence (and the numbered list it may have come from) is stripped
+        // from `cleanText` BEFORE the mirror sees it, so the console cannot
+        // re-parse the options — hand the parsed prompt over explicitly.
+        this.transcriptMirror.noteChoice(choicePrompt.question, choicePrompt.options);
         this.postMessage({
           type: 'choicePrompt',
           requestId,
@@ -5450,9 +5779,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.runningTurnAbort = undefined;
         this.toolInterrupt = undefined;
         this.runningTurnSession = undefined;
+        this.turnStartedAt = undefined;
       }
       // Drop the running badge whichever session is on screen.
       this.postSessionRunState();
+      this.broadcastTurnStatus();
       this.setWorking(false);
     }
   }

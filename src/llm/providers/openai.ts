@@ -2,6 +2,19 @@ import { LlmMessage, LlmStreamChunk, LlmConfig, LlmProvider, LlmTool, ToolCall }
 import type { ContentBlockParam } from '../types';
 import { toModelInfo, ModelInfo } from '../modelCapabilities';
 import { ADO_CODE_USER_AGENT } from '../../shared/version';
+import { llmFetch } from './net';
+import { joinBaseUrl } from './baseUrl';
+
+/**
+ * Single door for every request this provider makes.
+ *
+ * Bare `fetch` gave users a literal "fetch failed" with no detail (undici keeps
+ * the reason on `error.cause`), no retry and no bounded wait. `llmFetch` fixes
+ * all three: headers timeout, transient retry with backoff, described errors.
+ */
+function providerFetch(url: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+  return llmFetch(String(url), { ...init, label: 'OpenAI' });
+}
 
 /** Headers shared by every OpenAI-compatible request — identifies ADO Code. */
 function baseHeaders(config: LlmConfig): Record<string, string> {
@@ -12,13 +25,23 @@ function baseHeaders(config: LlmConfig): Record<string, string> {
   };
 }
 
+/**
+ * `<apiUrl>/chat/completions`, with the configured base URL normalised.
+ *
+ * Joining the raw setting produced `.../v1//chat/completions` whenever the user
+ * left a trailing slash in `adoCode.llmApiUrl`, and the gateway answered 404.
+ */
+function completionsUrl(config: LlmConfig): string {
+  return joinBaseUrl(config.apiUrl, '/chat/completions');
+}
+
 export class OpenAiProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
     const openaiMessages = messages
       .filter(m => m.role !== 'tool')
       .map(m => ({ role: m.role, content: convertContent(m.content) }));
 
-    const response = await fetch(`${config.apiUrl}/chat/completions`, {
+    const response = await providerFetch(completionsUrl(config), {
       method: 'POST',
       headers: baseHeaders(config),
       signal,
@@ -102,7 +125,7 @@ export class OpenAiProvider implements LlmProvider {
       return { role: m.role, content: convertContent(m.content) };
     });
 
-    const response = await fetch(`${config.apiUrl}/chat/completions`, {
+    const response = await providerFetch(completionsUrl(config), {
       method: 'POST',
       headers: baseHeaders(config),
       signal,
@@ -190,7 +213,7 @@ export class OpenAiProvider implements LlmProvider {
         }));
       }
 
-      const response = await fetch(`${config.apiUrl}/chat/completions`, {
+      const response = await providerFetch(completionsUrl(config), {
         method: 'POST',
         headers: baseHeaders(config),
         body: JSON.stringify(body),
@@ -249,7 +272,7 @@ function convertContent(
 
 /** Model ids (+ capability hints when the gateway exposes them) via the standard OpenAI-compatible GET /models endpoint. */
 export async function listModelsOpenAi(config: LlmConfig): Promise<ModelInfo[]> {
-  const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/models`, {
+  const response = await providerFetch(joinBaseUrl(config.apiUrl, '/models'), {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${config.apiKey}`,

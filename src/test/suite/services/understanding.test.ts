@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { UnderstandingService, UnderstandingGit } from '../../../services/understanding/UnderstandingService';
+import { makeScratchDir } from '../utils/scratchDir';
 
 function fakeGit(overrides: Partial<UnderstandingGit> = {}): UnderstandingGit {
   return {
@@ -24,7 +24,7 @@ suite('UnderstandingService', () => {
   let service: UnderstandingService;
 
   setup(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adocode-understanding-'));
+    tmpDir = makeScratchDir('adocode-understanding-');
     write(tmpDir, 'AGENTS.md', '# Project\nBuild with npm run build.\n');
     write(tmpDir, 'package.json', JSON.stringify({
       name: 'demo',
