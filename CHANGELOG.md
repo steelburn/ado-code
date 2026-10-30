@@ -4,6 +4,23 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The dependency step now walks you through Flutter *and* its Dart SDK, following the
+  official install docs.** The Flutter hint used to be one `winget`/`brew`/`snap` command,
+  and on Windows there is no such command: winget carries no Flutter SDK package at all
+  (`Flutter.Flutter` and `Google.Flutter` both resolve to nothing against a refreshed
+  index), so the card was pointing at an id that does not exist. Windows now follows
+  docs.flutter.dev's recommended route — the Flutter extension's Download SDK → Clone Flutter
+  → Add SDK to PATH flow — while macOS (`brew install --cask flutter`) and Linux
+  (`snap install flutter --classic`) keep a one-liner, and every platform finishes with
+  `flutter doctor`. An install hint may now be a list of commands, rendered as ordered,
+  individually copyable steps. A new optional `Dart SDK 3+` check reports whether `dart` is
+  reachable — Flutter already ships it on `flutter/bin`, so the check never gates the
+  wizard — and its hint follows dart.dev/get-dart: `winget install --id=Google.DartSDK -e`,
+  the `dart-lang/dart` tap on macOS (there is no core `dart` formula) and Google's apt repo
+  on Debian/Ubuntu (there is no `dart` snap).
+
 ## [0.8.3] - 2026-10-30
 
 ### Added

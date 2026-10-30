@@ -22,11 +22,17 @@
 
 export type DependencyKind = 'runtime' | 'sdk' | 'package-manager' | 'vcs' | 'cli';
 
-/** How the user installs something the host refuses to install for them. */
+/**
+ * How the user installs something the host refuses to install for them.
+ *
+ * A platform may list several commands: they render as ordered, copy-as-you-go
+ * steps, which is what an SDK bootstrap really is (install the SDK, then let it
+ * fetch its own sub-SDK). One string stays the common case.
+ */
 export interface DependencyInstallHint {
-  win?: string;
-  mac?: string;
-  linux?: string;
+  win?: string | string[];
+  mac?: string | string[];
+  linux?: string | string[];
   url?: string;
   note?: string;
 }
@@ -165,25 +171,25 @@ export function meetsMinimum(version: string | undefined, min?: string): boolean
   return compareVersions(version, min) >= 0;
 }
 
+/** One hint field as steps — `undefined` and blank entries vanish. */
+function stepsOf(hint?: string | string[]): string[] {
+  if (!hint) return [];
+  return (Array.isArray(hint) ? hint : [hint]).map(step => step.trim()).filter(step => step.length > 0);
+}
+
 /** Guidance lines for one spec, on the platform doing the asking. */
 export function guidanceFor(spec: DependencySpec, platform: string): string[] {
   const hint = spec.install;
   if (!hint) return [];
-  const lines: string[] = [];
-  const win = hint.win;
-  const mac = hint.mac;
-  const linux = hint.linux;
-  if (platform === 'win32') {
-    if (win) lines.push(win);
-    else if (mac) lines.push(mac);
-  } else if (platform === 'darwin') {
-    if (mac) lines.push(mac);
-    else if (linux) lines.push(linux);
-  } else {
-    if (linux) lines.push(linux);
-    else if (mac) lines.push(mac);
+  // The OS closest to the one asking is the fallback, so a hint is never empty;
+  // the first platform with steps wins outright.
+  const candidates =
+    platform === 'win32' ? [hint.win, hint.mac] : platform === 'darwin' ? [hint.mac, hint.linux] : [hint.linux, hint.mac];
+  for (const candidate of candidates) {
+    const steps = stepsOf(candidate);
+    if (steps.length > 0) return steps;
   }
-  return lines;
+  return [];
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -313,11 +319,47 @@ function flutterChecks(): DependencySpec[] {
       probes: [{ cmd: 'flutter', args: ['--version'] }],
       minVersion: '3',
       install: {
-        win: 'winget install --id Google.Flutter',
-        mac: 'brew install --cask flutter',
-        linux: 'sudo snap install flutter --classic',
-        url: 'https://docs.flutter.dev/get-started/install',
-        note: 'After installing, run `flutter doctor` once to accept the Android licences.',
+        // Grounded in docs.flutter.dev/install, which offers two routes: the VS
+        // Code extension (recommended — and this wizard already runs in VS Code),
+        // then the manual zip. winget carries no Flutter SDK package at all:
+        // `Flutter.Flutter` and `Google.Flutter` both answer "No package found"
+        // against a refreshed index, so Windows gets no package-manager one-liner.
+        win: [
+          'Install the "Flutter" extension (Dart-Code.flutter), then run "Flutter: New Project"',
+          'In the SDK prompt choose Download SDK → Clone Flutter → Add SDK to PATH',
+          'Restart VS Code, open a NEW terminal, then: flutter doctor',
+        ],
+        // macOS/Linux keep the package-manager shortcut (both packages are real
+        // and maintained) as a one-liner instead of the extension/zip walkthrough.
+        mac: ['brew install --cask flutter', 'flutter doctor'],
+        linux: ['sudo snap install flutter --classic', 'flutter doctor'],
+        url: 'https://docs.flutter.dev/install',
+        note: 'macOS/Linux use the package-manager shortcut (brew cask / snap classic); Windows follows the documented VS Code route. The `dart` CLI ships with Flutter: putting flutter/bin on PATH exposes both `flutter` and `dart`, so no separate Dart install is needed. `flutter doctor` only reports unaccepted Android licences — accept them with `flutter doctor --android-licenses`. If `flutter` is still not recognised, restart the terminal: PATH changes apply to new shells only. No-package-manager fallback: extract the release zip and add flutter/bin to PATH (docs.flutter.dev/install/manual).',
+      },
+    },
+    {
+      id: 'dart',
+      label: 'Dart SDK 3+',
+      why: 'Runs `flutter test` and the dart CLI; Flutter ships it, so this only checks PATH.',
+      kind: 'sdk',
+      // Bundled with Flutter ⇒ never a veto: a doctor-bootstrapped SDK that is
+      // missing from PATH is a convenience problem, not a broken project.
+      required: false,
+      probes: [{ cmd: 'dart', args: ['--version'] }],
+      minVersion: '3',
+      install: {
+        // dart.dev/get-dart documents exactly these routes. There is no core
+        // `dart` Homebrew formula and no `dart` snap (both 404), which is why
+        // macOS taps dart-lang/dart and Debian/Ubuntu add Google's apt repo.
+        win: 'winget install --id=Google.DartSDK -e',
+        mac: ['brew tap dart-lang/dart', 'brew trust dart-lang/dart', 'brew install dart'],
+        linux: [
+          'wget -qO- https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/dart.gpg',
+          "echo 'deb [signed-by=/usr/share/keyrings/dart.gpg arch=amd64] https://storage.googleapis.com/download.dartlang.org/linux/debian stable main' | sudo tee /etc/apt/sources.list.d/dart_stable.list",
+          'sudo apt-get update && sudo apt-get install dart',
+        ],
+        url: 'https://dart.dev/get-dart',
+        note: 'Only needed for a bare `dart` command. Flutter ships its own `dart` and exposes it by putting flutter/bin on PATH, so this check is optional and never blocks the template.',
       },
     },
     {

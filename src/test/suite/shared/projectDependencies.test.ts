@@ -60,6 +60,43 @@ suite('shared/projectDependencies', () => {
         test('empty for a spec without install hints', () => {
             assert.deepStrictEqual(guidanceFor({ ...planForTemplate('node-ts').checks[0], install: undefined }, 'win32'), []);
         });
+
+        test('an SDK bootstrap renders as ordered steps, not one crammed line', () => {
+            const flutter = planForTemplate('flutter').checks.find(c => c.id === 'flutter')!;
+            assert.deepStrictEqual(guidanceFor(flutter, 'win32'), [
+                'Install the "Flutter" extension (Dart-Code.flutter), then run "Flutter: New Project"',
+                'In the SDK prompt choose Download SDK → Clone Flutter → Add SDK to PATH',
+                'Restart VS Code, open a NEW terminal, then: flutter doctor',
+            ]);
+            // Windows has no winget package for the Flutter SDK — `Flutter.Flutter` and
+            // `Google.Flutter` both resolve to nothing on a refreshed index, so the hint
+            // must never send anyone down that path again.
+            assert.ok(!guidanceFor(flutter, 'win32').some(s => s.includes('winget')), 'the Flutter hint must not claim a winget id');
+            assert.deepStrictEqual(guidanceFor(flutter, 'darwin'), [
+                'brew install --cask flutter',
+                'flutter doctor',
+            ]);
+        });
+
+        test('the dart hint follows dart.dev, which has no snap and no core formula', () => {
+            const dart = planForTemplate('flutter').checks.find(c => c.id === 'dart')!;
+            assert.deepStrictEqual(guidanceFor(dart, 'win32'), ['winget install --id=Google.DartSDK -e']);
+            assert.deepStrictEqual(guidanceFor(dart, 'darwin'), [
+                'brew tap dart-lang/dart',
+                'brew trust dart-lang/dart',
+                'brew install dart',
+            ]);
+            const linux = guidanceFor(dart, 'linux');
+            assert.ok(linux.some(s => s.includes('apt-get install dart')), 'linux installs from the apt repo');
+            assert.ok(!linux.some(s => s.includes('snap')), 'there is no dart snap');
+        });
+
+        test('blank steps are dropped and the neighbouring OS still wins', () => {
+            const node = planForTemplate('node-ts').checks.find(c => c.id === 'node')!;
+            const linuxOnly = { ...node, install: { linux: ['  ', 'sudo apt install nodejs'] } };
+            assert.deepStrictEqual(guidanceFor(linuxOnly, 'darwin'), ['sudo apt install nodejs']);
+            assert.deepStrictEqual(guidanceFor({ ...node, install: { win: '   ' } }, 'win32'), []);
+        });
     });
 
     suite('planForTemplate', () => {
@@ -82,6 +119,16 @@ suite('shared/projectDependencies', () => {
             const plan = planForTemplate('flutter');
             assert.strictEqual(plan.checks.find(c => c.id === 'java')!.required, false);
             assert.deepStrictEqual(plan.autoInstall[0].args, ['pub', 'get']);
+        });
+
+        test('flutter documents where dart comes from and keeps a dart check that never vetoes', () => {
+            const plan = planForTemplate('flutter');
+            const flutter = plan.checks.find(c => c.id === 'flutter')!;
+            assert.ok(flutter.install?.note?.includes('ships with Flutter'), 'the Flutter hint says where dart comes from');
+            const dart = plan.checks.find(c => c.id === 'dart')!;
+            assert.deepStrictEqual(dart.probes.map(p => p.cmd), ['dart']);
+            assert.strictEqual(dart.required, false, 'a Flutter-bundled SDK is a PATH nicety, not a gate');
+            assert.ok(dart.install?.note?.includes('flutter/bin'), 'the dart hint names where Flutter exposes it');
         });
 
         test('documentation templates only care about pandoc and git', () => {
