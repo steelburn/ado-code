@@ -4,6 +4,19 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **Obsolete plan and promo documents.** `docs/` no longer carries executed implementation
+  plans: `remote-agent-oversight-plan.md` (superseded by `docs/remote.md`, which documents the
+  shipped console), `chat-declutter-strategy.md` and `chat-token-optimization.md` (every item
+  shipped across 0.6.x—0.8.x and recorded in this file). The whole `.hermes/` plan set went
+  with them, including its generated `STRUCTURE.md` module map (superseded by the repository-
+  understanding digest), the orphan `scripts/update-structure.js` generator, the two superseded
+  `docs/promo/` release kits (0.8.0, 0.8.1) and their `.vscodeignore` entries. Live documentation
+  — `README.md`, `AGENTS.md`, `docs/remote.md`, `docs/documentation-projects.md` and
+  `docs/playbooks/` — stays, and `AGENTS.md` now states that an executed plan lands in this
+  file, the code and the work item rather than in a plan document.
+
 ## [0.8.3] - 2026-10-30
 
 ### Added

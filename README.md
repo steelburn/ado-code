@@ -283,6 +283,15 @@ The extension infers the active model's capabilities from its id:
 - The Configuration page shows a live readout ("Capabilities: vision · tool calling") for the selected model and highlights models lacking tool calling
 
 
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [docs/remote.md](docs/remote.md) | Remote console: setup, QR and token, answering approvals, sessions, tunnels, troubleshooting |
+| [docs/documentation-projects.md](docs/documentation-projects.md) | Role-based documentation projects (doc-ba, doc-writer, doc-tester) and the export flow |
+| [docs/playbooks/](docs/playbooks) | Task recipes: add a tool, a message type, an MCP server or an agent adapter; release bump; user and workspace memory |
+| [AGENTS.md](AGENTS.md) | Repository conventions, build commands and constraints for contributors |
+
 ## Release Notes
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.

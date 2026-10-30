@@ -73,6 +73,7 @@ _…digest cut at 600 characters._
 - Docs budget: extend an existing document; never a .md per step or per turn
 - Progress lives in the chat and the work item, not in a new markdown file
 - Reference .ado-code/understanding/ and AGENTS.md; do not duplicate them
+- Keep `docs/` to live references (`remote.md`, `documentation-projects.md`, `playbooks/`); an executed plan ends up in CHANGELOG.md, the code and the work item, never in a plan file
 - Do not add ad-hoc files under .ado-code/ (it is garbage-collected) — the one exception is .ado-code/test-scratch, the suites' throwaway root (gitignored, wiped by every Electron run)
 
 ## What NOT to Do
