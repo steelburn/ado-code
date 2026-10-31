@@ -6,6 +6,8 @@
     "outDir": "out",
     "rootDir": "src",
     "sourceMap": true,
+    "incremental": true,
+    "tsBuildInfoFile": "out/tsconfig.tsbuildinfo",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

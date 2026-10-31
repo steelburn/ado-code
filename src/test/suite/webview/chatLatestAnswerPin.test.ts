@@ -53,7 +53,7 @@ suite('webview/MessageList - "Latest answer" pins the bottom', () => {
 
   test('jumpToLatest re-pins and scrolls through scrollToBottom', () => {
     const src = messageListSource();
-    const match = /const jumpToLatest = \(\) => \{([\s\S]*?)\n  \};/.exec(src);
+    const match = /const jumpToLatest = \(\) => \{([\s\S]*?)\n {2}\};/.exec(src);
     assert.ok(match, 'jumpToLatest is missing from MessageList');
     assert.ok(
       /stickToBottomRef\.current = true;/.test(match[1]),

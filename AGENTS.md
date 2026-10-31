@@ -76,9 +76,18 @@ _…digest cut at 600 characters._
 - Keep `docs/` to live references (`remote.md`, `documentation-projects.md`, `playbooks/`); an executed plan ends up in CHANGELOG.md, the code and the work item, never in a plan file
 - Do not add ad-hoc files under .ado-code/ (it is garbage-collected) — the one exception is .ado-code/test-scratch, the suites' throwaway root (gitignored, wiped by every Electron run)
 
+## Verification — test tiers
+Cheap by default; the Electron host is the exception, not the routine gate.
+- every edit: `npm run compile` (~3s, incremental)
+- while iterating: `npm run test:changed` — only the suites the diff touches (`--dry-run` lists them, `--grep <name>` narrows further)
+- before commit: `npm test` — all 132 suites headlessly under scripts/vscode-stub.js: 2049 tests, ~95s, ONE line of output when green, failure block capped at 12k chars
+- before a PR, or where the real vscode API is the thing under test: `npm run test:host` (minutes, GUI, very noisy). The stub is permissive, so this is the only check that catches a vacuous pass — which is why it stays available, not why it stays routine.
+- A red run prints the failing tests only. Read that block; do not re-run the whole suite to "see" a failure.
+- Global blast radius (package.json, tsconfig.json, scripts/, src/shared/, src/webview-ui/, src/test/) always escalates `--changed` to the full suite — by design, not a bug
+
 ## What NOT to Do
 - Do not add runtime dependencies without approval
 - Do not use any types where avoidable
 - Do not skip approval hook for mutating tools in inline mode
 - Do not use preview API versions where GA exists
-- Do not commit without npm run compile && npm test passing
+- Do not commit without `npm run compile` and `npm test` green (see Verification — test tiers)

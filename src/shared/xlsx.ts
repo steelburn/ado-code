@@ -174,6 +174,8 @@ export interface XlsxWarning {
 // Primitives
 // ---------------------------------------------------------------------------
 
+/** Code points XML 1.0 forbids outright — C0 controls among them, by design. */
+// eslint-disable-next-line no-control-regex -- control characters are the target here
 const INVALID_XML_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 

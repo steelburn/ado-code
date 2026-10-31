@@ -65,10 +65,14 @@ function decode(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('utf8');
 }
 
+/** Characters a Windows file name cannot contain — including C0 controls. */
+// eslint-disable-next-line no-control-regex -- control characters are the target here
+const UNSAFE_FILE_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
 /** Strips characters that would make a file name unusable on Windows. */
 export function workbookFileName(projectName: string): string {
   const cleaned = projectName
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(UNSAFE_FILE_NAME_CHARS, '-')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '');

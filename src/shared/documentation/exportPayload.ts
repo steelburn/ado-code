@@ -245,9 +245,13 @@ export function stemOf(filePath: string): string {
   return dot > 0 ? base.slice(0, dot) : base;
 }
 
+/** Characters a Windows file name cannot contain — including C0 controls. */
+// eslint-disable-next-line no-control-regex -- control characters are the target here
+const UNSAFE_FILE_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
 function safeSegment(value: string, fallback: string): string {
   const cleaned = value
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(UNSAFE_FILE_NAME_CHARS, '-')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '');

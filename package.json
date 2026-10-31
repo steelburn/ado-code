@@ -1496,7 +1496,9 @@
     "build:webview": "cd src/webview-ui && npm install && npm run build",
     "build:all": "npm run compile && npm run bundle && npm run build:webview",
     "watch:webview": "cd src/webview-ui && npm run watch",
-    "test": "node ./out/test/runTest.js",
+    "test": "node scripts/test.js",
+    "test:changed": "node scripts/test.js --changed",
+    "test:host": "node ./out/test/runTest.js",
     "test:unit": "node node_modules/mocha/bin/mocha.js --ui tdd --require ./scripts/vscode-stub.js \"out/test/suite/shared/**/*.test.js\" out/test/suite/services.lazy.test.js",
     "publish:open-vsx": "node scripts/publish-open-vsx.js",
     "prepare": "husky"

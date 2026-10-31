@@ -4,6 +4,8 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-30
+
 ### Added
 
 - **The remote console is now a single-page app, opened by the QR code.** It used to be
@@ -18,63 +20,6 @@ All notable changes to ADO Code will be documented in this file.
   view while the token is still scrubbed from the address bar once exchanged. A scan
   that carries a view (`#t=…&view=approvals`) opens it directly. Still no framework, no
   CDN and no build step - the console remains one self-contained document.
-
-### Changed
-
-- **The dependency step now walks you through Flutter *and* its Dart SDK, following the
-  official install docs.** The Flutter hint used to be one `winget`/`brew`/`snap` command,
-  and on Windows there is no such command: winget carries no Flutter SDK package at all
-  (`Flutter.Flutter` and `Google.Flutter` both resolve to nothing against a refreshed
-  index), so the card was pointing at an id that does not exist. Windows now follows
-  docs.flutter.dev's recommended route — the Flutter extension's Download SDK → Clone Flutter
-  → Add SDK to PATH flow — while macOS (`brew install --cask flutter`) and Linux
-  (`snap install flutter --classic`) keep a one-liner, and every platform finishes with
-  `flutter doctor`. An install hint may now be a list of commands, rendered as ordered,
-  individually copyable steps. A new optional `Dart SDK 3+` check reports whether `dart` is
-  reachable — Flutter already ships it on `flutter/bin`, so the check never gates the
-  wizard — and its hint follows dart.dev/get-dart: `winget install --id=Google.DartSDK -e`,
-  the `dart-lang/dart` tap on macOS (there is no core `dart` formula) and Google's apt repo
-  on Debian/Ubuntu (there is no `dart` snap).
-- **The Flutter steps were re-reviewed line by line against docs.flutter.dev/tools/vs-code.**
-  The Windows walkthrough now names the real UI landmarks (Extensions view search, Command
-  Palette → Flutter: New Project, Select Folder for Flutter SDK → Clone Flutter, then the
-  *Add SDK to PATH* button on the completion notification) and validates with **Flutter: Run
-  Flutter Doctor** from the Command Palette instead of a terminal `flutter doctor`, which
-  fails until the new PATH reaches a fresh shell. The card links to that page rather than
-  /install, the note carries the documented per-platform prerequisites (Git for Windows,
-  `xcode-select --install`, the Debian/Ubuntu apt set) and the documented tolerance — only
-  ✓ for Flutter and the platforms you target — and the claim that `flutter doctor` reports
-  *only* unaccepted Android licences is gone.
-
-### Fixed
-
-- **A new objective now retires the old goal instead of renaming it, so one chat can no longer
-  accumulate a fifty-step pile.** `set_goal` only archived the previous goal when every step was
-  ticked off, and a goal carrying a step that only a human can tick — the normal case — never
-  satisfied that gate: each new concern overwrote the goal text in place while `update_todo_list`
-  kept merging the next plan onto the old steps, so a long session ended as one goal line with
-  dozens of items and a meaningless "Progress: x/50". A goal text describing a different objective
-  (word overlap below 0.7 in a stopword-filtered Jaccard, so a rewording of the same objective
-  still keeps its checklist) now archives the old goal **with its still-open steps** and starts the
-  new goal with a clean list. Archive rows carry a `reason` (`completed` / `superseded`) and the
-  number of steps left open, rendered as "N open, superseded" with a tooltip, and `set_goal`
-  reports the retirement back as `superseded: { reason, archivedItems, openItems }` together with
-  "cleared — plan this objective with update_todo_list" instead of a bare `{ ok: true }`.
-- **The item cap prunes instead of silently swallowing new steps.** Once the list reached
-  `MAX_TODO_ITEMS`, `normalizeTodoItems` simply stopped reading, so the steps the model had just
-  sent were the ones discarded — a new objective's real work never appeared at all. Eviction now
-  runs oldest-completed, then oldest in-progress, then oldest pending, a step from the current
-  write is the last thing dropped, and `update_todo_list` returns `truncated: n` so the trim is
-  visible. An oversized single write is normalized against the hard ceiling first, so its overflow
-  lands in that reported count rather than vanishing inside normalization.
-- **The tool descriptions and system prompt now state the consequence of the merge semantics.**
-  Omitting an item keeps it forever rather than deleting it, so when the user raises a different
-  objective the assistant is told to call `set_goal` for the clean slate instead of appending the
-  new plan to the previous one.
-
-## [0.8.3] - 2026-10-30
-
-### Added
 
 - **Choice cards answered on either surface now close on both.** A choice block used to be a
   one-way prompt: tapping an option on the phone fed the answer into the next turn, but the
@@ -177,6 +122,51 @@ All notable changes to ADO Code will be documented in this file.
   card is hidden when the session has neither a goal nor a to-do list, and long lists stop at eight
   rows (`+N more steps`) so the conversation stays reachable.
 
+### Changed
+
+- **Verification is now cheap by default: the test suite runs headless, and the Electron
+  host is opt-in.** `npm test` used to boot the real VS Code test host (`runTest.ts`) on
+  every run - a GUI, a `.vscode-test` download, and mocha's `spec` reporter printing
+  ~177,000 characters (~44k tokens) of `√ <test name>` noise before it had even finished.
+  Running all 132 suite files headlessly under `scripts/vscode-stub.js` gives the same
+  2049 passing tests in ~95s with ~44 characters of output, so the host was buying a boot
+  and a context blowout, not coverage. The new `scripts/test.js` runner makes that the
+  default and prints one summary line on green, or just the capped failure block on red.
+- **`npm run test:changed` runs only the suites a diff touches.** Changed sources map to
+  suites by import basename and suite directory; files with extension-wide blast radius
+  (`package.json`, `tsconfig.json`, `scripts/`, `src/shared/`, `src/webview-ui/`,
+  `src/test/`) escalate to the full suite. `--dry-run` lists the selection, `--grep <name>`
+  narrows by test name, and `--files a.ts,b.ts` states the change set explicitly.
+- **`npm run test:host` keeps the real VS Code host available** for the one thing the stub
+  cannot prove: the stub is a permissive `Proxy`, so a suite that depends on real `vscode`
+  behaviour can pass vacuously. Run it before a PR, not per edit.
+- `tsc` now runs with `incremental: true`, cutting a repeat compile from ~16s to ~3s.
+
+- **The dependency step now walks you through Flutter *and* its Dart SDK, following the
+  official install docs.** The Flutter hint used to be one `winget`/`brew`/`snap` command,
+  and on Windows there is no such command: winget carries no Flutter SDK package at all
+  (`Flutter.Flutter` and `Google.Flutter` both resolve to nothing against a refreshed
+  index), so the card was pointing at an id that does not exist. Windows now follows
+  docs.flutter.dev's recommended route — the Flutter extension's Download SDK → Clone Flutter
+  → Add SDK to PATH flow — while macOS (`brew install --cask flutter`) and Linux
+  (`snap install flutter --classic`) keep a one-liner, and every platform finishes with
+  `flutter doctor`. An install hint may now be a list of commands, rendered as ordered,
+  individually copyable steps. A new optional `Dart SDK 3+` check reports whether `dart` is
+  reachable — Flutter already ships it on `flutter/bin`, so the check never gates the
+  wizard — and its hint follows dart.dev/get-dart: `winget install --id=Google.DartSDK -e`,
+  the `dart-lang/dart` tap on macOS (there is no core `dart` formula) and Google's apt repo
+  on Debian/Ubuntu (there is no `dart` snap).
+- **The Flutter steps were re-reviewed line by line against docs.flutter.dev/tools/vs-code.**
+  The Windows walkthrough now names the real UI landmarks (Extensions view search, Command
+  Palette → Flutter: New Project, Select Folder for Flutter SDK → Clone Flutter, then the
+  *Add SDK to PATH* button on the completion notification) and validates with **Flutter: Run
+  Flutter Doctor** from the Command Palette instead of a terminal `flutter doctor`, which
+  fails until the new PATH reaches a fresh shell. The card links to that page rather than
+  /install, the note carries the documented per-platform prerequisites (Git for Windows,
+  `xcode-select --install`, the Debian/Ubuntu apt set) and the documented tolerance — only
+  ✓ for Flutter and the platforms you target — and the claim that `flutter doctor` reports
+  *only* unaccepted Android licences is gone.
+
 ### Removed
 
 - **Obsolete plan and promo documents.** `docs/` no longer carries executed implementation
@@ -191,6 +181,38 @@ All notable changes to ADO Code will be documented in this file.
   file, the code and the work item rather than in a plan document.
 
 ### Fixed
+
+- **`npm run lint` is green again — the six pre-existing errors, none of them behavioural.** The
+  token-counter test reached `estimateContextWindow` and `ContextManager` through `require()`, so
+  those two names were `any`; they are now static imports, which is also why its fixture array
+  needed a `LlmMessage[]` annotation. The remaining four were deliberate: three regexes whose job
+  is to strip C0 controls (`xlsx` XML sanitising, and the two Windows file-name sanitisers) now carry
+  a one-line, reasoned `no-control-regex` suppression instead of leaving the rule permanently red,
+  and a test regex with two hard-coded spaces uses `{2}` so the count is visible.
+
+- **A new objective now retires the old goal instead of renaming it, so one chat can no longer
+  accumulate a fifty-step pile.** `set_goal` only archived the previous goal when every step was
+  ticked off, and a goal carrying a step that only a human can tick — the normal case — never
+  satisfied that gate: each new concern overwrote the goal text in place while `update_todo_list`
+  kept merging the next plan onto the old steps, so a long session ended as one goal line with
+  dozens of items and a meaningless "Progress: x/50". A goal text describing a different objective
+  (word overlap below 0.7 in a stopword-filtered Jaccard, so a rewording of the same objective
+  still keeps its checklist) now archives the old goal **with its still-open steps** and starts the
+  new goal with a clean list. Archive rows carry a `reason` (`completed` / `superseded`) and the
+  number of steps left open, rendered as "N open, superseded" with a tooltip, and `set_goal`
+  reports the retirement back as `superseded: { reason, archivedItems, openItems }` together with
+  "cleared — plan this objective with update_todo_list" instead of a bare `{ ok: true }`.
+- **The item cap prunes instead of silently swallowing new steps.** Once the list reached
+  `MAX_TODO_ITEMS`, `normalizeTodoItems` simply stopped reading, so the steps the model had just
+  sent were the ones discarded — a new objective's real work never appeared at all. Eviction now
+  runs oldest-completed, then oldest in-progress, then oldest pending, a step from the current
+  write is the last thing dropped, and `update_todo_list` returns `truncated: n` so the trim is
+  visible. An oversized single write is normalized against the hard ceiling first, so its overflow
+  lands in that reported count rather than vanishing inside normalization.
+- **The tool descriptions and system prompt now state the consequence of the merge semantics.**
+  Omitting an item keeps it forever rather than deleting it, so when the user raises a different
+  objective the assistant is told to call `set_goal` for the clean slate instead of appending the
+  new plan to the previous one.
 
 - **A tunnel QR no longer scans to a link without its session token.** When the tunnel reported
   its public URL the panel was redrawn straight from that URL, so the QR — and the URL printed

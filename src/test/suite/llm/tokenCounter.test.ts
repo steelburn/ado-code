@@ -1,5 +1,13 @@
 import * as assert from 'assert';
-import { countTokens, countMessageTokens, countContentTokens, countImageTokens } from '../../../llm/context/tokenCounter';
+import {
+  countTokens,
+  countMessageTokens,
+  countContentTokens,
+  countImageTokens,
+  estimateContextWindow,
+} from '../../../llm/context/tokenCounter';
+import { ContextManager } from '../../../llm/context/contextManager';
+import type { LlmMessage } from '../../../llm/types';
 
 // 0.6.5: token counting must reflect what is actually passed to the LLM —
 // tool-call content (arguments JSON on assistant messages, tool results) and
@@ -66,7 +74,6 @@ suite('Token counter (0.6.5: tool + image aware)', () => {
   });
 
   test('estimateContextWindow: o1-mini matches 128k, not o1 (200k), and demo1 does not match o1', () => {
-    const { estimateContextWindow } = require('../../../llm/context/tokenCounter');
     assert.strictEqual(estimateContextWindow({ apiModelId: 'o1-mini' }), 128_000, 'o1-mini must match o1-mini 128k');
     assert.strictEqual(estimateContextWindow({ apiModelId: 'o1' }), 200_000, 'o1 matches 200k');
     assert.strictEqual(estimateContextWindow({ apiModelId: 'demo1' }), 128_000, 'demo1 should not match o1');
@@ -74,13 +81,12 @@ suite('Token counter (0.6.5: tool + image aware)', () => {
   });
 
   test('ContextManager: truncateMessages respects overheadTokens and truncates properly', () => {
-    const { ContextManager } = require('../../../llm/context/contextManager');
     // maxTokens: 1000, overheadTokens: 400 => available message budget: 600
     const cm = new ContextManager(1000);
     cm.setOverheadTokens(400);
 
     // Messages with ~700 tokens
-    const messages = [
+    const messages: LlmMessage[] = [
       { role: 'system', content: 'sys' },
       { role: 'user', content: 'a'.repeat(800) }, // ~200 tokens
       { role: 'assistant', content: 'b'.repeat(800) }, // ~200 tokens
