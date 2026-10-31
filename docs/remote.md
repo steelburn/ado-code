@@ -38,6 +38,30 @@ The QR encodes the **resolved** URL, so it is never a loopback address when a pu
 exists. If no public URL exists, the panel says so plainly instead of handing you a code
 that silently fails.
 
+## One app, three views
+
+Scanning the QR code opens a single-page app: one document, one event stream, and a tab
+bar at the bottom that switches **views in place**. Nothing reloads when you move between
+them, so the stream stays connected, the mirrored conversation keeps arriving, and a
+consent card that lands while you are reading the runs is already live the moment you
+tap **Approvals**.
+
+| View | What it holds |
+| --- | --- |
+| **Thread** | The plan card, the mirrored conversation with its choice buttons, and the box you reply in. |
+| **Approvals** | The consent and confirmation cards, with a count on the tab while any of them is unanswered. |
+| **Runs** | The external agent runs this machine is driving, with their live delta. |
+
+The route lives in the URL fragment (`#view=thread`, `#view=approvals`, `#view=runs`),
+right next to the token, so the phone's back gesture returns to the previous view and a
+reload or a bookmark lands where you left off instead of on an empty page. A fragment
+never reaches the server: switching views costs no request and shows nothing to a tunnel
+interstitial, the token is still the only thing that opens a session, and it is still
+scrubbed from the address bar once it has been exchanged for the cookie.
+
+The app starts on **Thread**. A scan that carries a view - `#t=…&view=approvals` - opens
+that view directly; anything it does not recognise falls back to **Thread**.
+
 ## Settings
 
 All six are `machine`-scoped: the console is a service on *this* machine, so a workspace
@@ -55,7 +79,8 @@ cannot turn it on or point it elsewhere.
 ## Answering approvals
 
 A tool call that needs consent appears in two places at once: the card in the chat on the
-machine, and the **Approvals** region at the top of the console. Both are views of one
+machine, and the **Approvals** view of the console (the middle tab, which counts what is
+waiting). Both are views of one
 request, so the first answer wins — the other card disappears and its buttons go dead.
 
 - **Allow once** approves that single call.

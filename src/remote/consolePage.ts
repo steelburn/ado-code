@@ -183,7 +183,33 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     .act.go { border-color: #2e7d32; }
     .act.danger { border-color: #b3261e; }
     .act:disabled { opacity: 0.45; cursor: default; }
-</style>
+    /* Single-page shell: one document, one event stream, three views.
+       Switching a view never reloads, so a consent card that arrives while the
+       thread is on screen still lands in a live document. */
+    [hidden] { display: none !important; }
+    main { padding-bottom: 76px; }
+    footer { margin-bottom: 76px; }
+    .tabs {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+      display: flex; gap: 4px;
+      padding: 6px 8px calc(8px + env(safe-area-inset-bottom));
+      background: rgba(24, 24, 24, 0.97);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .tabs a {
+      flex: 1 1 0; min-width: 0; padding: 10px 4px; text-align: center;
+      border-radius: 10px; color: inherit; text-decoration: none;
+      font-size: 14px; opacity: 0.62;
+    }
+    .tabs a[aria-current="page"] { opacity: 1; background: rgba(255, 255, 255, 0.10); font-weight: 600; }
+    .tabs .count, .tabs .dot {
+      display: inline-block; margin-left: 6px; vertical-align: super;
+      background: rgba(201, 162, 39, 0.9); color: #14140f;
+      font-size: 11px; font-weight: 700; line-height: 1;
+    }
+    .tabs .count { min-width: 16px; padding: 3px 5px; border-radius: 9px; }
+    .tabs .dot { width: 7px; height: 7px; padding: 0; border-radius: 50%; }
+  </style>
 </head>
 <body>
 <header>
@@ -194,6 +220,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   <div id="banner" class="banner" hidden></div>
   <div id="plan" class="plan" hidden></div>
   <div id="approvals"></div>
+  <p class="empty" id="approvals-empty" hidden>Nothing waiting - an agent asks here the moment it needs consent.</p>
   <div id="transcript" class="thread"></div>
   <form id="composer" class="composer" autocomplete="off">
     <input id="composer-input" type="text" placeholder="Reply to the agent…" aria-label="Reply to the agent" />
@@ -201,6 +228,11 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   </form>
   <div id="runs"><div class="empty">Connecting…</div></div>
 </main>
+<nav class="tabs" id="tabs" aria-label="Console views">
+  <a href="#view=thread" data-view="thread">Thread<span class="dot" id="thread-dot" hidden></span></a>
+  <a href="#view=approvals" data-view="approvals">Approvals<span class="count" id="approvals-count" hidden></span></a>
+  <a href="#view=runs" data-view="runs">Runs<span class="count" id="runs-count" hidden></span></a>
+</nav>
   <footer>Approvals can be answered here — mutating tools still need a decision</footer>
 <script>
 (function () {
@@ -212,6 +244,116 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   var transcriptEl = document.getElementById('transcript');
   var bannerEl = document.getElementById('banner');
   var viewersEl = document.getElementById('viewers');
+  var composerEl = document.getElementById('composer');
+  var tabsEl = document.getElementById('tabs');
+  var threadDotEl = document.getElementById('thread-dot');
+  var approvalsCountEl = document.getElementById('approvals-count');
+  var runsCountEl = document.getElementById('runs-count');
+  var approvalsEmptyEl = document.getElementById('approvals-empty');
+
+  /**
+   * Single-page shell.
+   *
+   * The console is one document with one long-lived event stream: views are
+   * switched in place and never fetched, so moving between them keeps the
+   * stream, the mirrored conversation and every pending approval alive. The
+   * route rides in the URL fragment (#view=thread, #view=approvals, #view=runs)
+   * for the same reason the token does - a fragment never reaches the server - so
+   * a view survives a reload, a back gesture or a bookmark without a request and
+   * without leaking anything to a tunnel interstitial.
+   */
+  var VIEWS = ['thread', 'approvals', 'runs'];
+  var view = 'thread';
+
+  function parseView() {
+    var hash = window.location.hash || '';
+    var at = hash.indexOf('view=');
+    if (at < 0) { return 'thread'; }
+    var name = hash.slice(at + 5).split('&')[0].replace(/[^a-z]/g, '');
+    return VIEWS.indexOf(name) >= 0 ? name : 'thread';
+  }
+
+  /** A plan card with neither a goal nor a to-do list is not worth a view. */
+  function planVisible() {
+    var plan = state.plan;
+    if (!plan) { return false; }
+    return !!plan.goal || !!(plan.todos && plan.todos.length);
+  }
+
+  /** Unread marker: something landed in the thread while it was off screen. */
+  function showThreadDot(on) {
+    if (threadDotEl) { threadDotEl.hidden = !on; }
+  }
+
+  function syncBadges() {
+    var pending = state.approvalOrder.length;
+    var active = state.order.length;
+    if (approvalsCountEl) {
+      approvalsCountEl.hidden = !pending;
+      approvalsCountEl.textContent = pending ? String(pending) : '';
+    }
+    if (runsCountEl) {
+      runsCountEl.hidden = !active;
+      runsCountEl.textContent = active ? String(active) : '';
+    }
+    if (approvalsEmptyEl) {
+      approvalsEmptyEl.hidden = pending > 0 || view !== 'approvals';
+    }
+    if (!tabsEl) { return; }
+    var links = tabsEl.getElementsByTagName('a');
+    for (var i = 0; i < links.length; i++) {
+      if (links[i].getAttribute('data-view') === view) {
+        links[i].setAttribute('aria-current', 'page');
+      } else {
+        links[i].removeAttribute('aria-current');
+      }
+    }
+  }
+
+  function syncViews() {
+    var thread = view === 'thread';
+    if (planEl) { planEl.hidden = !thread || !planVisible(); }
+    if (transcriptEl) { transcriptEl.hidden = !thread; }
+    if (composerEl) { composerEl.hidden = !thread; }
+    if (approvalsEl) { approvalsEl.hidden = view !== 'approvals'; }
+    if (runsEl) { runsEl.hidden = view !== 'runs'; }
+    syncBadges();
+  }
+
+  /**
+   * Switch views. The replace flag rewrites the current history entry instead
+   * of adding one - used at boot, where the token fragment it replaces must not
+   * be one back gesture away.
+   */
+  function applyView(next, replace) {
+    if (VIEWS.indexOf(next) < 0) { next = 'thread'; }
+    var changed = next !== view;
+    view = next;
+    syncViews();
+    var hash = '#view=' + view;
+    if (window.location.hash !== hash) {
+      try {
+        if (replace) {
+          var base = window.location.pathname + window.location.search;
+          window.history.replaceState(null, document.title, base + hash);
+        } else {
+          window.location.hash = hash;
+        }
+      } catch (err) {
+        // A browser that refuses history calls still gets the view.
+      }
+    }
+    if (changed) {
+      try { window.scrollTo(0, 0); } catch (err) { /* nothing to scroll */ }
+    }
+    if (view === 'runs') { loadRuns(); }
+    if (view === 'thread') { showThreadDot(false); }
+  }
+
+  window.addEventListener('hashchange', function () {
+    var next = parseView();
+    if (next !== view) { applyView(next, false); }
+  });
 
   function showBanner(message, isError) {
     bannerEl.hidden = !message;
@@ -271,6 +413,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   function render() {
+    syncBadges();
     var html = turnHtml();
     if (!state.order.length) {
       runsEl.innerHTML = html + (state.connected
@@ -477,6 +620,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   function renderApprovals() {
+    syncBadges();
     if (!state.approvalOrder.length) {
       approvalsEl.innerHTML = '';
       return;
@@ -661,6 +805,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   function renderTranscript() {
+    showThreadDot(view !== 'thread' && state.transcriptOrder.length > 0);
     var html = '<div class="thread-head">Conversation</div>';
     if (!state.transcriptOrder.length) {
       html += '<div class="empty">No messages mirrored yet.</div>';
@@ -700,7 +845,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     var goal = (plan && plan.goal) || '';
     var todos = (plan && plan.todos) || [];
     if (!goal && !todos.length) {
-      planEl.hidden = true;
+      syncViews();
       planEl.innerHTML = '';
       return;
     }
@@ -731,7 +876,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       }
     }
     planEl.innerHTML = html;
-    planEl.hidden = false;
+    syncViews();
   }
 
   /** Replay on (re)connect: the plan changes are events a late phone missed. */
@@ -876,7 +1021,9 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   function readToken() {
     var hash = window.location.hash || '';
     if (hash.indexOf('#t=') !== 0) { return ''; }
-    return decodeURIComponent(hash.slice(3));
+    // A route may ride in the same fragment (t=...&view=runs): the token ends
+    // at the first parameter separator.
+    return decodeURIComponent(hash.slice(3).split('&')[0]);
   }
 
   function clearTokenFromAddressBar() {
@@ -898,8 +1045,12 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   function start() {
+    // The route is captured before the token fragment is scrubbed: a QR scan may
+    // land on any view, and a reload must not bounce back to Thread.
+    var initialView = parseView();
     var token = readToken();
     if (!token) {
+      applyView(initialView, true);
       resumeSession().then(function (ok) {
         if (ok) { connect(); return; }
         showBanner('This link is missing its access token. Re-open the QR code from VS Code.', true);
@@ -907,6 +1058,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       return;
     }
     clearTokenFromAddressBar();
+    applyView(initialView, true);
     fetch('/session', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

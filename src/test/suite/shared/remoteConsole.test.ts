@@ -201,4 +201,39 @@ suite('remote/consolePage', () => {
         assert.ok(CONSOLE_HTML.startsWith('<!DOCTYPE html>'));
         assert.match(CONSOLE_HTML, /<meta name="referrer" content="no-referrer">/);
     });
+
+    test('a single-page app: views are routed in place, never fetched', () => {
+        // One document and one stream, so a tab switch cannot drop a live
+        // approval or force the phone to re-establish the connection.
+        assert.strictEqual([...CONSOLE_HTML.matchAll(/<nav\b/g)].length, 1, 'one tab bar');
+        assert.strictEqual([...CONSOLE_HTML.matchAll(/data-view=/g)].length, 3, 'three routed views');
+        assert.strictEqual((CONSOLE_HTML.match(/new EventSource\(/g) ?? []).length, 1, 'one event stream');
+        assert.ok(!/location\.(assign|replace)\(/.test(CONSOLE_HTML), 'no navigation away from the app');
+        assert.ok(!/location\.href\s*=/.test(CONSOLE_HTML), 'no full page load');
+        assert.ok(!/fetch\('\/(console|app|runs\?view)/.test(CONSOLE_HTML), 'views are not fetched as markup');
+        assert.match(CONSOLE_HTML, /window\.addEventListener\('hashchange'/, 'the router follows the back gesture');
+        assert.match(CONSOLE_HTML, /#view=/, 'the route lives in the fragment');
+    });
+
+    test('a QR fragment may carry a route without keeping the token', () => {
+        assert.ok(
+            CONSOLE_HTML.includes("hash.slice(3).split('&')[0]"),
+            'the token ends at the first parameter separator'
+        );
+        const startAt = CONSOLE_HTML.indexOf('function start()');
+        const startBody = CONSOLE_HTML.slice(startAt, CONSOLE_HTML.indexOf('start();', startAt));
+        assert.ok(startBody.indexOf('parseView()') > 0, 'the route is read at boot');
+        assert.ok(
+            startBody.indexOf('parseView()') < startBody.indexOf('clearTokenFromAddressBar'),
+            'the route is captured before the token fragment is scrubbed'
+        );
+    });
+
+    test('pending work still advertises itself from another view', () => {
+        // Both markers are part of the shell: they exist before any event arrives.
+        assert.match(CONSOLE_HTML, /id="approvals-count"/);
+        assert.match(CONSOLE_HTML, /id="runs-count"/);
+        assert.match(CONSOLE_HTML, /id="thread-dot"/);
+        assert.ok(CONSOLE_HTML.includes('function syncBadges()'), 'badges follow state, not the view');
+    });
 });

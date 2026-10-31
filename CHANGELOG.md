@@ -4,6 +4,21 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The remote console is now a single-page app, opened by the QR code.** It used to be
+  one long scroll - plan, approvals, conversation and runs stacked on top of each other.
+  It now has a bottom tab bar - **Thread** (plan, mirrored conversation, reply box),
+  **Approvals** (consent and confirmation cards, with a count while any is unanswered)
+  and **Runs** (agent runs in flight) - that switches views in place. No view change
+  reloads the document, so the SSE stream stays open, the transcript keeps arriving and
+  a consent card raised while you were reading the runs is live the moment you tap
+  **Approvals**. Routes live in the URL fragment (`#view=thread`, `#view=approvals`,
+  `#view=runs`), so the back gesture works and a reload or bookmark lands on the same
+  view while the token is still scrubbed from the address bar once exchanged. A scan
+  that carries a view (`#t=…&view=approvals`) opens it directly. Still no framework, no
+  CDN and no build step - the console remains one self-contained document.
+
 ### Changed
 
 - **The dependency step now walks you through Flutter *and* its Dart SDK, following the
