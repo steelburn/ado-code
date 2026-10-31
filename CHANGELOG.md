@@ -31,6 +31,32 @@ All notable changes to ADO Code will be documented in this file.
   ✓ for Flutter and the platforms you target — and the claim that `flutter doctor` reports
   *only* unaccepted Android licences is gone.
 
+### Fixed
+
+- **A new objective now retires the old goal instead of renaming it, so one chat can no longer
+  accumulate a fifty-step pile.** `set_goal` only archived the previous goal when every step was
+  ticked off, and a goal carrying a step that only a human can tick — the normal case — never
+  satisfied that gate: each new concern overwrote the goal text in place while `update_todo_list`
+  kept merging the next plan onto the old steps, so a long session ended as one goal line with
+  dozens of items and a meaningless "Progress: x/50". A goal text describing a different objective
+  (word overlap below 0.7 in a stopword-filtered Jaccard, so a rewording of the same objective
+  still keeps its checklist) now archives the old goal **with its still-open steps** and starts the
+  new goal with a clean list. Archive rows carry a `reason` (`completed` / `superseded`) and the
+  number of steps left open, rendered as "N open, superseded" with a tooltip, and `set_goal`
+  reports the retirement back as `superseded: { reason, archivedItems, openItems }` together with
+  "cleared — plan this objective with update_todo_list" instead of a bare `{ ok: true }`.
+- **The item cap prunes instead of silently swallowing new steps.** Once the list reached
+  `MAX_TODO_ITEMS`, `normalizeTodoItems` simply stopped reading, so the steps the model had just
+  sent were the ones discarded — a new objective's real work never appeared at all. Eviction now
+  runs oldest-completed, then oldest in-progress, then oldest pending, a step from the current
+  write is the last thing dropped, and `update_todo_list` returns `truncated: n` so the trim is
+  visible. An oversized single write is normalized against the hard ceiling first, so its overflow
+  lands in that reported count rather than vanishing inside normalization.
+- **The tool descriptions and system prompt now state the consequence of the merge semantics.**
+  Omitting an item keeps it forever rather than deleting it, so when the user raises a different
+  objective the assistant is told to call `set_goal` for the clean slate instead of appending the
+  new plan to the previous one.
+
 ## [0.8.3] - 2026-10-30
 
 ### Added

@@ -103,7 +103,7 @@ function buildToolGuidelines(mode: ModeConfig): string {
 
   const guidelines: Partial<Record<string, string[]>> = {
     todo: [
-      'FIRST, when the objective of the request is clear and it is more than a trivial one-step change, record it with `set_goal` — ONE short outcome-shaped line. It heads the session\'s To-do view and stays fixed; do NOT rewrite it to describe progress or to restate individual steps.',
+      'FIRST, when the objective of the request is clear and it is more than a trivial one-step change, record it with `set_goal` — ONE short outcome-shaped line. It heads the session\'s To-do view and stays fixed; do NOT rewrite it to describe progress or to restate individual steps. When the user moves on to a DIFFERENT objective, call `set_goal` with it anyway: the previous goal and its steps are archived and the list starts clean. A mere reword of the same objective keeps the list.',
       'Then break that goal into steps with `update_todo_list`. For any task that needs 3 or more distinct steps — and ALWAYS when the user asks for a plan, a multi-file change, or a migration — write the plan down BEFORE you start working, then keep it current as you go.',
       'Send the list to `update_todo_list`; it is MERGED into the session list, so an item you leave out keeps its status instead of vanishing. Sending the full list is still best — include finished items with status `completed` so progress stays visible.',
       'Exactly ONE item should be `in_progress` at a time (the one you are working on right now); everything not yet started stays `pending`.',

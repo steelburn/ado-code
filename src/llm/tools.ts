@@ -762,7 +762,7 @@ export function createToolExecutor(
     // ── Session goal + to-do list ───────────────────────────────────
     {
       name: 'set_goal',
-      description: 'Record the GOAL of this chat session — the objective the work is meant to achieve, shown at the top of the ADO Code "To-do" view. Set it once, as soon as the objective is clear (a user request that implies more than a trivial edit, or an active work item). Keep it short and outcome-shaped (one line). Do NOT rewrite it to restate progress: the to-do list tracks progress, the goal stays stable. Pass an empty string only if the goal genuinely no longer applies.',
+      description: 'Record the GOAL of this chat session — the objective the work is meant to achieve, shown at the top of the ADO Code "To-do" view. Set it once, as soon as the objective is clear (a user request that implies more than a trivial edit, or an active work item). Keep it short and outcome-shaped (one line). Do NOT rewrite it to restate progress: the to-do list tracks progress, the goal stays stable. Setting a DIFFERENT objective archives the previous goal together with its steps and starts a clean to-do list (a mere rewording of the same objective keeps the list); the result reports what was archived and which steps were still open. Pass an empty string only if the goal genuinely no longer applies.',
       parameters: {
         type: 'object',
         properties: {
@@ -794,7 +794,7 @@ export function createToolExecutor(
             type: 'string',
             enum: ['merge', 'replace'],
             description:
-              'How to apply the list. "merge" (default) keeps items you omitted, with their status. "replace" discards every existing item first — use it only when rewriting the plan.',
+              'How to apply the list. "merge" (default) keeps items you omitted, with their status - so an abandoned step stays on the list forever. When a NEW objective arrives, call set_goal with it instead of appending to the old plan. The result reports `truncated` when the item cap had to evict steps. "replace" discards every existing item first — use it only when rewriting the plan.',
           },
         },
         required: ['todos'],
@@ -1377,18 +1377,36 @@ export function createToolExecutor(
           if (!goalSession) {
             return JSON.stringify({ error: 'no active chat session — the goal is scoped to a session' });
           }
-          const updated = services.todos.setGoal(
+          const goalWrite = services.todos.applyGoal(
             goalSession,
             args.goal,
             'ai',
             hooks?.getSessionName?.()
           );
+          const updated = goalWrite.list;
           if (!updated?.goal) {
             logger.info('Todos: session goal cleared');
             return JSON.stringify({ ok: true, goal: null, cleared: true });
           }
           logger.info(`Todos: session goal set (${updated.goal.text})`);
-          return JSON.stringify({ ok: true, goal: updated.goal.text });
+          if (!goalWrite.superseded) {
+            return JSON.stringify({ ok: true, goal: updated.goal.text });
+          }
+          // A NEW objective archived the previous goal AND its steps: say so, so
+          // the model does not assume its old checklist is still in the view.
+          logger.info(
+            `Todos: goal superseded (${goalWrite.reason}) - ${goalWrite.archivedItems} step(s) archived`
+          );
+          return JSON.stringify({
+            ok: true,
+            goal: updated.goal.text,
+            superseded: {
+              reason: goalWrite.reason,
+              archivedItems: goalWrite.archivedItems,
+              openItems: goalWrite.archivedPending,
+            },
+            todoList: 'cleared - plan this objective with update_todo_list',
+          });
         }
         case 'update_todo_list': {
           const todoSession = hooks?.getSessionId?.() ?? null;
@@ -1402,7 +1420,8 @@ export function createToolExecutor(
             return JSON.stringify({ error: "parameter 'todos' must be an array of { content, status } objects" });
           }
           const mode = args.mode === 'replace' ? 'replace' : 'merge';
-          const list = services.todos.replace(todoSession, args.todos, hooks?.getSessionName?.(), mode);
+          const write = services.todos.applyItems(todoSession, args.todos, hooks?.getSessionName?.(), mode);
+          const list = write.list;
           const done = list.items.filter(i => i.status === 'completed').length;
           const running = list.items.filter(i => i.status === 'in_progress').length;
           logger.info(`Todos: session list updated (${done}/${list.items.length} completed, ${running} in progress)`);
@@ -1413,6 +1432,7 @@ export function createToolExecutor(
             goal: list.goal?.text ?? null,
             mode,
             items: list.items.length,
+            ...(write.truncated > 0 ? { truncated: write.truncated } : {}),
             completed: done,
             inProgress: running,
             remaining: list.items.length - done,

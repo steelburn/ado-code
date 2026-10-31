@@ -63,16 +63,51 @@ export interface TodoListSummary extends TodoList {
 }
 
 /**
- * A goal that a NEWER goal superseded — moved out of the live list into the
- * session's archive file so a session's finished work stays traceable instead
- * of being silently overwritten when the work moves on.
+ * Why a goal left the live list. `completed` — every step was ticked off;
+ * `superseded` — a NEW objective arrived while steps were still open. Open steps
+ * are archived together with the goal instead of being carried into the
+ * successor goal's plan, where they would read as work toward the new objective.
+ */
+export type TodoArchiveReason = 'completed' | 'superseded';
+
+/**
+ * A goal that left the live list — either fully completed or superseded by a
+ * NEW objective — moved into the session's archive file so a session's history
+ * stays traceable instead of being silently overwritten when the work moves on.
  */
 export interface TodoArchiveEntry {
   /** When the goal was archived (a newer goal replaced it). */
   archivedAt: string;
+  /** Why it was archived. */
+  reason: TodoArchiveReason;
   goal: TodoGoal;
   /** The steps the archived goal had, with the statuses they ended on. */
   items: TodoItem[];
+  /** How many of `items` were still open (pending / in progress). */
+  remaining: number;
+}
+
+/**
+ * Outcome of a goal write — in particular what happened to the PREVIOUS goal, so
+ * the model is TOLD when its checklist was archived instead of silently losing
+ * it (or silently inheriting steps that belong to someone else's objective).
+ */
+export interface TodoGoalWrite {
+  list: TodoList | null;
+  /** The previous goal was archived because this write is a NEW objective. */
+  superseded: boolean;
+  /** Set when `superseded`. */
+  reason?: TodoArchiveReason;
+  /** Steps archived together with the previous goal. */
+  archivedItems: number;
+  /** Archived steps that were still open — labels, capped for the tool result. */
+  archivedPending: string[];
+}
+
+/** Outcome of a list write: the list plus what the item cap had to evict. */
+export interface TodoListWrite {
+  list: TodoList;
+  truncated: number;
 }
 
 /** Upper bound on items kept per list — a runaway model cannot flood the tree. */
@@ -89,6 +124,69 @@ export const MAX_TODO_GOAL_CHARS = 300;
 export function normalizeGoalText(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   return raw.replace(/\s+/g, ' ').trim().slice(0, MAX_TODO_GOAL_CHARS);
+}
+
+/** Words that say nothing about WHAT a goal is about, so they never match it. */
+const GOAL_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'into', 'than', 'then', 'that', 'this',
+  'these', 'those', 'its', 'our', 'your', 'you', 'all', 'any', 'via', 'per',
+  'are', 'was', 'were', 'been', 'being', 'has', 'have', 'had', 'does', 'did',
+  'will', 'would', 'shall', 'should', 'could', 'must', 'can', 'may', 'might',
+  'not', 'but', 'also', 'when', 'while', 'out', 'off', 'own', 'same',
+]);
+
+/**
+ * How much of the previous goal's vocabulary the new text must keep to count as
+ * the SAME objective merely reworded. Below this the goal is a new objective
+ * (archive it); at or above it, an edit (keep the plan).
+ */
+export const GOAL_SAME_OBJECTIVE_RATIO = 0.7;
+
+/**
+ * Content words of a goal: lowercased, hyphens joined ("to-do" -> "todo"),
+ * crudely singularised, stopwords dropped.
+ */
+function goalTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  const cleaned = normalizeGoalText(text).toLowerCase().replace(/-+/g, '');
+  for (const rawToken of cleaned.split(/[^\p{L}\p{N}+#_.]+/u)) {
+    let token = rawToken.replace(/^[_.]+|[_.]+$/g, '');
+    if (token.length > 3 && token.endsWith('s') && !token.endsWith('ss')) {
+      token = token.slice(0, -1);
+    }
+    if (token.length < 3 || GOAL_STOPWORDS.has(token)) continue;
+    out.add(token);
+  }
+  return out;
+}
+
+/**
+ * Jaccard (word-overlap) similarity of two goal texts, 0..1. Used to tell "the
+ * same objective, reworded" from "a different objective": a reword keeps the
+ * plan, a new objective archives it.
+ */
+export function goalSimilarity(a: string, b: string): number {
+  const left = goalTokens(a);
+  const right = goalTokens(b);
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared++;
+  return shared / (left.size + right.size - shared);
+}
+
+/**
+ * True when `next` is a DIFFERENT objective than `previous`, i.e. the previous
+ * goal must be archived and its steps cleared instead of treated as a reword.
+ * Identical text is never a new objective, and neither is a text that keeps at
+ * least {@link GOAL_SAME_OBJECTIVE_RATIO} of the previous goal's content words.
+ */
+export function isNewObjective(previous: string, next: string): boolean {
+  const before = normalizeGoalText(previous).toLowerCase();
+  const after = normalizeGoalText(next).toLowerCase();
+  if (!before || !after || before === after) return false;
+  // Goals made of nothing but stopwords/number noise: compare the texts instead.
+  if (goalTokens(before).size === 0 || goalTokens(after).size === 0) return true;
+  return goalSimilarity(before, after) < GOAL_SAME_OBJECTIVE_RATIO;
 }
 
 /** Placeholder shown when an item carries no `activeForm`. */
@@ -146,14 +244,21 @@ export function mergeTodoItems(
  * Coerce arbitrary tool input into a clean list. The model supplies JSON, so
  * every field is untrusted: unknown statuses degrade to `pending`, blank
  * entries are dropped, duplicates (same id) collapse, and both the item count
- * and each label are capped.
+ * and each label are capped. `max` bounds the item count: callers that
+ * PRUNE for the live list should pass a generous ceiling and let the reported
+ * prune downstream (see `applyItems`) trim visibly instead of silently here.
  */
-export function normalizeTodoItems(raw: unknown): TodoItem[] {
+export function normalizeTodoItems(
+  raw: unknown,
+  max: number = MAX_TODO_ITEMS
+): TodoItem[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   const out: TodoItem[] = [];
   for (const entry of raw) {
-    if (out.length >= MAX_TODO_ITEMS) break;
+    // Only a hard ceiling against a pathological paste: the real cap is applied
+    // by eviction below, so a long plan is never cut off in the middle.
+    if (out.length >= max * 10) break;
     const record = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
     const rawContent = typeof entry === 'string'
       ? entry
@@ -180,7 +285,32 @@ export function normalizeTodoItems(raw: unknown): TodoItem[] {
       ...(rawActiveForm ? { activeForm: rawActiveForm } : {}),
     });
   }
-  return out;
+  return pruneTodoItems(out, max).items;
+}
+
+/**
+ * Trim a list to `max` items by EVICTION, never by refusing the newest steps: a
+ * model that sends a longer plan must not have the work it just added dropped on
+ * the floor. The OLDEST COMPLETED steps go first (they are history, not work),
+ * then the oldest open ones. Reports how many steps were evicted so the tool
+ * result can say so.
+ */
+export function pruneTodoItems(
+  items: readonly TodoItem[],
+  max: number = MAX_TODO_ITEMS
+): { items: TodoItem[]; truncated: number } {
+  if (items.length <= max) return { items: [...items], truncated: 0 };
+  const excess = items.length - max;
+  const dropped = new Set<number>();
+  for (const status of ['completed', 'in_progress', 'pending'] as const) {
+    for (let i = 0; i < items.length && dropped.size < excess; i++) {
+      if (items[i].status === status) dropped.add(i);
+    }
+  }
+  return {
+    items: items.filter((_, i) => !dropped.has(i)),
+    truncated: dropped.size,
+  };
 }
 
 /**
@@ -199,14 +329,17 @@ function normalizeArchiveEntry(raw: unknown): TodoArchiveEntry | null {
   const goalRec = (rec.goal ?? {}) as Partial<TodoGoal>;
   const text = normalizeGoalText(goalRec.text);
   if (!text) return null;
+  const items = normalizeTodoItems(rec.items);
   return {
     archivedAt: typeof rec.archivedAt === 'string' ? rec.archivedAt : new Date(0).toISOString(),
+    reason: rec.reason === 'superseded' ? 'superseded' : 'completed',
     goal: {
       text,
       source: goalRec.source === 'user' ? 'user' : 'ai',
       setAt: typeof goalRec.setAt === 'string' ? goalRec.setAt : new Date(0).toISOString(),
     },
-    items: normalizeTodoItems(rec.items),
+    items,
+    remaining: items.filter(i => i.status !== 'completed').length,
   };
 }
 
@@ -384,16 +517,38 @@ export class TodoStore {
     sessionName?: string,
     mode: TodoUpdateMode = 'merge'
   ): TodoList {
+    return this.applyItems(sessionId, rawItems, sessionName, mode).list;
+  }
+
+  /**
+   * `replace`, but reporting how many steps the cap had to evict — a silent drop
+   * hides work the model still believes is on the list.
+   */
+  applyItems(
+    sessionId: string,
+    rawItems: unknown,
+    sessionName?: string,
+    mode: TodoUpdateMode = 'merge'
+  ): TodoListWrite {
     const previous = this.read(sessionId);
+    // Normalize with the hard ceiling, not the live cap: the single reported
+    // prune below must see the WHOLE merged list, otherwise an oversized incoming
+    // plan is trimmed silently inside normalize and `truncated` comes back as 0.
+    const merged = mergeTodoItems(
+      previous?.items ?? [],
+      normalizeTodoItems(rawItems, MAX_TODO_ITEMS * 10),
+      mode
+    );
+    const { items, truncated } = pruneTodoItems(merged);
     const list: TodoList = {
       sessionId,
       sessionName: sessionName || previous?.sessionName || 'Chat session',
       updatedAt: new Date().toISOString(),
-      items: mergeTodoItems(previous?.items ?? [], normalizeTodoItems(rawItems), mode),
+      items,
       ...(previous?.goal ? { goal: previous.goal } : {}),
     };
     this.write(list);
-    return list;
+    return { list, truncated };
   }
 
   /**
@@ -407,31 +562,68 @@ export class TodoStore {
     source: TodoGoalSource,
     sessionName?: string
   ): TodoList | null {
+    return this.applyGoal(sessionId, text, source, sessionName).list;
+  }
+
+  /**
+   * Record the session's goal, reporting what happened to the previous one.
+   *
+   * A goal whose TEXT CHANGED always leaves the live list; the only question is
+   * whether it is archived or merely retitled:
+   *  - a NEW objective (word overlap below `GOAL_SAME_OBJECTIVE_RATIO`) is
+   *    archived WITH its steps and the successor goal starts from a clean plan;
+   *  - the SAME objective reworded keeps the plan and only updates the title.
+   * Archiving deliberately does NOT require the previous plan to be finished: a
+   * step only a human can tick (a manual run, an approval, a deploy) would
+   * otherwise pin that goal in place forever, and every later objective would
+   * pile its steps onto a plan nobody is working on any more.
+   */
+  applyGoal(
+    sessionId: string,
+    text: unknown,
+    source: TodoGoalSource,
+    sessionName?: string
+  ): TodoGoalWrite {
     const goalText = normalizeGoalText(text);
-    if (!goalText) return this.clearGoal(sessionId);
+    if (!goalText) {
+      return {
+        list: this.clearGoal(sessionId),
+        superseded: false,
+        archivedItems: 0,
+        archivedPending: [],
+      };
+    }
     const previous = this.read(sessionId) ?? {
       sessionId,
       sessionName: sessionName || 'Chat session',
       updatedAt: new Date().toISOString(),
       items: [],
     };
-    // A NEW goal that supersedes a COMPLETED one is archived rather than
-    // overwritten, so the session's finished work stays traceable. Its steps
-    // leave the live list too — the successor goal starts from a clean slate
-    // and its steps arrive through `update_todo_list`.
-    const supersedes = !!previous.goal
-      && previous.goal.text !== goalText
-      && isGoalCompleted(previous);
-    if (supersedes) this.archiveCompletedGoal(sessionId);
+    const previousGoal = previous.goal;
+    const newObjective = !!previousGoal && isNewObjective(previousGoal.text, goalText);
+    const reason: TodoArchiveReason | undefined = newObjective
+      ? (isGoalCompleted(previous) ? 'completed' : 'superseded')
+      : undefined;
+    const archivedItems = newObjective ? previous.items.length : 0;
+    const archivedPending = newObjective
+      ? previous.items.filter(i => i.status !== 'completed').map(i => i.content)
+      : [];
+    if (reason) this.archiveGoal(sessionId, reason);
     const list: TodoList = {
       ...previous,
       sessionName: sessionName || previous.sessionName,
       updatedAt: new Date().toISOString(),
-      items: supersedes ? [] : previous.items,
+      items: newObjective ? [] : previous.items,
       goal: { text: goalText, source, setAt: new Date().toISOString() },
     };
     this.write(list);
-    return list;
+    return {
+      list,
+      superseded: newObjective,
+      ...(reason ? { reason } : {}),
+      archivedItems,
+      archivedPending: archivedPending.slice(0, 5),
+    };
   }
 
   /**
@@ -576,13 +768,18 @@ export class TodoStore {
    * there is no goal to archive. The caller is responsible for writing the
    * successor list (e.g. `setGoal` writes the new goal right after).
    */
-  archiveCompletedGoal(sessionId: string): TodoArchiveEntry | null {
+  archiveGoal(
+    sessionId: string,
+    reason: TodoArchiveReason = 'completed'
+  ): TodoArchiveEntry | null {
     const list = this.read(sessionId);
     if (!list || !list.goal) return null;
     const entry: TodoArchiveEntry = {
       archivedAt: new Date().toISOString(),
+      reason,
       goal: list.goal,
       items: list.items,
+      remaining: list.items.filter(i => i.status !== 'completed').length,
     };
     const existing = this.readArchive(sessionId);
     this.writeArchive(sessionId, [entry, ...existing]);
@@ -593,6 +790,14 @@ export class TodoStore {
       logger.error(`TodoStore: failed to clear archived live list ${file}`, err);
     }
     return entry;
+  }
+
+  /**
+   * Archive the session's goal as finished — thin alias for {@link archiveGoal},
+   * which also records WHY it was archived.
+   */
+  archiveCompletedGoal(sessionId: string): TodoArchiveEntry | null {
+    return this.archiveGoal(sessionId, 'completed');
   }
 
   private writeArchive(sessionId: string, entries: TodoArchiveEntry[]): void {

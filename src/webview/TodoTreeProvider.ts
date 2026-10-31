@@ -151,7 +151,7 @@ function formatArchivedAt(iso: string): string {
 }
 
 /**
- * Root node in ARCHIVE view: one superseded, COMPLETED goal. Read-only history
+ * Root node in ARCHIVE view: one retired goal (finished or superseded). Read-only history
  * — the live list keeps rendering from `TodoStore`.
  */
 export class TodoArchiveNode extends vscode.TreeItem {
@@ -166,7 +166,9 @@ export class TodoArchiveNode extends vscode.TreeItem {
     // Stable id so VS Code preserves expansion across refreshes.
     this.id = `archive:${sessionId}:${index}`;
     const done = entry.items.filter(i => i.status === 'completed').length;
-    this.description = entry.items.length > 0 ? `${done}/${entry.items.length}` : 'archived';
+    this.description = entry.reason === 'superseded'
+      ? `${entry.remaining} open, superseded`
+      : (entry.items.length > 0 ? `${done}/${entry.items.length}` : 'archived');
     this.iconPath = new vscode.ThemeIcon('archive');
     const md = new vscode.MarkdownString(
       [
@@ -176,6 +178,9 @@ export class TodoArchiveNode extends vscode.TreeItem {
         '',
         `- Completed ${done}/${entry.items.length}`,
         `- Archived ${formatArchivedAt(entry.archivedAt)}`,
+        ...(entry.reason === 'superseded'
+          ? [`- Superseded with ${entry.remaining} step(s) still open`]
+          : []),
         ...(entry.goal.source === 'user' ? ['', '_Set by you_'] : []),
       ].join('\n')
     );

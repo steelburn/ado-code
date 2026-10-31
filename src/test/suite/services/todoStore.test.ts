@@ -11,6 +11,9 @@ import {
   MAX_TODO_ITEMS,
   MAX_TODO_ITEM_CHARS,
   MAX_TODO_GOAL_CHARS,
+  GOAL_SAME_OBJECTIVE_RATIO,
+  goalSimilarity,
+  isNewObjective,
 } from '../../../services/todo/TodoStore';
 import { makeScratchDir } from '../utils/scratchDir';
 
@@ -482,37 +485,136 @@ suite('TodoStore', () => {
 
     store.setGoal('s', 'Second goal', 'ai', 'S');
 
-    // The live list carries only the new goal, with a fresh slate of steps...
-    const live = store.read('s')!;
-    assert.strictEqual(live.goal!.text, 'Second goal');
-    assert.strictEqual(live.items.length, 0, 'the finished steps moved to the archive');
+    // The live list carries only the new goal; the finished one is archived.
+    assert.strictEqual(store.read('s')!.goal!.text, 'Second goal');
+    assert.strictEqual(store.read('s')!.items.length, 0, 'archived steps leave the live list');
 
-    // ...while the finished goal and its steps are preserved for traceability.
     const archived = store.readArchive('s');
     assert.strictEqual(archived.length, 1);
     assert.strictEqual(archived[0]!.goal.text, 'First goal');
+    assert.strictEqual(archived[0]!.reason, 'completed');
+    assert.strictEqual(archived[0]!.remaining, 0);
     assert.strictEqual(archived[0]!.items.length, 1);
     assert.strictEqual(archived[0]!.items[0]!.content, 'Step');
   });
 
-  test('an unfinished goal is overwritten in place, not archived', () => {
-    store.replace('s', [{ content: 'Step', status: 'pending' }], 'S');
+  test('an unfinished goal is archived too, keeping the steps that were still open', () => {
+    // A step only a human can tick must not pin an abandoned goal in place - the
+    // successor objective would otherwise inherit its checklist for ever.
+    store.replace('s', [{ content: 'Manual run', status: 'pending' }], 'S');
     store.setGoal('s', 'First goal', 'ai', 'S');
     store.setGoal('s', 'Second goal', 'ai', 'S');
-    assert.strictEqual(store.read('s')!.goal!.text, 'Second goal');
-    assert.deepStrictEqual(store.readArchive('s'), [], 'a goal that is not done is not archived');
+
+    const live = store.read('s')!;
+    assert.strictEqual(live.goal!.text, 'Second goal');
+    assert.strictEqual(live.items.length, 0, 'the stale steps leave the live list');
+
+    const archived = store.readArchive('s');
+    assert.strictEqual(archived.length, 1, 'the abandoned goal is archived, not overwritten');
+    assert.strictEqual(archived[0]!.goal.text, 'First goal');
+    assert.strictEqual(archived[0]!.reason, 'superseded');
+    assert.strictEqual(archived[0]!.remaining, 1);
+    assert.strictEqual(archived[0]!.items[0]!.content, 'Manual run');
+  });
+
+  test('a reworded goal keeps its plan - it is a retitle, not a new objective', () => {
+    store.replace('s', [{ content: 'Step', status: 'pending' }], 'S');
+    store.setGoal('s', 'Fix goal and todo tool', 'ai', 'S');
+    store.setGoal('s', 'Fix the goal and to-do tools', 'ai', 'S');
+
+    assert.strictEqual(store.read('s')!.goal!.text, 'Fix the goal and to-do tools');
+    assert.strictEqual(store.read('s')!.items.length, 1, 'a reword keeps the checklist');
+    assert.deepStrictEqual(store.readArchive('s'), []);
+  });
+
+  test('goalSimilarity separates a reword from a new objective', () => {
+    assert.ok(
+      goalSimilarity('Fix goal and todo tool', 'Fix the goal and to-do tools') >= GOAL_SAME_OBJECTIVE_RATIO
+    );
+    assert.ok(
+      goalSimilarity('Fix goal and todo tool', 'Add dark mode to the work item tree') < GOAL_SAME_OBJECTIVE_RATIO
+    );
+    assert.strictEqual(goalSimilarity('', 'anything'), 0);
+    assert.strictEqual(isNewObjective('Same goal', 'Same goal'), false);
+    assert.strictEqual(isNewObjective('Same goal', 'Different objective entirely'), true);
+  });
+
+  test('applyGoal reports what the new objective archived', () => {
+    store.replace('s', [
+      { content: 'Done step', status: 'completed' },
+      { content: 'Manual run', status: 'pending' },
+    ], 'S');
+    store.setGoal('s', 'First objective', 'ai', 'S');
+
+    const write = store.applyGoal('s', 'Totally different objective', 'ai', 'S');
+    assert.strictEqual(write.superseded, true);
+    assert.strictEqual(write.reason, 'superseded');
+    assert.strictEqual(write.archivedItems, 2);
+    assert.deepStrictEqual(write.archivedPending, ['Manual run']);
+    assert.strictEqual(write.list!.items.length, 0);
+
+    // A reword reports nothing archived and leaves the plan alone.
+    store.replace('s', [{ content: 'Step', status: 'pending' }], 'S');
+    const reword = store.applyGoal('s', 'Totally different objectives', 'ai', 'S');
+    assert.strictEqual(reword.superseded, false);
+    assert.strictEqual(reword.archivedItems, 0);
+    assert.strictEqual(reword.list!.items.length, 1);
+  });
+
+  test('applyItems reports the steps the cap had to evict', () => {
+    const many = Array.from({ length: MAX_TODO_ITEMS }, (_, i) => ({
+      content: `step ${i}`,
+      status: 'completed' as const,
+    }));
+    store.replace('s', many, 'S');
+
+    const write = store.applyItems('s', [{ content: 'brand new step', status: 'pending' }], 'S');
+    assert.strictEqual(write.list.items.length, MAX_TODO_ITEMS);
+    assert.strictEqual(write.truncated, 1, 'the oldest completed step was evicted');
+    assert.ok(
+      write.list.items.some(i => i.content === 'brand new step'),
+      'the step the model just sent is never the one dropped'
+    );
+  });
+
+  test('applyItems reports truncation for a SINGLE oversized write', () => {
+    // A plan bigger than the cap in ONE call: normalize must not trim it silently,
+    // otherwise the reported `truncated` count comes back as 0 while steps vanish.
+    const flood = Array.from({ length: MAX_TODO_ITEMS + 10 }, (_, i) => ({
+      content: `flood ${i}`,
+      status: 'completed' as const,
+    }));
+
+    const write = store.applyItems('s', flood, 'S');
+    assert.strictEqual(write.list.items.length, MAX_TODO_ITEMS);
+    assert.strictEqual(write.truncated, 10, 'the overflow of a single oversized plan is reported');
+    assert.strictEqual(
+      write.list.items[write.list.items.length - 1]!.content,
+      `flood ${MAX_TODO_ITEMS + 9}`,
+      'the newest steps survive'
+    );
+  });
+
+  test('normalizeTodoItems evicts the OLDEST items, not the newest', () => {
+    const overflow = Array.from({ length: MAX_TODO_ITEMS + 5 }, (_, i) => ({
+      content: `item ${i}`,
+      status: 'pending' as const,
+    }));
+    const items = normalizeTodoItems(overflow);
+    assert.strictEqual(items.length, MAX_TODO_ITEMS);
+    assert.strictEqual(items[items.length - 1]!.content, `item ${MAX_TODO_ITEMS + 4}`);
   });
 
   test('archives are kept per session, identified by the session', () => {
     store.replace('a', [{ content: 'A', status: 'completed' }], 'A');
-    store.setGoal('a', 'Goal A', 'ai', 'A');
+    store.setGoal('a', 'Goal alpha', 'ai', 'A');
     store.setGoal('a', 'Goal A2', 'ai', 'A');
     store.replace('b', [{ content: 'B', status: 'completed' }], 'B');
-    store.setGoal('b', 'Goal B', 'ai', 'B');
-    store.setGoal('b', 'Goal B2', 'ai', 'B');
+    store.setGoal('b', 'Goal gamma', 'ai', 'B');
+    store.setGoal('b', 'Goal delta', 'ai', 'B');
 
-    assert.deepStrictEqual(store.readArchive('a').map(e => e.goal.text), ['Goal A']);
-    assert.deepStrictEqual(store.readArchive('b').map(e => e.goal.text), ['Goal B']);
+    assert.deepStrictEqual(store.readArchive('a').map(e => e.goal.text), ['Goal alpha']);
+    assert.deepStrictEqual(store.readArchive('b').map(e => e.goal.text), ['Goal gamma']);
   });
 
   test('readArchive is empty and safe when nothing was archived', () => {
