@@ -319,22 +319,23 @@ function flutterChecks(): DependencySpec[] {
       probes: [{ cmd: 'flutter', args: ['--version'] }],
       minVersion: '3',
       install: {
-        // Grounded in docs.flutter.dev/install, which offers two routes: the VS
-        // Code extension (recommended — and this wizard already runs in VS Code),
-        // then the manual zip. winget carries no Flutter SDK package at all:
-        // `Flutter.Flutter` and `Google.Flutter` both answer "No package found"
-        // against a refreshed index, so Windows gets no package-manager one-liner.
+        // Grounded in docs.flutter.dev/tools/vs-code + /install/with-vs-code: the
+        // documented default route everywhere is the Flutter extension — its "Flutter:
+        // New Project" prompt downloads ("Clone Flutter") and wires the SDK up, then
+        // the command palette validates it (no PATH needed). winget has no Flutter
+        // SDK package (`Flutter.Flutter` / `Google.Flutter`: "No package found").
         win: [
-          'Install the "Flutter" extension (Dart-Code.flutter), then run "Flutter: New Project"',
-          'In the SDK prompt choose Download SDK → Clone Flutter → Add SDK to PATH',
-          'Restart VS Code, open a NEW terminal, then: flutter doctor',
+          'Install the "Flutter" extension (Dart-Code.flutter) — Ctrl+Shift+X → search Flutter → Install (also installs the Dart extension)',
+          'Ctrl+Shift+P → "Flutter: New Project" → VS Code asks you to locate the SDK: choose Download SDK',
+          'In the "Select Folder for Flutter SDK" dialog pick a folder → Clone Flutter (a git clone, so Git for Windows is needed)',
+          'When the download ends click "Add SDK to PATH", restart VS Code, then Ctrl+Shift+P → "Flutter: Run Flutter Doctor"',
         ],
         // macOS/Linux keep the package-manager shortcut (both packages are real
         // and maintained) as a one-liner instead of the extension/zip walkthrough.
         mac: ['brew install --cask flutter', 'flutter doctor'],
         linux: ['sudo snap install flutter --classic', 'flutter doctor'],
-        url: 'https://docs.flutter.dev/install',
-        note: 'macOS/Linux use the package-manager shortcut (brew cask / snap classic); Windows follows the documented VS Code route. The `dart` CLI ships with Flutter: putting flutter/bin on PATH exposes both `flutter` and `dart`, so no separate Dart install is needed. `flutter doctor` only reports unaccepted Android licences — accept them with `flutter doctor --android-licenses`. If `flutter` is still not recognised, restart the terminal: PATH changes apply to new shells only. No-package-manager fallback: extract the release zip and add flutter/bin to PATH (docs.flutter.dev/install/manual).',
+        url: 'https://docs.flutter.dev/tools/vs-code',
+        note: 'The VS Code route above is the documented default on macOS and Linux too — the brew cask / snap lines are only the shortcut. Documented prerequisites: Git for Windows, `xcode-select --install` on macOS, and on Debian/Ubuntu `sudo apt-get install -y curl git unzip xz-utils zip libglu1-mesa`. The `dart` CLI ships with Flutter: putting flutter/bin on PATH exposes both `flutter` and `dart`, so no separate Dart install is needed. "Flutter: Run Flutter Doctor" (or flutter doctor in a NEW terminal) reports the whole toolchain — Android licences, Xcode, Chrome, connected devices; you only need [✓] for Flutter and the platforms you target, so [!]/[✗] for Android Studio or Xcode can be ignored until then, and unaccepted Android licences are cleared with `flutter doctor --android-licenses`. If `flutter` is still not recognised, restart the terminal: PATH changes apply to new shells only. No-package-manager fallback: extract the release zip and add flutter/bin to PATH (docs.flutter.dev/install/manual).',
       },
     },
     {

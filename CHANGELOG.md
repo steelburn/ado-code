@@ -20,6 +20,16 @@ All notable changes to ADO Code will be documented in this file.
   wizard — and its hint follows dart.dev/get-dart: `winget install --id=Google.DartSDK -e`,
   the `dart-lang/dart` tap on macOS (there is no core `dart` formula) and Google's apt repo
   on Debian/Ubuntu (there is no `dart` snap).
+- **The Flutter steps were re-reviewed line by line against docs.flutter.dev/tools/vs-code.**
+  The Windows walkthrough now names the real UI landmarks (Extensions view search, Command
+  Palette → Flutter: New Project, Select Folder for Flutter SDK → Clone Flutter, then the
+  *Add SDK to PATH* button on the completion notification) and validates with **Flutter: Run
+  Flutter Doctor** from the Command Palette instead of a terminal `flutter doctor`, which
+  fails until the new PATH reaches a fresh shell. The card links to that page rather than
+  /install, the note carries the documented per-platform prerequisites (Git for Windows,
+  `xcode-select --install`, the Debian/Ubuntu apt set) and the documented tolerance — only
+  ✓ for Flutter and the platforms you target — and the claim that `flutter doctor` reports
+  *only* unaccepted Android licences is gone.
 
 ## [0.8.3] - 2026-10-30
 

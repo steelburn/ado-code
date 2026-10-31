@@ -64,9 +64,10 @@ suite('shared/projectDependencies', () => {
         test('an SDK bootstrap renders as ordered steps, not one crammed line', () => {
             const flutter = planForTemplate('flutter').checks.find(c => c.id === 'flutter')!;
             assert.deepStrictEqual(guidanceFor(flutter, 'win32'), [
-                'Install the "Flutter" extension (Dart-Code.flutter), then run "Flutter: New Project"',
-                'In the SDK prompt choose Download SDK → Clone Flutter → Add SDK to PATH',
-                'Restart VS Code, open a NEW terminal, then: flutter doctor',
+                'Install the "Flutter" extension (Dart-Code.flutter) — Ctrl+Shift+X → search Flutter → Install (also installs the Dart extension)',
+                'Ctrl+Shift+P → "Flutter: New Project" → VS Code asks you to locate the SDK: choose Download SDK',
+                'In the "Select Folder for Flutter SDK" dialog pick a folder → Clone Flutter (a git clone, so Git for Windows is needed)',
+                'When the download ends click "Add SDK to PATH", restart VS Code, then Ctrl+Shift+P → "Flutter: Run Flutter Doctor"',
             ]);
             // Windows has no winget package for the Flutter SDK — `Flutter.Flutter` and
             // `Google.Flutter` both resolve to nothing on a refreshed index, so the hint
@@ -76,6 +77,32 @@ suite('shared/projectDependencies', () => {
                 'brew install --cask flutter',
                 'flutter doctor',
             ]);
+        });
+
+        // docs.flutter.dev/tools/vs-code is the page these steps are copied from, so
+        // every landmark on it has to survive an edit: the extension install, the
+        // palette-driven SDK download, the PATH button, and the palette doctor that
+        // validates the setup before `flutter` is on PATH at all.
+        test('the Flutter walkthrough stays faithful to docs.flutter.dev/tools/vs-code', () => {
+            const flutter = planForTemplate('flutter').checks.find(c => c.id === 'flutter')!;
+            const win = guidanceFor(flutter, 'win32');
+            assert.strictEqual(win.length, 4, 'four ordered steps: extension, project, SDK download, validation');
+            assert.ok(win[0].includes('Ctrl+Shift+X'), 'the extension is installed from the Extensions view');
+            assert.ok(win.some(s => s.includes('Download SDK')), 'the SDK comes from the documented "Download SDK" prompt');
+            assert.ok(win.some(s => s.includes('Clone Flutter')), 'the download is the documented "Clone Flutter" clone');
+            assert.ok(win.some(s => s.includes('Add SDK to PATH')), 'PATH is wired up from the completion notification');
+            assert.ok(win.some(s => s.includes('Flutter: Run Flutter Doctor')), 'validation uses the palette command that also works before PATH is applied');
+            assert.ok(win.some(s => s.includes('Git for Windows')), '"Clone Flutter" is a git clone, so its prerequisite is named');
+            assert.strictEqual(
+                flutter.install?.url,
+                'https://docs.flutter.dev/tools/vs-code',
+                'the link points at the page the steps came from',
+            );
+            const note = flutter.install?.note ?? '';
+            assert.ok(note.includes('xcode-select --install'), 'the macOS prerequisite is spelled out');
+            assert.ok(note.includes('libglu1-mesa'), 'the Linux prerequisite is spelled out');
+            assert.ok(note.includes('flutter doctor --android-licenses'), 'Android licences keep their documented escape hatch');
+            assert.ok(!/only reports unaccepted Android licences/.test(note), 'doctor reports the whole toolchain, not just licences');
         });
 
         test('the dart hint follows dart.dev, which has no snap and no core formula', () => {
