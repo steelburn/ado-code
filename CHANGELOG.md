@@ -4,6 +4,25 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Tiered testing is now the default ADO Code writes into AGENTS.md.** The generated
+  `## Build & Test` section used to name the full suite as the only way to test, so an agent
+  told to "run the tests" paid the slowest suite for the smallest change - in minutes and,
+  just as expensively, in the tokens its reporter output burns from the user's context (a
+  chatty `spec` reporter can print ~44k tokens of passing test names before it has even
+  finished). The section now
+  derives a ladder from the scripts the workspace actually defines - tier 1 compile or
+  type-check on every edit, tier 2 the targeted subset (`test:changed`, `test:unit`, …) while
+  iterating, tier 3 the full suite before commit, tier 4 host/e2e/integration on request only -
+  and states the default: run the cheapest tier that can fail because of your change, escalate
+  one rung at a time and name the tier you ran. Each rung is priced in time *and* output, and a
+  final line makes the cost explicit: testing is billed to the user in tokens, so quote only the
+  failing test and the head of its error, prefer one file or a `--grep` filter over the whole
+  suite, and never paste a full test log. Projects with no cheap tier keep the flat
+  one-line section, and the `agents.verifyCommand` setting now points at the cheap tier
+  (`npm run test:changed`) instead of the full suite.
+
 ### Fixed
 
 - **The chat reopens on the session you were last in, even after VS Code is killed.**

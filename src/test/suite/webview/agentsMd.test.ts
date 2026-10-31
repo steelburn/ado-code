@@ -97,6 +97,51 @@ suite('agentsMd', () => {
     assert.ok(!md.includes('npx jest'));
   });
 
+  test('tiered testing is the default when a cheap tier exists', () => {
+    const root = makeRoot({
+      scripts: { compile: 'tsc -p ./', test: 'node test/run.js', 'test:changed': 'node test/run.js --changed' },
+    });
+    const md = buildAgentsMdContent(root);
+    assert.ok(md.includes('Tier 1 — every edit: `npm run compile`'), 'compile is tier 1');
+    assert.ok(md.includes('Tier 2 — while iterating (default): `npm run test:changed`'), 'cheap tier is the default');
+    assert.ok(md.includes('Tier 3 — before commit: `npm test`'), 'full suite waits for commit');
+    assert.ok(md.includes('Default: run the cheapest tier'), 'states the default policy');
+    assert.ok(!md.includes('- `npm test`'), 'flat test line folded into the ladder');
+  });
+
+  test('the ladder prices runs in tokens, not just seconds', () => {
+    const root = makeRoot({
+      scripts: { compile: 'tsc -p ./', test: 'node test/run.js', 'test:changed': 'x' },
+    });
+    const md = buildAgentsMdContent(root);
+    assert.ok(md.includes('only the suites you broke print anything'), 'cheap tier is also the quiet one');
+    assert.ok(md.includes('the whole reporter output is billed to the user'), 'full suite bills its output');
+    assert.ok(md.includes('Testing is billed to the user in tokens'), 'token policy line present');
+    assert.ok(md.includes('never paste a full test log'), 'bounds output quoting');
+    assert.ok(md.includes('read that block instead of re-running'), 'forbids re-running to see a failure');
+  });
+
+  test('the exhaustive tier is named last and marked opt-in', () => {
+    const root = makeRoot({
+      scripts: { compile: 'tsc -p ./', test: 'node test/run.js', 'test:changed': 'x', 'test:host': 'y' },
+    });
+    const md = buildAgentsMdContent(root);
+    assert.ok(md.includes('Tier 4 — on request only: `npm run test:host`'), 'slow tier is tier 4');
+  });
+
+  test('a single test command keeps the flat Build & Test section', () => {
+    const root = makeRoot({ scripts: { compile: 'tsc -p ./', test: 'node test/run.js' } });
+    const md = buildAgentsMdContent(root);
+    assert.ok(md.includes('- `npm test`'), 'flat line kept');
+    assert.ok(!md.includes('Tier 1'), 'no ladder without a cheap tier');
+  });
+
+  test('a slow script alone does not create a ladder', () => {
+    const root = makeRoot({ scripts: { test: 'node test/run.js', 'test:e2e': 'y' } });
+    const md = buildAgentsMdContent(root);
+    assert.ok(!md.includes('Tier 1'), 'nothing cheap to default to, so no ladder');
+  });
+
   test('test dir without a script gets a generic note, not a broken command', () => {
     const root = makeRoot({ files: { 'src/test/foo.test.ts': '' } });
     const md = buildAgentsMdContent(root);

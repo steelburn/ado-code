@@ -66,6 +66,51 @@ function readJson(file: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Tiered testing — cheap by default.
+ *
+ * A project told to "run the tests" after every edit pays its slowest suite for
+ * its smallest change, and pays twice: wall-clock time, plus the output tokens
+ * the run burns from the user's context - a chatty reporter can print ~44k
+ * tokens of passing test names before it has even finished. The cheap rungs are
+ * therefore also the quiet ones, which is the whole point of defaulting to them.
+ *
+ * ADO Code derives the ladder from the scripts the workspace actually defines
+ * (never inventing a command) and makes the cheap end the default:
+ *
+ *   tier 1  every edit        compile / type check      (~seconds)
+ *   tier 2  while iterating   targeted subset           (test:changed, test:unit, …)
+ *   tier 3  before commit     full suite                (`test`)
+ *   tier 4  on request        host / e2e / integration  (slow, extra tooling)
+ *
+ * The ladder is only emitted when the project offers a real choice, so a
+ * single-`test` project keeps the one-line section instead.
+ */
+const FAST_TEST_SCRIPTS = [
+  'test:changed', 'test:unit', 'test:fast', 'test:quick', 'test:related', 'test:only',
+];
+const SLOW_TEST_SCRIPTS = [
+  'test:host', 'test:e2e', 'test:integration', 'test:ui', 'test:smoke', 'test:acceptance',
+  'test:all', 'test:electron', 'test:slow',
+];
+
+/** One rung of the tiered testing ladder. */
+interface TestTier {
+  /** 1-based position in the ladder (cheapest first). */
+  rank: number;
+  /** When an agent should pick this rung. */
+  when: string;
+  /** Shell command for the rung. */
+  command: string;
+  /** Cost per run: wall-clock time, and the output tokens it bills the user. */
+  note: string;
+}
+
+/** Command named in a `- \`cmd\` — description` build line. */
+function commandOf(bullet: string | undefined): string {
+  return /`([^`]+)`/.exec(bullet ?? '')?.[1] ?? '';
+}
+
 function deriveFacts(root: string): DerivedFacts {
   const pkg = readJson(path.join(root, 'package.json'));
   const pkgName = typeof pkg?.name === 'string' ? pkg.name : 'project';
@@ -132,6 +177,47 @@ function deriveFacts(root: string): DerivedFacts {
     buildLines.push('- `npm run lint` — Linting');
   } else if (hasLint) {
     buildLines.push('- `npx eslint .` — Linting');
+  }
+
+  // Tiered testing: promote the cheap rungs to the default instead of leaving
+  // the full suite as the only named command (see FAST_TEST_SCRIPTS).
+  const compileBullet = buildLines.find((l) => /^- `(npm run compile|npx tsc --noEmit)`/.test(l));
+  const fullSuiteBullet = buildLines.find((l) => /^- `(npm test|npx jest|npx vitest run|npx mocha)`/.test(l));
+  const targetedScript = FAST_TEST_SCRIPTS.find((s) => hasScript(s));
+  const exhaustiveScript = SLOW_TEST_SCRIPTS.find((s) => hasScript(s));
+  const choices = (targetedScript ? 1 : 0) + (exhaustiveScript ? 1 : 0) + (fullSuiteBullet ? 1 : 0);
+  // A ladder only pays when there is a cheap targeted tier to default to, and
+  // at least one other rung to escalate to.
+  if (targetedScript && choices >= 2) {
+    const testTiers: TestTier[] = [];
+    const addTier = (when: string, command: string, note: string) => {
+      if (command) testTiers.push({ rank: testTiers.length + 1, when, command, note });
+    };
+    addTier('every edit', commandOf(compileBullet), 'seconds, and a handful of lines of output');
+    addTier(
+      'while iterating (default)',
+      targetedScript ? `npm run ${targetedScript}` : '',
+      'seconds, and only the suites you broke print anything'
+    );
+    addTier('before commit', commandOf(fullSuiteBullet), 'minutes, and the whole reporter output is billed to the user');
+    addTier(
+      'on request only',
+      exhaustiveScript ? `npm run ${exhaustiveScript}` : '',
+      'minutes or more, and the loudest output of all: GUI, browser or host download'
+    );
+
+    const ladder = testTiers.map((t) => `- Tier ${t.rank} — ${t.when}: \`${t.command}\` (${t.note})`);
+    ladder.push(
+      '- Default: run the cheapest tier that can fail because of your change; escalate one tier at a time and name the tier you ran.',
+      '- Testing is billed to the user in tokens: quote only the failing test and the head of its error, prefer one file or a `--grep <name>` filter over the whole suite, and never paste a full test log.',
+      '- A red run already names the failing tests: read that block instead of re-running the suite to see the failure.'
+    );
+
+    // The ladder subsumes the flat compile/test lines it was derived from.
+    const folded = new Set([compileBullet, fullSuiteBullet].filter((b): b is string => !!b));
+    const kept = buildLines.filter((l) => !folded.has(l));
+    buildLines.length = 0;
+    buildLines.push(...ladder, ...kept);
   }
 
   // Honest fallback when nothing recognizable exists.
