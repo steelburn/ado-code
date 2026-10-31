@@ -42,9 +42,22 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     --ok: #4ec9b0;
     --warn: #d7ba7d;
     --error: #f48771;
+    --tab-bg: rgba(24, 24, 24, 0.97);
+    --tab-border: rgba(255, 255, 255, 0.14);
+    --tab-fg: #b8b8b8;
+    --tab-fg-active: #ffffff;
+    --tab-pill: rgba(255, 255, 255, 0.13);
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg: #ffffff; --panel: #f3f3f3; --border: #d4d4d4; --fg: #333333; --muted: #6a6a6a; }
+    :root {
+      --bg: #ffffff; --panel: #f3f3f3; --border: #d4d4d4; --fg: #333333; --muted: #6a6a6a;
+      /* The bar used to be dark-only: rgba(255,255,255,.10) on white is nothing. */
+      --tab-bg: rgba(243, 243, 243, 0.98);
+      --tab-border: #d4d4d4;
+      --tab-fg: #454545;
+      --tab-fg-active: #111111;
+      --tab-pill: rgba(0, 0, 0, 0.08);
+    }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
@@ -65,6 +78,53 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
   main { padding: 12px 16px 48px; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  .empty-title { color: var(--fg); font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .empty-body { color: var(--fg); opacity: 0.85; font-size: 13px; line-height: 1.5; }
+  .empty-hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  /* ── Tool calls: what the agent is doing, call by call ────────────── */
+  .tools { margin: 0 0 14px; }
+  .tools-head {
+    display: flex; align-items: center; gap: 8px;
+    margin: 0 2px 8px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  }
+  .tools-title { flex: 1; }
+  .tools-live {
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--accent); text-transform: none; letter-spacing: 0;
+  }
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    animation: tool-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes tool-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+  .tool-list { list-style: none; margin: 0; padding: 0; }
+  .tool {
+    display: flex; align-items: center; gap: 10px;
+    min-height: 44px; padding: 8px 12px; margin-bottom: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .tool-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .tool.running .tool-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(55, 148, 255, 0.18); }
+  .tool.ok .tool-dot { background: var(--ok); }
+  .tool.error .tool-dot { background: var(--error); }
+  .tool.stalled .tool-dot { background: var(--warn); }
+  .tool-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .tool-name {
+    font-weight: 600; font-size: 14px; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tool-detail {
+    font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tool-time {
+    flex: 0 0 auto; font-size: 12px;
+    font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  .tool.running .tool-time { color: var(--accent); }
+  .tool.error .tool-time { color: var(--error); }
   .run {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     padding: 12px 14px; margin-bottom: 12px;
@@ -144,11 +204,76 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     .msg.user { background: rgba(56, 139, 253, 0.13); border-color: rgba(56, 139, 253, 0.35); }
     .msg-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .55; margin: 0 0 4px; }
     .msg-body { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.5; }
+    /* Tool calls a message made, under its text: the shape of the work, not the
+       payloads — a name, a one-line digest and how long the call took. */
+    .msg .msg-tools {
+      list-style: none; margin: 10px 0 0; padding: 8px 0 0;
+      border-top: 1px dashed var(--border);
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .msg-tool { display: flex; align-items: baseline; gap: 7px; min-width: 0;
+      font-size: 12.5px; line-height: 1.35; color: var(--muted); }
+    .msg-tool-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted); transform: translateY(-1px); }
+    .msg-tool.running .msg-tool-dot { background: var(--accent); animation: tool-pulse 1.4s ease-in-out infinite; }
+    .msg-tool.ok .msg-tool-dot { background: var(--ok); }
+    .msg-tool.error .msg-tool-dot { background: var(--error); }
+    .msg-tool.stalled .msg-tool-dot { background: var(--warn); }
+    .msg-tool-name { flex: 0 0 auto; color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .msg-tool-detail { flex: 1 1 auto; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .msg-tool-ms { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+    .msg-tools-more { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+    .msg.tool-only .msg-body { display: none; }
+    .msg.tool-only .msg-tools { margin-top: 0; padding-top: 0; border-top: 0; }
+    .msg-sr { position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap; }
     .choice { margin: 10px 0 2px; display: flex; flex-direction: column; gap: 6px; }
     .choice-q { font-weight: 600; font-size: 13px; opacity: .85; }
     .choice-opt { text-align: left; }
-    .composer { display: flex; gap: 8px; margin: 0 0 18px; }
-    .composer input { flex: 1 1 auto; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.18); background: rgba(0, 0, 0, 0.25); color: inherit; font: inherit; }
+    /* The reply box is PINNED: a phone conversation is read with the thumb at
+       the bottom edge, so the thing that answers must live there and never
+       scroll away. It sits directly on top of the tab bar, safe area included,
+       so the two fixed strips cannot overlap on a notched phone. */
+    .composer {
+      position: fixed; left: 0; right: 0; z-index: 10;
+      bottom: calc(62px + env(safe-area-inset-bottom));
+      display: flex; align-items: center; gap: 8px;
+      margin: 0; padding: 10px 12px;
+      background: var(--tab-bg);
+      border-top: 1px solid var(--tab-border);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    .composer input {
+      flex: 1 1 auto; min-width: 0; min-height: 44px;
+      padding: 10px 12px; border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(0, 0, 0, 0.3); color: inherit; font: inherit;
+    }
+    .composer input:focus { outline: none; border-color: #2f81f7; box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.3); }
+    /* Send is the one control on the page that must look tappable: accent fill,
+       white label, soft glow. Its data-state drives the icon and the colour, so
+       "did it go?" is answered by the button itself, not by a toast. */
+    .send {
+      flex: 0 0 auto; min-width: 86px; min-height: 44px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 0 14px; border: 0; border-radius: 10px;
+      background: linear-gradient(135deg, #2f81f7, #1a5fd0);
+      color: #ffffff; font: inherit; font-weight: 700; letter-spacing: 0.01em;
+      box-shadow: 0 2px 10px rgba(47, 129, 247, 0.45);
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .send:active { transform: scale(0.96); }
+    .send .send-icon { font-size: 15px; line-height: 1; }
+    .send[data-state="sending"] { background: linear-gradient(135deg, #4b5563, #374151); box-shadow: none; }
+    .send[data-state="sending"] .send-icon { display: inline-block; animation: send-spin 900ms linear infinite; }
+    .send[data-state="sent"] { background: linear-gradient(135deg, #2ea043, #1f7a33); box-shadow: 0 2px 10px rgba(46, 160, 67, 0.45); }
+    .send[data-state="failed"] { background: linear-gradient(135deg, #da3633, #a92724); box-shadow: none; }
+    @keyframes send-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .send[data-state="sending"] .send-icon { animation: none; } }
     .ap-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
     .ap-title { font-weight: 600; font-size: 15px; }
     .ap-timer { font-size: 13px; opacity: 0.75; font-variant-numeric: tabular-nums; }
@@ -183,32 +308,75 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     .act.go { border-color: #2e7d32; }
     .act.danger { border-color: #b3261e; }
     .act:disabled { opacity: 0.45; cursor: default; }
-    /* Single-page shell: one document, one event stream, three views.
+    /* Single-page shell: one document, one event stream, five views.
        Switching a view never reloads, so a consent card that arrives while the
        thread is on screen still lands in a live document. */
     [hidden] { display: none !important; }
-    main { padding-bottom: 76px; }
-    footer { margin-bottom: 76px; }
+    main { padding-bottom: 150px; }
+    footer { margin-bottom: 150px; }
     .tabs {
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-      display: flex; gap: 4px;
-      padding: 6px 8px calc(8px + env(safe-area-inset-bottom));
-      background: rgba(24, 24, 24, 0.97);
-      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      display: flex; gap: 6px;
+      padding: 8px 8px calc(10px + env(safe-area-inset-bottom));
+      background: var(--tab-bg);
+      border-top: 1px solid var(--tab-border);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     }
+    /* Labels were 14px at 62% opacity: two dimmings stacked on an already muted
+       colour, unreadable at arm's length. Explicit colours instead of opacity -
+       legible when idle, full contrast plus an accent rule when selected - and
+       per-scheme, so a light-mode phone gets a selected tab it can actually see. */
     .tabs a {
-      flex: 1 1 0; min-width: 0; padding: 10px 4px; text-align: center;
-      border-radius: 10px; color: inherit; text-decoration: none;
-      font-size: 14px; opacity: 0.62;
+      flex: 1 1 0; min-width: 0;
+      display: flex; align-items: center; justify-content: center; gap: 5px;
+      min-height: 44px; padding: 10px 6px;
+      border-radius: 12px; text-decoration: none;
+      color: var(--tab-fg);
+      font-size: 15px; font-weight: 600; letter-spacing: 0.01em;
+      -webkit-tap-highlight-color: transparent;
     }
-    .tabs a[aria-current="page"] { opacity: 1; background: rgba(255, 255, 255, 0.10); font-weight: 600; }
+    .tabs a[aria-current="page"] {
+      color: var(--tab-fg-active);
+      background: var(--tab-pill);
+      box-shadow: inset 0 2px 0 var(--accent);
+    }
     .tabs .count, .tabs .dot {
-      display: inline-block; margin-left: 6px; vertical-align: super;
-      background: rgba(201, 162, 39, 0.9); color: #14140f;
+      flex: 0 0 auto;
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+      background: var(--warn); color: #14140f;
       font-size: 11px; font-weight: 700; line-height: 1;
     }
-    .tabs .count { min-width: 16px; padding: 3px 5px; border-radius: 9px; }
-    .tabs .dot { width: 7px; height: 7px; padding: 0; border-radius: 50%; }
+    .tabs .dot { width: 8px; height: 8px; min-width: 0; padding: 0; border-radius: 50%; }
+    /* Five views do not fit at 15px on a 390px phone; the labels stay whole and
+       the tap target stays 44px, so the type gives way instead. */
+    .tabs a { font-size: 13.5px; padding: 10px 5px; }
+    /* Goal view: the objective the work is meant to achieve, then its
+       milestones — this is the "why am I looking at this?" answer. */
+    .goal-hero {
+      margin: 0 0 12px; padding: 12px 14px; border-radius: 12px;
+      background: var(--panel); border: 1px solid var(--border);
+    }
+    .goal-kicker { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+    .goal-title { font-size: 17px; font-weight: 650; line-height: 1.35; word-break: break-word; }
+    .goal-bar { position: relative; height: 8px; margin: 0 0 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.25); overflow: hidden; }
+    .goal-bar span { position: absolute; top: 0; bottom: 0; left: 0; background: linear-gradient(90deg, #2f81f7, #2ea043); }
+    .goal-meta { margin: 0 0 16px; font-size: 12.5px; color: var(--muted); }
+    .goal-group { margin: 0 0 16px; }
+    .goal-group > h3 { margin: 0 0 6px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    .goal-list { list-style: none; margin: 0; padding: 0; }
+    /* Changes view: one row per file the agent touched. */
+    .file-row {
+      display: flex; align-items: center; gap: 10px;
+      min-height: 44px; padding: 8px 12px; margin-bottom: 6px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    }
+    .file-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #2ea043; }
+    .file-row.running .file-dot { background: var(--warn); animation: tool-pulse 1.4s ease-in-out infinite; }
+    .file-row.error .file-dot { background: #f85149; }
+    .file-name { flex: 1 1 auto; min-width: 0; font-size: 13.5px; word-break: break-all; }
+    .file-dir { color: var(--muted); }
+    .file-tool { flex: 0 0 auto; font-size: 11.5px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
   </style>
 </head>
 <body>
@@ -219,17 +387,23 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
 <main>
   <div id="banner" class="banner" hidden></div>
   <div id="plan" class="plan" hidden></div>
+  <div id="goal" class="goal" hidden></div>
+  <div id="changes" class="changes" hidden></div>
   <div id="approvals"></div>
   <p class="empty" id="approvals-empty" hidden>Nothing waiting - an agent asks here the moment it needs consent.</p>
   <div id="transcript" class="thread"></div>
   <form id="composer" class="composer" autocomplete="off">
     <input id="composer-input" type="text" placeholder="Reply to the agent…" aria-label="Reply to the agent" />
-    <button type="submit" class="act">Send</button>
+    <button type="submit" id="composer-send" class="send" data-state="idle" aria-label="Send reply">
+      <span class="send-icon" id="composer-send-icon" aria-hidden="true">➤</span><span id="composer-send-label">Send</span>
+    </button>
   </form>
   <div id="runs"><div class="empty">Connecting…</div></div>
 </main>
 <nav class="tabs" id="tabs" aria-label="Console views">
   <a href="#view=thread" data-view="thread">Thread<span class="dot" id="thread-dot" hidden></span></a>
+  <a href="#view=goal" data-view="goal">Goal</a>
+  <a href="#view=changes" data-view="changes">Files<span class="count" id="files-count" hidden></span></a>
   <a href="#view=approvals" data-view="approvals">Approvals<span class="count" id="approvals-count" hidden></span></a>
   <a href="#view=runs" data-view="runs">Runs<span class="count" id="runs-count" hidden></span></a>
 </nav>
@@ -238,8 +412,14 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
 (function () {
   'use strict';
   var state = { runs: {}, order: [], approvals: {}, approvalOrder: [], turn: null, source: null, connected: false,
-    transcriptOrder: [], transcriptMessages: {}, answered: {}, transcriptTimer: null, plan: null };
+    transcriptOrder: [], transcriptMessages: {}, answered: {}, transcriptTimer: null, plan: null, files: null };
   var planEl = document.getElementById('plan');
+  var goalEl = document.getElementById('goal');
+  var changesEl = document.getElementById('changes');
+  var filesCountEl = document.getElementById('files-count');
+  var sendBtn = document.getElementById('composer-send');
+  var sendIcon = document.getElementById('composer-send-icon');
+  var sendLabel = document.getElementById('composer-send-label');
   var runsEl = document.getElementById('runs');
   var transcriptEl = document.getElementById('transcript');
   var bannerEl = document.getElementById('banner');
@@ -257,12 +437,13 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
    * The console is one document with one long-lived event stream: views are
    * switched in place and never fetched, so moving between them keeps the
    * stream, the mirrored conversation and every pending approval alive. The
-   * route rides in the URL fragment (#view=thread, #view=approvals, #view=runs)
+   * route rides in the URL fragment (#view=thread, #view=goal, #view=changes,
+   * #view=approvals, #view=runs)
    * for the same reason the token does - a fragment never reaches the server - so
    * a view survives a reload, a back gesture or a bookmark without a request and
    * without leaking anything to a tunnel interstitial.
    */
-  var VIEWS = ['thread', 'approvals', 'runs'];
+  var VIEWS = ['thread', 'goal', 'changes', 'approvals', 'runs'];
   var view = 'thread';
 
   function parseView() {
@@ -272,6 +453,24 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     var name = hash.slice(at + 5).split('&')[0].replace(/[^a-z]/g, '');
     return VIEWS.indexOf(name) >= 0 ? name : 'thread';
   }
+
+  /** Follow the newest message while the reader stays at the bottom; scrolling up releases it. */
+  var stickToLatest = true;
+
+  /** True while the viewport sits at the (live) end of the page. */
+  function nearLatest() {
+    var scrolled = window.scrollY || document.documentElement.scrollTop || 0;
+    var height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    return (scrolled + window.innerHeight) >= (height - 72);
+  }
+
+  function followLatest() {
+    if (!stickToLatest) { return; }
+    var height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    try { window.scrollTo(0, height); } catch (err) { /* nothing to scroll yet */ }
+  }
+
+  window.addEventListener('scroll', function () { stickToLatest = nearLatest(); }, { passive: true });
 
   /** A plan card with neither a goal nor a to-do list is not worth a view. */
   function planVisible() {
@@ -286,6 +485,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   function syncBadges() {
+    syncFilesBadge();
     var pending = state.approvalOrder.length;
     var active = state.order.length;
     if (approvalsCountEl) {
@@ -313,11 +513,21 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   function syncViews() {
     var thread = view === 'thread';
     if (planEl) { planEl.hidden = !thread || !planVisible(); }
+    if (goalEl) { goalEl.hidden = view !== 'goal'; }
+    if (changesEl) { changesEl.hidden = view !== 'changes'; }
     if (transcriptEl) { transcriptEl.hidden = !thread; }
     if (composerEl) { composerEl.hidden = !thread; }
     if (approvalsEl) { approvalsEl.hidden = view !== 'approvals'; }
     if (runsEl) { runsEl.hidden = view !== 'runs'; }
     syncBadges();
+  }
+
+  /** How many files the agent has touched, on the Files tab. */
+  function syncFilesBadge() {
+    if (!filesCountEl) { return; }
+    var count = state.files && state.files.files ? state.files.files.length : 0;
+    filesCountEl.hidden = !count;
+    filesCountEl.textContent = count ? String(count) : '';
   }
 
   /**
@@ -346,8 +556,15 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     if (changed) {
       try { window.scrollTo(0, 0); } catch (err) { /* nothing to scroll */ }
     }
-    if (view === 'runs') { loadRuns(); }
-    if (view === 'thread') { showThreadDot(false); }
+    if (view === 'runs') { loadRuns(); loadTools(); }
+    if (view === 'thread') {
+      showThreadDot(false);
+      // Coming back to the conversation means "show me what is happening now":
+      // re-arm the follow and jump to the newest message.
+      if (changed) { stickToLatest = true; followLatest(); }
+    }
+    if (view === 'goal') { loadPlan(); }
+    if (view === 'changes') { loadFiles(); }
   }
 
   window.addEventListener('hashchange', function () {
@@ -412,12 +629,118 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     '</section>';
   }
 
+  /**
+   * What the Runs view shows while the list is empty.
+   *
+   * "Nothing running right now" read as "the feature is broken". This page is a
+   * mirror - it never starts a run - so the honest copy is "no agent is working
+   * yet; start one on the desktop and it lands here", plus where consents go.
+   */
+  function emptyRunsHtml() {
+    return '<div class="empty">' +
+      '<div class="empty-title">No agent is working right now.</div>' +
+      '<div class="empty-body">A run appears here the moment one starts on the desktop - a delegated agent, or a chat turn that calls tools. This page mirrors it live; it never starts one itself.</div>' +
+      '<div class="empty-hint">When a run needs consent it moves to Approvals, and this tab gets a badge.</div>' +
+      '</div>';
+  }
+
+  /** Milliseconds as a phone-sized duration: 240ms, 1.4s, 2m. */
+  function fmtMs(ms) {
+    var value = Math.max(0, Number(ms) || 0);
+    if (value < 1000) { return Math.round(value) + 'ms'; }
+    if (value < 60000) { return (value / 1000).toFixed(value < 10000 ? 1 : 0) + 's'; }
+    return Math.round(value / 60000) + 'm';
+  }
+
+  function elapsedFor(entry) {
+    if (typeof entry.durationMs === 'number') { return fmtMs(entry.durationMs); }
+    return fmtMs(Date.now() - (entry.startedAt || Date.now()));
+  }
+
+  /**
+   * A call still marked running long after it started is not live any more.
+   *
+   * The host only sends a finish for a call the loop actually completed, so an
+   * aborted turn (or a phone that slept through one) would otherwise leave a
+   * row pulsing forever. Five minutes is past every tool's timeout, so this
+   * reads as "no result came back" rather than lying about activity.
+   */
+  var TOOL_STALL_MS = 5 * 60 * 1000;
+
+  function toolStatusFor(entry) {
+    var status = String(entry.status || 'running');
+    if (status === 'running' && Date.now() - (entry.startedAt || 0) > TOOL_STALL_MS) {
+      return 'stalled';
+    }
+    return status;
+  }
+
+  function hasRunningTool() {
+    var entries = state.toolFeed || [];
+    for (var i = 0; i < entries.length; i++) {
+      if (toolStatusFor(entries[i]) === 'running') { return true; }
+    }
+    return false;
+  }
+
+  /**
+   * The tool calls the agent made, newest first.
+   *
+   * This is the feed that answers "what is it doing right now?" for calls that
+   * never stopped to ask permission - the ones the Approvals view cannot show.
+   */
+  function toolFeedHtml() {
+    var entries = state.toolFeed || [];
+    if (!entries.length) { return ''; }
+    var html = '<section class="tools">' +
+      '<div class="tools-head">' +
+        '<span class="tools-title">Tool calls</span>' +
+        (hasRunningTool() ? '<span class="tools-live"><span class="live-dot"></span>running</span>' : '') +
+      '</div>' +
+      '<ul class="tool-list">';
+    // Newest first: on a phone the last thing that happened is the headline.
+    for (var i = entries.length - 1; i >= 0; i--) {
+      var entry = entries[i] || {};
+      var status = toolStatusFor(entry);
+      html += '<li class="tool ' + esc(status) + '">' +
+        '<span class="tool-dot" aria-hidden="true"></span>' +
+        '<span class="tool-body">' +
+          '<span class="tool-name">' + esc(entry.name || 'tool') + '</span>' +
+          (entry.detail ? '<span class="tool-detail">' + esc(entry.detail) + '</span>' : '') +
+        '</span>' +
+        '<span class="tool-time">' + esc(elapsedFor(entry)) + '</span>' +
+      '</li>';
+    }
+    return html + '</ul></section>';
+  }
+
+  /** Replay on (re)connect: a phone that opens mid-turn missed the starts. */
+  function loadTools() {
+    fetch('/tools', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        if (payload && payload.entries) {
+          state.toolFeed = payload.entries;
+          render();
+        }
+      })
+      .catch(function () { /* the stream still delivers new calls */ });
+  }
+
+  /** Keep the elapsed column honest while a call is still running. */
+  function tickTools() {
+    if (view !== 'runs' || !hasRunningTool()) { return; }
+    render();
+  }
+
   function render() {
     syncBadges();
-    var html = turnHtml();
+    var html = turnHtml() + toolFeedHtml();
     if (!state.order.length) {
       runsEl.innerHTML = html + (state.connected
-        ? '<div class="empty">Nothing running right now. Waiting tool approvals show up at the top.</div>'
+        // A chat turn that is generating is shown as its own card above: claiming
+        // "no agent is working" next to it would contradict the card.
+        ? (html ? '' : emptyRunsHtml())
         : '<div class="empty">Connecting…</div>');
       return;
     }
@@ -459,9 +782,21 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   function handle(event) {
     if (!event || typeof event !== 'object') { return; }
     switch (event.type) {
+      case 'toolFeed': {
+        state.toolFeed = event.entries || [];
+        render();
+        break;
+      }
       case 'plan': {
         state.plan = { goal: event.goal || '', todos: event.todos || [] };
         renderPlan();
+        renderGoal();
+        break;
+      }
+      case 'files': {
+        state.files = { files: event.files || [], truncated: event.truncated === true };
+        renderChanges();
+        syncFilesBadge();
         break;
       }
       case 'turnStatus': {
@@ -748,7 +1083,17 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     }
     if (message.role === 'user' || message.role === 'assistant') { existing.role = message.role; }
     if (typeof message.content === 'string') { existing.content = message.content; }
-    if (message.choice) { existing.choice = message.choice; }
+    if (message.choice) {
+      existing.choice = message.choice;
+      // Remember the answer the HOST reports: a later frame for the same
+      // message that no longer carries it must still render the block closed,
+      // not as options waiting for input.
+      if (message.choice.answered === true && message.choice.answer) {
+        state.answered[existing.id] = message.choice.answer;
+      }
+    }
+    if (message.tools) { existing.tools = message.tools; }
+    if (typeof message.toolCount === 'number') { existing.toolCount = message.toolCount; }
     return existing;
   }
 
@@ -804,6 +1149,40 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     return html;
   }
 
+  /**
+   * The tool calls one message made, drawn under its text.
+   *
+   * The Runs view answers "what is it doing now?"; this answers "what did this
+   * answer cost?" — the files it read and the commands it ran, in the order
+   * they ran. The host sends the name and a one-line digest, never the payload,
+   * and keeps only the newest MAX_MESSAGE_TOOLS calls, so a long turn says how
+   * many older ones it is not showing instead of growing without bound.
+   */
+  function inlineTools(message) {
+    var tools = message.tools || [];
+    if (!tools.length) { return ''; }
+    var html = '<ul class="msg-tools" aria-label="Tool calls">';
+    for (var index = 0; index < tools.length; index++) {
+      var entry = tools[index] || {};
+      var status = toolStatusFor(entry);
+      var name = String(entry.name || 'tool');
+      html += '<li class="msg-tool ' + esc(status) + '">' +
+        '<span class="msg-tool-dot" aria-hidden="true"></span>' +
+        '<span class="msg-tool-name">' + esc(name) + '</span>' +
+        (entry.detail ? '<span class="msg-tool-detail">' + esc(String(entry.detail)) + '</span>' : '') +
+        '<span class="msg-tool-ms">' + esc(elapsedFor(entry)) + '</span>' +
+        '<span class="msg-sr">' + esc(name + ' ' + status) + '</span>' +
+        '</li>';
+    }
+    html += '</ul>';
+    var hidden = (Number(message.toolCount) || tools.length) - tools.length;
+    if (hidden > 0) {
+      html += '<div class="msg-tools-more">+' + esc(hidden) + ' earlier ' +
+        (hidden === 1 ? 'call' : 'calls') + ' not shown</div>';
+    }
+    return html;
+  }
+
   function renderTranscript() {
     showThreadDot(view !== 'thread' && state.transcriptOrder.length > 0);
     var html = '<div class="thread-head">Conversation</div>';
@@ -817,13 +1196,21 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       if (!message) { continue; }
       var roleClass = message.role === 'user' ? 'user' : 'bot';
       var roleLabel = message.role === 'user' ? 'You' : 'Assistant';
-      html += '<article class="msg ' + esc(roleClass) + '">';
+      // A turn that called tools before writing anything has a message of its
+      // own, with no text: label it for what it is instead of "Assistant".
+      var toolOnly = !String(message.content || '').trim() && !!(message.tools && message.tools.length);
+      if (toolOnly) { roleLabel = 'Tool run'; }
+      html += '<article class="msg ' + esc(roleClass) + (toolOnly ? ' tool-only' : '') + '">';
       html += '<div class="msg-role">' + esc(roleLabel) + '</div>';
       html += '<div class="msg-body">' + esc(message.content || '') + '</div>';
       html += choiceHtml(message);
+      html += inlineTools(message);
       html += '</article>';
     }
     transcriptEl.innerHTML = html;
+    // The page opens on the newest message, and stays there while it streams —
+    // unless the reader scrolled back, which nearLatest() has already noticed.
+    followLatest();
   }
 
   /** Deltas arrive per token: coalesce them into one paint. */
@@ -887,6 +1274,105 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
         if (!payload) { return; }
         state.plan = { goal: payload.goal || '', todos: payload.todos || [] };
         renderPlan();
+        renderGoal();
+      })
+      .catch(function () { /* keep whatever was already rendered */ });
+  }
+
+  /**
+   * The Goal view: what this session is trying to achieve, and how far along it
+   * is. Deliberately more than the compact plan card in the thread — this is
+   * the tab a reader opens to remind themselves WHAT the agent is doing, so it
+   * gets the objective in full, a progress bar and the milestones grouped by
+   * state (in progress, next, done) instead of one flat list.
+   */
+  function renderGoal() {
+    if (!goalEl) { return; }
+    var plan = state.plan || { goal: '', todos: [] };
+    var goal = plan.goal || '';
+    var todos = plan.todos || [];
+    if (!goal && !todos.length) {
+      goalEl.innerHTML = '<div class="empty">No goal for this session yet — the agent sets one when the work starts.</div>';
+      return;
+    }
+    var done = 0;
+    for (var i = 0; i < todos.length; i++) {
+      if (((todos[i] || {}).status || 'pending') === 'completed') { done++; }
+    }
+    var html = '';
+    if (goal) {
+      html += '<div class="goal-hero"><div class="goal-kicker">Objective</div>';
+      html += '<div class="goal-title">' + esc(goal) + '</div></div>';
+    }
+    if (todos.length) {
+      var summary = done + ' of ' + esc(String(todos.length)) + ' milestones complete';
+      var pct = Math.round((done / todos.length) * 100);
+      html += '<div class="goal-bar" role="img" aria-label="' + esc(summary) + '">';
+      html += '<span style="width:' + esc(String(pct)) + '%"></span></div>';
+      html += '<div class="goal-meta">' + esc(summary) + '</div>';
+      // Grouped by state, not by order: "what is running now" is the first
+      // question, "what is left" the second, "what is done" the last.
+      var groups = [['in_progress', 'In progress'], ['pending', 'Next'], ['completed', 'Done']];
+      for (var g = 0; g < groups.length; g++) {
+        var rows = '';
+        for (var j = 0; j < todos.length; j++) {
+          var todo = todos[j] || {};
+          if (String(todo.status || 'pending') !== groups[g][0]) { continue; }
+          var mark = groups[g][0] === 'completed' ? '✔' : groups[g][0] === 'in_progress' ? '▸' : '○';
+          var klass = 'plan-item' + (groups[g][0] === 'completed' ? ' done' : groups[g][0] === 'in_progress' ? ' active' : '');
+          rows += '<li class="' + esc(klass) + '"><span class="plan-mark">' + esc(mark) + '</span>';
+          rows += '<span class="plan-text">' + esc(todo.content || todo.activeForm || '') + '</span></li>';
+        }
+        if (!rows) { continue; }
+        html += '<div class="goal-group"><h3>' + esc(groups[g][1]) + '</h3><ul class="goal-list">';
+        html += rows;
+        html += '</ul></div>';
+      }
+    }
+    goalEl.innerHTML = html;
+  }
+
+  /**
+   * The Changes view: every file the agent touched this session, newest first.
+   *
+   * Paths are split at the last slash so the file NAME survives a 390px row
+   * and the directory can fade out — the same trick the desktop tree uses.
+   */
+  function renderChanges() {
+    if (!changesEl) { return; }
+    var list = state.files && state.files.files ? state.files.files : [];
+    if (!list.length) {
+      changesEl.innerHTML = '<div class="empty">No files changed yet this session.</div>';
+      return;
+    }
+    var html = '<div class="thread-head">Files · ' + esc(String(list.length)) + '</div>';
+    for (var i = list.length - 1; i >= 0; i--) {
+      var file = list[i] || {};
+      var path = String(file.path || '');
+      var cut = path.lastIndexOf('/');
+      var dir = cut >= 0 ? path.slice(0, cut + 1) : '';
+      var name = cut >= 0 ? path.slice(cut + 1) : path;
+      html += '<div class="file-row ' + esc(String(file.status || 'ok')) + '">';
+      html += '<span class="file-dot"></span>';
+      html += '<span class="file-name"><span class="file-dir">' + esc(dir) + '</span>' + esc(name) + '</span>';
+      html += '<span class="file-tool">' + esc(String(file.tool || '') + ' ×' + String(file.edits || 1)) + '</span>';
+      html += '</div>';
+    }
+    if (state.files && state.files.truncated) {
+      html += '<div class="msg-tools-more">Showing the ' + esc(String(list.length)) + ' most recently touched files</div>';
+    }
+    changesEl.innerHTML = html;
+  }
+
+  /** Replay on (re)connect: a phone that joins mid-run missed every files frame. */
+  function loadFiles() {
+    fetch('/files', { method: 'GET', cache: 'no-store', credentials: 'same-origin' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        if (!payload || !payload.files) { return; }
+        state.files = { files: payload.files, truncated: payload.truncated === true };
+        renderChanges();
+        syncFilesBadge();
       })
       .catch(function () { /* keep whatever was already rendered */ });
   }
@@ -945,6 +1431,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   }
 
   setInterval(tickApprovalTimers, 1000);
+  setInterval(tickTools, 1000);
 
   // Tapping a choice in the mirrored thread answers it the same way the
   // desktop card does: the option becomes the next user message.
@@ -979,13 +1466,41 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       var text = composerInput.value.trim();
       if (!text) { return; }
       composerInput.value = '';
+      setSendState('sending');
       sendChat(text, function (ok, payload) {
-        if (ok) { return; }
+        if (ok) { setSendState('sent'); return; }
+        setSendState('failed');
         if (!composerInput.value) { composerInput.value = text; }
         showBanner((payload && payload.error) || 'VS Code refused that message.', true);
       });
     });
   }
+
+  /**
+   * The Send button narrates its own request.
+   *
+   * A phone on a slow tunnel gives no other feedback that a reply left: the
+   * spinner says it is in flight, the tick says it landed, the arrow-plus-red
+   * says it did not and is worth tapping again.
+   */
+  function setSendState(next) {
+    if (!sendBtn) { return; }
+    sendBtn.setAttribute('data-state', next);
+    if (sendIcon) {
+      sendIcon.textContent = next === 'sending' ? '⟳' : next === 'sent' ? '✓' : next === 'failed' ? '↻' : '➤';
+    }
+    if (sendLabel) {
+      sendLabel.textContent = next === 'sending' ? 'Sending' : next === 'sent' ? 'Sent' : next === 'failed' ? 'Retry' : 'Send';
+    }
+    // Disabled while in flight: a double tap must not post the reply twice.
+    sendBtn.disabled = next === 'sending';
+    if (next === 'sent') {
+      setTimeout(function () {
+        if (sendBtn.getAttribute('data-state') === 'sent') { setSendState('idle'); }
+      }, 1400);
+    }
+  }
+
   // Tick the turn clock without a full re-render (a render would drop the
   // reader's scroll position on every second).
   setInterval(function () {
@@ -1005,6 +1520,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       loadRuns();
       loadTurn();
       loadPlan();
+      loadFiles();
       loadTranscript();
     };
     source.onmessage = function (message) {

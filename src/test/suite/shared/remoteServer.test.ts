@@ -87,9 +87,11 @@ interface ApprovalHooks {
     onConfirm?: (payload: { requestId: string; value?: string }) => Promise<{ status: number; body?: unknown }>;
     pendingApprovals?: () => unknown;
     runSnapshot?: () => unknown;
+    toolSnapshot?: () => unknown;
     turnSnapshot?: () => unknown;
     transcriptSnapshot?: () => unknown;
     planSnapshot?: () => unknown;
+    filesSnapshot?: () => unknown;
     onChat?: (text: string) => Promise<{ status: number; body?: unknown }>;
 }
 
@@ -105,7 +107,9 @@ async function harness(overrides: ApprovalHooks = {}): Promise<Harness> {
         runSnapshot: overrides.runSnapshot,
         turnSnapshot: overrides.turnSnapshot,
         transcriptSnapshot: overrides.transcriptSnapshot,
+        toolSnapshot: overrides.toolSnapshot,
         planSnapshot: overrides.planSnapshot,
+        filesSnapshot: overrides.filesSnapshot,
         onChat: overrides.onChat,
     });
     const port = await server.start();
@@ -541,6 +545,38 @@ suite('remote/RemoteServer', function () {
         }
     });
 
+    test('GET /tools serves the mirrored tool feed', async () => {
+        const feed = {
+            type: 'toolFeed',
+            entries: [
+                { id: 'c1', name: 'edit_file', detail: 'src/a.ts', status: 'ok', startedAt: 1, durationMs: 12 },
+                { id: 'c2', name: 'run_terminal_command', detail: 'npm test', status: 'running', startedAt: 2 },
+            ],
+        };
+        const h = await harness({ toolSnapshot: () => feed });
+        try {
+            assert.strictEqual((await call(h.port, 'GET', '/tools')).status, 401);
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/tools', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body as unknown as string), feed);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /tools degrades to an empty feed instead of 500', async () => {
+        const h = await harness({ toolSnapshot: () => { throw new Error('mirror exploded'); } });
+        try {
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/tools', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body as unknown as string), { type: 'toolFeed', entries: [] });
+        } finally {
+            await h.dispose();
+        }
+    });
+
     test('GET /transcript replays the mirrored conversation', async () => {
         const transcript = {
             type: 'transcript',
@@ -646,6 +682,41 @@ suite('remote/RemoteServer', function () {
             assert.deepStrictEqual(JSON.parse(reply.body), { goal: '', todos: [] });
         } finally {
             await h.dispose();
+        }
+    });
+
+    test('GET /files returns the snapshot to a logged-in caller only', async () => {
+        const frame = { type: 'files', files: [{ path: 'src/a.ts', tool: 'edit_file', status: 'ok', edits: 2, at: 1 }], truncated: false };
+        const h = await harness({ filesSnapshot: () => frame });
+        try {
+            const anonymous = await call(h.port, 'GET', '/files');
+            assert.strictEqual(anonymous.status, 401);
+            assert.ok(!anonymous.body.includes('src/a.ts'));
+
+            const cookie = await h.login();
+            const reply = await call(h.port, 'GET', '/files', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), frame);
+        } finally {
+            await h.dispose();
+        }
+    });
+
+    test('GET /files degrades to an empty list instead of failing', async () => {
+        // A tracker that is not wired (or one that throws) must not black out
+        // the Files tab — an empty list is a legible answer, a 500 is not.
+        const broken = await harness({
+            filesSnapshot: () => {
+                throw new Error('tracker gone');
+            },
+        });
+        try {
+            const cookie = await broken.login();
+            const reply = await call(broken.port, 'GET', '/files', { headers: { cookie } });
+            assert.strictEqual(reply.status, 200);
+            assert.deepStrictEqual(JSON.parse(reply.body), { type: 'files', files: [] });
+        } finally {
+            await broken.dispose();
         }
     });
 

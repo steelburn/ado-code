@@ -52,6 +52,15 @@ export interface RemoteQrPanelDeps {
   onShown?: () => void;
 }
 
+/** The off switch: stop the server and disconnect every phone, from the panel. */
+export const REMOTE_STOP_COMMAND = 'adoCode.remote.stop';
+export const REMOTE_COPY_URL_COMMAND = 'adoCode.remote.copyUrl';
+/** Invalidates the current link - a phone that scanned it has to scan again. */
+export const REMOTE_ROTATE_TOKEN_COMMAND = 'adoCode.remote.rotateToken';
+/** Reconfiguring stays in the settings UI instead of duplicating config here. */
+export const REMOTE_SETTINGS_QUERY = '@ext:steelburn.ado-code adoCode.remote';
+export const REMOTE_SETTINGS_COMMAND =
+  'workbench.action.openSettings?' + encodeURIComponent(JSON.stringify(REMOTE_SETTINGS_QUERY));
 /** Command invoked by the "expose through a tunnel" link in the panel. */
 export const TUNNEL_START_COMMAND = 'adoCode.remote.tunnel.start';
 
@@ -187,6 +196,20 @@ export function renderQrHtml(payload: RemoteQrPanelPayload): string {
   .tunnel, .hint, .cta { margin: 0 0 8px; }
   .hint { opacity: 0.75; font-size: 0.9em; }
   a { color: var(--vscode-textLink-foreground); }
+  /* Action row. Plain command: links - the panel still ships no script. */
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 4px; }
+  .actions a {
+    flex: 1 1 auto; text-align: center; text-decoration: none;
+    padding: 7px 14px; border-radius: 4px; font-size: 0.92em;
+    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.18));
+    border: 1px solid var(--vscode-button-border, transparent);
+  }
+  .actions a:hover {
+    background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+  }
+  .actions a:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  .actions a.danger { color: var(--vscode-errorForeground, #f48771); }
 </style>
 </head>
 <body>
@@ -204,7 +227,13 @@ export function renderQrHtml(payload: RemoteQrPanelPayload): string {
       ? `<p class="cta"><a href="command:${TUNNEL_START_COMMAND}">Expose this console through a tunnel…</a></p>`
       : ''
   }
-  <p class="hint">Scan the code with the camera on your phone. Remote access stays on until you turn it off.</p>
+  <nav class="actions" aria-label="Remote access actions">
+    <a class="danger" href="command:${REMOTE_STOP_COMMAND}" title="Stop the server and disconnect every phone">Turn off remote access</a>
+    <a href="command:${REMOTE_COPY_URL_COMMAND}" title="Put the console URL on the clipboard">Copy console URL</a>
+    <a href="command:${REMOTE_ROTATE_TOKEN_COMMAND}" title="Invalidate the current link - every phone must scan again">Rotate token</a>
+    <a href="command:${REMOTE_SETTINGS_COMMAND}" title="Bind address, port and tunnel settings">Reconfigure</a>
+  </nav>
+  <p class="hint">Scan the code with the camera on your phone, then close this page. Remote access stays on until you turn it off - use the actions above when you are done.</p>
 </body>
 </html>`;
 }

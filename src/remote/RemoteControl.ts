@@ -171,6 +171,7 @@ export class RemoteControl {
     const desired = !this.deps.readSettings().enabled;
     await this.deps.writeEnabled(desired);
     await this.reconcile();
+    if (!desired) { this.deps.hideQrPanel(); }
   }
 
   async stop(): Promise<void> {
@@ -178,6 +179,9 @@ export class RemoteControl {
       await this.deps.writeEnabled(false);
     }
     await this.reconcile();
+    // A QR panel left open keeps advertising a server that no longer answers, so
+    // turning remote access off closes the panel the off switch was clicked in.
+    this.deps.hideQrPanel();
   }
 
   /** Show the QR panel, starting the stack first when it is off. */

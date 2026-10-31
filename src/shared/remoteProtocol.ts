@@ -152,6 +152,18 @@ export interface RemoteTranscriptMessage {
   /** Message text with any ```choice fence already removed. */
   content: string;
   choice?: RemoteTranscriptChoice;
+  /**
+   * The tool calls this message made, in the order they ran (R-P1-09).
+   *
+   * The console draws them under the message that asked for them, so the phone
+   * shows the shape of the work — which files, which commands — instead of only
+   * the prose around it. Bounded to MAX_MESSAGE_TOOLS entries of at most
+   * MAX_TOOL_DETAIL characters; `toolCount` keeps the real total so the console
+   * can say how many earlier calls it is not showing.
+   */
+  tools?: RemoteToolActivity[];
+  /** Every call this message made, including the ones `tools` no longer holds. */
+  toolCount?: number;
 }
 
 /** Full transcript — replay on connect, and after a reset (session switch). */
@@ -180,6 +192,105 @@ export interface RemoteTurnStatusEvent {
   turn: RemoteTurnInfo | null;
 }
 
+/**
+ * How a tool call ended, as far as the console is concerned.
+ *
+ * `running` is the state that matters on a phone: it is what turns a silent
+ * screen into "it is editing src/remote/consolePage.ts right now".
+ */
+export type RemoteToolStatus = 'running' | 'ok' | 'error';
+
+/**
+ * One tool call, flattened for a 390px screen.
+ *
+ * The console is not a log viewer: it gets the tool NAME, a one-line digest of
+ * what the call targets (`detail`) and how it ended — never the arguments or
+ * the result body. A `chat.showToolCalls=false` desktop therefore keeps its
+ * promise on the phone too: the call is announced, its payload is not.
+ */
+export interface RemoteToolActivity {
+  /** Stable per call id — the loop re-announces a call, so this upserts. */
+  id: string;
+  /** Tool name as the model called it, e.g. `run_terminal_command`. */
+  name: string;
+  /** Clipped argument digest, e.g. `npm test`. Empty when not disclosed. */
+  detail: string;
+  status: RemoteToolStatus;
+  /** Epoch ms, when the call was first seen. */
+  startedAt: number;
+  /** Set once the result landed. */
+  durationMs?: number;
+}
+
+/**
+ * The tool feed, pushed WHOLE on every change.
+ *
+ * Deliberately not a delta: the feed is capped at MAX_TOOL_ACTIVITY entries of
+ * at most MAX_TOOL_DETAIL characters, so a full replace is a couple of KB and
+ * the console needs no merge logic — a phone that slept through six calls and
+ * a phone that just opened render the same thing.
+ */
+export interface RemoteToolFeedEvent {
+  type: 'toolFeed';
+  /** Oldest first, so the newest call is the last row. */
+  entries: RemoteToolActivity[];
+}
+
+/**
+ * One file the agent changed, aggregated across every call that touched it.
+ *
+ * The console's Changes view answers "what did it actually touch?" without
+ * making the phone replay tool calls: `edits` counts the mutations, `tool`
+ * names the last one and `status` is the worst outcome seen for that file —
+ * `error` wins over `running`, which wins over `ok`.
+ */
+export interface RemoteChangedFile {
+  /** Workspace-relative path, as the tool received it. */
+  path: string;
+  /** The last mutating tool that touched the file (edit_file, apply_diff, …). */
+  tool: string;
+  status: RemoteToolStatus;
+  /** How many mutating calls have touched the file this session. */
+  edits: number;
+  /** Epoch ms of the most recent touch. */
+  at: number;
+}
+
+/**
+ * The changed-file list, pushed WHOLE on every change.
+ *
+ * Same contract as `toolFeed`: capped at MAX_CHANGED_FILES rows of short
+ * paths, so a full replace is a couple of KB and the console needs no merge
+ * logic — a phone that slept through an hour of edits renders what a phone
+ * that just opened renders.
+ */
+export interface RemoteFilesEvent {
+  type: 'files';
+  /** First touch first, so the newest edit is the last row. */
+  files: RemoteChangedFile[];
+  /** True when the list was clipped at MAX_CHANGED_FILES. */
+  truncated?: boolean;
+}
+
+/** How many distinct changed files the console keeps. */
+export const MAX_CHANGED_FILES = 60;
+
+/** How many tool calls the console keeps. */
+export const MAX_TOOL_ACTIVITY = 12;
+
+/** Longest argument digest the console will render for one call. */
+export const MAX_TOOL_DETAIL = 100;
+
+/**
+ * Tool calls kept on ONE transcript message.
+ *
+ * The live feed (MAX_TOOL_ACTIVITY) is a rolling window of what is happening
+ * now; this is the history of a single message, so it is kept with the message
+ * and replayed with it. An agentic turn can call dozens of tools — the newest
+ * are the ones a reader wants, the rest collapse into a count.
+ */
+export const MAX_MESSAGE_TOOLS = 10;
+
 export type RemoteDownstreamEvent =
   | RemoteAgentStatusEvent
   | RemoteAgentResultEvent
@@ -192,7 +303,9 @@ export type RemoteDownstreamEvent =
   | RemoteTranscriptEvent
   | RemoteTranscriptMessageEvent
   | RemoteTranscriptDeltaEvent
-  | RemotePlanEvent;
+  | RemotePlanEvent
+  | RemoteToolFeedEvent
+  | RemoteFilesEvent;
 
 /**
  * The session plan: the goal the work is meant to achieve plus the to-do list
@@ -458,6 +571,35 @@ export function parseDownstream(input: unknown): RemoteParseResult<RemoteDownstr
         return reject('approvalResolved.source must be host | remote');
       }
       return { ok: true, value: { type: 'approvalResolved', requestId, outcome, source } };
+    }
+    case 'files': {
+      if (!Array.isArray(body.files)) {
+        return reject('files.files must be an array');
+      }
+      const files: RemoteChangedFile[] = [];
+      for (const raw of body.files) {
+        if (!isRecord(raw)) {
+          return reject('files.files[] must be an object');
+        }
+        const path = raw.path;
+        if (typeof path !== 'string' || !path.trim()) {
+          return reject('files.files[].path must be a non-empty string');
+        }
+        const status = raw.status;
+        if (status !== 'running' && status !== 'ok' && status !== 'error') {
+          return reject('files.files[].status must be running | ok | error');
+        }
+        files.push({
+          path,
+          tool: typeof raw.tool === 'string' ? raw.tool : '',
+          status,
+          edits: typeof raw.edits === 'number' && Number.isFinite(raw.edits) ? raw.edits : 1,
+          at: typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : 0,
+        });
+      }
+      const event: RemoteFilesEvent = { type: 'files', files };
+      if (body.truncated === true) { event.truncated = true; }
+      return { ok: true, value: event };
     }
     default:
       return reject(`unknown event type: ${String(body.type)}`);

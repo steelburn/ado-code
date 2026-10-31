@@ -35,6 +35,7 @@ import { RemoteTunnel } from './remote/RemoteTunnel';
 import { CONSOLE_HTML } from './remote/consolePage';
 import { resolveRemoteUrl } from './remote/remoteUrl';
 import { logger } from './services/logger';
+import { extractChangelogSection, renderChangelogMarkdown } from './changelog/changelogMarkdown';
 import {
   compactArtifactsCommand,
   scheduleArtifactPrune,
@@ -1494,10 +1495,19 @@ const remoteControl = new RemoteControl({
       // the screen slept) replays the transcript the webview is showing — the
       // choice block included — and can answer it from here.
       transcriptSnapshot: () => chatProvider.transcriptSnapshot(),
+      // The agent's tool calls. Approvals cover the calls that stop to ask; this
+      // covers the rest, so the phone shows activity during a consent-free turn.
+      toolSnapshot: () => chatProvider.toolActivitySnapshot(),
       // The plan — session goal plus to-do list. Pushed on every change, but
       // a console connecting later has missed those events.
       planSnapshot: () => chatProvider.planSnapshot(),
-      onChat: text => chatProvider.remoteSendMessage(text),
+      // What the agent actually touched: derived from the same tool calls, so a
+      // consent-free edit shows up here too.
+      filesSnapshot: () => chatProvider.changedFilesSnapshot(),
+      // The answered choice id travels with the text: it is what lets the host
+      // close the DESKTOP card the phone just answered, instead of guessing
+      // from a pending id the new turn may already have moved.
+      onChat: (text, choiceRequestId) => chatProvider.remoteSendMessage(text, choiceRequestId),
       logger,
     });
     return remoteServer;
@@ -2069,10 +2079,8 @@ context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose
       const changelogPath = path.join(context.extensionPath, 'CHANGELOG.md');
       const changelog = fs.readFileSync(changelogPath, 'utf8');
       // Find the section for the current version
-      const versionRegex = new RegExp(`## \\[${currentVersion.replace(/\./g, '\\.')}\\]([\\s\\S]*?)(?=## \\[|$)`);
-      const match = changelog.match(versionRegex);
-      if (match) {
-        const entry = match[1].trim();
+      const entry = extractChangelogSection(changelog, currentVersion);
+      if (entry) {
         const action = await vscode.window.showInformationMessage(
           `ADO Code updated to ${currentVersion}`,
           'Show Changelog',
@@ -2095,16 +2103,15 @@ context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose
     ul { padding-left: 20px; }
     li { margin-bottom: 6px; }
     strong { color: var(--vscode-charts-blue); }
+    p { margin: 8px 0; }
+    code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); padding: 0 3px; border-radius: 3px; }
+    a { color: var(--vscode-textLink-foreground); }
+    hr { border: 0; border-top: 1px solid var(--vscode-panel-border); margin: 16px 0; }
   </style>
 </head>
 <body>
   <h2>ADO Code ${currentVersion}</h2>
-  ${entry.split('\n').map(line => {
-    if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
-    if (line.startsWith('- **')) return `<li>${line.slice(2).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</li>`;
-    if (line.startsWith('- ')) return `<li>${line.slice(2)}</li>`;
-    return '';
-  }).join('\n')}
+  ${renderChangelogMarkdown(entry)}
 </body>
 </html>`;
         }

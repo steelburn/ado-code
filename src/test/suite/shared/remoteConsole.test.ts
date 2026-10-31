@@ -206,7 +206,10 @@ suite('remote/consolePage', () => {
         // One document and one stream, so a tab switch cannot drop a live
         // approval or force the phone to re-establish the connection.
         assert.strictEqual([...CONSOLE_HTML.matchAll(/<nav\b/g)].length, 1, 'one tab bar');
-        assert.strictEqual([...CONSOLE_HTML.matchAll(/data-view=/g)].length, 3, 'three routed views');
+        assert.strictEqual([...CONSOLE_HTML.matchAll(/data-view=/g)].length, 5, 'five routed views');
+        for (const view of ['thread', 'goal', 'changes', 'approvals', 'runs']) {
+            assert.ok(CONSOLE_HTML.includes('data-view="' + view + '"'), view + ' is reachable from the tab bar');
+        }
         assert.strictEqual((CONSOLE_HTML.match(/new EventSource\(/g) ?? []).length, 1, 'one event stream');
         assert.ok(!/location\.(assign|replace)\(/.test(CONSOLE_HTML), 'no navigation away from the app');
         assert.ok(!/location\.href\s*=/.test(CONSOLE_HTML), 'no full page load');
@@ -235,5 +238,116 @@ suite('remote/consolePage', () => {
         assert.match(CONSOLE_HTML, /id="runs-count"/);
         assert.match(CONSOLE_HTML, /id="thread-dot"/);
         assert.ok(CONSOLE_HTML.includes('function syncBadges()'), 'badges follow state, not the view');
+    });
+
+    test('tool calls are drawn under the message that made them', () => {
+        // The host pairs a call with its assistant message; the console renders
+        // what arrives on the message and never guesses the pairing itself.
+        assert.ok(CONSOLE_HTML.includes('function inlineTools(message)'), 'an inline renderer exists');
+        assert.match(CONSOLE_HTML, /html \+= inlineTools\(message\);/, 'the thread calls it per message');
+        assert.match(CONSOLE_HTML, /if \(message\.tools\) \{ existing\.tools = message\.tools; \}/,
+            'an updated message carries its new calls');
+        assert.match(CONSOLE_HTML, /existing\.toolCount = message\.toolCount;/, 'the real total travels too');
+        assert.match(CONSOLE_HTML, /\.msg\.tool-only \.msg-body \{ display: none; \}/,
+            'a calls-only message is not an empty bubble');
+        assert.match(CONSOLE_HTML, /\.msg-tool\.stalled \.msg-tool-dot/, 'a call that never settled reads as stalled');
+        assert.ok(
+            CONSOLE_HTML.includes("'<span class=\"msg-tool-detail\">' + esc(String(entry.detail))"),
+            'the digest is escaped like every other interpolation'
+        );
+    });
+
+    test('the thread opens on the newest message and keeps following it', () => {
+        // A phone that joins an hour-long run must land on the last bubble, not
+        // on the first frame of the replay.
+        assert.match(CONSOLE_HTML, /var stickToLatest = true;/, 'the page opens pinned to the end');
+        assert.match(CONSOLE_HTML, /function nearLatest\(\)/, 'there is a bottom test');
+        assert.match(CONSOLE_HTML, /function followLatest\(\)/, 'there is a scroller');
+        assert.match(CONSOLE_HTML, /if \(!stickToLatest\) \{ return; \}/, 'following is releasable');
+        // Scrolling away releases the follow, scrolling back re-arms it: a
+        // reader who is mid-conversation must not be yanked back to the bottom.
+        assert.match(
+            CONSOLE_HTML,
+            /window\.addEventListener\('scroll', function \(\) \{ stickToLatest = nearLatest\(\); \}, \{ passive: true \}\)/,
+            'the follow is re-armed by arriving at the bottom'
+        );
+        // Every render and every switch to Thread re-applies it.
+        assert.ok(
+            (CONSOLE_HTML.match(/followLatest\(\);/g) ?? []).length >= 2,
+            'both a render and the Thread route follow the end'
+        );
+        assert.match(
+            CONSOLE_HTML,
+            /if \(changed\) \{ stickToLatest = true; followLatest\(\); \}/,
+            'opening Thread lands on the newest message'
+        );
+    });
+
+    test('the Goal view states the objective and groups the milestones', () => {
+        // The compact plan card in the thread answers "how far along"; the tab
+        // answers "what is this agent even doing", so it must not be the same
+        // flat list again.
+        assert.ok(CONSOLE_HTML.includes('data-view="goal"'), 'Goal is a tab');
+        assert.match(CONSOLE_HTML, /function renderGoal\(\)/, 'it has its own renderer');
+        assert.match(CONSOLE_HTML, /function loadPlan\(\)/, 'a phone joining mid-run replays it from /plan');
+        assert.ok(CONSOLE_HTML.includes('esc(goal)'), 'the objective is escaped and shown in full');
+        assert.match(CONSOLE_HTML, /class="goal-bar"/, 'progress is a bar, not a sentence');
+        assert.match(CONSOLE_HTML, /class="goal-bar" role="img" aria-label=/, 'the bar is readable to a screen reader');
+        for (const label of ['In progress', 'Next', 'Done']) {
+            assert.ok(CONSOLE_HTML.includes("'" + label + "'"), label + ' is a milestone group');
+        }
+        // A session with no plan says so instead of rendering an empty page.
+        assert.match(CONSOLE_HTML, /if \(!goal && !todos\.length\) \{/);
+    });
+
+    test('the Files view lists what the agent changed, newest first', () => {
+        assert.ok(CONSOLE_HTML.includes('data-view="changes"'), 'Files is a tab');
+        assert.match(CONSOLE_HTML, /function renderChanges\(\)/, 'it has its own renderer');
+        assert.match(CONSOLE_HTML, /fetch\('\/files'/, 'the client pulls the snapshot on load');
+        assert.match(CONSOLE_HTML, /case 'files': \{/, 'live files frames are applied too');
+        assert.match(CONSOLE_HTML, /<div class="file-row /, 'one row per file');
+        assert.match(CONSOLE_HTML, /esc\(String\(file\.status \|\| 'ok'\)\)/, 'the status drives the row class, escaped');
+        assert.match(CONSOLE_HTML, /for \(var i = list\.length - 1; i >= 0; i--\)/, 'newest first');
+        // The directory fades out so the file NAME survives a 390px row.
+        assert.ok(CONSOLE_HTML.includes('class="file-dir"'), 'the directory is de-emphasised, not dropped');
+        assert.ok(CONSOLE_HTML.includes('most recently touched files'), 'a capped list says it is capped');
+        assert.match(CONSOLE_HTML, /function syncFilesBadge\(\)/, 'the tab counts what has arrived');
+    });
+
+    test('the reply box is pinned above the tab bar, not scrolled away', () => {
+        assert.match(CONSOLE_HTML, /\.composer \{[^}]*position: fixed;/, 'the composer leaves the flow');
+        assert.match(
+            CONSOLE_HTML,
+            /bottom: calc\(62px \+ env\(safe-area-inset-bottom\)\)/,
+            'it sits on the tab bar and clears the phone home indicator'
+        );
+        // Content must not hide under it.
+        assert.match(CONSOLE_HTML, /padding-bottom: 150px;/, 'main and footer reserve its height');
+    });
+
+    test('Send is the most prominent control and reports its own state', () => {
+        // Filled with the accent colour rather than outlined like every other
+        // control: it is the one action the page exists for.
+        assert.match(
+            CONSOLE_HTML,
+            /\.send \{[^}]*linear-gradient\(135deg, #2f81f7, #1a5fd0\)/,
+            'Send is accent-filled'
+        );
+        assert.match(CONSOLE_HTML, /\.send \{[^}]*min-height: 44px/, 'and a real tap target');
+        for (const state of ['sending', 'sent', 'failed']) {
+            assert.match(
+                CONSOLE_HTML,
+                new RegExp('\\.send\\[data-state="' + state + '"\\]'),
+                state + ' has its own look'
+            );
+        }
+        assert.match(CONSOLE_HTML, /@keyframes send-spin/, 'in flight is animated, not just greyed');
+        assert.match(CONSOLE_HTML, /function setSendState\(next\)/, 'the state machine is one function');
+        assert.match(
+            CONSOLE_HTML,
+            /sendBtn\.disabled = next === 'sending';/,
+            'a double tap cannot post the reply twice'
+        );
+        assert.ok(CONSOLE_HTML.includes('Retry'), 'a failure invites a second attempt');
     });
 });

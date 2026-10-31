@@ -1,5 +1,7 @@
-import type { RemoteConsentScope, RemoteDownstreamEvent, RemotePlanEvent, RemoteTranscriptEvent, RemoteTurnInfo } from '../shared/remoteProtocol';
+import type { RemoteConsentScope, RemoteDownstreamEvent, RemoteFilesEvent, RemotePlanEvent, RemoteTranscriptEvent, RemoteTurnInfo } from '../shared/remoteProtocol';
 import { TranscriptMirror } from './TranscriptMirror';
+import { ToolActivityFeed, summariseToolArguments } from '../remote/toolActivityFeed';
+import { ChangedFilesTracker } from '../remote/changedFiles';
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
@@ -69,6 +71,16 @@ export interface ProposedTask {
   acceptanceCriteria: string;
   assignedTo: string;
   tags: string;
+}
+
+/**
+ * The 409 reason a message typed on the phone gets while ANOTHER session is
+ * still generating. ONE wording, shared by the turn guard in
+ * `handleUserMessage` and by `remoteSendMessage`, which asks BEFORE it records
+ * a phone answer.
+ */
+function remoteRefusalNotice(sessionName?: string | null): string {
+  return `${runningElsewhereNotice(sessionName)} Send again once it finishes.`;
 }
 
 /**
@@ -3437,6 +3449,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * console renders the choice block the model just emitted instead of a
    * stream of approvals with no conversation around them.
    */
+  /**
+   * The tool calls the agent made, for the remote console's activity feed.
+   *
+   * The transcript mirror covers messages and approvals cover the calls that
+   * stopped to ask — but a consent-free call (read_file, search_files, a `yolo`
+   * turn) is invisible on the phone, which is exactly when the console should
+   * be showing that the agent is doing something.
+   *
+   * Fed from the SAME `postMessage` choke point as the transcript, so the phone
+   * learns what the desktop was already told and never more: under
+   * `chat.showToolCalls=false` the loop posts the call with `arguments: {}`, so
+   * the console renders the tool's NAME and status but no payload.
+   */
+  private readonly toolFeed = new ToolActivityFeed(event => this.remoteBridge?.(event));
+
+  /**
+   * The files those calls changed, for the console's Changes view.
+   *
+   * Fed from the same choke point and for the same reason: a `yolo` edit
+   * never raises an approval card, so the approval routes alone would leave the
+   * phone unable to answer "what did it touch?".
+   */
+  private readonly changedFiles = new ChangedFilesTracker(event => this.remoteBridge?.(event));
+
+  /** Mirror one webview-bound message into the tool feed (no-op for others). */
+  private mirrorTool(message: {
+    type?: string;
+    call?: { id?: string; name?: string; arguments?: unknown };
+    callId?: string;
+    content?: string;
+  }): void {
+    if (!message || typeof message.type !== 'string') { return; }
+    if (message.type === 'toolCall') {
+      const call = message.call ?? {};
+      const id = String(call.id ?? '').trim();
+      if (!id) { return; }
+      const started = this.toolFeed.start(id, String(call.name ?? 'tool'), summariseToolArguments(call.arguments));
+      // The thread shows the call under the message that asked for it; the feed
+      // is only the rolling window of what is running now.
+      if (started) { this.transcriptMirror.noteTool(started); }
+      // Paths come from the RAW arguments, never from the clipped digest: the
+      // Changes view has to name the file, not a 100-character preview of it.
+      this.changedFiles.start(id, String(call.name ?? 'tool'), call.arguments);
+      return;
+    }
+    if (message.type === 'toolResult') {
+      if (message.callId) {
+        const settled = this.toolFeed.finishWithResult(String(message.callId), message.content);
+        if (settled) { this.transcriptMirror.noteTool(settled); }
+        this.changedFiles.settle(String(message.callId), settled ? settled.status : 'ok');
+      }
+      return;
+    }
+    // `chat.showToolCalls=false` posts completion as a bare tick with no result
+    // body — the call still clearly finished, it just carries no verdict.
+    if (message.type === 'toolCallDone' && message.callId) {
+      const settled = this.toolFeed.finish(String(message.callId), 'ok');
+      if (settled) { this.transcriptMirror.noteTool(settled); }
+      this.changedFiles.settle(String(message.callId), 'ok');
+    }
+  }
+
+  /** The tool feed for GET /tools (a console that connected mid-turn). */
+  toolActivitySnapshot(): unknown {
+    return this.toolFeed.event();
+  }
+
+  /** The changed files for GET /files (a console that connected mid-turn). */
+  public changedFilesSnapshot(): RemoteFilesEvent {
+    return this.changedFiles.snapshot();
+  }
+
   private readonly transcriptMirror = new TranscriptMirror(
     event => this.remoteBridge?.(event),
     () => this.getActiveSessionId(),
@@ -3476,6 +3560,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Why a message typed on the phone must be refused right now, or null when it
+   * can be accepted. ONE source of truth with the guard in `handleUserMessage`:
+   * `remoteSendMessage` asks it BEFORE recording the answer, so an answer the
+   * host will refuse never closes the card on both screens.
+   */
+  private remoteTurnRefusal(): string | null {
+    const foreignTurn = foreignRunningTurn(this.runningTurnSession, this.getActiveSessionId());
+    if (!foreignTurn) return null;
+    return remoteRefusalNotice(this.getSessions().find(s => s.id === foreignTurn)?.name);
+  }
+
+  /**
    * A message typed on the phone. Deliberately the SAME entry point as the
    * webview's `sendMessage`, so slash commands, the busy/steering guard and
    * turn bookkeeping behave exactly as they do on the desktop.
@@ -3488,19 +3584,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!trimmed) {
       return { status: 400, body: { error: 'text must be a non-empty string' } };
     }
+    // The console answers a mirrored question by sending the option text, so
+    // this POST IS the answer to the card the phone showed. Pin the id NOW: the
+    // turn about to run may offer a NEW question and move the pending id off
+    // the block the phone just answered.
+    const answeredCard = (choiceRequestId ?? this.pendingChoiceRequestId ?? '').trim();
+    // 409: the host refuses while another session is generating. Asked here,
+    // BEFORE the answer is recorded, so a refused answer leaves the card
+    // answerable on both sides (the console shows the reason in its banner
+    // instead of parking the POST behind a desktop modal nobody can answer).
+    const refusal = this.remoteTurnRefusal();
+    if (refusal) {
+      return { status: 409, body: { error: refusal } };
+    }
+    // Accepted — close the desktop card NOW, not when the turn finishes: a run
+    // can stream for minutes, and all that while the desktop would keep
+    // offering options for a question already answered on the phone (and let a
+    // second answer overtake the first).
+    if (answeredCard) {
+      this.resolveChoiceCard(answeredCard, trimmed, 'remote');
+    }
     try {
       const result = await this.handleUserMessage(trimmed, undefined, 'remote');
       if (!result.ok) {
-        // 409: the host refused (a turn is still running elsewhere) — the
-        // console shows the reason in its banner instead of parking the POST
-        // behind a desktop modal nobody can answer from a phone.
         return { status: 409, body: { error: result.error ?? 'the message was not accepted' } };
       }
-      // The console answers by sending text, and that text IS the answer to
-      // the card it showed — so close that card on every surface. Nothing here
-      // is announced when the host refused the turn: a refused answer must
-      // leave the card answerable on both sides.
-      this.resolveChoiceCard(choiceRequestId, trimmed, 'remote');
     } catch (error) {
       return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
     }
@@ -3533,6 +3641,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
     this._editorPanel?.webview.postMessage(message);
     this.mirrorApproval(message);
+    this.mirrorTool(message);
     this.mirrorTranscript(message);
   }
 
@@ -5514,7 +5623,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // nobody is looking at.
         return {
           ok: false,
-          error: `${runningElsewhereNotice(otherName)} Send again once it finishes.`,
+          error: remoteRefusalNotice(otherName),
         };
       }
       const decision = await this.requestConfirmation(

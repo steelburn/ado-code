@@ -48,6 +48,15 @@ suite('shared/remoteProtocol', () => {
                 turn: { sessionId: 's-1', title: 'Wire the console', startedAt: 1790000000000, background: false },
             },
             { type: 'turnStatus' as const, turn: null },
+            {
+                type: 'files' as const,
+                files: [
+                    { path: 'src/a.ts', tool: 'edit_file', status: 'ok' as const, edits: 2, at: 1790000000000 },
+                    { path: 'src/b.ts', tool: 'write_to_file', status: 'running' as const, edits: 1, at: 1790000000001 },
+                ],
+                truncated: true,
+            },
+            { type: 'files' as const, files: [] },
         ];
 
         for (const event of events) {
@@ -129,6 +138,32 @@ suite('shared/remoteProtocol', () => {
         assert.strictEqual(parseDownstream({ type: 'transcript', messages: 'nope' }).ok, false);
         assert.strictEqual(parseDownstream({ type: 'transcriptDelta', id: 'm' }).ok, false);
         assert.strictEqual(parseDownstream({ type: 'transcriptDelta', id: 'm', delta: 'more' }).ok, true);
+    });
+
+    test('files frames validate and stay capped', () => {
+        const frame = (files: unknown, truncated?: unknown) => ({ type: 'files', files, truncated });
+
+        const good = parseDownstream(
+            JSON.stringify(
+                frame(
+                    [
+                        { path: 'src/a.ts', tool: 'edit_file', status: 'ok', edits: 2, at: 1790000000000 },
+                        { path: 'src/b.ts', tool: 'apply_diff', status: 'running', edits: 1, at: 1790000000001 },
+                    ],
+                    true
+                )
+            )
+        );
+        assert.strictEqual(good.ok, true);
+
+        // The list is what drives the Files tab, so an unusable entry is a
+        // reject rather than a row the phone has to defend itself against.
+        assert.strictEqual(parseDownstream(JSON.stringify(frame('nope'))).ok, false);
+        assert.strictEqual(parseDownstream(JSON.stringify(frame([null]))).ok, false);
+        assert.strictEqual(parseDownstream(JSON.stringify(frame([{ path: '' }]))).ok, false);
+        assert.strictEqual(parseDownstream(JSON.stringify(frame([{ path: 'src/a.ts', status: 'nope' }]))).ok, false);
+        // A frame with no files at all is legal: it is how a reset reads.
+        assert.strictEqual(parseDownstream(JSON.stringify(frame([]))).ok, true);
     });
 
     test('upstream session payload requires the fragment token', () => {

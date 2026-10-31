@@ -4,41 +4,6 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
-
-- **Tiered testing is now the default ADO Code writes into AGENTS.md.** The generated
-  `## Build & Test` section used to name the full suite as the only way to test, so an agent
-  told to "run the tests" paid the slowest suite for the smallest change - in minutes and,
-  just as expensively, in the tokens its reporter output burns from the user's context (a
-  chatty `spec` reporter can print ~44k tokens of passing test names before it has even
-  finished). The section now
-  derives a ladder from the scripts the workspace actually defines - tier 1 compile or
-  type-check on every edit, tier 2 the targeted subset (`test:changed`, `test:unit`, …) while
-  iterating, tier 3 the full suite before commit, tier 4 host/e2e/integration on request only -
-  and states the default: run the cheapest tier that can fail because of your change, escalate
-  one rung at a time and name the tier you ran. Each rung is priced in time *and* output, and a
-  final line makes the cost explicit: testing is billed to the user in tokens, so quote only the
-  failing test and the head of its error, prefer one file or a `--grep` filter over the whole
-  suite, and never paste a full test log. Projects with no cheap tier keep the flat
-  one-line section, and the `agents.verifyCommand` setting now points at the cheap tier
-  (`npm run test:changed`) instead of the full suite.
-
-### Fixed
-
-- **The chat reopens on the session you were last in, even after VS Code is killed.**
-  Transcripts already survived a shutdown - they are fsync'd into the on-disk mirror under
-  `.ado-code/sessions/` - but *which* session was on screen did not. The mirror index only
-  carried the pointer as a by-product of the next list write, and the list is written
-  *before* the active session settles, so a shutdown in that window left an index with every
-  session present and no pointer at all: the panel opened blank, the next message minted a
-  fresh session and the conversation looked lost. The pointer is now its own durable write
-  (`SessionMirror.writePointer`, fsync'd, transcripts untouched) issued by every path that
-  changes the active session, and a list write that carries no pointer no longer erases the
-  one already on disk. Restore falls back to the newest session when the pointer is missing
-  or names a session that no longer exists, and repairs the mirror pointer so the next
-  launch reads it directly.
-
-
 ## [0.8.3] - 2026-10-30
 
 ### Added
@@ -157,6 +122,36 @@ All notable changes to ADO Code will be documented in this file.
   card is hidden when the session has neither a goal nor a to-do list, and long lists stop at eight
   rows (`+N more steps`) so the conversation stays reachable.
 
+- **The Remote Oversight console gained a Goal view and a Files view.** The phone could watch the
+  conversation but not the plan or the working tree, so the two questions a reader asks most - where
+  is this going, and what has it touched - still needed the desktop. The tab bar now carries five
+  views: **Goal** renders the objective as a hero block with a progress bar and the milestones
+  grouped In progress / Next / Done, replayed from `GET /plan` so a reload draws the same plan;
+  **Files** lists every file the agent changed, newest first, with the tool that wrote it, its edit
+  count and a status dot that pulses while a call is in flight and turns red if one failed. The list
+  is aggregated host-side from the mutating tool calls (`edit_file`, `apply_diff`, `write_to_file`,
+  `delete_file`), served by a new auth-gated `GET /files`, bounded to 60 rows with an eviction that
+  drops the coldest file rather than the oldest, and the tab carries a count badge.
+
+- **Tool calls now show up in Remote Oversight.** The console mirrored the conversation and the
+  approvals, which left a hole: a call that needed no consent (`read_file`, `search_files`, a
+  `yolo` turn, anything a delegated run does) produced no message at all, so the phone looked idle
+  while the agent edited files. The Runs view now carries a **Tool calls** feed — tool name, a
+  one-line digest of its target, `running`/`ok`/`error` plus elapsed time, newest first — fed from
+  the same `postMessage` choke point as the transcript, so the phone never learns more than the
+  desktop did (`chat.showToolCalls=false` gives it the name and status, not the payload). The feed
+  is bounded to 12 calls, pushed whole as a `toolFeed` event, replayed by a new `GET /tools` on
+  reconnect, and a call with no result after five minutes renders as stalled instead of pulsing
+  forever.
+- **Inlined under the answer that made them, in the Thread view.** The feed answered "what is it
+  doing now?" but not "what did this answer cost?": the conversation showed the prose and none of
+  the work. Each assistant message now carries its own tool calls, drawn beneath its text in the
+  order they ran - name, digest, status dot, duration - paired on the **host** by `TranscriptMirror`
+  so the console never guesses from timings and a reloaded page draws the same groups. A turn that
+  calls a tool before writing anything gets a content-less **Tool run** message rather than an empty
+  bubble, each message keeps its newest 10 calls plus the real total (`+N earlier calls not shown`),
+  and the rows travel with the message, so `GET /transcript` replays them like the text.
+
 ### Changed
 
 - **Verification is now cheap by default: the test suite runs headless, and the Electron
@@ -201,6 +196,47 @@ All notable changes to ADO Code will be documented in this file.
   `xcode-select --install`, the Debian/Ubuntu apt set) and the documented tolerance — only
   ✓ for Flutter and the platforms you target — and the claim that `flutter doctor` reports
   *only* unaccepted Android licences is gone.
+
+- **The console opens on the newest message, pins the reply box and makes Send hard to miss.** The
+  thread opened at the top and the reply box scrolled away with it, so answering on a phone meant
+  scrolling through a long run first. The view now follows the tail of the thread when it renders and
+  when it is opened, and stops following only once the reader scrolls up on purpose. The *Reply to
+  Agent* composer is pinned above the tab bar - safe-area aware, with the body padded so nothing
+  hides beneath it - and **Send** is a filled accent button with a 44px tap target that reports its
+  own state: *Send* becomes *Sending* with a spinner and disables itself so a double tap cannot post
+  twice, then *Sent*, or *Retry* in red when the post fails.
+
+- **The Remote Access panel can now turn remote access off, and re-pick its settings.** The QR
+  panel was read-only: it showed the URL and offered a tunnel, but stopping the server, copying
+  the URL, rotating the token or reaching the bind/port/tunnel settings meant going back to the
+  command palette. The panel now carries a row of actions - *Turn off remote access*, *Copy
+  console URL*, *Rotate token*, *Reconfigure* - as plain `command:` links, so it still ships no
+  script, and turning off also closes the panel instead of leaving it pointing at a dead server.
+  The footer hint no longer implies the only way to stop is to find the command.
+- **The remote console's bottom tabs are readable.** Labels were 14px at 62% opacity over an
+  already-muted colour - roughly 4:1 contrast on a phone held at arm's length - and the selected
+  state was `rgba(255,255,255,0.10)`, invisible in light mode. They are now 15px semibold with
+  explicit per-scheme colours, a 44px tap target, and a selected state marked by an accent rule
+  plus a pill instead of by dimming the other two.
+- **The empty Runs view explains itself.** "Nothing running right now" read as a defect. It now
+  says no agent is working yet, that a run appears as soon as one starts on the desktop, that
+  this page mirrors rather than starts runs, and that consent requests land on Approvals.
+- **Tiered testing is now the default ADO Code writes into AGENTS.md.** The generated
+  `## Build & Test` section used to name the full suite as the only way to test, so an agent
+  told to "run the tests" paid the slowest suite for the smallest change - in minutes and,
+  just as expensively, in the tokens its reporter output burns from the user's context (a
+  chatty `spec` reporter can print ~44k tokens of passing test names before it has even
+  finished). The section now
+  derives a ladder from the scripts the workspace actually defines - tier 1 compile or
+  type-check on every edit, tier 2 the targeted subset (`test:changed`, `test:unit`, …) while
+  iterating, tier 3 the full suite before commit, tier 4 host/e2e/integration on request only -
+  and states the default: run the cheapest tier that can fail because of your change, escalate
+  one rung at a time and name the tier you ran. Each rung is priced in time *and* output, and a
+  final line makes the cost explicit: testing is billed to the user in tokens, so quote only the
+  failing test and the head of its error, prefer one file or a `--grep` filter over the whole
+  suite, and never paste a full test log. Projects with no cheap tier keep the flat
+  one-line section, and the `agents.verifyCommand` setting now points at the cheap tier
+  (`npm run test:changed`) instead of the full suite.
 
 ### Removed
 
@@ -333,6 +369,64 @@ All notable changes to ADO Code will be documented in this file.
   `/v1/messages`, `/v1/messages/count_tokens` and `/v1/models` exactly once — the old inline
   `.replace(/\/+$/, '')` turned `.../v1` into `/v1/v1/messages` and left pasted whitespace in the
   URL, both of which surfaced as a 404 that looked like a bad key.
+
+- **The What's New panel no longer truncates every changelog entry after its first line.** The
+  changelog is hard-wrapped at ~100 columns, so one bullet spans several physical lines, and the
+  panel rendered the section line by line - `<li>` for lines starting with `- `, nothing at all for
+  the wrapped remainder. Every entry therefore read like a half sentence ("The remote console is
+  now a single-page app, opened by the QR code. It used to be"), and inline `**bold**`, *italic*
+  and `` `code` `` were dropped. `changelogMarkdown.ts` now folds the continuation lines back into
+  the bullet/paragraph they belong to and hands the result to the shared markdown renderer, so the
+  whole entry, its inline markup and the section's `###` headings all reach the panel; the version
+  heading's trailing date no longer shows up as stray text either.
+
+- **A restored chat no longer empties itself a moment after it appears on screen.** Startup had
+  two restore writers - the constructor kicked off the mirror merge and `resolveWebviewView`
+  awaited a second, independent one - and a queued transcript write carrying a live buffer that
+  the webview had not loaded yet (empty) then ran `applyConversation` and stored `messages: []`
+  over the transcript the chat had just rendered. The merge is now single-flight
+  (`ensureRestored`), an empty buffer can no longer overwrite a transcript that holds messages
+  (only an explicit clear may empty one, via `allowEmptyPersist`), the resume fallback prefers a
+  session that actually has messages over a newer empty one, and every `historyRestored: []` now
+  logs its caller so a remaining "the messages vanished" report is traceable.
+
+- **The chat reopens on the session you were last in, even after VS Code is killed.**
+  Transcripts already survived a shutdown - they are fsync'd into the on-disk mirror under
+  `.ado-code/sessions/` - but *which* session was on screen did not. The mirror index only
+  carried the pointer as a by-product of the next list write, and the list is written
+  *before* the active session settles, so a shutdown in that window left an index with every
+  session present and no pointer at all: the panel opened blank, the next message minted a
+  fresh session and the conversation looked lost. The pointer is now its own durable write
+  (`SessionMirror.writePointer`, fsync'd, transcripts untouched) issued by every path that
+  changes the active session, and a list write that carries no pointer no longer erases the
+  one already on disk. Restore falls back to the newest session when the pointer is missing
+  or names a session that no longer exists, and repairs the mirror pointer so the next
+  launch reads it directly.
+- **An answered choice card no longer returns as live "waiting for input" on the phone.**
+  The console already closed a block when it was told the answer, but the host rebuilt the
+  block from raw text on every re-render — the final stream chunk, a second `noteChoice`, a
+  history restore after a webview reload — and each rebuild handed the console a fresh, open
+  choice, so an already-answered question could be tapped a second time. The transcript
+  mirror now keeps an answer registry: keyed by `requestId` for a live block and by its
+  question+options signature for one that has to be rebuilt from text and so lost its id (a
+  restored history), bounded to 64 entries and discarded on a session switch. A rebuild
+  carries the identity and the answer of the block it replaces, a prompt whose fence the
+  webview stripped is no longer deleted from the mirror, and a *new* prompt with a different
+  `requestId` stays live even when it repeats a question that was answered before. The
+  console additionally remembers an answer reported by a frame, so a stale frame cannot
+  re-open a closed block either.
+
+- **Answering a question on the phone now closes the option card in VS Code.**
+  The host already told the webview about a remotely answered choice, but only *after*
+  awaiting the whole turn the answer starts — so for the entire run (minutes, on a long task)
+  the desktop kept offering options for a question that was already answered, and a second
+  click there could overtake the first answer. The remote entry point now pins the answered
+  card id before anything else (the reply about to stream may offer a *new* question and move
+  the pending id off the block the phone answered), asks the same 409 guard the turn itself
+  uses — so an answer the host will refuse still leaves the card answerable on both screens —
+  and closes the card on acceptance, before the turn streams. The id the console sends was
+  also being dropped at the wiring in `extension.ts`; it now reaches the host, so the desktop
+  closes the block the phone actually answered rather than whatever happens to be pending.
 
 ## [0.8.2] - 2026-10-29
 

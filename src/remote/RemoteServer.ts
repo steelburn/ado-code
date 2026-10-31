@@ -69,11 +69,26 @@ export interface RemoteServerOptions {
    */
   transcriptSnapshot?: () => unknown;
   /**
+   * The agent's recent tool calls (`GET /tools`).
+   *
+   * Same contract as `transcriptSnapshot` and the same reason it exists: the
+   * host pushes a `toolFeed` event on every change, but a console that opens
+   * later has missed all of them. Optional — without it `/tools` answers an
+   * empty feed, so an observe-only harness keeps working.
+   */
+  toolSnapshot?: () => unknown;
+  /**
    * The session plan — goal plus to-do list (GET /plan). Same replay contract
    * as `transcriptSnapshot`: the host pushes a `plan` event on every change,
    * but a console that opens later has missed every one of them.
    */
   planSnapshot?: () => unknown;
+  /**
+   * The files the agent changed this session (GET /files). Same replay contract
+   * as `toolSnapshot`: the host pushes a `files` event on every change, but a
+   * console that opens later has missed them.
+   */
+  filesSnapshot?: () => unknown;
   /** A message typed on the phone. Absent = read-only console (501). */
   onChat?: (text: string, choiceRequestId?: string) => Promise<{ status: number; body?: unknown }>;
   onConfirm?: (payload: { requestId: string; value?: string; approved?: boolean }) => Promise<{ status: number; body?: unknown }>;
@@ -267,6 +282,14 @@ export class RemoteServer {
         await this.handlePlan(req, res);
         return;
       }
+      if (method === 'GET' && pathname === '/tools') {
+        await this.handleTools(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/files') {
+        await this.handleFiles(req, res);
+        return;
+      }
       if (method === 'GET' && pathname === '/turn') {
         await this.handleTurn(req, res);
         return;
@@ -341,6 +364,51 @@ export class RemoteServer {
    * the webview uses, so tools, approvals and steering keep working while the
    * phone is the only screen. 501 when the console is observe-only.
    */
+  /**
+   * The agent's recent tool calls (GET /tools).
+   *
+   * The console mirrors the conversation and the approvals; this is the third
+   * thing it needs to answer "what is it doing right now?" — the calls that
+   * never asked permission. Bounded by the host (MAX_TOOL_ACTIVITY), so the
+   * response stays a few KB. Degrades to an empty feed, never 500: a broken
+   * snapshot must not black out the console.
+   */
+  private async handleTools(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!(await this.authorized(req))) {
+      this.sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    let feed: unknown = null;
+    try {
+      feed = this.options.toolSnapshot ? this.options.toolSnapshot() : null;
+    } catch {
+      feed = null;
+    }
+    this.sendJson(res, 200, feed ?? { type: 'toolFeed', entries: [] });
+  }
+
+  /**
+   * The files the agent changed (GET /files).
+   *
+   * The third question the phone asks, after "what is happening" and "what
+   * needs me": *what did it touch?* Bounded by the host (MAX_CHANGED_FILES),
+   * and it degrades to an empty list rather than 500 — a broken snapshot must
+   * not black out the console.
+   */
+  private async handleFiles(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!(await this.authorized(req))) {
+      this.sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    let files: unknown = null;
+    try {
+      files = this.options.filesSnapshot ? this.options.filesSnapshot() : null;
+    } catch {
+      files = null;
+    }
+    this.sendJson(res, 200, files ?? { type: 'files', files: [] });
+  }
+
   private async handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!(await this.authorized(req))) {
       this.sendJson(res, 401, { error: 'unauthorized' });

@@ -2,6 +2,10 @@ import * as assert from 'assert';
 
 import {
   QR_PANEL_TITLE,
+  REMOTE_COPY_URL_COMMAND,
+  REMOTE_ROTATE_TOKEN_COMMAND,
+  REMOTE_SETTINGS_COMMAND,
+  REMOTE_STOP_COMMAND,
   RemoteQrPanel,
   TUNNEL_START_COMMAND,
   renderQrHtml,
@@ -252,5 +256,46 @@ suite('RemoteQrPanel', () => {
 
   test('the panel title is exported for the host to use', () => {
     assert.strictEqual(QR_PANEL_TITLE, 'Remote Access');
+  });
+
+  test('the panel carries the off switch and the reconfiguration links', () => {
+    const html = renderQrHtml(payload({ resolution: localResolution() }));
+
+    assert.ok(html.includes(`command:${REMOTE_STOP_COMMAND}`), 'offers turning remote access off');
+    assert.ok(html.includes(`command:${REMOTE_COPY_URL_COMMAND}`), 'offers copying the URL');
+    assert.ok(html.includes(`command:${REMOTE_ROTATE_TOKEN_COMMAND}`), 'offers rotating the token');
+    assert.ok(
+      html.includes(`command:${REMOTE_SETTINGS_COMMAND}`),
+      'offers opening the remote settings',
+    );
+    assert.ok(
+      REMOTE_SETTINGS_COMMAND.startsWith('workbench.action.openSettings?'),
+      'the settings link is a command URI with an encoded query',
+    );
+    assert.ok(
+      decodeURIComponent(REMOTE_SETTINGS_COMMAND).includes('adoCode.remote'),
+      'the query narrows to the remote settings',
+    );
+    assert.ok(!/<script/i.test(html), 'still no scripts');
+  });
+
+  test('the action row is there whatever the URL resolves to', () => {
+    const tunnel = renderQrHtml(
+      payload({
+        resolution: {
+          kind: 'tunnel',
+          url: 'https://abc.trycloudflare.com/?t=abc',
+          loopbackUrl: `${LOOPBACK}/`,
+          message: 'Reachable through the tunnel.',
+        },
+      }),
+    );
+    const unavailable = renderQrHtml(
+      payload({ resolution: { kind: 'unavailable', url: '', loopbackUrl: '', message: 'Off.' } }),
+    );
+
+    for (const html of [tunnel, unavailable]) {
+      assert.ok(html.includes(`command:${REMOTE_STOP_COMMAND}`), 'an off switch is always offered');
+    }
   });
 });

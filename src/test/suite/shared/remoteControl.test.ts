@@ -99,6 +99,7 @@ interface Rig {
     quickPickCalls: Array<{ items: Array<{ label: string }>; activeItem?: { label: string } }>;
     commandHandlers: Map<string, (...args: never[]) => unknown>;
     panelCalls: () => number;
+    hideCalls: () => number;
     lastPanelUrl: () => string | undefined;
     overrideServerFactory: (factory: () => RemoteServerLike) => void;
 }
@@ -126,6 +127,7 @@ function createRig(
     const quickPickCalls: Array<{ items: Array<{ label: string }>; activeItem?: { label: string } }> = [];
     const commandHandlers = new Map<string, (...args: never[]) => unknown>();
     let panelCalls = 0;
+    let hideCalls = 0;
     let lastPanelUrl: string | undefined;
     let listener: (() => void) | undefined;
     let serverFactoryOverride: (() => RemoteServerLike) | undefined;
@@ -181,7 +183,7 @@ function createRig(
             panelCalls++;
             lastPanelUrl = payload.url;
         },
-        hideQrPanel: () => undefined,
+        hideQrPanel: () => { hideCalls += 1; },
         copyToClipboard: async (text) => {
             clipboard.push(text);
         },
@@ -204,6 +206,7 @@ function createRig(
         commandHandlers,
         fireConfigChange: () => listener?.(),
         panelCalls: () => panelCalls,
+        hideCalls: () => hideCalls,
         lastPanelUrl: () => lastPanelUrl,
         overrideServerFactory: (factory) => {
             serverFactoryOverride = factory;
@@ -227,6 +230,30 @@ suite('remote/RemoteControl', () => {
         assert.strictEqual(rig.status.text, '$(broadcast) Remote');
         assert.strictEqual(rig.contexts['adoCode.remoteActive'], true);
         assert.strictEqual(rig.contexts['adoCode.remoteState'], 'on');
+    });
+
+    test('stopping remote access closes the panel that advertised it', async () => {
+        const rig = createRig();
+        rig.control.activate();
+        await rig.control.toggle();
+        assert.strictEqual(rig.hideCalls(), 0, 'turning it on leaves the panel open');
+
+        await rig.control.stop();
+
+        assert.deepStrictEqual(rig.writes, [true, false]);
+        assert.strictEqual(rig.control.currentState, 'off');
+        assert.strictEqual(rig.hideCalls(), 1, 'the QR panel is closed, not left on a dead URL');
+    });
+
+    test('the toggle closes the panel when it turns remote access off', async () => {
+        const rig = createRig();
+        rig.control.activate();
+        await rig.control.toggle();
+
+        await rig.control.toggle();
+
+        assert.strictEqual(rig.control.currentState, 'off');
+        assert.strictEqual(rig.hideCalls(), 1);
     });
 
     test('the toggle reconciles exactly once even though the write fires the listener', async () => {
