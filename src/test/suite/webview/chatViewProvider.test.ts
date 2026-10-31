@@ -1700,6 +1700,142 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
     }
   });
 
+  test('an empty persist never erases a restored transcript', async () => {
+    // The startup race that emptied the chat seconds after it was rendered: the
+    // webview paints the restored messages, then a queued write carrying an empty
+    // live buffer (no session loaded yet, or a switch already reset it) reached
+    // applyConversation and replaced the stored messages with nothing.
+    const root = makeScratchDir('ado-session-keep-');
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      await (provider as any).ensureSession('keep me');
+      const id = (provider as any).getActiveSessionId();
+      await (provider as any).persistConversation(id, [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1' },
+      ]);
+
+      await (provider as any).persistConversation(id, []);
+
+      const kept = (provider as any).getSessions().find((s: any) => s.id === id);
+      assert.deepStrictEqual(
+        kept.messages.map((m: any) => m.content),
+        ['q1', 'a1'],
+        'an empty buffer leaves the stored transcript intact',
+      );
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      const mirrored = new SessionMirror(() => mirrorDir).read()?.sessions.find((s: any) => s.id === id);
+      assert.deepStrictEqual(
+        mirrored?.messages.map((m: any) => m.content),
+        ['q1', 'a1'],
+        'the on-disk transcript is intact too',
+      );
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test('an explicit clear still empties the transcript', async () => {
+    const root = makeScratchDir('ado-session-clear-');
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      await (provider as any).ensureSession('clear me');
+      const id = (provider as any).getActiveSessionId();
+      await (provider as any).persistConversation(id, [{ role: 'user', content: 'q1' }]);
+
+      (provider as any).allowEmptyPersist = true;
+      try {
+        await (provider as any).persistConversation(id, []);
+      } finally {
+        (provider as any).allowEmptyPersist = false;
+      }
+
+      const cleared = (provider as any).getSessions().find((s: any) => s.id === id);
+      assert.deepStrictEqual(cleared.messages, [], 'the user-requested clear wins');
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test('resume prefers a session with messages over a newer empty one', async () => {
+    // A chat minted at the end of a run carries the newest createdAt but no
+    // messages; resuming THAT is what made a restored conversation look wiped.
+    const root = makeScratchDir('ado-session-prefer-');
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      const filled: any = {
+        id: 'filled',
+        name: 'filled',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'hello' }],
+      };
+      const empty: any = { id: 'empty', name: 'empty', createdAt: '2026-02-01T00:00:00.000Z', messages: [] };
+      await context.workspaceState.update((provider as any).sessionsStorageKey, [filled, empty]);
+      await context.workspaceState.update((provider as any).activeSessionKey, undefined);
+      // Mirror the list WITHOUT a pointer: exactly the state a shutdown in the
+      // write window leaves behind.
+      (provider as any).sessionMirror.write([filled, empty], '');
+      (provider as any).restorePromise = undefined;
+
+      await (provider as any).ensureRestored();
+
+      assert.strictEqual(
+        (provider as any).getActiveSessionId(),
+        'filled',
+        'the empty newest session must not shadow the conversation',
+      );
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test('ensureRestored merges the mirror exactly once', async () => {
+    // The constructor starts the restore and resolveWebviewView awaits it again;
+    // two concurrent merges re-write the same stale snapshot, which is how a
+    // post-paint write could still be carrying pre-restore state.
+    const context = makeSessionContext();
+    const provider = new ChatViewProvider({} as any, makeServices(), context);
+    let calls = 0;
+    const original = (provider as any).restoreFromMirror.bind(provider);
+    (provider as any).restoreFromMirror = async () => {
+      calls++;
+      await original();
+    };
+    (provider as any).restorePromise = undefined;
+
+    await Promise.all([(provider as any).ensureRestored(), (provider as any).ensureRestored()]);
+    await (provider as any).ensureRestored();
+
+    assert.strictEqual(calls, 1, 'the mirror is merged once per provider instance');
+  });
+
   test('flushPendingWrites mirrors the in-flight turn and drains queued writes', async () => {
     const root = makeScratchDir('ado-session-flush-');
     const workspace = vscode.workspace as any;

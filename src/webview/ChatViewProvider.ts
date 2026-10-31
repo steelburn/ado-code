@@ -294,18 +294,22 @@ const AGENTS_MD_SYNC_KEY = 'adoCode.agentsMdSyncPrior';
  * stored pointer is missing or names a session that no longer exists.
  */
 function newestSessionId(sessions: Session[]): string | undefined {
+  const later = (a: Session | undefined, b: Session): Session => {
+    if (!a) return b;
+    const left = b.createdAt ?? '';
+    const right = a.createdAt ?? '';
+    return left > right || (left === right && b.id > a.id) ? b : a;
+  };
   let newest: Session | undefined;
+  let newestFilled: Session | undefined;
   for (const s of sessions) {
     if (!s || typeof s.id !== 'string') continue;
-    if (!newest) {
-      newest = s;
-      continue;
-    }
-    const a = s.createdAt ?? '';
-    const b = newest.createdAt ?? '';
-    if (a > b || (a === b && s.id > newest.id)) newest = s;
+    newest = later(newest, s);
+    // An empty session is usually a chat that was minted and never used; the
+    // conversation the user came back for is in one that holds messages.
+    if (Array.isArray(s.messages) && s.messages.length > 0) newestFilled = later(newestFilled, s);
   }
-  return newest?.id;
+  return (newestFilled ?? newest)?.id;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -489,6 +493,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * it is folded back in — including a turn that was still running when the
    * machine went down (checkpointed mid-turn).
    */
+  /** Settled mirror-restore promise — see ensureRestored(). */
+  private restorePromise?: Promise<void>;
+
+  /** Set only by an explicit clear, the one write allowed to empty a transcript. */
+  private allowEmptyPersist = false;
+
+  /**
+   * Run the mirror restore EXACTLY once. The constructor starts it before the
+   * webview exists and resolveWebviewView awaits it again; two concurrent runs
+   * merge the same stale snapshot, and the late one could land a write after the
+   * chat had already rendered the restored messages.
+   */
+  private ensureRestored(): Promise<void> {
+    if (!this.restorePromise) {
+      this.restorePromise = this.restoreFromMirror().catch((err) => {
+        console.warn(`[ado-code] chat mirror restore failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    return this.restorePromise;
+  }
+
   private async restoreFromMirror(): Promise<void> {
     let mirrored: MirroredSessions | undefined;
     try {
@@ -667,7 +692,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // reopened in an editor tab (a different attach path), and a shutdown
     // mid-turn is exactly when the mirror must be consulted before ANYTHING
     // reads the session list.
-    void this.restoreFromMirror().catch(() => undefined);
+    void this.ensureRestored();
     // The console mirrors the plan (goal + to-do list) — every store write,
     // whether it came from `set_goal`, `update_todo_list` or an automatic tick,
     // reaches the phone without the turn loop having to remember to forward it.
@@ -2171,7 +2196,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.migrateFromLegacyHistory();
       // Recover anything a hard shutdown dropped from workspaceState before the
       // active session is loaded into the webview.
-      await this.restoreFromMirror();
+      await this.ensureRestored();
       this.sendSessionList();
       const activeId = this.getActiveSessionId();
       if (activeId) {
@@ -2391,7 +2416,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const clearedSessionId = this.getActiveSessionId();
             if (clearedSessionId) this.conversationBySession.set(clearedSessionId, this.conversation);
             this.resetConversationCaches();
-            await this.persistConversation();
+            // An explicit clear is the ONE write allowed to empty a transcript.
+            this.allowEmptyPersist = true;
+            try {
+              await this.persistConversation();
+            } finally {
+              this.allowEmptyPersist = false;
+            }
             this.postMessage({ type: 'historyRestored', messages: [] });
             this.postMessage({ type: 'loading', loading: false });
             this.markDirty();
@@ -3492,6 +3523,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public postMessage(message: any) {
+    if (message?.type === 'historyRestored' && Array.isArray(message.messages) && message.messages.length === 0) {
+      // Clearing the chat view is the ONE message that can drop a transcript from
+      // the screen; log who asked for it so a "the messages vanished" report is
+      // traceable instead of a guess.
+      const caller = (new Error().stack || '').split('\n').slice(2, 4).map(l => l.trim()).join(' <- ');
+      console.warn(`[ado-code] chat: clearing the chat view (${caller})`);
+    }
     this._view?.webview.postMessage(message);
     this._editorPanel?.webview.postMessage(message);
     this.mirrorApproval(message);
@@ -4794,7 +4832,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const m of session.messages) {
       if (m.role === 'assistant' && m.trace) priorTraces.set(m.content, m.trace);
     }
-    session.messages = trimConversationToPairs(target, ChatViewProvider.MAX_PERSISTED_PAIRS)
+    const persistedMessages = trimConversationToPairs(target, ChatViewProvider.MAX_PERSISTED_PAIRS);
+    // Never let a stale or empty live buffer erase a transcript that is already
+    // stored: at startup the mirror restore, the first webview paint and the
+    // queued Memento writes overlap, and an empty persist here used to wipe the
+    // conversation seconds after it had been rendered.
+    if (persistedMessages.length === 0 && session.messages.length > 0 && !this.allowEmptyPersist) {
+      console.warn(`[ado-code] chat: skipped empty persist for ${session.id} (kept ${session.messages.length} messages)`);
+      return undefined;
+    }
+    session.messages = persistedMessages
       .map(m => {
         const content = typeof m.content === 'string' ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('') || '(image attached)';
         let trace = m.role === 'assistant' ? priorTraces.get(content) : undefined;
