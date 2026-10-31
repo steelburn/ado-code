@@ -13,6 +13,7 @@ import {
   clearSessionAutoApprovals,
 } from '../../../llm/tool-approval-ui';
 import { makeScratchDir } from '../utils/scratchDir';
+import type { Session } from '../../../shared/messages';
 
 /** Fake ExtensionContext whose workspaceState backs a Map (like the real one). */
 function makeSessionContext(): any {
@@ -1587,6 +1588,74 @@ suite('ChatViewProvider · session durability (shutdown mid-turn)', () => {
 
     assert.strictEqual(maxInFlight, 1, 'no two transcript writes may overlap');
     assert.deepStrictEqual(written, ['draft (turn interrupted)', 'the real answer'], 'issue order is kept');
+  });
+
+  test('restoreFromMirror resumes the newest session when no pointer survived', async () => {
+    // The mirror list is written BEFORE the active-session pointer, so a
+    // shutdown between the two left an index with 20 restored sessions and no
+    // pointer at all: the chat opened blank and the next message minted a fresh
+    // session, which read as "my history is gone".
+    const root = makeScratchDir('ado-session-pointer-');
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      const older: Session = {
+        id: 'sess-old',
+        name: 'old',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'older' }],
+      };
+      const newer: Session = {
+        id: 'sess-new',
+        name: 'new',
+        createdAt: '2025-02-01T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'newest' }],
+      };
+      await context.workspaceState.update((provider as any).sessionsStorageKey, [older, newer]);
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      assert.ok(mirrorDir, 'mirror dir resolves for an open folder');
+      new SessionMirror(() => mirrorDir).write([older, newer]);
+
+      await (provider as any).restoreFromMirror();
+
+      assert.strictEqual((provider as any).getActiveSessionId(), 'sess-new');
+      assert.strictEqual(new SessionMirror(() => mirrorDir).read()?.activeSessionId, 'sess-new',
+        'the repaired pointer is written back to the mirror');
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+    }
+  });
+
+  test('restoreFromMirror ignores a pointer naming a deleted session', async () => {
+    const root = makeScratchDir('ado-session-pointer-');
+    const workspace = vscode.workspace as any;
+    const previousFolders = workspace.workspaceFolders;
+    workspace.workspaceFolders = [{ uri: vscode.Uri.file(root), name: 'ws', index: 0 }];
+    try {
+      const context = makeSessionContext();
+      const provider = new ChatViewProvider({} as any, makeServices(), context);
+      const only: Session = {
+        id: 'sess-one',
+        name: 'one',
+        createdAt: '2025-03-01T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'kept' }],
+      };
+      await context.workspaceState.update((provider as any).sessionsStorageKey, [only]);
+      await context.workspaceState.update((provider as any).activeSessionKey, 'sess-deleted');
+      const mirrorDir = (provider as any).sessionMirrorDir();
+      assert.ok(mirrorDir);
+      new SessionMirror(() => mirrorDir).write([only], 'sess-deleted');
+
+      await (provider as any).restoreFromMirror();
+
+      assert.strictEqual((provider as any).getActiveSessionId(), 'sess-one',
+        'a stale pointer never wins over a surviving session');
+    } finally {
+      workspace.workspaceFolders = previousFolders;
+    }
   });
 
   test('restoreFromMirror adopts a mid-turn transcript the Memento lost', async () => {

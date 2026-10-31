@@ -103,6 +103,46 @@ export class SessionMirror {
     private readonly getFolderKey: () => string = () => '',
   ) {}
 
+  /** Pointer this instance last committed — carried over by write() (see writePointer). */
+  private lastActiveId: string | undefined;
+
+  /**
+   * Durably record WHICH session is on screen, without rewriting any transcript.
+   *
+   * WHY this needs its own entry point: the pointer changes on every new chat and
+   * every session switch, while `write()` is driven by the session LIST — and
+   * `ensureSession()` writes that list BEFORE it sets the pointer. A shutdown in
+   * between left an index naming no session at all, so the next launch opened a
+   * blank chat although every transcript was on disk: the "latest session history
+   * did not survive the restart" symptom.
+   */
+  writePointer(activeSessionId?: string | null): void {
+    const id =
+      typeof activeSessionId === 'string' && activeSessionId.length > 0 ? activeSessionId : undefined;
+    // Remember it for write()'s carry-over. An explicit clear must stick, so an
+    // empty pointer forgets the old one instead of preserving it.
+    this.lastActiveId = id;
+    const dir = this.getDir();
+    if (!dir) return;
+    const file = path.join(dir, INDEX_FILE);
+    let index: IndexFile;
+    try {
+      index = JSON.parse(fs.readFileSync(file, 'utf8')) as IndexFile;
+    } catch {
+      return; // no index yet — the next full write() carries the pointer anyway
+    }
+    if (!index || index.version !== MIRROR_VERSION || !Array.isArray(index.sessions)) return;
+    if (id) index.activeSessionId = id;
+    else delete index.activeSessionId;
+    try {
+      writeFileDurable(file, JSON.stringify(index));
+      // The index changed behind write()'s back — make it reconcile next time.
+      this.lastIndexSignature = undefined;
+    } catch {
+      /* best effort: this instance still holds the pointer in memory */
+    }
+  }
+
   /**
    * Mirror the full session list plus the active-session pointer.
    * Best-effort and synchronous: a mirror failure must never break a save.
@@ -151,18 +191,26 @@ export class SessionMirror {
 
     // Index: which sessions exist and which one was on screen. Deleted sessions
     // disappear from here first, so a stale session file can never resurrect one.
-    const indexSignature = JSON.stringify({ activeSessionId: activeSessionId ?? undefined, metas });
+    // A caller that passes no pointer (the list is written before the pointer is
+    // set on a new chat) must not erase the one we already know: carry it over as
+    // long as that session still exists, so a restart resumes it. An explicit
+    // clear goes through writePointer(), which forgets it first.
+    const pointer: string | undefined =
+      (typeof activeSessionId === 'string' && activeSessionId ? activeSessionId : undefined) ??
+      (this.lastActiveId && metas.some(m => m.id === this.lastActiveId) ? this.lastActiveId : undefined);
+    const indexSignature = JSON.stringify({ activeSessionId: pointer, metas });
     if (indexSignature !== this.lastIndexSignature) {
       const index: IndexFile = {
         version: MIRROR_VERSION,
         savedAt,
         folderKey,
-        ...(activeSessionId ? { activeSessionId } : {}),
+        ...(pointer ? { activeSessionId: pointer } : {}),
         sessions: metas,
       };
       try {
         writeFileDurable(path.join(dir, INDEX_FILE), JSON.stringify(index));
         this.lastIndexSignature = indexSignature;
+        this.lastActiveId = pointer;
       } catch {
         /* best effort */
       }

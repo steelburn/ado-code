@@ -91,6 +91,50 @@ suite('SessionMirror · durable session mirror', () => {
     );
   });
 
+  test('writePointer records the active session and leaves transcripts alone', () => {
+    mirror.write([makeSession('a', ['hi']), makeSession('b', ['yo'])], 'a');
+    const onDisk = fs.readFileSync(path.join(dir, 'b.json'), 'utf8');
+
+    mirror.writePointer('b');
+
+    assert.strictEqual(mirror.read()?.activeSessionId, 'b');
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'b.json'), 'utf8'), onDisk);
+  });
+
+  test('a pointerless list write keeps the last committed pointer', () => {
+    mirror.write([makeSession('a', ['hi']), makeSession('b', ['yo'])], 'b');
+
+    // The provider writes the list BEFORE it settles the active session, so a
+    // shutdown in that window must not erase the pointer.
+    mirror.write([makeSession('a', ['hi']), makeSession('b', ['yo', 'more'])], undefined);
+
+    assert.strictEqual(mirror.read()?.activeSessionId, 'b');
+  });
+
+  test('writePointer with an empty id clears the pointer', () => {
+    mirror.write([makeSession('a', ['hi'])], 'a');
+
+    mirror.writePointer('');
+
+    assert.strictEqual(mirror.read()?.activeSessionId, undefined);
+  });
+
+  test('a carried-over pointer whose session is gone is dropped', () => {
+    mirror.write([makeSession('a', ['hi']), makeSession('b', ['yo'])], 'b');
+
+    mirror.write([makeSession('a', ['hi'])], undefined);
+
+    assert.strictEqual(mirror.read()?.activeSessionId, undefined);
+  });
+
+  test('writePointer before the first write is kept for the next write', () => {
+    mirror.writePointer('a');
+
+    mirror.write([makeSession('a', ['hi'])], undefined);
+
+    assert.strictEqual(mirror.read()?.activeSessionId, 'a');
+  });
+
   test('mirroring is disabled without a directory (no folder open)', () => {
     const disabled = new SessionMirror(() => undefined);
     disabled.write([makeSession('a', ['hi'])], 'a');

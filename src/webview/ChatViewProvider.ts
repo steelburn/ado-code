@@ -289,6 +289,25 @@ const wizardHiddenViews = new Set<string>();
  */
 const AGENTS_MD_SYNC_KEY = 'adoCode.agentsMdSyncPrior';
 
+/**
+ * Id of the most recently CREATED session — what the chat resumes when the
+ * stored pointer is missing or names a session that no longer exists.
+ */
+function newestSessionId(sessions: Session[]): string | undefined {
+  let newest: Session | undefined;
+  for (const s of sessions) {
+    if (!s || typeof s.id !== 'string') continue;
+    if (!newest) {
+      newest = s;
+      continue;
+    }
+    const a = s.createdAt ?? '';
+    const b = newest.createdAt ?? '';
+    if (a > b || (a === b && s.id > newest.id)) newest = s;
+  }
+  return newest?.id;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
@@ -490,8 +509,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.resetConversationCaches();
       await this.saveSessions(merged.sessions);
     }
-    if (merged.activeSessionId && merged.activeSessionId !== this.getActiveSessionId()) {
-      await this.setActiveSessionId(merged.activeSessionId);
+    // WHICH session reopens matters as much as the transcripts: an empty pointer
+    // (the Memento's `activeSessionId` is debounced exactly like the list, and a
+    // new chat wrote the list before the pointer) left the panel blank, so the
+    // user's next message minted a fresh session and the conversation they were
+    // in appeared to be gone. Never leave the pointer unnamed while sessions
+    // exist — resume the newest one instead.
+    const known = new Set(merged.sessions.map(s => s.id));
+    const storedActive = this.getActiveSessionId();
+    const activeSessionId =
+      merged.activeSessionId && known.has(merged.activeSessionId)
+        ? merged.activeSessionId
+        : storedActive && known.has(storedActive)
+          ? storedActive
+          : newestSessionId(merged.sessions);
+    if (activeSessionId && activeSessionId !== storedActive) {
+      await this.setActiveSessionId(activeSessionId);
+    } else if (activeSessionId) {
+      // The Memento is intact but the index may still lack the pointer (a full
+      // mirror write only happens when the LIST changes) — record it now so a
+      // later hard exit still resumes this session.
+      this.sessionMirror.writePointer(activeSessionId);
+    }
+    if (changed || activeSessionId !== storedActive) {
+      logger.info(
+        `Chat: resumed ${activeSessionId ?? 'no session'} from the session mirror ` +
+          `(${merged.added.length} added, ${merged.replaced.length} replaced, ` +
+          `${merged.sessions.length} known)`,
+      );
     }
   }
 
@@ -519,7 +564,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async setActiveSessionId(id: string): Promise<void> {
+    // Memento write first (it is what the next launch reads when it is intact)…
     await this._context.workspaceState.update(this.activeSessionKey, id);
+    // …then the fsync'd mirror pointer: the Memento is debounced, and the session
+    // never reopens on its own if the pointer is the write that gets dropped.
+    this.sessionMirror.writePointer(id);
   }
 
   /**

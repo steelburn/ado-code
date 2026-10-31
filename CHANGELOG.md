@@ -4,6 +4,22 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The chat reopens on the session you were last in, even after VS Code is killed.**
+  Transcripts already survived a shutdown - they are fsync'd into the on-disk mirror under
+  `.ado-code/sessions/` - but *which* session was on screen did not. The mirror index only
+  carried the pointer as a by-product of the next list write, and the list is written
+  *before* the active session settles, so a shutdown in that window left an index with every
+  session present and no pointer at all: the panel opened blank, the next message minted a
+  fresh session and the conversation looked lost. The pointer is now its own durable write
+  (`SessionMirror.writePointer`, fsync'd, transcripts untouched) issued by every path that
+  changes the active session, and a list write that carries no pointer no longer erases the
+  one already on disk. Restore falls back to the newest session when the pointer is missing
+  or names a session that no longer exists, and repairs the mirror pointer so the next
+  launch reads it directly.
+
+
 ## [0.8.3] - 2026-10-30
 
 ### Added
