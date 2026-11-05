@@ -78,6 +78,8 @@
     "onCommand:adoCode.sendFileToChat",
     "onCommand:adoCode.rerunWizard",
     "onCommand:adoCode.openSettings",
+    "onCommand:adoCode.showChangelog",
+    "onCommand:adoCode.showLog",
     "onCommand:adoCode.moveChatToEditor",
     "onCommand:adoCode.moveChatToSidebar",
     "onView:adoCode.todos",
@@ -163,6 +165,18 @@
         "command": "adoCode.openSettings",
         "title": "Configuration…",
         "icon": "$(gear)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showChangelog",
+        "title": "Show What's New",
+        "icon": "$(megaphone)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showLog",
+        "title": "Show Log",
+        "icon": "$(output)",
         "category": "ADO Code"
       },
       {

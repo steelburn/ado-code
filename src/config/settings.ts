@@ -66,11 +66,22 @@ export interface AdoCodeSettings {
   agentsMdSync: boolean;
 }
 
+/**
+ * Settings are user-writable JSON: a hand-edited array setting can arrive as an
+ * object or a string. `.find()`/`.map()` on that throws — and the throw surfaced
+ * while the webview configuration was being built, i.e. before the chat view had
+ * received its first `config` message, which left it on its startup spinner with
+ * no error and no way out. Coerce here; never throw over a malformed setting.
+ */
+function asArray<T>(value: T[]): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 export function getSettings(): AdoCodeSettings {
   const config = vscode.workspace.getConfiguration('adoCode');
   const llmProvider = config.get<LlmProvider>('llmProvider', 'openai');
   return {
-    organizations: config.get<Array<{ name: string; url: string; project: string; pat?: string }>>('organizations', []),
+    organizations: asArray(config.get<Array<{ name: string; url: string; project: string; pat?: string }>>('organizations', [])),
     adoOrganization: config.get<string>('adoOrganization', ''),
     adoProject: config.get<string>('adoProject', ''),
     adoServerUrl: config.get<string>('adoServerUrl', ''),
@@ -80,7 +91,7 @@ export function getSettings(): AdoCodeSettings {
     llmApiKey: config.get<string>('llmApiKey', ''),
     llmModel: config.get<string>('llmModel', 'gpt-4o'),
     llmChoiceDetectionModel: config.get<string>('llm.choiceDetectionModel', ''),
-    llmCapabilityOverrides: config.get<Array<{ model: string; vision?: boolean; tools?: boolean }>>('llm.capabilityOverrides', []),
+    llmCapabilityOverrides: asArray(config.get<Array<{ model: string; vision?: boolean; tools?: boolean }>>('llm.capabilityOverrides', [])),
     advancedConfig: config.get<boolean>('advancedConfig', false),
     llmModeConfigs: config.get<Record<string, { model: string }>>('llm.modeConfigs', {}),
     llmModeReasoningEffort: config.get<Record<string, string>>('llm.modeReasoningEffort', {}),

@@ -53,6 +53,10 @@ export type WebviewToExtensionMessage =
   | { type: 'updateWorkItem'; workItemId: number; fields: Record<string, any> }
   | { type: 'addComment'; workItemId: number; text: string }
   | { type: 'getConfig' }
+  // Startup recovery: usable while the chat view is still waiting for config.
+  | { type: 'showChangelog' }
+  | { type: 'openLog' }
+  | { type: 'reloadWindow' }
   | { type: 'updateConfig'; config: Partial<ExtensionConfig> }
   // Task 24: agent delegation protocol
   | { type: 'delegateToAgent'; workItemId: number; prompt: string; agent?: string }
@@ -392,6 +396,11 @@ export interface ExtensionConfig {
   adoClarificationState: string;
   adoWarnOnSparseTask: boolean;
   isEditor?: boolean;
+  /**
+   * Set when the host could not build the full configuration (malformed settings,
+   * a settings read that threw). The webview shows it instead of waiting forever.
+   */
+  startupError?: string;
 }
 
 // ── Session History ─────────────────────────────────────────────────

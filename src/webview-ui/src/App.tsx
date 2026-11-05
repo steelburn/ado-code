@@ -44,6 +44,11 @@ interface SanitizedConfig {
 
   /** adoCode.chat.showToolCalls, mirrored: the kebab action hides tool-call output. */
   chatShowToolCalls?: boolean;
+  /**
+   * Set when the host could not build the full configuration. The startup screen
+   * shows this instead of spinning, so the failure is visible and actionable.
+   */
+  startupError?: string;
 }
 
 interface AgentInfo {
@@ -110,12 +115,21 @@ function restoredMessages(
  *  after 30s; if the message port is wedged we still un-stick the UI at 40s. */
 const PROJECTS_FETCH_WATCHDOG_MS = 40_000;
 
+/** How long the pre-config spinner may sit before the recovery UI appears. */
+const STARTUP_SLOW_MS = 3000;
+
 function App() {
   // ── State ──────────────────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<SanitizedConfig | null>(null);
+  // Startup watchdog. The view below renders a spinner until the host posts its
+  // first `config`; if that never arrives (host still activating, a config build
+  // that failed, a stalled disk) the user must not be left with an unlabelled
+  // spinner and no way out — after a couple of seconds we explain the wait and
+  // offer retry, the host-independent What's New panel, the log and a reload.
+  const [startupSlow, setStartupSlow] = useState(false);
   // Messages the user sent while the AI was still working (queue behavior).
   const [queued, setQueued] = useState<Array<{ id: string; fullContent: string; displayContent: string; images?: ImageAttachment[] }>>([]);
   // Whether a message sent mid-turn steers the current run or waits its turn.
@@ -1240,14 +1254,66 @@ function App() {
     );
   }
 
-  // Loading state before config arrives
+  // Arm the watchdog only while there is no config to render.
+  useEffect(() => {
+    if (config) {
+      setStartupSlow(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setStartupSlow(true), STARTUP_SLOW_MS);
+    return () => clearTimeout(timer);
+  }, [config]);
+
+  // Loading state before config arrives — a spinner, never a dead end.
   if (!config) {
     return (
       <div className="app">
-        <div className="empty-state">
+        <div className="empty-state startup-pending">
           <div className="loading-dots">
             <span /><span /><span />
           </div>
+          {startupSlow && (
+            <>
+              <p className="startup-pending-title">ADO Code is still starting…</p>
+              <p className="startup-pending-hint">
+                {error ??
+                  'The extension host has not sent its configuration yet. Retry, read what is new, check the log, or reload the window.'}
+              </p>
+              <div className="startup-pending-actions">
+                <button
+                  type="button"
+                  className="startup-pending-button"
+                  onClick={() => {
+                    setStartupSlow(false);
+                    vscode.postMessage({ type: 'getConfig' });
+                  }}
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  className="startup-pending-button"
+                  onClick={() => vscode.postMessage({ type: 'showChangelog' })}
+                >
+                  Show What's New
+                </button>
+                <button
+                  type="button"
+                  className="startup-pending-button"
+                  onClick={() => vscode.postMessage({ type: 'openLog' })}
+                >
+                  Open Log
+                </button>
+                <button
+                  type="button"
+                  className="startup-pending-button"
+                  onClick={() => vscode.postMessage({ type: 'reloadWindow' })}
+                >
+                  Reload Window
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     );

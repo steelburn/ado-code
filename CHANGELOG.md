@@ -4,7 +4,24 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **What's New is reachable from the first second of activation, including a fresh
+  install.** The changelog announcement used to sit at the very END of `activate()` and
+  behind `await showInformationMessage(...)`, so a first run - which has no stored
+  `lastSeenVersion` - never saw it at all, and a user who ignored the toast held open
+  every registration queued after it. It now runs in the first lines of activation,
+  awaits nothing, and covers first runs as well as updates.
+
 ### Fixed
+
+- **"Extension loading" no longer leaves you staring at a bare spinner.** A malformed
+  setting (e.g. `adoCode.organizations` hand-edited into a non-array) made the chat
+  config build throw before the webview ever heard from the host, so the pre-config
+  spinner never cleared. Config building is now total - a bad setting is coerced or
+  reported instead of thrown - and the startup screen says what it is waiting for
+  after a few seconds, with **Retry**, **Show What's New**, **Open Log** and
+  **Reload Window**.
 
 - **A decision raised by a running turn no longer lands in whichever chat you happen to
   be looking at.** Switching to an older session mid-run detaches the turn, which is the

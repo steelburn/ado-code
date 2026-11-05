@@ -2684,3 +2684,50 @@ code {
 .doc-export__outcome.is-ok { color: var(--vscode-testing-iconPassed, #3fb950); }
 .doc-export__outcome.is-error { color: var(--vscode-errorForeground); }
 .doc-export__warnings { margin: 0; padding-left: 18px; opacity: 0.85; }
+
+/* ── Pre-config startup screen ───────────────────────────────────────
+ * The chat view has no config yet, so nothing is interactive except these
+ * recovery actions: retry the config request, open the standalone What's New
+ * panel (host-independent), show the log, or reload the window.
+ * ------------------------------------------------------------------ */
+.startup-pending {
+  gap: 10px;
+  padding: 24px 18px;
+  text-align: center;
+}
+
+.startup-pending-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.startup-pending-hint {
+  margin: 0;
+  max-width: 320px;
+  font-size: 0.9em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
+}
+
+.startup-pending-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.startup-pending-button {
+  padding: 4px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  font-family: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+.startup-pending-button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}

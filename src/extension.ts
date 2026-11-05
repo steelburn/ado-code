@@ -35,7 +35,13 @@ import { RemoteTunnel } from './remote/RemoteTunnel';
 import { CONSOLE_HTML } from './remote/consolePage';
 import { resolveRemoteUrl } from './remote/remoteUrl';
 import { logger } from './services/logger';
-import { extractChangelogSection, renderChangelogMarkdown } from './changelog/changelogMarkdown';
+import {
+  changelogAnnouncement,
+  changelogNotificationText,
+  changelogPanelHtml,
+  changelogSectionFor,
+  readChangelog,
+} from './changelog/startupChangelog';
 import {
   compactArtifactsCommand,
   scheduleArtifactPrune,
@@ -70,6 +76,17 @@ function wireUnderstanding(services: Services): void {
 export async function activate(context: vscode.ExtensionContext) {
   logger.activate(context);
   const activationT0 = performance.now();
+
+  // ── Changelog first, and never on the critical path ──────────────
+  // The What's New surfaces are registered before anything else can stall or
+  // throw: they are the only UI that is useful *while* the extension is still
+  // coming up, so a first-run user whose chat view sits on its spinner can
+  // open them and see that ADO Code did load. Nothing in here awaits — neither
+  // the notification (which only settles when the user reacts) nor the version
+  // write — so this can never hold activation hostage.
+  const extensionVersion = context.extension.packageJSON.version as string;
+  beginChangelogAnnouncement(context, extensionVersion);
+
   let services = createServices(context);
   const servicesMs = performance.now() - activationT0;
   // Repository understanding: wire the LLM summarizer eagerly (cheap); the
@@ -2071,59 +2088,98 @@ context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose
     })
   );
 
-  // ── Show changelog once after package update ────────────────────
-  const currentVersion = context.extension.packageJSON.version as string;
-  const lastSeenVersion = context.globalState.get<string>('adoCode.lastSeenVersion', '');
-  if (lastSeenVersion && lastSeenVersion !== currentVersion) {
-    try {
-      const changelogPath = path.join(context.extensionPath, 'CHANGELOG.md');
-      const changelog = fs.readFileSync(changelogPath, 'utf8');
-      // Find the section for the current version
-      const entry = extractChangelogSection(changelog, currentVersion);
-      if (entry) {
-        const action = await vscode.window.showInformationMessage(
-          `ADO Code updated to ${currentVersion}`,
-          'Show Changelog',
-          'Dismiss'
-        );
-        if (action === 'Show Changelog') {
-          const panel = vscode.window.createWebviewPanel(
-            'adoCodeChangelog',
-            `ADO Code ${currentVersion} — What's New`,
-            vscode.ViewColumn.One,
-            { enableScripts: false }
-          );
-          panel.webview.html = `<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 20px; line-height: 1.6; }
-    h2 { color: var(--vscode-charts-green); }
-    h3 { margin-top: 16px; }
-    ul { padding-left: 20px; }
-    li { margin-bottom: 6px; }
-    strong { color: var(--vscode-charts-blue); }
-    p { margin: 8px 0; }
-    code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); padding: 0 3px; border-radius: 3px; }
-    a { color: var(--vscode-textLink-foreground); }
-    hr { border: 0; border-top: 1px solid var(--vscode-panel-border); margin: 16px 0; }
-  </style>
-</head>
-<body>
-  <h2>ADO Code ${currentVersion}</h2>
-  ${renderChangelogMarkdown(entry)}
-</body>
-</html>`;
-        }
-      }
-    } catch {
-      // Changelog read failed — silently skip
-    }
-  }
-  // Always update the stored version
-  await context.globalState.update('adoCode.lastSeenVersion', currentVersion);
-
   logger.info(`startup(activation): services ${servicesMs.toFixed(1)}ms, ready in ${(performance.now() - activationT0).toFixed(1)}ms`);
+}
+
+/** Notification button that opens the What's New panel. */
+const SHOW_CHANGELOG_ACTION = "Show What's New";
+
+/** The single What's New panel, reused when it is already open. */
+let changelogPanel: vscode.WebviewPanel | undefined;
+
+/**
+ * Register the changelog surfaces and announce the current version.
+ *
+ * Called from the first lines of `activate()`, before services exist:
+ * `adoCode.showChangelog` and `adoCode.showLog` must be callable even when a
+ * later registration or a service throws, because they are how a user stuck on
+ * "extension loading" finds out what is happening. Both the announcement and
+ * the version write are fire-and-forget, so activation never waits on a human.
+ */
+function beginChangelogAnnouncement(context: vscode.ExtensionContext, version: string): void {
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.showChangelog', () =>
+      showChangelogPanel(context, version, { firstRun: false })
+    ),
+    vscode.commands.registerCommand('adoCode.showLog', () => logger.getChannel()?.show(true))
+  );
+
+  let lastSeenVersion = '';
+  try {
+    lastSeenVersion = context.globalState.get<string>('adoCode.lastSeenVersion', '');
+  } catch (err) {
+    logger.warn('changelog: lastSeenVersion is unreadable, announcing anyway', String(err));
+  }
+
+  const kind = changelogAnnouncement(lastSeenVersion, version);
+  if (!kind) return;
+
+  // Mark the version seen when it is ANNOUNCED, not when the panel is opened:
+  // a user who ignores the notification must not be told again every window.
+  void Promise.resolve(context.globalState.update('adoCode.lastSeenVersion', version)).then(
+    undefined,
+    (err) => logger.warn('changelog: could not record lastSeenVersion', String(err))
+  );
+
+  void vscode.window
+    .showInformationMessage(changelogNotificationText(kind, version), SHOW_CHANGELOG_ACTION)
+    .then(
+      (action) => {
+        if (action === SHOW_CHANGELOG_ACTION) {
+          showChangelogPanel(context, version, { firstRun: kind === 'first-run' });
+        }
+      },
+      (err) => logger.warn('changelog: announcement failed', String(err))
+    );
+}
+
+/**
+ * Open (or reveal) the standalone What's New panel.
+ *
+ * Deliberately independent of `services`: it reads CHANGELOG.md from the
+ * extension folder and renders it, so it works before ADO, the LLM and the
+ * chat webview are ready.
+ */
+function showChangelogPanel(
+  context: vscode.ExtensionContext,
+  version: string,
+  options: { firstRun?: boolean } = {}
+): void {
+  const changelog = readChangelog(context.extensionPath);
+  if (!changelog) {
+    void vscode.window.showWarningMessage('ADO Code: no CHANGELOG.md is bundled with this build.');
+    return;
+  }
+  const section = changelogSectionFor(changelog, version);
+  if (!section) {
+    void vscode.window.showWarningMessage('ADO Code: no changelog section to show for this build.');
+    return;
+  }
+
+  if (changelogPanel) {
+    changelogPanel.reveal(vscode.ViewColumn.One);
+    return;
+  }
+
+  const panel = vscode.window.createWebviewPanel(
+    'adoCodeChangelog',
+    `ADO Code ${version} — What's New`,
+    vscode.ViewColumn.One,
+    { enableScripts: false, retainContextWhenHidden: true }
+  );
+  panel.webview.html = changelogPanelHtml(version, section, { firstRun: options.firstRun });
+  panel.onDidDispose(() => { changelogPanel = undefined; });
+  changelogPanel = panel;
 }
 
 /**

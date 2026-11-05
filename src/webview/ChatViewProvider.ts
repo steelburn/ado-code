@@ -2507,6 +2507,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Reset config so the welcome screen re-appears
             this.postMessage({ type: 'config', config: { ...this._sanitizedConfig(), configured: false } });
             break;
+          // Startup recovery. The What's New panel and the output channel are
+          // independent of services and of this webview, so they answer even when
+          // the host is still starting, and the reload is the last resort.
+          case 'showChangelog':
+            await vscode.commands.executeCommand('adoCode.showChangelog');
+            break;
+          case 'openLog':
+            await vscode.commands.executeCommand('adoCode.showLog');
+            break;
+          case 'reloadWindow':
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+            break;
+
           case 'openSettings':
             // The chat kebab "Configuration…" opens the IN-WEBVIEW
             // Configuration page (the full-page wizard) — posting back to the
@@ -3802,8 +3815,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return models;
   }
 
-  /** Task 19: never send adoPat/llmApiKey to the webview — secrets stay in the host. */
+  /**
+   * Configuration payload for the webview. NEVER throws.
+   *
+   * Task 19: adoPat/llmApiKey never reach the webview — secrets stay in the host.
+   *
+   * WHY: this used to be able to throw (malformed `adoCode.organizations`, a
+   * settings read that fails on an odd workspace), and it is called before the
+   * first `config` message is posted. A throw rejected `resolveWebviewView`
+   * before the webview had ever heard from the host, so the chat view sat on its
+   * pre-config spinner forever — indistinguishable from "the extension never
+   * loaded", with no error and no way out. The fallback payload carries
+   * `startupError`, so the webview can explain itself and offer a way forward.
+   */
   private _sanitizedConfig(isEditor: boolean = false) {
+    try {
+      return this._buildConfig(isEditor);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('config: could not build the webview configuration', message);
+      return { configured: false, startupError: message } as any;
+    }
+  }
+
+  private _buildConfig(isEditor: boolean = false) {
     const s = getSettings();
     const active = getActiveOrg(this._context, s);
     return {
