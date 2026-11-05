@@ -34,6 +34,12 @@ interface SanitizedConfig {
   configured: boolean;
   /** ADO is optional — false when the user skipped it in the setup wizard. */
   adoConfigured?: boolean;
+  /**
+   * Which secrets the host already stores. The values themselves are never
+   * sent, so the setup wizard cannot pre-fill them — it has to know they exist
+   * or it shows two blank fields and blocks Save.
+   */
+  secretConfigured?: { adoPat: boolean; llmApiKey: boolean };
   adoConnectionConfigured?: boolean;
   modelCapabilities?: { vision: boolean; tools: boolean };
   isEditor?: boolean;
@@ -1089,11 +1095,13 @@ function App() {
   const handleSaveConfig = useCallback((form: {
     adoOrganization: string;
     adoProject: string;
-    adoPat: string;
+    // Optional: the wizard only sends a secret the user actually typed. An
+    // absent key means "keep the stored one" (the host enforces the same rule).
+    adoPat?: string;
     llmProvider: string;
     llmApiUrl: string;
-    llmApiKey: string;
-    llmModel: string;
+    llmApiKey?: string;
+    llmModel?: string;
   }) => {
     vscode.postMessage({ type: 'updateConfig', config: form });
   }, []);

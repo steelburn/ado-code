@@ -209,3 +209,45 @@ export function parseWizardConfigPayload(payload: unknown): WizardConfigParseRes
   }
   return { entries, ignored };
 }
+
+/**
+ * Wizard keys the webview SENDS but never RECEIVES back: `_buildConfig`
+ * strips the secrets so they cannot leak into the webview. The wizard form
+ * therefore starts with an empty PAT / API key even when the host still stores
+ * one — and writing that blank back wiped the stored secret on every re-open
+ * (F2 in the Setup-Wizard persistency review).
+ *
+ * An empty value for one of these keys means "I could not see it / unchanged".
+ * Deliberately clearing a secret stays possible from the Configuration page,
+ * which does echo the stored value back into its fields.
+ */
+export const WIZARD_WRITE_ONLY_KEYS: ReadonlyArray<ConfigSettingKey> = ['adoPat', 'llmApiKey'];
+
+/** True when the key is a write-only secret that must survive a blank save. */
+export function isWriteOnlyWizardKey(key: ConfigSettingKey): boolean {
+  return WIZARD_WRITE_ONLY_KEYS.includes(key);
+}
+
+/**
+ * Split parsed wizard entries into what may be persisted and the blank
+ * write-only secrets that must be left untouched.
+ *
+ * `''` is a legitimate value for every other setting (clearing the org, the
+ * project, a model), so ONLY the write-only list is filtered — an empty org is
+ * still written, a blank PAT is not.
+ */
+export function splitBlankWriteOnlySecrets(
+  entries: ReadonlyArray<readonly [ConfigSettingKey, ConfigValue]>,
+): { writable: Array<[ConfigSettingKey, ConfigValue]>; kept: ConfigSettingKey[] } {
+  const writable: Array<[ConfigSettingKey, ConfigValue]> = [];
+  const kept: ConfigSettingKey[] = [];
+  for (const [key, value] of entries) {
+    if (isWriteOnlyWizardKey(key) && (value === '' || value === null)) {
+      kept.push(key);
+      continue;
+    }
+    writable.push([key, value]);
+  }
+  return { writable, kept };
+}
+

@@ -7,15 +7,20 @@ interface Props {
     llmProvider: string;
     llmApiUrl: string;
     llmModel: string;
+    /** Which secrets the HOST already stores — the values are never echoed. */
+    secretConfigured?: { adoPat: boolean; llmApiKey: boolean };
+    /** Set when the host could not read the stored settings at all. */
+    startupError?: string;
   };
   onSave: (config: {
     adoOrganization: string;
     adoProject: string;
-    adoPat: string;
+    adoPat?: string;
     llmProvider: string;
     llmApiUrl: string;
-    llmApiKey: string;
-    llmModel: string;
+    llmApiKey?: string;
+    /** Optional: an unknown model is left untouched instead of blanked. */
+    llmModel?: string;
   }) => void;
   onFetchProjects: (organization?: string, pat?: string) => void;
   projects: Array<{ id: string; name: string; state: string }>;
@@ -25,15 +30,31 @@ interface Props {
   modelsLoading: boolean;
 }
 
+/**
+ * F5: provider-aware defaults. The hard-coded OpenAI URL/model made a re-opened
+ * wizard look like a fresh OpenAI install whenever the stored config was
+ * missing, and a save then overwrote the real endpoint.
+ */
+const DEFAULT_API_URL: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+};
+
+const defaultApiUrl = (provider?: string): string =>
+  DEFAULT_API_URL[provider || 'openai'] || DEFAULT_API_URL.openai;
+
 export function WelcomeScreen({ config, onSave, onFetchProjects, projects, projectsLoading, onFetchModels, models, modelsLoading }: Props) {
   const [form, setForm] = useState({
     adoOrganization: config.adoOrganization || '',
     adoProject: config.adoProject || '',
     adoPat: '',
     llmProvider: config.llmProvider || 'openai',
-    llmApiUrl: config.llmApiUrl || 'https://api.openai.com/v1',
+    llmApiUrl: config.llmApiUrl || defaultApiUrl(config.llmProvider),
     llmApiKey: '',
-    llmModel: config.llmModel || 'gpt-4o',
+    // F5: never invent a model id for a provider we know nothing about — the
+    // list fetch (or the autopick below) fills it in, and an unknown model is
+    // left out of the save payload instead of being blanked.
+    llmModel: config.llmModel || (config.llmProvider === 'anthropic' ? '' : 'gpt-4o'),
   });
 
   // Azure DevOps is OPTIONAL: the user may skip it and configure it later
@@ -41,11 +62,54 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
   // card hides its fields; "Configure now" re-opens them.
   const [adoSkipped, setAdoSkipped] = useState(false);
 
-  const update = (field: string, value: string) =>
+  // F1/F6: the host strips the secrets from the config it publishes, so "a
+  // secret is already stored" is first-class wizard state. Without it the
+  // re-opened wizard shows two blank secret fields, keeps Save disabled until
+  // the API key is retyped, and warns "you're about to continue without Azure
+  // DevOps" for an ADO setup that is perfectly configured.
+  const storedAdoPat = Boolean(config.secretConfigured?.adoPat);
+  const storedApiKey = Boolean(config.secretConfigured?.llmApiKey);
+  // Typed value, else the stored one: the host falls back to its own settings
+  // whenever the wizard leaves a secret blank.
+  const hasAdoPat = Boolean(form.adoPat || storedAdoPat);
+  const hasApiKey = Boolean(form.llmApiKey || storedApiKey);
+
+  // F3: `form` is a one-shot initialiser, so a `config` republished while the
+  // wizard is open (re-run, reconnect, error refresh) used to be ignored and
+  // the wizard kept showing stale — often blank — values. Re-seed on every
+  // publication, but never clobber edits the user already made.
+  const dirty = useRef(false);
+  useEffect(() => {
+    if (dirty.current) return;
+    setForm(prev => ({
+      ...prev,
+      adoOrganization: config.adoOrganization || '',
+      adoProject: config.adoProject || '',
+      llmProvider: config.llmProvider || 'openai',
+      llmApiUrl: config.llmApiUrl || defaultApiUrl(config.llmProvider),
+      llmModel: config.llmModel || prev.llmModel,
+    }));
+    // F6: a configured ADO setup re-opens its card; "skipped" is only a choice
+    // the user makes in this session.
+    if (config.adoOrganization || config.adoProject) setAdoSkipped(false);
+  }, [
+    config.adoOrganization,
+    config.adoProject,
+    config.llmProvider,
+    config.llmApiUrl,
+    config.llmModel,
+  ]);
+
+  const update = (field: string, value: string) => {
+    dirty.current = true;
     setForm(prev => ({ ...prev, [field]: value }));
+  };
 
   // Live check: are all ADO creds present on the form right now?
-  const adoFormComplete = Boolean(form.adoOrganization && form.adoProject && form.adoPat);
+  // A stored PAT counts: the field is blank only because the host never echoes
+  // it back (F6 — the wizard used to warn about "continuing without ADO" for a
+  // fully configured setup).
+  const adoFormComplete = Boolean(form.adoOrganization && form.adoProject && hasAdoPat);
 
   // Auto-fetch projects once org+PAT are filled, using the TYPED credentials
   // (the host fetches with them before they're saved). Guard with a ref so a
@@ -54,38 +118,84 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
   // clobbering an already-populated list.
   const lastFetchKey = useRef('');
   useEffect(() => {
-    const key = `${form.adoOrganization}::${form.adoPat}`;
+    // A stored PAT is usable too — the host then fetches with its own settings.
+    const key = `${form.adoOrganization}::${form.adoPat || (storedAdoPat ? '<stored>' : '')}`;
     if (
       form.adoOrganization &&
-      form.adoPat &&
+      hasAdoPat &&
       projects.length === 0 &&
       !projectsLoading &&
       lastFetchKey.current !== key
     ) {
       lastFetchKey.current = key;
-      onFetchProjects(form.adoOrganization, form.adoPat);
+      onFetchProjects(form.adoOrganization, form.adoPat || undefined);
     }
-  }, [form.adoOrganization, form.adoPat, projects.length, projectsLoading, onFetchProjects]);
+  }, [
+    form.adoOrganization,
+    form.adoPat,
+    hasAdoPat,
+    storedAdoPat,
+    projects.length,
+    projectsLoading,
+    onFetchProjects,
+  ]);
 
   // Auto-fetch the model list once API URL + API Key are filled (provider is
   // part of the key too). Same ref-guard: only a credentials change re-fires;
   // the Refresh button handles manual retries.
   const lastModelsFetchKey = useRef('');
   useEffect(() => {
-    const key = `${form.llmProvider}::${form.llmApiUrl}::${form.llmApiKey}`;
+    // F1: a stored key is enough to list models — the host falls back to its
+    // own settings when the wizard leaves the field blank. Without this the
+    // re-opened wizard could not even show which model was selected.
+    const key = `${form.llmProvider}::${form.llmApiUrl}::${form.llmApiKey || (storedApiKey ? '<stored>' : '')}`;
     if (
       form.llmApiUrl &&
-      form.llmApiKey &&
+      hasApiKey &&
       !modelsLoading &&
       lastModelsFetchKey.current !== key
     ) {
       lastModelsFetchKey.current = key;
-      onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey);
+      onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey || undefined);
     }
-  }, [form.llmProvider, form.llmApiUrl, form.llmApiKey, modelsLoading, onFetchModels]);
+  }, [form.llmProvider, form.llmApiUrl, form.llmApiKey, hasApiKey, storedApiKey, modelsLoading, onFetchModels]);
+
+  // F5: pick the first model the provider actually offers rather than keeping
+  // a blank (or invented) id in the form.
+  useEffect(() => {
+    const first = models[0];
+    if (form.llmModel || !first || !first.id) return;
+    setForm(prev => (prev.llmModel ? prev : { ...prev, llmModel: first.id }));
+  }, [models, form.llmModel]);
 
   const refreshModels = () => {
-    onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey);
+    onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey || undefined);
+  };
+
+  // F2: an empty secret means "not visible / unchanged", NEVER "clear" — the
+  // host strips the secrets from the published config, so posting the blank
+  // field back erased the stored PAT / API key. The host guards this too; not
+  // sending the key at all is simply the honest wire payload.
+  const buildPayload = () => {
+    const payload: {
+      adoOrganization: string;
+      adoProject: string;
+      adoPat?: string;
+      llmProvider: string;
+      llmApiUrl: string;
+      llmApiKey?: string;
+      llmModel?: string;
+    } = {
+      adoOrganization: form.adoOrganization,
+      adoProject: form.adoProject,
+      llmProvider: form.llmProvider,
+      llmApiUrl: form.llmApiUrl || defaultApiUrl(form.llmProvider),
+    };
+    if (form.adoPat) payload.adoPat = form.adoPat;
+    if (form.llmApiKey) payload.llmApiKey = form.llmApiKey;
+    // An unknown model is better left untouched than blanked.
+    if (form.llmModel) payload.llmModel = form.llmModel;
+    return payload;
   };
 
   return (
@@ -94,6 +204,15 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
         <h1>ADO Code</h1>
         <p>AI coding assistant with Azure DevOps integration</p>
       </div>
+
+      {/* F5: a failed settings read returns { configured: false, startupError }.
+          Showing bare provider defaults with no explanation made the wizard look
+          like a fresh install — and saving then replaced the stored settings. */}
+      {config.startupError && (
+        <div className="welcome-save-hint">
+          ⚠ Could not read the saved configuration: {config.startupError}. The values below are defaults — saving replaces the stored settings.
+        </div>
+      )}
 
       {/* LLM Provider comes FIRST — it's the only required step. */}
       <div className="welcome-card">
@@ -130,7 +249,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
             type="password"
             value={form.llmApiKey}
             onChange={e => update('llmApiKey', e.target.value)}
-            placeholder="sk-..."
+            placeholder={storedApiKey ? 'Stored — leave blank to keep it' : 'sk-...'}
           />
         </div>
 
@@ -152,7 +271,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
                 className="btn-icon"
                 onClick={refreshModels}
                 title="Refresh model list"
-                disabled={modelsLoading || !form.llmApiUrl || !form.llmApiKey}
+                disabled={modelsLoading || !form.llmApiUrl || !hasApiKey}
               >
                 ↻
               </button>
@@ -163,13 +282,13 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
                 className="form-input"
                 value={form.llmModel}
                 onChange={e => update('llmModel', e.target.value)}
-                placeholder={modelsLoading ? 'Fetching models…' : 'gpt-4o'}
+                placeholder={modelsLoading ? 'Fetching models…' : 'model id'}
               />
               <button
                 className="btn-icon"
                 onClick={refreshModels}
                 title="Refresh model list"
-                disabled={modelsLoading || !form.llmApiUrl || !form.llmApiKey}
+                disabled={modelsLoading || !form.llmApiUrl || !hasApiKey}
               >
                 ↻
               </button>
@@ -178,7 +297,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
           {modelsLoading && (
             <div className="form-hint">Fetching models from the API…</div>
           )}
-          {!modelsLoading && models.length === 0 && form.llmApiUrl && form.llmApiKey && (
+          {!modelsLoading && models.length === 0 && form.llmApiUrl && hasApiKey && (
             <div className="form-hint">
               <a href="#" onClick={e => { e.preventDefault(); refreshModels(); }}>Refresh model list</a>
             </div>
@@ -230,7 +349,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
                 type="password"
                 value={form.adoPat}
                 onChange={e => update('adoPat', e.target.value)}
-                placeholder="vso.work_write scope"
+                placeholder={storedAdoPat ? 'Stored — leave blank to keep it' : 'vso.work_write scope'}
               />
               <div className="form-hint">
                 Create at <a href="https://dev.azure.com">dev.azure.com</a> → User Settings → PATs.
@@ -247,6 +366,14 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
                   onChange={e => update('adoProject', e.target.value)}
                 >
                   <option value="">None (no project)</option>
+                  {/* F4: a persisted project the fetched list does not contain
+                      (renamed, archived, or a token with narrower visibility)
+                      must stay selectable — the model select already does this.
+                      Without it the select fell back to "None" and the next
+                      save dropped the stored project. */}
+                  {form.adoProject && !projects.some(p => p.name === form.adoProject) && (
+                    <option value={form.adoProject}>{form.adoProject} (saved)</option>
+                  )}
                   {projects.map(p => (
                     <option key={p.id} value={p.name}>{p.name}</option>
                   ))}
@@ -277,7 +404,7 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
         )}
       </div>
 
-      {form.llmApiKey && !adoFormComplete && (
+      {hasApiKey && !adoFormComplete && (
         <div className="welcome-save-hint">
           {form.adoOrganization && form.adoPat && !form.adoProject ? (
             <>ℹ Continuing without an attached ADO project — you can select a project anytime from the header dropdown.</>
@@ -289,8 +416,8 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
 
       <button
         className="btn btn-primary btn-block"
-        onClick={() => onSave(form)}
-        disabled={!form.llmApiKey}
+        onClick={() => onSave(buildPayload())}
+        disabled={!hasApiKey}
       >
         Save &amp; Continue
       </button>

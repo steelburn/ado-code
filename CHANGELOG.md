@@ -15,6 +15,20 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **The Setup Wizard remembers your settings when you re-open it.** The wizard is not
+  stateless by accident - the host deliberately withholds `adoCode.adoPat` and
+  `adoCode.llmApiKey` from the webview - but the wizard read that omission as "nothing
+  was saved": **Save & Continue** stayed disabled until the API key was retyped, and
+  posting the blank secret fields back wrote `''` over the stored PAT and API key. The
+  host now publishes *which* secrets are stored (booleans, never the values) and treats a
+  blank secret as "unchanged" rather than "clear"; the wizard shows a stored-value
+  placeholder, sends only a secret you actually typed, and its project picker keeps a
+  saved project that the fetched list does not contain. A config republished while the
+  wizard is open (re-run, reconnect, error refresh) now re-seeds the form instead of
+  being ignored, "continuing without Azure DevOps" no longer fires for an ADO setup that
+  is fully configured, and a settings read that failed is reported instead of being
+  masked by OpenAI defaults.
+
 - **"Extension loading" no longer leaves you staring at a bare spinner.** A malformed
   setting (e.g. `adoCode.organizations` hand-edited into a non-array) made the chat
   config build throw before the webview ever heard from the host, so the pre-config

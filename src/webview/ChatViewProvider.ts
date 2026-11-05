@@ -11,7 +11,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { splitAcceptanceCriteria } from '../shared/workItemContent';
 import { WebviewToExtensionMessage, WorkItemSummary, WorkItemContext, Session, ImageAttachment, TraceEntry, StoredTurnTrace } from '../shared/messages';
-import { parseSaveConfigPayload, parseWizardConfigPayload, CONFIG_SETTING_KEYS, type ConfigSettingsMap } from '../shared/configSchema';
+import { parseSaveConfigPayload, parseWizardConfigPayload, splitBlankWriteOnlySecrets, CONFIG_SETTING_KEYS, type ConfigSettingsMap } from '../shared/configSchema';
 import { WorkItemsMode, workItemsModeLabel } from '../shared/workItemsMode';
 import { isTurnVisible, foreignRunningTurn, runningElsewhereNotice, sessionRunInfo } from '../shared/sessionRun';
 import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
@@ -3853,6 +3853,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       chatDensity: s.chatDensity,
       chatShowToolCalls: s.chatShowToolCalls,
       configured: Boolean(s.llmApiKey),
+      // F1: the webview never receives the secrets themselves, so it has to
+      // know WHICH ones the host already stores. Without this the re-opened
+      // wizard showed two empty secret fields and kept Save disabled until the
+      // user retyped the API key — even though it was still configured.
+      secretConfigured: { adoPat: Boolean(active.pat), llmApiKey: Boolean(s.llmApiKey) },
       // ADO is optional: `configured` (LLM) gates the welcome wizard, but ADO
       // features only activate once the org + project + PAT are present.
       adoConfigured: Boolean(active.name && active.project && active.pat),
@@ -3943,7 +3948,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (ignored.length > 0) {
       console.warn(`[ado-code] wizard config: ignoring invalid values for ${ignored.join(', ')}`);
     }
-    for (const [settingKey, value] of entries) {
+    // F2: the wizard cannot show the stored secrets, so a blank adoPat /
+    // llmApiKey is "I could not see it / unchanged" — NOT a request to clear.
+    // Writing '' here wiped the stored credentials on every re-open of the
+    // wizard. Every other key keeps empty-means-empty semantics.
+    const { writable, kept } = splitBlankWriteOnlySecrets(entries);
+    if (kept.length > 0) {
+      console.log(`[ado-code] wizard config: keeping stored ${kept.join(', ')} (left blank)`);
+    }
+    for (const [settingKey, value] of writable) {
       await updateSettingRespectingScope(cfg, settingKey, value);
     }
     if (payload.adoOrganization !== undefined) {
