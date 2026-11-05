@@ -36,27 +36,55 @@ suite('webview/chat - one-click tool-call toggle', () => {
     );
   });
 
+  test('updateConfig can persist chat.showThinking', () => {
+    // Half of the verbosity dial: if the schema drops this key the dial posts
+    // three values and only two stick, which reads as flakiness to the user.
+    const { entries, ignored } = parseWizardConfigPayload({ chatShowThinking: false });
+    assert.deepStrictEqual(ignored, [], 'chatShowThinking was rejected by the config schema');
+    assert.deepStrictEqual(
+      entries,
+      [['chat.showThinking', false]],
+      'chatShowThinking no longer round-trips to the adoCode.chat.showThinking setting',
+    );
+  });
+
   test('the sanitized config echoes the setting back to the webview', () => {
     const src = read('src', 'webview', 'ChatViewProvider.ts');
     assert.ok(
       /chatShowToolCalls: s\.chatShowToolCalls,/.test(src),
       'the webview cannot render the toggle state without the value in _sanitizedConfig',
     );
+    assert.ok(
+      /chatShowThinking: s\.chatShowThinking,/.test(src),
+      'the verbosity dial cannot derive its level without chatShowThinking in _sanitizedConfig',
+    );
   });
 
-  test('the kebab menu offers the toggle and asks the host to flip it', () => {
+  test('the kebab menu offers the verbosity dial and writes tool-call visibility through it', () => {
     const src = appSource();
     assert.ok(
-      /label: `Tool calls: \$\{showToolCalls \? 'shown' : 'hidden'\}`,/.test(src),
-      'the kebab menu no longer offers the tool-call toggle',
+      /label: `Verbosity: \$\{chatVerbosityLabel\(verbosityLevel\)\}`,/.test(src),
+      'the kebab menu no longer offers the verbosity dial',
+    );
+    assert.ok(
+      !/label: `Tool calls:/.test(src),
+      'a separate tool-call toggle came back - the verbosity dial must stay the only affordance',
+    );
+    assert.ok(
+      !/action: 'cycleChatDensity'/.test(src),
+      'a separate density cycler came back - both knobs belong to the one dial',
     );
     assert.ok(
       !/chat-header-toggle/.test(src),
       'a header toggle button came back - the kebab item must stay the only affordance',
     );
     assert.ok(
-      /config: \{ chatShowToolCalls: !showToolCalls \}/.test(src),
-      'the toggle no longer posts the flip through updateConfig',
+      /chatShowToolCalls: preset\.showToolCalls,/.test(src),
+      'the dial no longer posts tool-call visibility through updateConfig',
+    );
+    assert.ok(
+      /chatShowThinking: preset\.showThinking,[\s\S]{0,200}chatDensity: preset\.density,/.test(src),
+      'the dial no longer writes all three verbosity settings in one updateConfig',
     );
     assert.ok(
       /showToolCalls=\{showToolCalls\}/.test(src),

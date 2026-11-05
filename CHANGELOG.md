@@ -13,6 +13,27 @@ All notable changes to ADO Code will be documented in this file.
   every registration queued after it. It now runs in the first lines of activation,
   awaits nothing, and covers first runs as well as updates.
 
+### Changed
+
+- **The chat's three verbosity knobs are now one dial — in Configuration and in the
+  kebab menu.** `adoCode.chat.showThinking`, `adoCode.chat.showToolCalls` and
+  `adoCode.chat.density` were three rows scattered through the Chat section plus two
+  separate kebab actions, so "make the chat quieter" meant finding and combining them
+  by hand. A new **Chat verbosity** section (and the kebab's single **Verbosity**
+  action, which cycles) offers one scale — *Verbose* (reasoning text, tool cards,
+  roomy spacing), *Standard* (tool cards, no reasoning text), *Compact* (tool cards,
+  tighter spacing), *Minimal* (answers only) — and writes all three settings in ONE
+  `updateConfig` call. The level is DERIVED from those settings instead of stored as a
+  fourth one (`shared/chatVerbosity.ts`), so a hand-edited `settings.json` still shows
+  up truthfully as **Custom** rather than drifting from the dial. The two booleans stay
+  individually editable under *Advanced*; `chat.density` is the dial's own host key, so
+  the catalog still has exactly one row per setting. `chatShowThinking` now travels in
+  the config payload and is echoed back in `_sanitizedConfig`, otherwise the webview
+  could not derive a level at all — the round-trip is guarded by tests, and the
+  source-scan guard that pinned the old two-item menu now pins the single dial. The
+  level logic is pure (no timers, no I/O): the touched suites ran 5 times back to back
+  and the full suite twice, all green.
+
 ### Fixed
 
 - **The Setup Wizard remembers your settings when you re-open it.** The wizard is not

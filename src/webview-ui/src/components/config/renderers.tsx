@@ -5,6 +5,16 @@ import { McpServersInput } from './inputs/McpServersInput';
 import { OrganizationsInput } from './inputs/OrganizationsInput';
 import { CapabilityOverridesInput } from './inputs/CapabilityOverridesInput';
 import { ModelInput } from './model/ModelInput';
+import type { ConfigValue } from '../../../../shared/configSchema';
+import {
+  CHAT_VERBOSITY_LEVELS,
+  chatVerbosityLabel,
+  chatVerbosityLevel,
+  chatVerbosityPreset,
+  chatVerbositySummary,
+  readChatVerbosity,
+  type ChatVerbosityLevel,
+} from '../../../../shared/chatVerbosity';
 
 // Stage 3: data-driven field rendering. The page no longer carries a
 // `setting.type === …` dispatch chain — it renders each ConfigSetting through
@@ -12,7 +22,14 @@ import { ModelInput } from './model/ModelInput';
 // Adding a new ConfigSetting type means adding one row here (and the exhaustive
 // Record makes TypeScript flag a missing entry).
 
+/** The page's whole value map, keyed by setting key. */
+type ConfigValues = Record<string, ConfigValue>;
+
 export interface SettingRendererProps {
+  /** Every value on the page — multi-key rows (type 'verbosity') read it. */
+  allValues?: ConfigValues;
+  /** Multi-key write for rows that own more than one setting. */
+  onPatch?: (patch: ConfigValues) => void;
   setting: ConfigSetting;
   value: any;
   models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
@@ -120,9 +137,46 @@ function ModelRenderer({ setting, value, models, onChange }: SettingRendererProp
   );
 }
 
+/** Composite row: ONE dial over three settings (thinking text, tool cards,
+ *  density). It reads the whole value map and writes all three keys at once,
+ *  so the level stays derived from the persisted settings — never stored
+ *  twice, never drifting from them. */
+function VerbosityRenderer({ allValues, onPatch }: SettingRendererProps) {
+  // Derived, never stored: the level the three persisted settings add up to.
+  const state = readChatVerbosity(
+    allValues?.['chat.showThinking'],
+    allValues?.['chat.showToolCalls'],
+    allValues?.['chat.density'],
+  );
+  const level = chatVerbosityLevel(state);
+  return (
+    <select
+      className="config-select"
+      value={level}
+      onChange={e => {
+        if (e.target.value === 'custom') return;
+        const preset = chatVerbosityPreset(e.target.value as ChatVerbosityLevel);
+        onPatch?.({
+          'chat.showThinking': preset.showThinking,
+          'chat.showToolCalls': preset.showToolCalls,
+          'chat.density': preset.density,
+        });
+      }}
+    >
+      {level === 'custom' && (
+        <option value="custom">{`Custom — ${chatVerbositySummary(state)}`}</option>
+      )}
+      {CHAT_VERBOSITY_LEVELS.map(l => (
+        <option key={l} value={l}>{chatVerbosityLabel(l)}</option>
+      ))}
+    </select>
+  );
+}
+
 /** One widget per ConfigSetting['type']. Exhaustive by construction: the Record
  *  type makes a missing type a compile error. */
 export const SETTING_RENDERERS: Record<ConfigSetting['type'], ComponentType<SettingRendererProps>> = {
+  verbosity: VerbosityRenderer,
   string: TextRenderer,
   password: TextRenderer,
   number: NumberRenderer,

@@ -37,7 +37,7 @@ export interface ConfigCategory {
 export interface ConfigSetting {
   key: ConfigSettingKey;
   label: string;
-  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides' | 'model';
+  type: 'string' | 'password' | 'number' | 'boolean' | 'enum' | 'array' | 'mcp' | 'orgs' | 'capOverrides' | 'model' | 'verbosity';
   description: string;
   hint?: string;
   min?: number;
@@ -116,14 +116,20 @@ export const CATEGORIES: ConfigCategory[] = [
         ],
       },
       {
+        title: 'Chat verbosity',
+        icon: '🎚️',
+        settings: [
+          // Composite row: type 'verbosity' reads/writes all three chat
+          // verbosity settings at once; chat.density is only its host key.
+          { key: 'chat.density', label: 'Verbosity', type: 'verbosity', description: 'One dial for how much the chat narrates: Verbose keeps the reasoning text and tool cards, Minimal strips down to answers only', hint: 'Verbose: thinking + tool cards + roomy spacing. Standard: tool cards, no reasoning text. Compact: tool cards, tighter spacing. Minimal: answers only. A hand-tuned combination shows up as “Custom”. Thinking text and tool cards stay individually editable under Advanced; density lives here in settings.json.' },
+        ],
+      },
+      {
         title: 'Chat',
         icon: '💬',
         settings: [
-          { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)", hint: "When enabled, the model's internal reasoning appears inline as quiet, de-emphasized text while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don't support it." },
-          { key: 'chat.showToolCalls', label: 'Show tool calls in chat', type: 'boolean', description: 'Display tool calls as live cards in the chat while the AI works (running → completed, with arguments and results)', hint: "When enabled, every tool the AI runs appears as a card that flips from running to completed. Turn it off to keep tool details out of the chat — you'll still see a subtle '…' indicator while the AI works, and the tools still run normally." },
           { key: 'chat.inputWhileBusy', label: 'Message while AI is busy', type: 'enum', options: ['steer', 'queue'], description: 'What happens when you send a message while the AI is still processing: Steer applies it to the current turn immediately, Queue holds it and runs it next', hint: 'Steer interrupts the AI current response so your new message lands right away. Queue waits for the AI to finish, then sends your message automatically. The in-chat send button lets you override this per message.' },
           { key: 'chat.suggestDelegation', label: 'Suggest external agents', type: 'boolean', description: 'Show an action card suggesting a hand-off to an installed external coding agent (claude, codex, gemini, …) when a task suits a separate agent run', hint: 'When ON, the assistant may propose delegating a large or self-contained task to another agent. Nothing runs until you accept the suggestion.' },
-          { key: 'chat.density', label: 'Chat density', type: 'enum', options: ['comfortable', 'compact', 'answers-only'], description: 'How much per-turn detail the chat shows: Comfortable (everything), Compact (tighter spacing), or Answers only (hide tool/reasoning chrome)', hint: "Comfortable shows tool activity, reasoning and turn summaries. Compact keeps that detail with tighter spacing. Answers only hides the chrome on finished turns — expand a turn to reveal its details on demand." },
         ],
       },
       {
@@ -301,6 +307,14 @@ export const ADVANCED_CATEGORY: ConfigCategory = {
       settings: [
         { key: 'llm.choiceDetectionModel', label: 'Choice detection model', type: 'model', description: 'Optional cheaper model for AI choice-prompt detection (empty = use the main model)', placeholder: 'e.g. gpt-4o-mini, claude-haiku; type "off" to disable' },
         { key: 'llm.useNativeTokenCounting', label: 'Native token counting', type: 'boolean', description: 'Use provider-native token counting (Anthropic count_tokens; OpenAI-compatible via usage.prompt_tokens) for status-bar accuracy' },
+      ],
+    },
+    {
+      title: 'Chat verbosity — fine-grained',
+      icon: '🎚️',
+      settings: [
+        { key: 'chat.showThinking', label: 'Show AI thinking', type: 'boolean', description: "Display the model's thinking/reasoning text while it processes (o1/o3 reasoning, Claude extended thinking)", hint: "The Verbosity dial in the Chat section sets this as well — edit here to hand-tune. When enabled, the model's internal reasoning appears inline as quiet, de-emphasized text while it streams. Only works with models that return thinking tokens (o1, o3, Claude with extended thinking). Has no effect on models that don't support it." },
+        { key: 'chat.showToolCalls', label: 'Show tool calls in chat', type: 'boolean', description: 'Display tool calls as live cards in the chat while the AI works (running → completed, with arguments and results)', hint: "The Verbosity dial in the Chat section sets this as well — edit here to hand-tune. When enabled, every tool the AI runs appears as a card that flips from running to completed. Turn it off to keep tool details out of the chat — you'll still see a subtle '…' indicator while the AI works, and the tools still run normally." },
       ],
     },
   ],

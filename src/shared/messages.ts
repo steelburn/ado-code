@@ -382,6 +382,10 @@ export interface ExtensionConfig {
   chatSuggestDelegation?: boolean;
   /** Chat transcript density ('chat.density'). */
   chatDensity?: ChatDensity;
+  /** Tool-call cards in the chat ('chat.showToolCalls') — one input of the verbosity dial. */
+  chatShowToolCalls?: boolean;
+  /** Model reasoning text in the chat ('chat.showThinking') — one input of the verbosity dial. */
+  chatShowThinking?: boolean;
   agentsEnabled: string[];
   /** Max agentic loop iterations per chat turn (config key 'act.toolBudget' — legacy name kept). */
   actMaxIterations: number;

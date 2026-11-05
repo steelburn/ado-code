@@ -3851,6 +3851,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       chatInputWhileBusy: s.chatInputWhileBusy,
       chatSuggestDelegation: s.chatSuggestDelegation,
       chatDensity: s.chatDensity,
+      chatShowThinking: s.chatShowThinking,
       chatShowToolCalls: s.chatShowToolCalls,
       configured: Boolean(s.llmApiKey),
       // F1: the webview never receives the secrets themselves, so it has to

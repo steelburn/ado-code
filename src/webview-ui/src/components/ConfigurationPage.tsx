@@ -92,6 +92,13 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
     setSaved(false);
   }, []);
 
+  /** Multi-key write — the Verbosity dial owns three settings at once. */
+  const handlePatch = useCallback((patch: Record<string, ConfigValue>) => {
+    setConfig(prev => ({ ...prev, ...patch }));
+    setDirty(true);
+    setSaved(false);
+  }, []);
+
   const handleSave = useCallback(() => {
     vscode.postMessage({ type: 'saveConfig', config });
     setDirty(false);
@@ -271,6 +278,8 @@ export function ConfigurationPage({ onBack, onFetchModels, models, modelsLoading
                     value={config[setting.key]}
                     models={models ?? []}
                     onChange={value => handleChange(setting.key, value)}
+                    allValues={config}
+                    onPatch={handlePatch}
                   />
                 </div>
               ))}

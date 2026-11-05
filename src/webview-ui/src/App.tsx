@@ -9,7 +9,14 @@ import { DocumentationExportBar } from './components/DocumentationExportBar';
 import { deliverDocumentationExportPayload } from './export/documentationExport';
 import { KebabMenu } from './components/KebabMenu';
 import { collapseAllActionLabel } from '../../shared/chatNavigation';
-import { normalizeDensity, cycleDensity, densityLabel } from '../../shared/chatDensity';
+import { normalizeDensity } from '../../shared/chatDensity';
+import {
+  chatVerbosityLabel,
+  chatVerbosityLevel,
+  chatVerbosityPreset,
+  cycleChatVerbosity,
+  readChatVerbosity,
+} from '../../shared/chatVerbosity';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { AgentOutputPanel } from './components/AgentOutputPanel';
 import { ConsentCard, ConsentRequest } from './components/ConsentCard';
@@ -47,6 +54,8 @@ interface SanitizedConfig {
   chatInputWhileBusy?: 'steer' | 'queue';
   /** Item 5: chat density mirrored from the host setting (comfortable | compact | answers-only). */
   chatDensity?: string;
+  /** adoCode.chat.showThinking, mirrored: half of the verbosity dial. */
+  chatShowThinking?: boolean;
 
   /** adoCode.chat.showToolCalls, mirrored: the kebab action hides tool-call output. */
   chatShowToolCalls?: boolean;
@@ -1165,25 +1174,42 @@ function App() {
   // override (each turn keeps its default); `true`/`false` forces every row.
   const [activityOverride, setActivityOverride] = useState<boolean | null>(null);
 
-  // Item 5: chat density. The host owns the persisted setting; the webview
-  // mirrors it (via the 'config' message) and asks for the next mode when the
-  // kebab “Chat density” action fires.
+  // Density is one of the three inputs to the verbosity dial below; the host
+  // owns the persisted setting and the webview mirrors it via 'config'.
   const density = normalizeDensity(config?.chatDensity);
 
   // Tool-call visibility: the host owns the persisted setting (it also stops
-  // sending tool arguments/results when it is off). The kebab item just asks
-  // the host to flip it — there is no second source of
-  // truth, so a reload or another window lands on the same value.
+  // sending tool arguments/results when it is off). It is written through the
+  // verbosity dial — there is no second source of truth, so a reload or
+  // another window lands on the same value.
   const showToolCalls = config?.chatShowToolCalls !== false;
-  const toggleToolCalls = useCallback(() => {
-    vscode.postMessage({ type: 'updateConfig', config: { chatShowToolCalls: !showToolCalls } });
-  }, [showToolCalls]);
+  // Verbosity: ONE dial over the three settings above (thinking text,
+  // tool-call cards, density). It is DERIVED from the persisted settings —
+  // never a fourth stored value — so a hand-edited settings.json still shows
+  // up truthfully here (as "Custom").
+  const verbosityLevel = chatVerbosityLevel(
+    readChatVerbosity(config?.chatShowThinking, config?.chatShowToolCalls, config?.chatDensity),
+  );
+  const cycleVerbosity = useCallback(() => {
+    const preset = chatVerbosityPreset(cycleChatVerbosity(verbosityLevel));
+    setConfig(prev => (prev ? {
+      ...prev,
+      chatShowThinking: preset.showThinking,
+      chatShowToolCalls: preset.showToolCalls,
+      chatDensity: preset.density,
+    } : prev));
+    vscode.postMessage({ type: 'updateConfig', config: {
+      chatShowThinking: preset.showThinking,
+      chatShowToolCalls: preset.showToolCalls,
+      chatDensity: preset.density,
+    } });
+  }, [verbosityLevel]);
 
   // ── Kebab menu actions ───────────────────────────────────────
   const handleKebabAction = useCallback((action: string) => {
     switch (action) {
-      case 'toggleToolCalls':
-        toggleToolCalls();
+      case 'cycleVerbosity':
+        cycleVerbosity();
         break;
       case 'toggleAllTurns':
         setActivityOverride(prev => (prev === false ? true : false));
@@ -1203,17 +1229,11 @@ function App() {
       case 'moveChatToSidebar':
         vscode.postMessage({ type: 'moveChatToSidebar' });
         break;
-      case 'cycleChatDensity': {
-        const next = cycleDensity(density);
-        setConfig((prev) => (prev ? { ...prev, chatDensity: next } : prev));
-        vscode.postMessage({ type: 'updateConfig', config: { chatDensity: next } });
-        break;
-      }
       case 'clearAllSessions':
         handleDeleteAllSessions();
         break;
     }
-  }, [handleDeleteAllSessions, density, toggleToolCalls]);
+  }, [handleDeleteAllSessions, cycleVerbosity]);
 
   const handleFetchProjects = useCallback((organization?: string, pat?: string) => {
     setProjectsLoading(true);
@@ -1450,8 +1470,7 @@ function App() {
             { label: 'Refresh Work Items', icon: '↻', action: 'refreshWorkItems' },
             { label: 'Rerun Setup Wizard', icon: '🔄', action: 'rerunWizard' },
             { label: 'Configuration…', icon: '⚙', action: 'openSettings' },
-            { label: `Chat density: ${densityLabel(density)}`, icon: '📐', action: 'cycleChatDensity' },
-            { label: `Tool calls: ${showToolCalls ? 'shown' : 'hidden'}`, icon: showToolCalls ? '🧰' : '🙈', action: 'toggleToolCalls' },
+            { label: `Verbosity: ${chatVerbosityLabel(verbosityLevel)}`, icon: '🎚️', action: 'cycleVerbosity' },
             { label: '', action: '', separator: true },
             { label: collapseAllActionLabel(activityOverride), icon: '≡', action: 'toggleAllTurns' },
               { label: 'Clear Chat History', icon: '🗑️', action: 'clearAllSessions' },

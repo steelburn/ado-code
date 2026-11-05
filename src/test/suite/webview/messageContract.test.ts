@@ -147,7 +147,7 @@ suite('Message contract — single source of truth', () => {
 
   test('ExtensionConfig in the shared module is the complete settings snapshot', () => {
     const shared = read(SHARED_MESSAGES);
-    for (const field of ['chatInputWhileBusy', 'chatSuggestDelegation', 'chatDensity']) {
+    for (const field of ['chatInputWhileBusy', 'chatSuggestDelegation', 'chatDensity', 'chatShowToolCalls', 'chatShowThinking']) {
       assert.ok(new RegExp(`\\b${field}\\??\\s*:`).test(shared), `ExtensionConfig is missing '${field}'`);
     }
   });
