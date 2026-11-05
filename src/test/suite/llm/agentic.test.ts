@@ -117,6 +117,64 @@ suite('OpenAiProvider chatWithTools', () => {
     assert.ok(result.text.includes('maximum of 3 iterations'), `unexpected conclusion: ${result.text}`);
   });
 
+
+  test('the wrap-up may record goal / to-do state before it concludes', async () => {
+    const bodies: any[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      // Budgeted iterations: keep asking for the work tool.
+      if (bodies.length <= 2) {
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: `call_${bodies.length}`, type: 'function', function: { name: 'echo', arguments: `{"value":"${bodies.length}"}` } }] } }],
+        });
+      }
+      // First wrap-up round-trip: bookkeeping only — refresh the to-do list.
+      if (bodies.length === 3) {
+        return jsonResponse({
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'todo_1', type: 'function', function: { name: 'update_todo_list', arguments: '{"todos":[{"content":"finish the job","status":"completed"}]}' } }] } }],
+        });
+      }
+      // Second wrap-up round-trip: the concluding reply.
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'Hit the iteration limit; the to-do list is up to date.' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const executed: string[] = [];
+    const bookkeepingTools: LlmTool[] = [
+      ...tools,
+      { name: 'set_goal', description: 'set the goal', parameters: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] } },
+      { name: 'update_todo_list', description: 'set the to-do list', parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object' } } } } },
+    ];
+    const executor = {
+      tools: bookkeepingTools,
+      beginTurn() {},
+      mode: 'act' as 'inline' | 'plan' | 'act' | 'yolo',
+      setMode(_m: 'inline' | 'plan' | 'act' | 'yolo') {},
+      canAutoExecute(_name: string, _args: Record<string, any>): boolean { return true; },
+      async execute(name: string, args: Record<string, any>): Promise<string> {
+        executed.push(name);
+        if (name === 'echo') return `echoed: ${args.value}`;
+        return '{"ok":true}';
+      },
+    };
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(client, executor, [{ role: 'user', content: 'go' }], undefined, 2);
+
+    assert.strictEqual(result.reachedIterationLimit, true);
+    // The bookkeeping call RAN inside the wrap-up — it records state, no work.
+    assert.deepStrictEqual(executed, ['echo', 'echo', 'update_todo_list']);
+    assert.strictEqual(result.toolCalls.length, 3);
+    // The wrap-up instruction offers the bookkeeping escape hatch …
+    const wrapUpTurn = bodies[2].messages[bodies[2].messages.length - 1];
+    assert.strictEqual(wrapUpTurn.role, 'user');
+    assert.ok(wrapUpTurn.content.includes('update_todo_list'), 'the wrap-up may call the to-do tool');
+    // …and the model sees the result of the call it made before replying.
+    const toolMsgs = bodies[3].messages.filter((m: any) => m.role === 'tool');
+    assert.ok(toolMsgs.some((m: any) => m.tool_call_id === 'todo_1'), 'bookkeeping result fed back');
+    assert.ok(result.text.includes('to-do list is up to date'), `unexpected conclusion: ${result.text}`);
+  });
   test('a batch of N parallel tool calls in one model round-trip is ONE iteration', async () => {
     const fetchStub = async (_url: any, init: any) => {
       const body = JSON.parse(init.body);

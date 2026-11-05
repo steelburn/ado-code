@@ -11,18 +11,24 @@ import { DEFAULT_MAX_ITERATIONS, INTERNAL_TODO_TOOLS, MAX_INTERNAL_ITERATIONS } 
  * remains — the model knows the full conversation, so its wrap-up is far
  * richer than a synthesized error.
  */
-function wrapUpInstruction(maxIterations: number, reason?: 'limit' | 'loop'): string {
+function wrapUpInstruction(maxIterations: number, reason?: 'limit' | 'loop', bookkeeping = false): string {
+  // Bookkeeping calls record state and execute no work, and the next turn
+  // resumes from what they leave behind — so the wrap-up MAY still use them
+  // to bring the goal / to-do list in line with reality before it replies.
+  const toolRule = bookkeeping
+    ? 'You may still call ONLY the bookkeeping tools: `update_todo_list` (tick off what you finished, drop steps you will not do, add what is still left) and `set_goal` (only if the objective itself changed) — they record state and execute no work. If the list no longer matches reality, update it first, then write the reply.'
+    : 'You may not call any more tools.';
   if (reason === 'loop') {
     return [
       '[repetitive loop detected] Repeated identical or redundant tool calls were detected and stopped.',
-      'You may not call any more tools.',
+      toolRule,
       'Write your final reply to the user now: synthesize the information you have already gathered in this turn,',
       'answer the user request based on what has been retrieved so far, and state your conclusions.',
     ].join(' ');
   }
   return [
     `[iteration limit reached] You have used all ${maxIterations} iterations (model round-trips) allowed for this turn.`, // eslint-disable-line max-len
-    'You may not call any more tools.',
+    toolRule,
     'Write your final reply to the user now: say that you have reached the maximum number of iterations for this turn,',
     'briefly summarize what you have accomplished so far, and state what is still left to do (or what you would do next if given more steps).',
   ].join(' ');
@@ -49,18 +55,28 @@ function fallbackLimitConclusion(maxIterations: number, executedCalls: ToolCall[
 }
 
 /**
+ * Extra, NON-budgeted round-trips for the forced wrap-up. The model may
+ * spend one on recording goal / to-do state (set_goal / update_todo_list);
+ * the last must be the concluding reply.
+ */
+const MAX_WRAPUP_ROUNDS = 3;
+
+/**
  * Graceful end-of-turn when the model exhausts its iteration budget while
  * still requesting tools or when a repetitive loop is stopped. NOT an error: the user sees a concluding chat
  * message. One extra, NON-budgeted round-trip lets the model itself summarize
  * progress and what remains; if that wrap-up call fails, is aborted, or
  * returns nothing usable (empty, truncated, or tool calls only), fall back to
- * a deterministic conclusion. Tool calls in the wrap-up response are NEVER
- * executed — the budget is exhausted, so running more tools would defeat it.
+ * a deterministic conclusion. WORK tool calls in the wrap-up response are
+ * never executed — the budget is exhausted, so running more work would defeat
+ * it — but the bookkeeping tools (`set_goal` / `update_todo_list`) MAY still
+ * run there: they record state only, and the next turn resumes from the goal
+ * and to-do list they leave behind.
  */
 async function concludeAtIterationLimit(
   client: LlmClient,
+  executor: ToolExecutor,
   messages: LlmMessage[],
-  tools: LlmTool[],
   signal: AbortSignal | undefined,
   maxIterations: number,
   executedCalls: ToolCall[],
@@ -71,26 +87,66 @@ async function concludeAtIterationLimit(
   if (signal?.aborted) {
     throw new Error('agentic loop stopped before the concluding reply');
   }
-  const withWrapUp: LlmMessage[] = [
+  const canBookkeep = executor.tools.some((t: LlmTool) => INTERNAL_TODO_TOOLS.has(t.name));
+  const conversation: LlmMessage[] = [
     ...messages,
-    { role: 'user', content: wrapUpInstruction(maxIterations, reason) },
+    { role: 'user', content: wrapUpInstruction(maxIterations, reason, canBookkeep) },
   ];
+  const wrapUpCalls: ToolCall[] = [];
   try {
-    const { text, toolCalls, stopReason } = await client.chatWithTools(withWrapUp, tools, signal);
-    const usable =
-      text && text.trim().length > 0
-      && (!toolCalls || toolCalls.length === 0)
-      && stopReason !== 'length' && stopReason !== 'max_tokens';
-    if (usable) {
-      return {
-        text: text.trim(),
-        toolCalls: executedCalls,
-        iterations: maxIterations,
-        reachedIterationLimit: true,
-        loopDetected: reason === 'loop',
-      };
+    // At most MAX_WRAPUP_ROUNDS extra, NON-budgeted round-trips: an earlier
+    // one may be spent recording goal / to-do state, the last must be the reply.
+    for (let round = 1; round <= MAX_WRAPUP_ROUNDS; round++) {
+      const { text, toolCalls, stopReason } = await client.chatWithTools(conversation, executor.tools, signal);
+      const requested = toolCalls ?? [];
+      const work = requested.filter((c: ToolCall) => !INTERNAL_TODO_TOOLS.has(c.name));
+      const bookkeeping = requested.filter((c: ToolCall) => INTERNAL_TODO_TOOLS.has(c.name));
+      const usable =
+        !!text && text.trim().length > 0
+        && work.length === 0
+        && stopReason !== 'length' && stopReason !== 'max_tokens';
+      if (usable) {
+        return {
+          text: text.trim(),
+          toolCalls: [...executedCalls, ...wrapUpCalls],
+          iterations: maxIterations,
+          reachedIterationLimit: true,
+          loopDetected: reason === 'loop',
+        };
+      }
+      // Truncated output: the arguments may be incomplete — record nothing.
+      if (stopReason === 'length' || stopReason === 'max_tokens') {
+        logger.warn('agentic: wrap-up response was truncated — keeping no wrap-up calls');
+        break;
+      }
+      // The budget is gone: a wrap-up that asks for real work is not executed.
+      if (work.length > 0) {
+        logger.warn(
+          `agentic: wrap-up requested ${work.length} work tool call(s) after the budget was exhausted — not executed`
+        );
+        break;
+      }
+      if (bookkeeping.length === 0 || round === MAX_WRAPUP_ROUNDS) break;
+      // Run the bookkeeping calls and feed their outcome back, so the model
+      // can then write the concluding reply with the list already brought
+      // up to date.
+      conversation.push({
+        role: 'assistant',
+        content: text || '',
+        toolCalls: bookkeeping.map((c: ToolCall) => ({ id: c.id, name: c.name, arguments: JSON.stringify(c.arguments) })),
+      });
+      for (const call of bookkeeping) {
+        let content: string;
+        try {
+          content = await executor.execute(call.name, call.arguments, signal);
+        } catch (err) {
+          content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+        }
+        conversation.push({ role: 'tool', content, toolCallId: call.id });
+      }
+      wrapUpCalls.push(...bookkeeping);
+      logger.info(`agentic: wrap-up recorded ${bookkeeping.map((c: ToolCall) => c.name).join(', ')}`);
     }
-    logger.warn('agentic: wrap-up response unusable (tool calls / empty / truncated) — using deterministic conclusion');
   } catch (err) {
     // User stop → let the host reconcile the stopped turn. Any other wrap-up
     // failure must not turn the whole turn into an error banner: the budget
@@ -98,9 +154,11 @@ async function concludeAtIterationLimit(
     if (signal?.aborted) throw err;
     logger.warn('agentic: wrap-up conclusion call failed — using deterministic conclusion', err);
   }
+  logger.warn('agentic: wrap-up produced no usable conclusion — using deterministic conclusion');
+  const allCalls = [...executedCalls, ...wrapUpCalls];
   return {
-    text: fallbackLimitConclusion(maxIterations, executedCalls, reason),
-    toolCalls: executedCalls,
+    text: fallbackLimitConclusion(maxIterations, allCalls, reason),
+    toolCalls: allCalls,
     iterations: maxIterations,
     reachedIterationLimit: true,
     loopDetected: reason === 'loop',
@@ -575,7 +633,7 @@ export async function runAgenticChat(
       logger.warn(
         `agentic: breaking out of degenerate loop at iteration ${i + 1}/${maxIterations} after consecutive blocked iterations — forcing concluding reply`
       );
-      return concludeAtIterationLimit(client, messages, executor.tools, signal, i + 1, allToolCalls, 'loop');
+      return concludeAtIterationLimit(client, executor, messages, signal, i + 1, allToolCalls, 'loop');
     }
 
     i++;
@@ -587,5 +645,5 @@ export async function runAgenticChat(
   logger.warn(
     `agentic: exhausted ${maxIterations} iteration(s) after ${allToolCalls.length} tool call(s) — forcing a concluding reply`
   );
-  return concludeAtIterationLimit(client, messages, executor.tools, signal, maxIterations, allToolCalls);
+  return concludeAtIterationLimit(client, executor, messages, signal, maxIterations, allToolCalls);
 }

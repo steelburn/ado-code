@@ -4,6 +4,18 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **A turn that runs out of iterations now leaves the goal and to-do list in a state
+  the next turn can resume from.** The forced wrap-up (`reachedIterationLimit`) was a
+  summary-only round-trip — every tool call in it was discarded — so the list could
+  still show finished steps as "in progress" and miss the ones that were left, and the
+  user had to reconstruct that from the prose. The wrap-up reply may now still call
+  `update_todo_list` (and `set_goal`, if the objective changed) before it summarizes:
+  those bookkeeping calls record state and execute no work, their results are fed back
+  so the summary is written against a refreshed list, and the extra round-trips stay
+  capped (3) and outside the budget. Work tools in the wrap-up are still never executed.
+
 ## [0.8.4] - 2026-11-05
 
 ### Added
