@@ -24,6 +24,7 @@ import {
   parseVersion,
   planForTemplate,
 } from '../shared/projectDependencies';
+import { resolveShellEnv } from '../shared/shellEnv';
 
 export interface CommandOutcome {
   ok: boolean;
@@ -35,7 +36,7 @@ export interface CommandOutcome {
 export type CommandRunner = (
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number },
+  opts?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 ) => Promise<CommandOutcome>;
 
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -44,6 +45,9 @@ const DEFAULT_TIMEOUT_MS = 10000;
  * Real runner. `shell: true` on win32 so `npm`/`pnpm` resolve to their `.cmd`
  * shims (`npm --version` via execFile without a shell → ENOENT). The arguments
  * are all literals from the spec table — nothing user-supplied reaches a shell.
+ *
+ * `env` is the freshly resolved block from `shellEnv.ts` (see CheckOptions);
+ * without it the child inherits the block VS Code was started with.
  */
 export const execRunner: CommandRunner = (cmd, args, opts = {}) =>
   new Promise<CommandOutcome>(resolve => {
@@ -53,6 +57,7 @@ export const execRunner: CommandRunner = (cmd, args, opts = {}) =>
         args,
         {
           cwd: opts.cwd,
+          env: opts.env,
           timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           windowsHide: true,
           shell: process.platform === 'win32',
@@ -81,12 +86,13 @@ async function probeSpec(
   spec: DependencySpec,
   run: CommandRunner,
   platform: string,
+  env?: NodeJS.ProcessEnv,
 ): Promise<DependencyStatus> {
   const guidance = guidanceFor(spec, platform);
   let lastError = 'not found on PATH';
 
   for (const probe of spec.probes) {
-    const outcome = await run(probe.cmd, probe.args, { timeoutMs: DEFAULT_TIMEOUT_MS });
+    const outcome = await run(probe.cmd, probe.args, { timeoutMs: DEFAULT_TIMEOUT_MS, env });
     if (!outcome.ok) {
       lastError = outcome.error || lastError;
       continue;
@@ -129,6 +135,13 @@ async function probeSpec(
 export interface CheckOptions {
   run?: CommandRunner;
   platform?: string;
+  /**
+   * Environment for the probes. Omitted -> a fresh PATH is resolved once for
+   * the whole round (`shellEnv.ts`), so a toolchain installed after VS Code
+   * started is found without restarting it. `false` keeps the inherited
+   * block — the tests use it because they inject their own runner.
+   */
+  env?: NodeJS.ProcessEnv | false;
   /** Cancels a long probe round (the wizard re-checked with another template). */
   isCancelled?: () => boolean;
 }
@@ -145,10 +158,11 @@ export async function checkProjectDependencies(
   const plan: ProjectDependencyPlan = planForTemplate(templateId, options, planOptions);
 
   try {
+    const env = opts.env === false ? undefined : opts.env ?? (await resolveShellEnv({ platform }));
     const checks: DependencyStatus[] = [];
     for (const spec of plan.checks) {
       if (opts.isCancelled?.()) break;
-      checks.push(await probeSpec(spec, run, platform));
+      checks.push(await probeSpec(spec, run, platform, env));
     }
     return {
       platform,
@@ -185,10 +199,18 @@ export interface AutoInstallOutcome {
 export async function runAutoInstalls(
   projectDir: string,
   steps: AutoInstallStep[],
-  opts: { run?: CommandRunner; fileExists?: (p: string) => boolean } = {},
+  opts: {
+    run?: CommandRunner;
+    fileExists?: (p: string) => boolean;
+    /** Same contract as `CheckOptions.env`. */
+    env?: NodeJS.ProcessEnv | false;
+  } = {},
 ): Promise<AutoInstallOutcome[]> {
   const run = opts.run ?? execRunner;
   const fileExists = opts.fileExists;
+  // Nothing to install: do not pay for the PATH lookup.
+  if (steps.length === 0) return [];
+  const env = opts.env === false ? undefined : opts.env ?? (await resolveShellEnv());
   const results: AutoInstallOutcome[] = [];
 
   for (const step of steps) {
@@ -197,7 +219,7 @@ export async function runAutoInstalls(
       continue;
     }
     try {
-      const outcome = await run(step.cmd, step.args, { cwd: projectDir, timeoutMs: 180000 });
+      const outcome = await run(step.cmd, step.args, { cwd: projectDir, timeoutMs: 180000, env });
       results.push({
         id: step.id,
         label: step.label,

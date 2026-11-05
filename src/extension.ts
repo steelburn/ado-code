@@ -34,6 +34,7 @@ import { RemoteServer } from './remote/RemoteServer';
 import { RemoteTunnel } from './remote/RemoteTunnel';
 import { CONSOLE_HTML } from './remote/consolePage';
 import { resolveRemoteUrl } from './remote/remoteUrl';
+import { isOnPath, sharedShellEnv } from './shared/shellEnv';
 import { logger } from './services/logger';
 import {
   changelogAnnouncement,
@@ -1386,24 +1387,17 @@ function lanAddress(): string | undefined {
   return undefined;
 }
 
-/** Probe PATH for an executable without spawning it. */
-function onPath(bin: string): boolean {
-  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) {
-      continue;
-    }
-    for (const ext of exts) {
-      try {
-        if (fs.existsSync(path.join(dir, bin + ext))) {
-          return true;
-        }
-      } catch {
-        // unreadable PATH entry — keep looking
-      }
-    }
-  }
-  return false;
+/** One fresh shell-env lookup per 15 s, shared by the tunnel probe, its launch and the agent probes. */
+const shellEnvCache = sharedShellEnv;
+
+/**
+ * Probe PATH for an executable without spawning it — against the PATH a *new*
+ * process would get, so a cloudflared installed after VS Code started (or one
+ * living in a registry / managed-shim directory) is found without a reload.
+ */
+async function onPath(bin: string): Promise<boolean> {
+  const env = (await shellEnvCache.get()) ?? process.env;
+  return isOnPath(env, bin);
 }
 
 const remoteQrPanel = new RemoteQrPanel({
@@ -1537,17 +1531,26 @@ const remoteControl = new RemoteControl({
       port: remoteServer?.port ?? settings.port,
       customCommand: settings.tunnelCommand,
       urlPattern: settings.tunnelUrlPattern,
+      // The same fresh PATH the availability check just used, so a cloudflared
+      // that only a *new* process sees still launches.
+      env: shellEnvCache.peek(),
       onUrl: handlers.onUrl,
       onError: handlers.onError,
       onExit: handlers.onExit,
     });
   },
-  tunnelAvailable: provider => {
+  tunnelAvailable: async provider => {
     if (provider === 'none') {
       return false;
     }
     if (provider === 'custom') {
-      return readRemoteSettings().tunnelCommand.trim().length > 0;
+      if (readRemoteSettings().tunnelCommand.trim().length === 0) {
+        return false;
+      }
+      // Warm the same cache the launch reads: a custom command resolves on
+      // the PATH too, and it gets the fresh block when the tunnel spawns.
+      await shellEnvCache.get();
+      return true;
     }
     return onPath('cloudflared');
   },

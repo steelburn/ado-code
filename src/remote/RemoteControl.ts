@@ -75,8 +75,12 @@ export interface RemoteControlDeps {
     onError: (message: string) => void;
     onExit: (code: number | null) => void;
   }) => RemoteTunnelLike;
-  /** True when the configured tunnel provider's binary is available. */
-  tunnelAvailable: (provider: RemoteSettings['tunnel']) => boolean;
+  /**
+   * True when the configured tunnel provider's binary is available. May be
+   * async: the check resolves the PATH a new process would get, which needs a
+   * short shell probe.
+   */
+  tunnelAvailable: (provider: RemoteSettings['tunnel']) => boolean | Promise<boolean>;
   showQuickPick: (
     items: Array<{ label: string; description?: string; provider: RemoteSettings['tunnel'] }>,
     options: { placeHolder: string; activeItem?: { label: string } }
@@ -311,7 +315,7 @@ export class RemoteControl {
       }
 
       if (settings.tunnel !== 'none' && !this.tunnel) {
-        if (!this.deps.tunnelAvailable(settings.tunnel)) {
+        if (!(await this.deps.tunnelAvailable(settings.tunnel))) {
           this.deps.notify(
             `Remote Access: ${settings.tunnel} was not found — the console stays local-only.`,
             'warn'
@@ -404,7 +408,7 @@ export class RemoteControl {
     if (!picked || picked.provider === 'none') {
       return;
     }
-    if (!this.deps.tunnelAvailable(picked.provider)) {
+    if (!(await this.deps.tunnelAvailable(picked.provider))) {
       this.deps.notify(`Remote Access: ${picked.label} is not available on this machine.`, 'warn');
       return;
     }

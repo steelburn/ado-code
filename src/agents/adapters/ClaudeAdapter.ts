@@ -1,33 +1,30 @@
 import * as cp from 'child_process';
-import * as fs from 'fs';
-import * as nodePath from 'path';
 import { AgentAdapter } from './types';
 import { AgentRun } from '../types';
 import { resolveSpawn, agentBinCandidates } from '../resolveBin';
 import { deliverPromptArg } from '../promptDelivery';
+import { currentShellEnv, findOnPath } from '../../shared/shellEnv';
 
 /** Minimal spawn signature — loose enough for test fakes, matches cp.spawn. */
 export type SpawnFn = (bin: string, args: string[], opts: any) => any;
 
 /**
- * Resolve the best available binary name for an agent CLI.
+ * Resolve the best available binary for an agent CLI.
  * On Windows this prefers `<name>.cmd` (npm shim) over `.exe` over bare name.
- * Falls back to the bare name when no candidate is found on PATH.
+ *
+ * The scan uses the freshly resolved shell PATH, not the block this extension
+ * inherited at launch, and returns the ABSOLUTE path it found — a CLI installed
+ * while VS Code was running is then spawned by path, no reload needed. Falls
+ * back to the bare name when no candidate is found.
  */
-export function resolveBin(name: string): string {
+export function resolveBin(
+  name: string,
+  env: NodeJS.ProcessEnv = currentShellEnv() ?? process.env,
+): string {
   for (const candidate of agentBinCandidates(name)) {
-    try {
-      // Check each directory on PATH for the candidate file.
-      const dirs = (process.env.PATH ?? process.env.Path ?? '').split(
-        process.platform === 'win32' ? ';' : ':'
-      );
-      for (const dir of dirs) {
-        if (dir && fs.existsSync(nodePath.join(dir, candidate))) {
-          return candidate;
-        }
-      }
-    } catch {
-      // ignore stat errors
+    const found = findOnPath(env, candidate);
+    if (found) {
+      return found;
     }
   }
   // Default: return bare name and let the OS resolve it.

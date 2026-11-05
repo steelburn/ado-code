@@ -81,6 +81,35 @@ All notable changes to ADO Code will be documented in this file.
   A turn that is over also stops painting the transient "N tools running"
   line above the input.
 
+- **The /new-project dependency check no longer needs a VS Code restart.** The probes
+  and the autonomous installs (npm/composer/dotnet/pip) inherited the environment
+  block VS Code was started with, so a toolchain installed afterwards - a fresh Node,
+  a JDK, an nvm/asdf switch - was reported missing until the whole editor was
+  restarted, even though the integrated terminal found it. Each check round now asks
+  a freshly spawned shell for the PATH a *new* process would see (win32: the
+  Machine + User registry values, `%VAR%` expanded; Linux/macOS: a login +
+  interactive shell, which also fixes the minimal macOS GUI PATH) and merges it in
+  front of the inherited entries, once per round rather than per spec. Auto-installs
+  resolve it again at scaffold time, since they can run minutes after the check. A
+  failed or slow lookup falls back silently to the old inherited block.
+
+- **The remote tunnel check now finds a cloudflared installed after launch.** The
+  Remote Access availability probe, and the tunnel launch itself, read the same
+  freshly resolved PATH, so installing cloudflared (or a custom tunnel command)
+  no longer needs a VS Code restart before the phone console can come up. The
+  lookup is memoised for 15 s, so the probe and the spawn share one shell call,
+  and a failed lookup keeps the inherited block.
+
+- **Agent detection and agent runs use that same fresh PATH.** The last raw
+  `process.env.PATH` scan is gone: the CLI sweep now probes every candidate with the
+  freshly resolved environment, so an agent installed while VS Code is running
+  (`claude`, `codex`, `dsh`, ...) turns up in the next sweep instead of after a window
+  reload; `resolveSpawn` resolves the binary to the absolute file that PATH points at
+  and hands the child the fresh block (a `.cmd` shim still runs through `cmd.exe`);
+  and `AgentRegistry.clearCache()` drops the PATH snapshot so a manual re-detect
+  re-reads it. The resolver moved to `src/shared/shellEnv.ts` and is one shared 15 s
+  cache for the wizard, the tunnel probe/launch and agent detection.
+
 ## [0.8.3] - 2026-10-30
 
 ### Added

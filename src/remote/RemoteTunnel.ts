@@ -35,6 +35,12 @@ export interface RemoteTunnelOptions {
   port: number;
   /** Custom command template; `{port}` is substituted. */
   customCommand?: string;
+  /**
+   * Environment for the tunnel process (defaults to the inherited block).
+   * Carry the freshly resolved PATH so a binary VS Code did not start with
+   * still launches.
+   */
+  env?: NodeJS.ProcessEnv;
   /** Custom URL pattern (regular expression source) used to scrape the tunnel URL. */
   urlPattern?: string;
   spawnFn?: (bin: string, args: string[], opts?: object) => TunnelChild;
@@ -143,7 +149,7 @@ export class RemoteTunnel {
 
     let child: TunnelChild;
     try {
-      child = spawnFn(resolved.bin, resolved.args, resolved.opts);
+      child = spawnFn(resolved.bin, resolved.args, spawnOptions(resolved.opts, this.options.env));
     } catch (error) {
       this.fail(this.spawnFailure(command.bin, error));
       return null;
@@ -234,6 +240,14 @@ export class RemoteTunnel {
   private fail(message: string): void {
     this.options.onError?.(message);
   }
+}
+
+/** Spawn options for the tunnel child: the resolved argv plus a fresh PATH. */
+function spawnOptions(
+  opts: object | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+): object | undefined {
+  return env ? { ...(opts ?? {}), env } : opts;
 }
 
 function errorText(error: unknown): string {

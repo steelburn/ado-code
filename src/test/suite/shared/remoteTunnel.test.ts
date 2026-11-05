@@ -124,6 +124,45 @@ suite('remote/RemoteTunnel', () => {
         assert.deepStrictEqual(fallbackUrls, ['http://127.0.0.1:5000/']);
     });
 
+    test('spawns with the supplied env so a fresh PATH reaches the binary', () => {
+        const child = new FakeChild();
+        const seen: Array<{ env?: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean } | undefined> = [];
+        const env: NodeJS.ProcessEnv = { ...process.env, Path: 'C:\\fresh\\bin' };
+        const tunnel = new RemoteTunnel({
+            provider: 'cloudflared',
+            port: 41234,
+            env,
+            spawnFn: (_bin, _args, opts) => {
+                seen.push(opts as { env?: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean });
+                return child;
+            },
+            resolveSpawnFn: (bin, args) => ({ bin, args, opts: { windowsVerbatimArguments: true } }),
+        });
+        tunnel.start();
+
+        assert.strictEqual(seen.length, 1);
+        assert.strictEqual(seen[0]?.env, env, 'the child gets the resolved block');
+        assert.strictEqual(seen[0]?.windowsVerbatimArguments, true, 'resolved spawn opts survive');
+    });
+
+    test('without env the spawn options are passed through untouched', () => {
+        const child = new FakeChild();
+        const opts = { windowsVerbatimArguments: true };
+        let seen: unknown;
+        const tunnel = new RemoteTunnel({
+            provider: 'cloudflared',
+            port: 41234,
+            spawnFn: (_bin, _args, spawnOpts) => {
+                seen = spawnOpts;
+                return child;
+            },
+            resolveSpawnFn: (bin, args) => ({ bin, args, opts }),
+        });
+        tunnel.start();
+
+        assert.strictEqual(seen, opts);
+    });
+
     test('a missing binary reports an actionable error and does not throw', () => {
         const errors: string[] = [];
         const child = new FakeChild();

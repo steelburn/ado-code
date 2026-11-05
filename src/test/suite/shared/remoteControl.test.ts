@@ -105,7 +105,11 @@ interface Rig {
 }
 
 function createRig(
-    options: { settings?: Partial<RemoteSettings>; tunnelAvailable?: boolean; secrets?: FakeSecrets } = {}
+    options: {
+        settings?: Partial<RemoteSettings>;
+        tunnelAvailable?: boolean | (() => boolean | Promise<boolean>);
+        secrets?: FakeSecrets;
+    } = {}
 ): Rig {
     const tunnelOptions: Array<{ onUrl: (url: string) => void }> = [];
     const settings: RemoteSettings = {
@@ -173,7 +177,10 @@ function createRig(
             tunnelOptions.push(opts);
             return tunnel;
         },
-        tunnelAvailable: () => options.tunnelAvailable !== false,
+        tunnelAvailable: () =>
+            typeof options.tunnelAvailable === 'function'
+                ? options.tunnelAvailable()
+                : options.tunnelAvailable !== false,
         showQuickPick: async (items, pickOptions) => {
             quickPickCalls.push({ items, activeItem: pickOptions.activeItem });
             const first = items[0];
@@ -358,6 +365,31 @@ suite('remote/RemoteControl', () => {
             /^https:\/\/daily-cats-try\.trycloudflare\.com\/#t=.+$/,
             'the QR must carry the #t= token fragment or the phone cannot authenticate'
         );
+    });
+
+    test('an async availability check is awaited before the tunnel spawns', async () => {
+        const rig = createRig({
+            settings: { enabled: true, tunnel: 'cloudflared' },
+            tunnelAvailable: async () => false,
+        });
+        rig.control.activate();
+        await rig.control.reconcile();
+        await rig.control.startTunnel();
+
+        assert.strictEqual(rig.tunnels.length, 0, 'a pending check must be resolved, not read as available');
+        assert.ok(rig.notifications.some((n) => /not available/.test(n.message)));
+    });
+
+    test('an async availability check that resolves true still spawns the tunnel', async () => {
+        const rig = createRig({
+            settings: { enabled: true, tunnel: 'none' },
+            tunnelAvailable: async () => true,
+        });
+        rig.control.activate();
+        await rig.control.reconcile();
+        await rig.control.startTunnel();
+
+        assert.strictEqual(rig.tunnels.length, 1, 'awaiting the check must not swallow a positive answer');
     });
 
     test('a missing cloudflared neither spawns nor throws', async () => {

@@ -110,7 +110,7 @@ suite('New-project Dependencies step — Extension Host smoke', () => {
   });
 
   test('an empty machine gets per-platform guidance (flutter + optional JDK)', async () => {
-    const report = await checkProjectDependencies('flutter', {}, {}, { run: nothingInstalled });
+    const report = await checkProjectDependencies('flutter', {}, {}, { run: nothingInstalled, env: false });
     assert.ok(report.missingRequired.length > 0, 'required toolchain reported missing');
 
     const flutter = report.checks.find((c: any) => c.id === 'flutter');
@@ -131,7 +131,7 @@ suite('New-project Dependencies step — Extension Host smoke', () => {
   });
 
   test('a throwing runner degrades to report.error instead of crashing the wizard', async () => {
-    const report = await checkProjectDependencies('node-ts', {}, {}, { run: explodingRunner });
+    const report = await checkProjectDependencies('node-ts', {}, {}, { run: explodingRunner, env: false });
     assert.ok(report.error, 'the broken probe rides report.error');
     assert.deepStrictEqual(report.checks, [], 'no half-probed statuses are reported');
     assert.deepStrictEqual(report.missingRequired, [], 'a probe failure is not dressed up as a missing tool');

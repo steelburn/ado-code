@@ -181,7 +181,7 @@ suite('shared/projectDependencies', () => {
                 npm: { ok: false, error: 'not found on PATH' },
                 git: { ok: true, output: 'git version 2.44.0.windows.1' },
             });
-            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32' });
+            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32', env: false });
 
             const node = report.checks.find(c => c.id === 'node')!;
             assert.strictEqual(node.ok, true);
@@ -203,7 +203,7 @@ suite('shared/projectDependencies', () => {
                 npm: { ok: true, output: '9.6.7' },
                 git: { ok: true, output: 'git version 2.44.0' },
             });
-            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'linux' });
+            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'linux', env: false });
             const node = report.checks.find(c => c.id === 'node')!;
             assert.strictEqual(node.ok, false);
             assert.ok(node.error!.includes('need 18+'));
@@ -217,14 +217,14 @@ suite('shared/projectDependencies', () => {
                 pip: { ok: true, output: 'pip 24.0' },
                 git: { ok: true, output: 'git version 2.44.0' },
             });
-            const report = await checkProjectDependencies('python', {}, {}, { run, platform: 'darwin' });
+            const report = await checkProjectDependencies('python', {}, {}, { run, platform: 'darwin', env: false });
             assert.strictEqual(report.checks.find(c => c.id === 'python')!.version, '3.11.4');
             assert.deepStrictEqual(report.missingRequired, []);
         });
 
         test('a thrown runner becomes a soft error, never a rejection', async () => {
             const run: CommandRunner = async () => { throw new Error('spawn EPERM'); };
-            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32' });
+            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32', env: false });
             assert.strictEqual(report.error, 'spawn EPERM');
             assert.deepStrictEqual(report.checks, []);
         });
@@ -236,7 +236,7 @@ suite('shared/projectDependencies', () => {
             const outcomes = await runAutoInstalls(
                 '/tmp/project',
                 [{ id: 'npm-install', label: 'npm install', cmd: 'npm', args: ['install'], requiresFile: 'package.json' }],
-                { run, fileExists: () => false },
+                { run, fileExists: () => false, env: false },
             );
             assert.strictEqual(outcomes[0].ok, true);
             assert.ok(outcomes[0].output.includes('skipped'));
@@ -248,7 +248,7 @@ suite('shared/projectDependencies', () => {
             const outcomes = await runAutoInstalls(
                 '/tmp/project',
                 [{ id: 'npm-install', label: 'npm install', cmd: 'npm', args: ['install'], requiresFile: 'package.json' }],
-                { run, fileExists: () => true },
+                { run, fileExists: () => true, env: false },
             );
             assert.strictEqual(outcomes[0].ok, false);
             assert.deepStrictEqual(autoInstallWarnings(outcomes), [
@@ -266,7 +266,7 @@ suite('shared/projectDependencies', () => {
                 npm: { ok: false, error: 'not found on PATH' },
                 git: { ok: true, output: 'git version 2.44.0' },
             });
-            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32' });
+            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32', env: false });
 
             const open = dependencyGate(report, false);
             assert.strictEqual(open.blocked, true);
@@ -287,7 +287,7 @@ suite('shared/projectDependencies', () => {
                 java: { ok: false, error: 'not found on PATH' },
                 git: { ok: true, output: 'git version 2.44.0' },
             });
-            const report = await checkProjectDependencies('flutter', {}, {}, { run, platform: 'linux' });
+            const report = await checkProjectDependencies('flutter', {}, {}, { run, platform: 'linux', env: false });
             const gate = dependencyGate(report, false);
             assert.deepStrictEqual(gate.blocking, []);
             assert.strictEqual(gate.blocked, false);
@@ -295,7 +295,7 @@ suite('shared/projectDependencies', () => {
 
         test('a failed probe is a soft warning, not a gate', async () => {
             const run: CommandRunner = async () => { throw new Error('spawn EPERM'); };
-            const report = await checkProjectDependencies('python', {}, {}, { run, platform: 'linux' });
+            const report = await checkProjectDependencies('python', {}, {}, { run, platform: 'linux', env: false });
             const gate = dependencyGate(report, false);
             assert.strictEqual(gate.probeFailed, true);
             assert.strictEqual(gate.blocked, false);

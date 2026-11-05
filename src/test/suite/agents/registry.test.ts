@@ -21,7 +21,7 @@ const probeOnlyClaude = async (bin: string): Promise<string> => {
 suite('AgentRegistry', function () {
   this.timeout(30000);
   test('reports installed agents with version', async () => {
-    const registry = new AgentRegistry(() => 1000, probeAllInstalled);
+    const registry = new AgentRegistry(() => 1000, probeAllInstalled, null);
     const caps = await registry.detect();
     // Every spec yields a capability entry (installed or not) — no throws.
     assert.strictEqual(caps.length, Object.keys(AGENT_SPECS).length);
@@ -34,7 +34,7 @@ suite('AgentRegistry', function () {
   });
 
   test('getInstalled filters to installed only', async () => {
-    const registry = new AgentRegistry(() => 1000, probeOnlyClaude);
+    const registry = new AgentRegistry(() => 1000, probeOnlyClaude, null);
     const installed = await registry.getInstalled();
     for (const c of installed) {
       assert.strictEqual(c.installed, true);
@@ -46,7 +46,7 @@ suite('AgentRegistry', function () {
     const registry = new AgentRegistry(() => 1000, async () => {
       probes++;
       return '9.9.9';
-    });
+    }, null);
     const first = await registry.detect();
     const afterFirst = probes;
     assert.ok(afterFirst > 0, 'the first sweep probes candidates');
@@ -67,7 +67,7 @@ suite('AgentRegistry', function () {
     // START of the sweep therefore stores an already-expired entry, and the
     // very next detect() re-probes (new array) instead of serving the cache.
     let reads = 0;
-    const registry = new AgentRegistry(() => (reads++ === 0 ? 1000 : 1000 + DETECT_TTL_MS + 1), probeAllInstalled);
+    const registry = new AgentRegistry(() => (reads++ === 0 ? 1000 : 1000 + DETECT_TTL_MS + 1), probeAllInstalled, null);
     const first = await registry.detect();
     const second = await registry.detect();
     assert.strictEqual(first, second, 'a slow sweep must still be cached once it completes');
@@ -75,7 +75,7 @@ suite('AgentRegistry', function () {
 
   test('detect re-probes after the TTL so CLIs installed mid-session are found', async () => {
     let t = 1000;
-    const registry = new AgentRegistry(() => t, probeAllInstalled);
+    const registry = new AgentRegistry(() => t, probeAllInstalled, null);
     const first = await registry.detect();
     // Same cached array while inside the TTL window…
     t += DETECT_TTL_MS - 1000;
@@ -89,7 +89,7 @@ suite('AgentRegistry', function () {
   });
 
   test('AGENT_SPECS supportsSession drives modes (for installed agents)', async () => {
-    const registry = new AgentRegistry(() => 1000, probeAllInstalled);
+    const registry = new AgentRegistry(() => 1000, probeAllInstalled, null);
     const caps = await registry.detect();
     for (const spec of Object.values(AGENT_SPECS)) {
       const cap = caps.find(c => c.name === spec.name)!;
@@ -117,4 +117,35 @@ suite('AgentRegistry', function () {
     assert.deepStrictEqual(migrateEnabledAgents(['claude', 'dsh']), ['claude', 'dsh']);
     assert.deepStrictEqual(migrateEnabledAgents([]), [], 'empty (unset) stays empty — default applies upstream');
   });
+
+  test('every candidate is probed with the freshly resolved PATH', async () => {
+    const fresh = { PATH: '/fresh/bin' } as NodeJS.ProcessEnv;
+    const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+    let current: NodeJS.ProcessEnv | undefined = fresh;
+    const cache = {
+      get: async () => current,
+      peek: () => current,
+      clear: () => {
+        current = undefined;
+      },
+    };
+    const registry = new AgentRegistry(
+      () => 1000,
+      async (_bin: string, _flag: string[], env?: NodeJS.ProcessEnv) => {
+        seen.push(env);
+        return '9.9.9';
+      },
+      cache,
+    );
+    await registry.detect();
+    assert.ok(seen.length > 0);
+    assert.ok(seen.every(e => e === fresh), 'a CLI installed after launch is found via the fresh PATH');
+
+    // A manual re-detect must not reuse the PATH snapshot taken before an install.
+    registry.clearCache();
+    seen.length = 0;
+    await registry.detect();
+    assert.ok(seen.every(e => e === undefined), 'clearCache() re-resolves the PATH');
+  });
+
 });

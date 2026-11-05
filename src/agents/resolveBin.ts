@@ -1,4 +1,5 @@
 import * as cp from 'child_process';
+import { currentShellEnv, findOnPath } from '../shared/shellEnv';
 
 /**
  * Executable candidates to probe (and later spawn) for an agent CLI.
@@ -46,6 +47,11 @@ export interface ResolvedSpawn {
 /**
  * Decide what to actually spawn for `bin` + `args`.
  *
+ * `env` defaults to the freshly resolved shell environment (see shared/shellEnv):
+ * the binary is then looked up in THAT PATH and the child inherits it, so an
+ * agent CLI installed while VS Code was running is launched without a reload.
+ * `null` = keep the inherited block (old behaviour, and what tests use).
+ *
  * - Non-win32 / non-shim: pass through unchanged (direct spawn, no shell).
  * - win32 `.cmd`/`.bat` shim: Node's spawn refuses these without a shell.
  *   The safe route is spawning `cmd.exe` with the whole command line passed
@@ -61,13 +67,20 @@ export function resolveSpawn(
   args: string[],
   platform: NodeJS.Platform = process.platform,
   comspec: string = process.env.ComSpec ?? process.env.comspec ?? 'cmd.exe',
+  env: NodeJS.ProcessEnv | null = currentShellEnv() ?? null,
 ): ResolvedSpawn {
-  if (platform === 'win32' && isCmdShim(bin)) {
+  // Spawn the FILE the freshly resolved PATH points at rather than a bare name
+  // the host's inherited PATH has to resolve: a toolchain installed after VS
+  // Code started is missing from the inherited block, and on Windows
+  // CreateProcess searches the PARENT path, not the env block we hand it.
+  const resolved = env ? findOnPath(env, bin, platform) ?? bin : bin;
+  const childEnv: cp.SpawnOptions = env ? { env } : {};
+  if (platform === 'win32' && isCmdShim(resolved)) {
     return {
       bin: comspec,
-      args: ['/d', '/s', '/c', cmdLineForShim(bin, args)],
-      opts: { windowsVerbatimArguments: true },
+      args: ['/d', '/s', '/c', cmdLineForShim(resolved, args)],
+      opts: { windowsVerbatimArguments: true, ...childEnv },
     };
   }
-  return { bin, args };
+  return env ? { bin: resolved, args, opts: childEnv } : { bin: resolved, args };
 }

@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import { promisify } from 'util';
 import { AgentCapability, AgentName } from './types';
 import { agentBinCandidates } from './resolveBin';
+import { sharedShellEnv } from '../shared/shellEnv';
+import type { ShellEnvCache } from '../shared/shellEnv';
 
 const execFile = promisify(cp.execFile);
 
@@ -13,13 +15,20 @@ const PROBE_TIMEOUT_MS = 5000;
  * Injectable (see AgentRegistry) so a sweep can be driven from tests without
  * spawning ~30 child processes.
  */
-async function probeCandidate(bin: string, versionFlag: string[]): Promise<string> {
+async function probeCandidate(
+  bin: string,
+  versionFlag: string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<string> {
   // M12/M-7 fix: on Windows, npm-installed CLIs ship as .cmd shims; execFile
   // can't execute .cmd without shell:true — probe with a shell on win32 (args
   // are static version flags, no injection risk).
   const { stdout } = await execFile(bin, versionFlag, {
     timeout: PROBE_TIMEOUT_MS,
     shell: process.platform === 'win32',
+    // Search the PATH a NEW process would get, so a CLI installed while VS
+    // Code is already running answers here instead of after a window reload.
+    ...(env ? { env } : {}),
   });
   return stdout.trim().split('\n')[0];
 }
@@ -153,12 +162,22 @@ export class AgentRegistry {
   constructor(
     private now: () => number = Date.now,
     /** Injectable so tests can drive the sweep without spawning agent CLIs. */
-    private probe: (bin: string, versionFlag: string[]) => Promise<string> = probeCandidate,
+    private probe: (
+      bin: string,
+      versionFlag: string[],
+      env?: NodeJS.ProcessEnv,
+    ) => Promise<string> = probeCandidate,
+    /** Fresh-PATH source; `null` keeps the inherited block (tests). */
+    private envCache: ShellEnvCache | null = sharedShellEnv,
   ) {}
 
   async detect(): Promise<AgentCapability[]> {
     const now = this.now();
     if (this.cache && now - this.cachedAt < DETECT_TTL_MS) return this.cache;
+    // One fresh-PATH lookup per sweep (TTL-cached and shared with the tunnel
+    // probe and the /new-project wizard), so every candidate is probed against
+    // the PATH a process started right now would see.
+    const env = this.envCache ? await this.envCache.get() : undefined;
     // M3/M17: honor adoCode.agents.enabled — disabled agents are never probed.
     let enabled: string[] = [];
     try {
@@ -181,7 +200,7 @@ export class AgentRegistry {
       let found: { bin: string; version: string } | undefined;
       for (const candidate of agentBinCandidates(spec.bin, process.platform)) {
         try {
-          found = { bin: candidate, version: await this.probe(candidate, spec.versionFlag) };
+          found = { bin: candidate, version: await this.probe(candidate, spec.versionFlag, env) };
           break;
         } catch {
           // try the next candidate shape
@@ -216,6 +235,8 @@ export class AgentRegistry {
 
   clearCache(): void {
     this.cache = undefined;
+    // A manual re-detect must not reuse a PATH snapshot from before an install.
+    this.envCache?.clear();
     this.cachedAt = 0;
   }
 }
