@@ -1,7 +1,7 @@
 import * as assert from 'assert';
-import { buildSystemPrompt, buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, extractDeliveryReport, extractDelegationSuggestion } from '../../../llm/prompts';
+import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, extractDeliveryReport, extractDelegationSuggestion, formatWorkItemContext } from '../../../llm/prompts';
 import { generateSystemPrompt } from '../../../llm/prompts/system';
-import { getDefaultMode } from '../../../llm/modes';
+import { getDefaultMode, getModeBySlug } from '../../../llm/modes';
 import { WorkItemContext } from '../../../shared/messages';
 
 const baseItem: WorkItemContext = {
@@ -14,14 +14,14 @@ const baseItem: WorkItemContext = {
 };
 
 suite('Thread-aware prompts', () => {
-  test('buildSystemPrompt omits thread section when comments empty', () => {
-    const prompt = buildSystemPrompt(baseItem);
+  test('formatWorkItemContext omits the thread section when comments are empty', () => {
+    const prompt = formatWorkItemContext(baseItem);
     assert.ok(!prompt.includes('Discussion thread'));
   });
 
-  test('buildSystemPrompt includes discussion thread when populated', () => {
+  test('formatWorkItemContext includes the discussion thread when populated', () => {
     const item = { ...baseItem, comments: [{ author: 'Jane BA', text: 'Please clarify X', date: '2026-08-02' }] };
-    const prompt = buildSystemPrompt(item);
+    const prompt = formatWorkItemContext(item);
     assert.ok(prompt.includes('Discussion thread (latest first)'));
     assert.ok(prompt.includes('Jane BA: Please clarify X'));
   });
@@ -36,8 +36,8 @@ suite('Thread-aware prompts', () => {
         { author: 'Older', text: 'first comment', date: '2026-08-01' },
       ],
     };
-    const sys = buildSystemPrompt(item);
-    assert.ok(sys.indexOf('Newer: second comment') < sys.indexOf('Older: first comment'), 'system prompt keeps newest-first order');
+    const cached = formatWorkItemContext(item);
+    assert.ok(cached.indexOf('Newer: second comment') < cached.indexOf('Older: first comment'), 'cached work-item context keeps newest-first order');
     const agent = buildAgentPrompt(item, 'feature/ADO-7-add-feature');
     assert.ok(agent.indexOf('Newer: second comment') < agent.indexOf('Older: first comment'), 'agent prompt keeps newest-first order');
   });
@@ -74,13 +74,30 @@ suite('Thread-aware prompts', () => {
     assert.ok(wrapped.includes('do the thing'));
   });
 
-  test('buildSystemPrompt teaches the merge flow incl. conflict resolution', () => {
-    const prompt = buildSystemPrompt(baseItem);
+  const worktreeTools = ['commit_worktree', 'push_worktree', 'create_pull_request', 'resolve_pr_conflicts'] as any[];
+
+  test('the system prompt teaches the merge flow incl. conflict resolution', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+      availableTools: worktreeTools,
+    });
     assert.ok(prompt.includes('commit_worktree(runId)'), 'merge flow present');
     assert.ok(prompt.includes('create_pull_request(runId)'), 'PR step present');
     assert.ok(prompt.includes('resolve_pr_conflicts(runId)'), 'conflict-resolution step present');
     assert.ok(prompt.includes('mergeStatus'), 'LLM told about the mergeStatus field');
     assert.ok(prompt.includes('worktreePath'), 'LLM told the worktree-relative edit path');
+  });
+
+  test('a prompt without the worktree tools pays nothing for the merge flow', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+      availableTools: ['read_file'] as any[],
+    });
+    assert.ok(!prompt.includes('## Merging agent work'), 'merge flow gated on the tools');
   });
 });
 
@@ -319,5 +336,43 @@ suite('extractDelegationSuggestion', () => {
     const { cleaned, suggestions } = extractDelegationSuggestion(input);
     assert.deepStrictEqual(suggestions, []);
     assert.strictEqual(cleaned, input);
+  });
+});
+
+suite('System prompt size budget', () => {
+  // The static part of the prompt (no memory, no understanding) is re-sent on
+  // EVERY iteration of the tool loop, so it is a per-round-trip cost. This
+  // suite is the guard against prompt creep.
+  const STATIC_BUDGET = 7200;
+
+  for (const slug of ['inline', 'plan', 'act', 'yolo']) {
+    test(`${slug}: the static system prompt stays within the char budget`, () => {
+      const prompt = generateSystemPrompt({
+        mode: getModeBySlug(slug) ?? getDefaultMode(),
+        workspacePath: '/workspace',
+        os: 'linux',
+        // Worst case: the write-tool and worktree sections are both present.
+        availableTools: ['read_file', 'write_to_file', 'commit_worktree', 'execute_command', 'update_todo_list'] as any[],
+      });
+      assert.ok(
+        prompt.length < STATIC_BUDGET,
+        `${slug} static prompt is ${prompt.length} chars (budget ${STATIC_BUDGET}) — trim it, do not raise the budget`
+      );
+    });
+  }
+
+  test('the per-turn sections come after the static prefix (cacheable order)', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+      availableTools: ['read_file', 'write_to_file'] as any[],
+      todos: '## Current To-do List (this session)\n\n- [ ] Ship it',
+      memoryPrompt: '## User Memories\n\n- something',
+    });
+    const lastStatic = prompt.indexOf('## Output Format');
+    const firstDynamic = prompt.indexOf('## Current To-do List');
+    assert.ok(lastStatic > 0 && firstDynamic > 0, 'both sections present');
+    assert.ok(lastStatic < firstDynamic, 'static sections precede the per-turn ones so prefix caching hits');
   });
 });

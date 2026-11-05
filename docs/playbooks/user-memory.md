@@ -189,20 +189,42 @@ if (content === '/memory') {
 
 ## Using Memory in Prompts
 
-Memory is injected into the system prompt for the LLM:
+User memory reaches the model through `generateSystemPrompt()` in
+`src/llm/prompts/system.ts` — there is exactly one prompt builder:
 
 ```typescript
-function buildSystemPrompt(context: vscode.ExtensionContext): string {
-  const memories = context.globalState.get<string[]>('adoCode.userFacts', [])
-  const memoryBlock = memories.length > 0
-    ? `\n\n## User Preferences\n${memories.map(m => `- ${m}`).join('\n')}`
-    : ''
+export function generateSystemPrompt(options: SystemPromptOptions): string {
+  const sections = [
+    // static prefix — identical from one turn to the next, so a provider can
+    // cache it (Anthropic: `cache_control: { type: 'ephemeral' }`)
+    buildRoleSection(mode),
+    buildToolsSection(mode, availableTools),
+    buildToolGuidelines(mode),
+    buildDocsPolicySection(toolNames.includes('write_to_file')),
+    buildMergeFlowSection(toolNames.includes('commit_worktree')),
+    buildEnvironmentSection(workspacePath, os),
+    buildOutputFormatSection(),
 
-  return `You are ADO Code, an AI assistant for Azure DevOps.${memoryBlock}
+    // per-turn sections go LAST, or the cache breakpoint moves every turn
+    buildTodoSection(todos),
+    buildSkillsSection(enabledSkills),
+    buildMemorySection(memoryPrompt),
+    buildWorkspaceMemorySection(workspaceMemoryPrompt),
+    buildUnderstandingSection(understanding),
+    buildCustomInstructionsSection(customInstructions),
+    buildDelegationSuggestionSection(options.suggestDelegation),
+  ].filter((s) => s.length > 0);
 
-... rest of prompt ...`
+  return sections.join('\n\n');
 }
 ```
+
+`memoryPrompt` is the digest produced by `wrapMemoryContext()` in
+`src/llm/prompts.ts`; user memory and workspace memory are separate
+sections and both are budgeted — 400 chars per entry, 4,000 per block,
+with a one-line-per-entry digest and a "plus N more" pointer. Do not
+append memory text to the prompt anywhere else: a second injection point
+is how the prompt grows unnoticed, and it defeats the cached prefix.
 
 ## Pitfalls
 

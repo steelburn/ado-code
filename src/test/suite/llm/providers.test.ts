@@ -147,7 +147,7 @@ suite('AnthropicProvider', () => {
     assert.strictEqual(captured.url, 'https://api.anthropic.com/v1/messages');
     assert.strictEqual(captured.init.headers['x-api-key'], 'test-key');
     assert.ok(captured.init.headers['anthropic-version']);
-    assert.strictEqual(JSON.parse(captured.init.body).system, 'sys');
+    assert.deepStrictEqual(JSON.parse(captured.init.body).system, [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }]);
     assert.strictEqual(chunks[chunks.length - 1].done, true);
   });
 

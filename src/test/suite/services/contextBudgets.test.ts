@@ -23,10 +23,10 @@ import {
 import type { MemoryBlockEntry } from '../../../memory/memoryBudget';
 import {
   DEFAULT_THREAD_BUDGET,
-  DOCS_POLICY_INSTRUCTIONS,
-  buildSystemPrompt,
   formatDiscussionThread,
 } from '../../../llm/prompts';
+import { generateSystemPrompt } from '../../../llm/prompts/system';
+import { getDefaultMode } from '../../../llm/modes';
 import {
   MAX_DIGEST_LINES,
   digestLineCount,
@@ -417,13 +417,25 @@ suite('Context budgets (epic 27351)', () => {
   // -------------------------------------------------------------------
 
   test('the system prompt carries the documentation budget policy', () => {
-    const prompt = buildSystemPrompt();
-    assert.ok(prompt.includes(DOCS_POLICY_INSTRUCTIONS.trim().split('\n')[0]), 'docs policy heading missing');
-    assert.ok(/generated doc/i.test(DOCS_POLICY_INSTRUCTIONS), 'the policy must talk about generated docs');
-    assert.ok(
-      prompt.includes(DOCS_POLICY_INSTRUCTIONS.slice(0, 80)),
-      'the policy must be inlined in the prompt, not merely defined'
-    );
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+      availableTools: ['write_to_file', 'edit_file', 'build_documentation'] as any[],
+    });
+    assert.ok(prompt.includes('## Documentation and artifact budget'), 'docs policy heading missing');
+    assert.ok(/Generated files are re-read on later turns/i.test(prompt), 'the policy must talk about generated docs');
+    assert.ok(prompt.includes('build_documentation'), 'the documented way to build a doc set is named');
+  });
+
+  test('a read-only prompt carries no documentation budget policy', () => {
+    const prompt = generateSystemPrompt({
+      mode: getDefaultMode(),
+      workspacePath: '/workspace',
+      os: 'linux',
+      availableTools: ['read_file'] as any[],
+    });
+    assert.ok(!prompt.includes('## Documentation and artifact budget'), 'no write tools, no policy');
   });
 
   // -------------------------------------------------------------------

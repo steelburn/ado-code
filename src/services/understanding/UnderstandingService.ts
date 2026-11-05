@@ -77,11 +77,22 @@ const MAX_README_CHARS = 1500;
 const MAX_README_LINES = 30;
 const MAX_PKG_SCRIPTS = 20;
 const MAX_DEPS = 20;
-/** Per-section caps keep the injected block bounded (≈ tokens / 4). */
+/** Per-section caps keep the generated files bounded (≈ tokens / 4). */
 const MAX_FACTS_CHARS = 3500;
 const MAX_SUMMARY_CHARS = 2800;
 const MAX_KNOWLEDGE_CHARS = 5000;
-const MAX_TOTAL_CHARS = 12000;
+/**
+ * Budgets for the block INJECTED into a system prompt / agent handoff. The
+ * full files stay on disk under .ado-code/understanding/, so the prompt only
+ * needs the navigable head of each part; truncation names the file and the
+ * model reads the rest on demand instead of paying for it every turn.
+ */
+const MAX_REPO_PROMPT_CHARS = 4500;
+const MAX_WORK_ITEM_PROMPT_CHARS = 2500;
+const MAX_KNOWLEDGE_PROMPT_CHARS = 1500;
+const MAX_TOTAL_CHARS = 8000;
+const REPO_PROMPT_PATH = '.ado-code/understanding/repo.md';
+const KNOWLEDGE_PROMPT_PATH = '.ado-code/understanding/knowledge.md';
 
 /** System prompt for the LLM repo-summary generator. */
 const SUMMARY_SYSTEM_PROMPT =
@@ -343,23 +354,45 @@ export class UnderstandingService {
    * prior session knowledge — bounded to a total char budget. Empty string
    * when nothing is cached yet.
    */
+  /**
+   * Cap one injected part, cutting on a line boundary, and name the full file
+   * so the model can read the rest on demand.
+   */
+  private capPart(text: string, max: number, file: string): string {
+    if (text.length <= max) {
+      return text;
+    }
+    const cut = text.lastIndexOf('\n', max);
+    const head = cut > max / 2 ? text.slice(0, cut) : text.slice(0, max);
+    return `${head}\n\n…(truncated to keep the prompt within budget — full file: ${file})`;
+  }
+
   toPromptString(): string {
     const parts: string[] = [];
     const repo = this.readFileIfExists(this.repoFile());
     if (repo) {
-      parts.push(repo);
+      parts.push(this.capPart(repo, MAX_REPO_PROMPT_CHARS, REPO_PROMPT_PATH));
       this.index.touch('repo');
     }
     if (this.currentWorkItemId !== undefined) {
       const wi = this.readFileIfExists(this.workItemFile(this.currentWorkItemId));
       if (wi) {
-        parts.push(wi);
+        parts.push(
+          this.capPart(
+            wi,
+            MAX_WORK_ITEM_PROMPT_CHARS,
+            `.ado-code/understanding/workitem-${this.currentWorkItemId}.md`
+          )
+        );
         this.index.touch(`workitem-${this.currentWorkItemId}`);
       }
     }
     const knowledge = this.readFileIfExists(this.knowledgeFile());
     if (knowledge) {
-      parts.push(`### Prior Session Knowledge\n\n${knowledge}`);
+      parts.push(
+        '### Prior Session Knowledge\n\n' +
+          this.capPart(knowledge, MAX_KNOWLEDGE_PROMPT_CHARS, KNOWLEDGE_PROMPT_PATH)
+      );
       this.index.touch('knowledge');
     }
     if (parts.length === 0) return '';

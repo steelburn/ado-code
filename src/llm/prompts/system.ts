@@ -87,42 +87,36 @@ function buildToolsSection(
 function buildToolGuidelines(mode: ModeConfig): string {
   const lines = ['## Tool Use Guidelines', ''];
 
-  // Mode-independent guidance (pi parity): the model must know it can batch
-  // independent calls and that disjoint edits to one file collapse into a
-  // single call — otherwise providers+loops that accept parallel tool calls
-  // never get used, and every edit costs a round-trip.
+  // Mode-independent guidance: the model must know it can batch independent
+  // calls and that disjoint edits to one file collapse into a single call —
+  // otherwise providers+loops that accept parallel tool calls never get used,
+  // and every edit costs a round-trip.
   lines.push(
-    '- If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the SAME request so they execute in parallel (e.g. several `read_file` calls, or get_work_items + get_selection). Otherwise wait for previous calls to finish first to determine the dependent values.',
-    '- When making several disjoint changes to the SAME file, batch them into ONE `edit_file` call using the `edits` array instead of separate calls.',
-    '- To fetch details of SEVERAL work items, pass all their ids in ONE `get_work_item` call via the `ids` array instead of repeated calls.',
-    '- To run several quick terminal commands, pass them as the `commands` array in ONE `run_terminal_command` call instead of repeated calls (each command still runs separately, in order; outputs are concatenated).',
-    '- To read SEVERAL files at once, pass all their paths in ONE `read_file` call via the `paths` array instead of repeated calls (max 10 files).',
-    '- A work item already carries its own description and acceptance criteria: an `add_comment` call that merely restates them is dropped as a duplicate. Comment only NEW information (findings, decisions, results), and pass acceptance criteria to `create_work_item` as `acceptanceCriteria` — do not repeat that section inside the description.',
+    '- Independent tool calls belong in the SAME request — they run in parallel. Wait for a result only when the next call depends on it.',
+    '- Batch by parameter: disjoint changes to one file → one `edit_file` with `edits`; several work items → `get_work_item` `ids`; several commands → `run_terminal_command` `commands` (in order, outputs concatenated); several files → `read_file` `paths` (max 10).',
+    '- An `add_comment` that restates a description or acceptance criteria is dropped — comment only NEW findings, decisions and results. Acceptance criteria go to `create_work_item` as `acceptanceCriteria`, never inside its description.',
     '',
   );
 
-  const guidelines: Partial<Record<string, string[]>> = {
+  const guidelines: Record<string, string[]> = {
     todo: [
-      'FIRST, when the objective of the request is clear and it is more than a trivial one-step change, record it with `set_goal` — ONE short outcome-shaped line. It heads the session\'s To-do view and stays fixed; do NOT rewrite it to describe progress or to restate individual steps. When the user moves on to a DIFFERENT objective, call `set_goal` with it anyway: the previous goal and its steps are archived and the list starts clean. A mere reword of the same objective keeps the list.',
-      'Then break that goal into steps with `update_todo_list`. For any task that needs 3 or more distinct steps — and ALWAYS when the user asks for a plan, a multi-file change, or a migration — write the plan down BEFORE you start working, then keep it current as you go.',
-      'Send the list to `update_todo_list`; it is MERGED into the session list, so an item you leave out keeps its status instead of vanishing. Sending the full list is still best — include finished items with status `completed` so progress stays visible.',
-      'Exactly ONE item should be `in_progress` at a time (the one you are working on right now); everything not yet started stays `pending`.',
-      'Flip an item to `completed` in the SAME iteration you finish it — never batch completions to the end of the turn. The user watches this list tick over in the To-do view; a stale list is worse than no list.',
-      'If new work appears mid-task, add it as a new item instead of silently doing it. If an item turns out to be unnecessary, drop it from the list and say why.',
-      'Skip the goal and the list entirely for trivial single-step requests (a question, one small edit) — do not create ceremony.',
+      'When the objective is clear and the work is more than a trivial one-step change, record it with `set_goal` — ONE short outcome line that stays fixed. A DIFFERENT objective replaces it (its steps are archived); a reword of the same objective keeps the list.',
+      'Then break that goal into steps with `update_todo_list` BEFORE you start working — always when the user asks for a plan, a multi-file change or a migration — and keep the list current as you go.',
+      'The list is MERGED, not replaced: an item you leave out keeps its status, so send the full list with finished items marked `completed`.',
+      'Exactly ONE item should be `in_progress` — the one you are working on right now. Flip it to `completed` in the SAME iteration you finish it, never batched at the end of the turn.',
+      'New work mid-task is added as a new item instead of being done silently; an item that turns out to be unnecessary is dropped from the list, with the reason stated.',
+      'Skip the goal and the list for a trivial single-step request (a question, one small edit) — do not create ceremony.',
     ],
     read: [
-      'When studying an unfamiliar codebase or feature area, orient on directory structure and documentation FIRST, then drill into code: use `list_workspace` to map the layout and read the doc/entry files (README.md, AGENTS.md, docs/, package.json scripts) before individual source files. The cached `Repository Understanding` section in your prompt (when present) already summarizes the layout — start from it instead of re-listing everything.',
-      'Read files lazily and appropriately: for small or medium files (< 400 lines), read the whole file in ONE call — avoid slicing it into tiny range reads. Use targeted `read_file` ranges (startLine/endLine) only for large files (> 400 lines) where you need a specific section, and avoid reading many files up front — read only what the current step actually needs.',
-      'Always check existing patterns and conventions before editing.',
-      'When searching, prefer `search_files` over reading files one by one.',
-      'Before building a document set, call `list_doc_templates` (optionally with a templateId) to see which documents a template emits and which options it accepts.',
+      'Orient on the directory structure and documentation FIRST — `list_workspace` maps the layout, and README.md, AGENTS.md, docs/ and package.json scripts are cheaper than source. The `Repository Understanding` block in the prompt already summarizes that layout: start from it and read the files it names only when a step needs them.',
+      'Read lazily: a file under ~400 lines comes back in one `read_file` call, so do not slice it into ranges. Use startLine/endLine only for a large file where you need one section, and avoid reading many files up front — read what the current step actually needs.',
+      'Check existing patterns and conventions before editing; prefer `search_files` over reading files one by one.',
+      'Before a document set, call `list_doc_templates` (optionally with a templateId) to see which documents the template emits and which options it accepts.',
     ],
     write: [
       'Prefer `edit_file` for targeted changes; use `write_to_file` for new files or full rewrites.',
-      'For documentation work use `build_documentation` instead of hand-writing the tree: it runs the same scaffolder as the New Project wizard and produces the Markdown sources (with front matter), the .md + .csv registers, project-control files and inputs/ folders. Build first, then fill the Markdown in with `edit_file`. A single note or a section added to an existing document is still a normal `edit_file` — that is not a document set.',
-      'Preserve existing code style (indentation, naming, imports).',
-      'Include only the lines that changed — avoid rewriting entire files when a small edit suffices.',
+      'For a document set use `build_documentation` instead of hand-writing the tree: it runs the same scaffolder as the New Project wizard (Markdown with front matter, .md + .csv registers, project control, inputs/). Build first, then fill the Markdown in with `edit_file`; a note or a section added to an existing document is a normal `edit_file` — that is not a document set.',
+      'Preserve existing code style (indentation, naming, imports). Include only the lines that changed — avoid rewriting entire files when a small edit suffices.',
     ],
     execute: [
       'Explain what each command does before running it.',
@@ -144,6 +138,49 @@ function buildToolGuidelines(mode: ModeConfig): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Documentation and artifact budget (ADO-27355). Generated files are
+ * re-charged on every later turn, so the policy is stated once — and only for
+ * a prompt whose tools can actually write files.
+ */
+function buildDocsPolicySection(hasWrite: boolean): string {
+  if (!hasWrite) {
+    return '';
+  }
+  return [
+    '## Documentation and artifact budget',
+    '',
+    'Generated files are re-read on later turns, so documentation is a cost you are spending.',
+    '',
+    '- Extend an existing document instead of adding one — no `step-1-notes.md`, `summary-<id>.md` or other per-step/per-turn file.',
+    '- Never write a .md file to record your own progress or findings: the chat, the to-do list and the work item are the record — answer in the response instead.',
+    '- A multi-step change updates the ONE CHANGELOG entry (or the work item), not one file per step.',
+    '- A document set is `build_documentation` only; that tree is owned by ADO Code and is garbage-collected.',
+  ].join('\n');
+}
+
+/**
+ * Worktree merge flow. Only emitted when the prompt actually carries the
+ * worktree tools, so read-only/plan prompts never pay for it.
+ */
+function buildMergeFlowSection(hasWorktreeTools: boolean): string {
+  if (!hasWorktreeTools) {
+    return '';
+  }
+  return [
+    '## Merging agent work',
+    '',
+    'Delegated runs work in isolated git worktrees on `feature/ADO-<id>` branches. Once a run has FINISHED (or the user asks for the merge), execute the flow yourself:',
+    '',
+    '1. `commit_worktree(runId)` — commit ALL changes in the run worktree. Finished runs only; tell the user before committing a failed run (`allowFailed`).',
+    '2. `push_worktree(runId)` — pushes the branch; never force-pushes, never touches main/master. The run card reflects each step as `mergeStatus`.',
+    '3. `create_pull_request(runId)` — refuses protected branches; report the PR link.',
+    '4. `resolve_pr_conflicts(runId)` lists the conflicted files read-only — resolve them in `worktreePath`, then commit and push again.',
+    '',
+    'The runId comes from the finished run\'s output; when it is unknown, ask the user. If a step fails (rejected push, conflicts), stop and report the exact error instead of working around it.',
+  ].join('\n');
 }
 
 /** Environment context — OS, workspace, shell hints. */
@@ -328,17 +365,24 @@ export function generateSystemPrompt(options: SystemPromptOptions): string {
   const { mode, workspacePath, os, customInstructions, availableTools, memoryPrompt, workspaceMemoryPrompt, understanding, todos, enabledSkills } =
     options;
 
+  const toolNames = (availableTools ?? []).map((t) => String(t));
+
+  // Static prefix first: those sections are byte-identical from turn to turn,
+  // which is what provider prefix caching (Anthropic cache_control) hits.
+  // Everything that varies per turn goes after them.
   const sections: string[] = [
     buildRoleSection(mode),
     buildToolsSection(mode, availableTools),
     buildToolGuidelines(mode),
+    buildDocsPolicySection(toolNames.includes('write_to_file')),
+    buildMergeFlowSection(toolNames.includes('commit_worktree')),
+    buildEnvironmentSection(workspacePath, os),
+    buildOutputFormatSection(),
     buildTodoSection(todos),
     buildSkillsSection(enabledSkills),
     buildMemorySection(memoryPrompt),
     buildWorkspaceMemorySection(workspaceMemoryPrompt),
     buildUnderstandingSection(understanding),
-    buildEnvironmentSection(workspacePath, os),
-    buildOutputFormatSection(),
     buildCustomInstructionsSection(customInstructions),
     buildDelegationSuggestionSection(options.suggestDelegation),
   ].filter((s) => s.length > 0);

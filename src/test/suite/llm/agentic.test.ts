@@ -290,7 +290,10 @@ suite('AnthropicProvider chatWithTools', () => {
       { role: 'system', content: 'sys' },
       { role: 'user', content: 'hi' },
     ]);
-    assert.strictEqual(captured.system, 'sys');
+    // The system prompt travels as a content block carrying a cache
+    // breakpoint, so the identical prefix is not re-billed every iteration.
+    assert.strictEqual(captured.system[0].text, 'sys');
+    assert.strictEqual(captured.system[0].cache_control.type, 'ephemeral');
     assert.strictEqual(captured.messages[0].role, 'user');
   });
 

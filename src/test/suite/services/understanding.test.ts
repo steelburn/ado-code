@@ -181,11 +181,17 @@ suite('UnderstandingService', () => {
     assert.ok(content.includes('## '), 'an entry header survives rotation');
   });
 
-  test('toPromptString caps the total block', () => {
+  test('toPromptString caps each part and the total block', () => {
+    // Every part is capped on its own (repo 4500 / work item 2500 / knowledge 1500)…
+    fs.mkdirSync(service.getDir(), { recursive: true });
+    fs.writeFileSync(path.join(service.getDir(), 'repo.md'), 'r'.repeat(9000));
     service.setWorkItem({ id: 1, title: 'Big', description: 'd'.repeat(13000), acceptanceCriteria: 'ac' }, 'fp1');
+    service.appendKnowledge('k'.repeat(9000));
     const out = service.toPromptString();
-    assert.ok(out.includes('…(understanding truncated'), 'truncation marker present');
-    assert.ok(out.length <= 12500, `block too big: ${out.length}`);
+    // …and their sum is capped again, so the whole block stays inside the budget.
+    assert.ok(out.includes('…(truncated to keep the prompt within budget'), 'per-part truncation marker present');
+    assert.ok(out.includes('…(understanding truncated'), 'total truncation marker present');
+    assert.ok(out.length <= 8200, `block too big: ${out.length}`);
   });
 
   test('toPromptString includes the staleness note + all sections', async () => {

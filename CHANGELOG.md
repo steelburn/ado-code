@@ -4,18 +4,6 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
-
-- **A turn that runs out of iterations now leaves the goal and to-do list in a state
-  the next turn can resume from.** The forced wrap-up (`reachedIterationLimit`) was a
-  summary-only round-trip — every tool call in it was discarded — so the list could
-  still show finished steps as "in progress" and miss the ones that were left, and the
-  user had to reconstruct that from the prose. The wrap-up reply may now still call
-  `update_todo_list` (and `set_goal`, if the objective changed) before it summarizes:
-  those bookkeeping calls record state and execute no work, their results are fed back
-  so the summary is written against a refreshed list, and the extra round-trips stay
-  capped (3) and outside the budget. Work tools in the wrap-up are still never executed.
-
 ## [0.8.4] - 2026-11-05
 
 ### Added
@@ -28,6 +16,45 @@ All notable changes to ADO Code will be documented in this file.
   awaits nothing, and covers first runs as well as updates.
 
 ### Changed
+
+- **The system prompt is ~20% smaller, its dead policy text is live again, and the
+  static prefix is now cacheable.** Three problems shared one root cause — nothing
+  measured the prompt. (1) `src/llm/prompts.ts` still exported a full
+  `buildSystemPrompt()` plus the ADO-27355 artifact-budget policy and the
+  commit → push → PR merge flow, but **no production code imported it** — only its own
+  test did, so the docs policy and merge flow never reached the model while the tests
+  kept asserting on them. Those two sections are now part of `generateSystemPrompt`,
+  emitted only when the prompt carries the tools they describe, and the dead builder
+  and constants are gone. (2) `## Tool Use Guidelines` was 5.0 kB — 69% of the static
+  prompt — and restated what the JSON tool schemas already say (batched `edits`,
+  `ids`, `commands`, per-line truncation); it is now 3.4 kB with every trigger phrase
+  preserved. The static `act` prompt drops from 7,311 to 5,937 chars (~1,484 tokens),
+  `plan` from 6,112 to 5,001. (3) Anthropic requests now carry a
+  `cache_control: { type: "ephemeral" }` breakpoint on the system block, so the tool
+  loop reuses the cached tools + prompt prefix instead of re-billing it on every
+  round-trip; a turn that rewrites the to-do list, memory or the understanding block
+  misses once and repopulates. `countTokens` still sends a plain string.
+
+- **The repository-understanding block is capped per part instead of wholesale.** It
+  used to concatenate the full `repo.md` (6,935 chars here) and then cut the result at
+  12,000 chars, so one large section could crowd out the others. Each part now has its
+  own budget (repo 4,500 / work item 2,500 / knowledge 1,500), the total is capped at
+  8,000, and truncation cuts on a line boundary with a pointer to the full file on
+  disk.
+
+- **A size-budget test guards the prompt against creep.** `System prompt size budget`
+  asserts every mode stays under 7,200 chars with the write-tool and worktree sections
+  both present, and that the static sections precede the per-turn ones.
+
+- **A turn that runs out of iterations now leaves the goal and to-do list in a state
+  the next turn can resume from.** The forced wrap-up (`reachedIterationLimit`) was a
+  summary-only round-trip — every tool call in it was discarded — so the list could
+  still show finished steps as "in progress" and miss the ones that were left, and the
+  user had to reconstruct that from the prose. The wrap-up reply may now still call
+  `update_todo_list` (and `set_goal`, if the objective changed) before it summarizes:
+  those bookkeeping calls record state and execute no work, their results are fed back
+  so the summary is written against a refreshed list, and the extra round-trips stay
+  capped (3) and outside the budget. Work tools in the wrap-up are still never executed.
 
 - **The setup wizard no longer asks for an Azure DevOps project — it tells you whether
   the ADO configuration actually works.** The project picker was a wizard-only field

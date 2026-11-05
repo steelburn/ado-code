@@ -71,6 +71,7 @@ _…digest cut at 600 characters._
 - ADO API: api-version=7.1 (GA) or 7.1-preview.4 (comments)
 - Tool errors return JSON { error: string }, never throw
 - Docs budget: extend an existing document; never a .md per step or per turn
+- System prompt: `generateSystemPrompt()` in `src/llm/prompts/system.ts` is the only builder — static sections first, per-turn sections (to-do, skills, user/workspace memory, understanding, custom instructions) last so provider prefix caching hits. A size-budget test caps the static prompt at 7,200 chars; the understanding block is capped per part (repo 4,500 / work item 2,500 / knowledge 1,500, 8,000 total). Never add a second injection point
 - Progress lives in the chat and the work item, not in a new markdown file
 - Reference .ado-code/understanding/ and AGENTS.md; do not duplicate them
 - Keep `docs/` to live references (`remote.md`, `documentation-projects.md`, `playbooks/`); an executed plan ends up in CHANGELOG.md, the code and the work item, never in a plan file

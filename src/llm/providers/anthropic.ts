@@ -105,6 +105,34 @@ export function formatAnthropicMessages(messages: LlmMessage[]): Array<{ role: '
   return anthropicMessages;
 }
 
+/**
+ * System prompt as a cacheable content block.
+ *
+ * The system prompt is byte-identical from one iteration of the tool loop to
+ * the next as long as nothing per-turn changed — the to-do list, memory and
+ * the repository-understanding block are the volatile parts — so the
+ * `cache_control` breakpoint lets Anthropic reuse the cached tools + prompt
+ * prefix instead of re-billing it on every round-trip; a turn that rewrites
+ * one of those sections misses the cache once and repopulates it. Prompts
+ * below the model's minimum cacheable size are simply not cached — no error,
+ * no downside.
+ */
+function systemBlocks(
+  content: string | ContentBlockParam[]
+): Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> {
+  if (Array.isArray(content)) {
+    // Already blocks — put the breakpoint on the last one so the whole
+    // system prompt is the cached prefix.
+    const blocks = content as Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }>;
+    const last = blocks.length - 1;
+    if (last >= 0) {
+      blocks[last] = { ...blocks[last], cache_control: { type: 'ephemeral' } };
+    }
+    return blocks;
+  }
+  return [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
+}
+
 export class AnthropicProvider implements LlmProvider {
   async *streamChat(messages: LlmMessage[], config: LlmConfig, signal?: AbortSignal): AsyncGenerator<LlmStreamChunk> {
     // Anthropic uses a separate system prompt, not in messages array
@@ -142,7 +170,7 @@ export class AnthropicProvider implements LlmProvider {
     };
 
     if (systemMessage) {
-      body.system = systemMessage.content;
+      body.system = systemBlocks(systemMessage.content);
     }
 
     const response = await providerFetch(anthropicUrl(config, '/v1/messages'), {
@@ -226,7 +254,7 @@ export class AnthropicProvider implements LlmProvider {
       tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })),
     };
     if (systemMessage) {
-      body.system = systemMessage.content;
+      body.system = systemBlocks(systemMessage.content);
     }
 
     const response = await providerFetch(anthropicUrl(config, '/v1/messages'), {

@@ -125,7 +125,7 @@ suite('Turn decisions stay in the session that owns the run', () => {
 
   test('the webview files a decision card under the session that asked', () => {
     const src = readWebviewSource();
-    const choice = /case 'choicePrompt':([\s\S]{0,700}?)\n          const curKey = ([^;]+);/.exec(src);
+    const choice = /case 'choicePrompt':([\s\S]{0,700}?)\n {10}const curKey = ([^;]+);/.exec(src);
     assert.ok(choice, 'the choicePrompt case still exists');
     assert.match(
       choice![2],
@@ -133,11 +133,11 @@ suite('Turn decisions stay in the session that owns the run', () => {
       'the card is keyed by the asking session, not activeSessionIdRef'
     );
 
-    const confirmation = /case 'confirmationRequest':([\s\S]{0,500}?)\n          const curKey = ([^;]+);/.exec(src);
+    const confirmation = /case 'confirmationRequest':([\s\S]{0,500}?)\n {10}const curKey = ([^;]+);/.exec(src);
     assert.ok(confirmation, 'the confirmationRequest case still exists');
     assert.match(confirmation![2], /msg\.sessionId/, 'confirmation cards follow the same rule');
 
-    const errorCase = /case 'error': \{([\s\S]{0,700}?)\n          setError\(msg\.message\);/.exec(src);
+    const errorCase = /case 'error': \{([\s\S]{0,700}?)\n {10}setError\(msg\.message\);/.exec(src);
     assert.ok(errorCase, 'the error case still exists');
     assert.match(
       errorCase![1],
