@@ -182,11 +182,19 @@ suite('Wizard persistency — webview wiring (F1/F3/F4/F5/F6)', () => {
     );
   });
 
-  test('a saved project missing from the fetched list stays selectable (F4)', () => {
+  test('the wizard validates the ADO connection instead of picking a project (F4)', () => {
     const src = read(WELCOME);
     assert.ok(
-      /!projects\.some\(p => p\.name === form\.adoProject\)/.test(src),
-      'the project select must keep the persisted project as an option',
+      !/form\.adoProject/.test(src),
+      'the wizard must not carry a project field any more — the project is per chat session',
+    );
+    assert.ok(
+      /onValidateAdo\(form\.adoOrganization, form\.adoPat \|\| undefined\)/.test(src),
+      'the wizard must ask the host to validate the typed org + PAT',
+    );
+    assert.ok(
+      /welcome-ado-validation/.test(src),
+      'the ADO card must render the validation verdict',
     );
   });
 
@@ -213,7 +221,7 @@ suite('Wizard persistency — webview wiring (F1/F3/F4/F5/F6)', () => {
   test('a stored PAT completes the ADO section (F6)', () => {
     const src = read(WELCOME);
     assert.ok(
-      /const adoFormComplete = Boolean\(form\.adoOrganization && form\.adoProject && hasAdoPat\);/.test(src),
+      /const adoFormComplete = Boolean\(form\.adoOrganization && hasAdoPat\);/.test(src),
       'the "continuing without ADO" hint must count the stored PAT',
     );
     assert.ok(
@@ -223,6 +231,23 @@ suite('Wizard persistency — webview wiring (F1/F3/F4/F5/F6)', () => {
     assert.ok(
       /if \(config\.adoOrganization \|\| config\.adoProject\) setAdoSkipped\(false\);/.test(src),
       'a configured ADO setup must re-open its card',
+    );
+  });
+});
+
+suite('Wizard ADO check — host wiring', () => {
+  test('the host probes the ADO configuration without a project', () => {
+    const src = read(HOST);
+    assert.ok(/case 'validateAdo': \{/.test(src), 'the webview can ask for an ADO probe');
+    assert.ok(/private async validateAdo\(/.test(src), 'the probe lives on the provider');
+    assert.ok(/type: 'adoValidation'/.test(src), 'the verdict is posted back to the wizard');
+    assert.ok(
+      /return \{ ok: true, organization, projectCount: projects\.length \};/.test(src),
+      'a successful probe reports how many projects the token can see',
+    );
+    assert.ok(
+      /return \{ ok: false, organization, error:/.test(src),
+      'a rejected credential comes back as a verdict, not a thrown error',
     );
   });
 });

@@ -93,6 +93,7 @@ export type WebviewToExtensionMessage =
   | { type: 'cycleMode' }
   | { type: 'selectMode'; mode: 'inline' | 'plan' | 'act' | 'yolo' }
   | { type: 'fetchProjects'; organization?: string; pat?: string }
+  | { type: 'validateAdo'; organization?: string; pat?: string }
   | { type: 'fetchModels'; provider?: string; apiUrl?: string; apiKey?: string }
   | { type: 'selectProject'; projectName: string }
   // Input-bar tools: inject active-editor context / attach a file into the draft
@@ -220,6 +221,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'taskReplies'; workItemId: number; comments: WorkItemComment[] }
   // Project selection
   | { type: 'projectList'; projects: Array<{ id: string; name: string; state: string }> }
+  | { type: 'adoValidation'; ok: boolean; organization?: string; projectCount?: number; error?: string }
   // Open the in-webview Configuration page (host-side trigger, e.g. from the
   // chat kebab "Configuration…" menu item).
   | { type: 'openSettings' }

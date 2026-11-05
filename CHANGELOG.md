@@ -4,6 +4,8 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-05
+
 ### Added
 
 - **What's New is reachable from the first second of activation, including a fresh
@@ -14,6 +16,17 @@ All notable changes to ADO Code will be documented in this file.
   awaits nothing, and covers first runs as well as updates.
 
 ### Changed
+
+- **The setup wizard no longer asks for an Azure DevOps project — it tells you whether
+  the ADO configuration actually works.** The project picker was a wizard-only field
+  whose value the session's project switcher overwrote anyway, and it failed exactly
+  when it mattered: with a token of narrower visibility the select came up empty and
+  the next save dropped the stored project. The wizard now takes Organization + PAT
+  only, probes them against `dev.azure.com` (debounced while typing, with a manual
+  **Retry** after a failure) and prints the verdict — "Connection verified — N projects
+  accessible" or ADO's own error message — while the project itself is picked per chat
+  session from the header switcher. Saving with the field gone leaves the stored
+  project untouched.
 
 - **The chat's three verbosity knobs are now one dial — in Configuration and in the
   kebab menu.** `adoCode.chat.showThinking`, `adoCode.chat.showToolCalls` and

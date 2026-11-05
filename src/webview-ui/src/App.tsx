@@ -191,6 +191,12 @@ function App() {
   const [agentRuns, setAgentRuns] = useState<Map<string, { run: any; output: string }>>(new Map());
   const [projects, setProjects] = useState<Array<{ id: string; name: string; state: string }>>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  // Wizard ADO check: the setup wizard no longer asks for a project (that is
+  // picked per chat session from the header switcher), so all it reports is
+  // whether the org + PAT pair actually works.
+  const [adoValidating, setAdoValidating] = useState(false);
+  const [adoValidation, setAdoValidation] = useState<{ ok: boolean; organization?: string; projectCount?: number; error?: string } | null>(null);
+  const adoValidationWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Input draft lives in App so toolbar tools (add context / attach files) can
   // append to it; InputBar renders it controlled.
   const [draft, setDraft] = useState('');
@@ -819,6 +825,20 @@ function App() {
           setProjectsLoading(false);
           break;
 
+        case 'adoValidation':
+          if (adoValidationWatchdog.current !== null) {
+            clearTimeout(adoValidationWatchdog.current);
+            adoValidationWatchdog.current = null;
+          }
+          setAdoValidating(false);
+          setAdoValidation({
+            ok: msg.ok,
+            organization: msg.organization,
+            projectCount: msg.projectCount,
+            error: msg.error,
+          });
+          break;
+
         case 'modelList':
           setModels(msg.models);
           setModelsLoading(false);
@@ -1103,7 +1123,9 @@ function App() {
 
   const handleSaveConfig = useCallback((form: {
     adoOrganization: string;
-    adoProject: string;
+    // The wizard no longer asks for a project — it is picked per chat session
+    // from the header switcher — so an absent key leaves the stored one alone.
+    adoProject?: string;
     // Optional: the wizard only sends a secret the user actually typed. An
     // absent key means "keep the stored one" (the host enforces the same rule).
     adoPat?: string;
@@ -1256,6 +1278,19 @@ function App() {
     vscode.postMessage({ type: 'fetchModels', provider, apiUrl, apiKey });
   }, []);
 
+  const handleValidateAdo = useCallback((organization?: string, pat?: string) => {
+    setAdoValidating(true);
+    // Same watchdog idea as the project fetch: a wedged port must not leave the
+    // wizard's "Checking…" line spinning forever.
+    if (adoValidationWatchdog.current !== null) clearTimeout(adoValidationWatchdog.current);
+    adoValidationWatchdog.current = setTimeout(() => {
+      adoValidationWatchdog.current = null;
+      setAdoValidating(false);
+      setAdoValidation({ ok: false, error: 'Timed out checking the ADO connection.' });
+    }, 40000);
+    vscode.postMessage({ type: 'validateAdo', organization, pat });
+  }, []);
+
   const handleSwitchProject = useCallback((projectName: string) => {
     // Host persists the choice (settings + workspaceState) and refreshes work
     // items (chat list + sidebar tree) for the new project.
@@ -1271,9 +1306,9 @@ function App() {
         <WelcomeScreen
           config={config}
           onSave={handleSaveConfig}
-          onFetchProjects={handleFetchProjects}
-          projects={projects}
-          projectsLoading={projectsLoading}
+          onValidateAdo={handleValidateAdo}
+          adoValidating={adoValidating}
+          adoValidation={adoValidation}
           onFetchModels={handleFetchModels}
           models={models}
           modelsLoading={modelsLoading}

@@ -2562,6 +2562,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.markDirty();
             break;
           }
+          case 'validateAdo': {
+            // The wizard asks for org + PAT only — the project is chosen per chat
+            // session from the header switcher — so this probe answers "is the ADO
+            // configuration usable" and nothing else.
+            this.postMessage({ type: 'adoValidation', ...await this.validateAdo(message) });
+            break;
+          }
           case 'fetchProjects': {
             try {
               const projects = await this.fetchProjects(message);
@@ -3766,6 +3773,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Record user interaction — resets the idle timer. */
   private touchIdle(): void {
     this._lastUserInteraction = Date.now();
+  }
+
+  /**
+   * Prove the wizard's ADO configuration. The wizard no longer asks for a project
+   * (that is picked per chat session from the header switcher), so the check is
+   * "can we list this organization's projects" — the cheapest call that exercises
+   * BOTH the organization name and the token. Never throws: the wizard renders the
+   * verdict, so a bad PAT comes back as `{ ok: false, error }` instead of a red
+   * banner somewhere else in the UI.
+   */
+  private async validateAdo(message: { organization?: string; pat?: string }): Promise<{ ok: boolean; organization?: string; projectCount?: number; error?: string }> {
+    const s = getSettings();
+    const active = getActiveOrg(this._context, s);
+    const organization = message.organization || active.name;
+    const pat = message.pat || active.pat;
+    if (!organization || !pat) {
+      return { ok: false, error: 'Organization and Personal Access Token are both required.' };
+    }
+    try {
+      const projects = await new AdoClient(organization, pat).getProjects();
+      return { ok: true, organization, projectCount: projects.length };
+    } catch (err) {
+      return { ok: false, organization, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /**

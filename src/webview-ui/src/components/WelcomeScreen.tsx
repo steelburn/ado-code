@@ -14,7 +14,6 @@ interface Props {
   };
   onSave: (config: {
     adoOrganization: string;
-    adoProject: string;
     adoPat?: string;
     llmProvider: string;
     llmApiUrl: string;
@@ -22,9 +21,19 @@ interface Props {
     /** Optional: an unknown model is left untouched instead of blanked. */
     llmModel?: string;
   }) => void;
-  onFetchProjects: (organization?: string, pat?: string) => void;
-  projects: Array<{ id: string; name: string; state: string }>;
-  projectsLoading: boolean;
+  /**
+   * Prove the typed org+PAT actually work against dev.azure.com. The PROJECT is
+   * deliberately absent here: it belongs to the chat session / workspace (header
+   * switcher), so the wizard only validates the configuration itself.
+   */
+  onValidateAdo: (organization?: string, pat?: string) => void;
+  adoValidating: boolean;
+  adoValidation: {
+    ok: boolean;
+    organization?: string;
+    projectCount?: number;
+    error?: string;
+  } | null;
   onFetchModels: (provider?: string, apiUrl?: string, apiKey?: string) => void;
   models: Array<{ id: string; vision?: boolean; tools?: boolean }>;
   modelsLoading: boolean;
@@ -43,10 +52,9 @@ const DEFAULT_API_URL: Record<string, string> = {
 const defaultApiUrl = (provider?: string): string =>
   DEFAULT_API_URL[provider || 'openai'] || DEFAULT_API_URL.openai;
 
-export function WelcomeScreen({ config, onSave, onFetchProjects, projects, projectsLoading, onFetchModels, models, modelsLoading }: Props) {
+export function WelcomeScreen({ config, onSave, onValidateAdo, adoValidating, adoValidation, onFetchModels, models, modelsLoading }: Props) {
   const [form, setForm] = useState({
     adoOrganization: config.adoOrganization || '',
-    adoProject: config.adoProject || '',
     adoPat: '',
     llmProvider: config.llmProvider || 'openai',
     llmApiUrl: config.llmApiUrl || defaultApiUrl(config.llmProvider),
@@ -84,7 +92,6 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
     setForm(prev => ({
       ...prev,
       adoOrganization: config.adoOrganization || '',
-      adoProject: config.adoProject || '',
       llmProvider: config.llmProvider || 'openai',
       llmApiUrl: config.llmApiUrl || defaultApiUrl(config.llmProvider),
       llmModel: config.llmModel || prev.llmModel,
@@ -109,36 +116,25 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
   // A stored PAT counts: the field is blank only because the host never echoes
   // it back (F6 — the wizard used to warn about "continuing without ADO" for a
   // fully configured setup).
-  const adoFormComplete = Boolean(form.adoOrganization && form.adoProject && hasAdoPat);
+  const adoFormComplete = Boolean(form.adoOrganization && hasAdoPat);
 
-  // Auto-fetch projects once org+PAT are filled, using the TYPED credentials
-  // (the host fetches with them before they're saved). Guard with a ref so a
-  // persistent failure (bad PAT, offline) can't re-trigger on every render —
-  // only a credential change re-fires. `projects.length === 0` keeps it from
-  // clobbering an already-populated list.
-  const lastFetchKey = useRef('');
+  // Validate the connection once org+PAT are filled, using the TYPED credentials
+  // (the host probes with them before they are saved). The project is NOT asked
+  // for here — it is picked per chat session from the header switcher — so the
+  // wizard's ADO job is a verdict on the configuration, nothing more. The ref
+  // guard keeps a persistent failure (bad PAT, offline) from re-firing on every
+  // render, and the 600ms debounce keeps typing a PAT off the network.
+  const lastValidateKey = useRef('');
   useEffect(() => {
-    // A stored PAT is usable too — the host then fetches with its own settings.
-    const key = `${form.adoOrganization}::${form.adoPat || (storedAdoPat ? '<stored>' : '')}`;
-    if (
-      form.adoOrganization &&
-      hasAdoPat &&
-      projects.length === 0 &&
-      !projectsLoading &&
-      lastFetchKey.current !== key
-    ) {
-      lastFetchKey.current = key;
-      onFetchProjects(form.adoOrganization, form.adoPat || undefined);
-    }
-  }, [
-    form.adoOrganization,
-    form.adoPat,
-    hasAdoPat,
-    storedAdoPat,
-    projects.length,
-    projectsLoading,
-    onFetchProjects,
-  ]);
+    // A stored PAT is usable too — the host then probes with its own settings.
+    const key = form.adoOrganization + '::' + (form.adoPat || (storedAdoPat ? '<stored>' : ''));
+    if (!adoFormComplete || lastValidateKey.current === key) return undefined;
+    const timer = setTimeout(() => {
+      lastValidateKey.current = key;
+      onValidateAdo(form.adoOrganization, form.adoPat || undefined);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [adoFormComplete, form.adoOrganization, form.adoPat, storedAdoPat, onValidateAdo]);
 
   // Auto-fetch the model list once API URL + API Key are filled (provider is
   // part of the key too). Same ref-guard: only a credentials change re-fires;
@@ -172,6 +168,14 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
     onFetchModels(form.llmProvider, form.llmApiUrl, form.llmApiKey || undefined);
   };
 
+  // Manual retry for the ADO check: clear the key guard so the very same
+  // credentials are probed again (the effect only fires on a credential change).
+  const retryValidate = () => {
+    if (!adoFormComplete) return;
+    lastValidateKey.current = '';
+    onValidateAdo(form.adoOrganization, form.adoPat || undefined);
+  };
+
   // F2: an empty secret means "not visible / unchanged", NEVER "clear" — the
   // host strips the secrets from the published config, so posting the blank
   // field back erased the stored PAT / API key. The host guards this too; not
@@ -179,7 +183,6 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
   const buildPayload = () => {
     const payload: {
       adoOrganization: string;
-      adoProject: string;
       adoPat?: string;
       llmProvider: string;
       llmApiUrl: string;
@@ -187,7 +190,6 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
       llmModel?: string;
     } = {
       adoOrganization: form.adoOrganization,
-      adoProject: form.adoProject,
       llmProvider: form.llmProvider,
       llmApiUrl: form.llmApiUrl || defaultApiUrl(form.llmProvider),
     };
@@ -357,43 +359,27 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
               </div>
             </div>
 
-            <div className="form-group">
-              <label className="form-label">Project</label>
-              {projects.length > 0 ? (
-                <select
-                  className="form-select"
-                  value={form.adoProject}
-                  onChange={e => update('adoProject', e.target.value)}
-                >
-                  <option value="">None (no project)</option>
-                  {/* F4: a persisted project the fetched list does not contain
-                      (renamed, archived, or a token with narrower visibility)
-                      must stay selectable — the model select already does this.
-                      Without it the select fell back to "None" and the next
-                      save dropped the stored project. */}
-                  {form.adoProject && !projects.some(p => p.name === form.adoProject) && (
-                    <option value={form.adoProject}>{form.adoProject} (saved)</option>
-                  )}
-                  {projects.map(p => (
-                    <option key={p.id} value={p.name}>{p.name}</option>
-                  ))}
-                </select>
+            {/* No project picker: the project is chosen per chat session /
+                workspace from the header switcher, so the wizard only proves the
+                org + PAT pair actually works against dev.azure.com. */}
+            <div className={'welcome-ado-validation' + (adoValidating ? ' is-checking' : adoValidation ? (adoValidation.ok ? ' is-ok' : ' is-error') : '')}>
+              {adoValidating ? (
+                <span>Checking dev.azure.com/{form.adoOrganization}…</span>
+              ) : adoValidation ? (
+                adoValidation.ok ? (
+                  <span>
+                    ✓ Connection verified — {adoValidation.projectCount === 1
+                      ? '1 project accessible'
+                      : (adoValidation.projectCount || 0) + ' projects accessible'}. You pick the project per chat session from the header switcher.
+                  </span>
+                ) : (
+                  <span>
+                    ✗ {adoValidation.error || 'Azure DevOps rejected these credentials.'}{' '}
+                    <a href="#" onClick={e => { e.preventDefault(); retryValidate(); }}>Retry</a>
+                  </span>
+                )
               ) : (
-                <input
-                  className="form-input"
-                  value={form.adoProject}
-                  onChange={e => update('adoProject', e.target.value)}
-                  placeholder={projectsLoading ? 'Fetching projects…' : 'MyProject'}
-                  disabled={projectsLoading}
-                />
-              )}
-              {projectsLoading && (
-                <div className="form-hint">Fetching projects from ADO…</div>
-              )}
-              {!projectsLoading && projects.length === 0 && form.adoOrganization && form.adoPat && (
-                <div className="form-hint">
-                  <a href="#" onClick={e => { e.preventDefault(); onFetchProjects(form.adoOrganization, form.adoPat); }}>Refresh project list</a>
-                </div>
+                <span>Not checked yet — the connection is verified as soon as the organization and PAT are filled in.</span>
               )}
             </div>
 
@@ -406,11 +392,10 @@ export function WelcomeScreen({ config, onSave, onFetchProjects, projects, proje
 
       {hasApiKey && !adoFormComplete && (
         <div className="welcome-save-hint">
-          {form.adoOrganization && form.adoPat && !form.adoProject ? (
-            <>ℹ Continuing without an attached ADO project — you can select a project anytime from the header dropdown.</>
-          ) : (
-            <>⚠ You're about to continue without Azure DevOps — work items, task tracking, and PR flows will stay disabled. You can configure ADO later from the ADO Code menu → Configuration.</>
-          )}
+          {/* No "continuing without a project" branch any more: org + PAT is the
+              whole ADO setup here — the project is picked per chat session from
+              the header switcher. */}
+          <>⚠ You're about to continue without Azure DevOps — work items, task tracking, and PR flows will stay disabled. You can configure ADO later from the ADO Code menu → Configuration.</>
         </div>
       )}
 

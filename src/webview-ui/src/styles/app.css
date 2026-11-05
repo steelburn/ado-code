@@ -139,6 +139,33 @@ code {
   align-self: flex-start;
 }
 
+/* ADO connection verdict inside the wizard's Azure DevOps card. The wizard no
+   longer picks a project (that is per chat session), so this strip carries the
+   whole "is the ADO configuration correct" answer. */
+.welcome-ado-validation {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
+}
+.welcome-ado-validation.is-checking {
+  border-style: dashed;
+}
+.welcome-ado-validation.is-ok {
+  border-color: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+  color: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+}
+.welcome-ado-validation.is-error {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+  color: var(--vscode-errorForeground);
+}
+.welcome-ado-validation a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 /* Wizard save-time reminder when saving without ADO */
 .welcome-save-hint {
   margin-top: 8px;
