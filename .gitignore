@@ -7,3 +7,6 @@ dist/
 
 # ADO Code workspace data (per-user, machine-local)
 .ado-code
+# Local scratch: agent temp scripts and per-machine editor settings
+.ado-scratch-probe/
+.vscode/
