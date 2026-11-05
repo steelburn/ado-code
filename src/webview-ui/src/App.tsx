@@ -505,6 +505,11 @@ function App() {
           break;
 
         case 'error': {
+          // A failure raised by a turn that is NOT the session on screen belongs
+          // to that turn's chat: the host stamps it with its sessionId and
+          // re-posts it when the user switches back. Showing it here would put
+          // another session's failure into this thread.
+          if (msg.sessionId && msg.sessionId !== (activeSessionIdRef.current || 'default')) break;
           setError(msg.message);
           // An error can be raised while work keeps going (a delegated run,
           // a failed ADO refresh); the turn UI ends on sessionRunState(null).
@@ -543,7 +548,9 @@ function App() {
 
         case 'confirmationRequest': {
           // Generic in-chat confirmation card (replaces native dialogs).
-          const curKey = activeSessionIdRef.current || 'default';
+          // Same rule as the choice card below: the card belongs to the session
+          // that raised the turn, even when another chat is the one on screen.
+          const curKey = msg.sessionId || activeSessionIdRef.current || 'default';
           const req: ConfirmationRequest = {
             requestId: msg.requestId,
             title: msg.title,
@@ -617,7 +624,12 @@ function App() {
           // AI detected a choice prompt — show as inline confirmation card.
           // isChoice marks it: clicking an option sends the choice as a user
           // message (the LLM then acts on it as a follow-up turn).
-          const curKey = activeSessionIdRef.current || 'default';
+          // File the card under the session that ASKED, never under the session
+          // on screen: the turn keeps running when the user switches chats, and a
+          // card that leaks into an older chat makes the user answer the question
+          // there — which points the run (and the next message) at that session
+          // instead of the running one.
+          const curKey = msg.sessionId || activeSessionIdRef.current || 'default';
           const req: ConfirmationRequest = {
             requestId: msg.requestId,
             title: 'Choose an option',

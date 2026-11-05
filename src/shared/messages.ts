@@ -195,7 +195,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'toolCallDone'; callId: string }
   | { type: 'planReady'; plan: string } // plan mode: "Begin implementation" button
   | { type: 'config'; config: ExtensionConfig }
-  | { type: 'error'; message: string }
+  // sessionId is set when the failure belongs to a specific chat session (a
+  // running turn) rather than to whatever session is on screen.
+  | { type: 'error'; message: string; sessionId?: string }
   | { type: 'loading'; loading: boolean }
   // Task 24: agent delegation protocol
   | { type: 'agentStatus'; run: AgentRun; delta: string }
@@ -203,7 +205,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'agentList'; agents: AgentCapability[] }
   | { type: 'agentRunsList'; runs: AgentRun[] }
   // AI choice prompt: detected question + options from AI response
-  | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }> }
+  // sessionId = the session that ASKED (a turn keeps running when the user
+  // switches chats, so its card must not land in the chat on screen).
+  | { type: 'choicePrompt'; requestId: string; question: string; options: Array<{ label: string; value: string }>; sessionId?: string }
   // Task 26: history restore (Q4). `trace` carries the turn's persisted
   // Thinking/Tools record so a reopened session renders like the turn the user
   // watched (reasoning collapsed, tool cards intact).
@@ -224,7 +228,7 @@ export type ExtensionToWebviewMessage =
   // Consent: the agent requires user approval for a mutating tool (inline mode)
   | { type: 'consentRequest'; requestId: string; tool: string; args: Record<string, any>; autoApproveMs?: number; expiresAt?: number }
   // Generic confirmation: ask the user to pick an option (replaces showQuickPick / showWarningMessage)
-  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }>; expiresAt?: number }
+  | { type: 'confirmationRequest'; requestId: string; title: string; description: string; options: Array<{ label: string; value: string; isDangerous?: boolean }>; expiresAt?: number; sessionId?: string }
   // A consent/confirmation request resolved by its timeout (auto-approve,
   // auto-deny or auto-cancel) — the webview clears the matching card. Sent
   // so cards never linger as zombies even when they were hidden behind a

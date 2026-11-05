@@ -6,6 +6,17 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **A decision raised by a running turn no longer lands in whichever chat you happen to
+  be looking at.** Switching to an older session mid-run detaches the turn, which is the
+  point - but the "Choose an option" card was filed under whatever session was on screen
+  when it arrived, so it showed up in the older chat, and answering it there made that
+  older session the tracked run while the real turn kept streaming into its own thread.
+  Decision frames (choice cards and confirmation cards) are now stamped with the session
+  that owns the turn and filed there by the webview, so answering one can only continue
+  the session that asked; the card is re-posted when you switch back, even if the webview
+  was reloaded meanwhile. A turn failure follows the same rule - it is stamped and
+  delivered to its own session instead of painting another chat red.
+
 - **A finished turn no longer keeps claiming it is still "Working…".** Tool
   cards derived "running" from the call alone, never from whether a turn was
   live, so any call whose result never reached the webview (aborted turn, a

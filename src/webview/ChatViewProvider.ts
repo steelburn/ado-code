@@ -1624,6 +1624,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const pendingConfirm = this.confirmBroker.pending;
     if (pendingConfirm) {
       this.postMessage({
+        ...this.turnStamp(),
         type: 'confirmationRequest',
         requestId: pendingConfirm.requestId,
         title: pendingConfirm.title,
@@ -1744,7 +1745,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // so the timer can't expire before the user ever sees the card.
     if (this.promptsPaused) this.confirmBroker.pause();
     if (this._view || this._editorPanel) {
-      this.postMessage({ type: 'confirmationRequest', requestId, title, description, options, expiresAt });
+      this.postMessage({ ...this.turnStamp(), type: 'confirmationRequest', requestId, title, description, options, expiresAt });
     } else {
       // No webview: native QuickPick fallback.
       const pick = await vscode.window.showQuickPick(
@@ -3193,6 +3194,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pendingChoiceRequestId: string | null = null;
 
   /**
+   * The session that ASKED the question in `pendingChoiceRequestId`, plus the
+   * frame posted for it.
+   *
+   * A turn keeps running when the user switches chats, so its card belongs to
+   * the session that OWNS the run — never to whatever session happens to be on
+   * screen when the question is raised. Keeping the frame lets loadSession()
+   * re-post the card when the user comes back (the webview may have been
+   * reloaded, or the card may never have been seen at all).
+   */
+  private pendingChoiceSessionId: string | null = null;
+  private pendingChoiceFrame: any = null;
+
+  /**
+   * Turn-terminal frames (failures) raised while their session was off screen.
+   * Re-posted by loadSession() so a detached turn's failure is not swallowed by
+   * the chat that happened to be on screen at the time.
+   */
+  private pendingTurnNotices = new Map<string, any[]>();
+
+  /**
    * Install the sink that mirrors approval cards to the mobile console.
    * Null when remote access is off: no bridge, no mirroring, no surface.
    */
@@ -3556,6 +3577,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     if (!id || id === this.pendingChoiceRequestId) {
       this.pendingChoiceRequestId = null;
+      this.pendingChoiceSessionId = null;
+      this.pendingChoiceFrame = null;
+    }
+  }
+
+  /**
+   * Report a turn failure to the session that OWNS the turn.
+   *
+   * A detached turn (the user switched chats mid-run) must not drop its failure
+   * into the chat that happens to be on screen — but it must not lose it
+   * either: the frame is stamped and, while the owning session is off screen,
+   * queued for loadSession() to re-post when the user comes back.
+   */
+  private postTurnError(turnSessionId: string | undefined, message: string): void {
+    const frame: { type: 'error'; message: string; sessionId?: string } = { type: 'error', message };
+    if (turnSessionId) frame.sessionId = turnSessionId;
+    this.postMessage(frame);
+    if (!turnSessionId || turnSessionId === this.getActiveSessionId()) return;
+    const queued = this.pendingTurnNotices.get(turnSessionId) ?? [];
+    queued.push(frame);
+    this.pendingTurnNotices.set(turnSessionId, queued);
+  }
+
+  /**
+   * The stamp a turn-owned prompt frame carries: the session that owns the
+   * running turn (the session on screen when no turn is in flight).
+   */
+  private turnStamp(): { sessionId?: string } {
+    const id = this.runningTurnSession ?? this.getActiveSessionId();
+    return id ? { sessionId: id } : {};
+  }
+
+  /**
+   * Re-post what the freshly loaded session still owes the user: a decision its
+   * running turn is waiting on, or a failure that happened while another chat
+   * was on screen.
+   */
+  private replayPendingTurnFrames(sessionId: string): void {
+    const notices = this.pendingTurnNotices.get(sessionId);
+    if (notices?.length) {
+      this.pendingTurnNotices.delete(sessionId);
+      for (const notice of notices) this.postMessage(notice);
+    }
+    // Same requestId ⇒ re-posting is idempotent: the webview overwrites its
+    // card for that session instead of stacking a second one.
+    if (this.pendingChoiceFrame && this.pendingChoiceSessionId === sessionId) {
+      this.postMessage(this.pendingChoiceFrame);
     }
   }
 
@@ -5137,6 +5205,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // The To-do view follows the session on screen.
     this.syncTodoSession();
     this.postMessage({ type: 'historyRestored', messages: withStoredTraces(this.conversation, session.messages) });
+    // Anything a running turn owes THIS session (a decision card, a failure)
+    // follows the history — the user is back where the turn lives.
+    this.replayPendingTurnFrames(sessionId);
   }
 
   /** Backward-compatible wrapper for extension.ts / tests that pass raw history. */
@@ -6049,12 +6120,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           requestId,
         );
         this.pendingChoiceRequestId = requestId;
-        this.postMessage({
+        // The card belongs to the session that OWNS this turn, which is not
+        // necessarily the session on screen: switching chats detaches the run,
+        // it never moves it. Stamp the frame so the webview files the card
+        // under `turnSessionId`, and keep it so the card can be re-posted when
+        // the user switches back.
+        const frame = {
           type: 'choicePrompt',
           requestId,
           question: choicePrompt.question,
           options: choicePrompt.options,
-        });
+          sessionId: turnSessionId,
+        };
+        this.pendingChoiceSessionId = turnSessionId;
+        this.pendingChoiceFrame = frame;
+        this.postMessage(frame as any);
       }
     } catch (err) {
       if (abort.signal.aborted) {
@@ -6082,16 +6162,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
           }
           const message = streamErr instanceof Error ? streamErr.message : String(streamErr);
-          this.postMessage({ type: 'error', message });
+          this.postTurnError(turnSessionId, message);
         }
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
-      this.postMessage({ type: 'error', message });
+      this.postTurnError(turnSessionId, message);
     } finally {
       // Clear the running-turn identity ONLY if this turn is still the tracked
       // one (a newer turn may already have claimed the slot after aborting us).
       if (this.runningTurnAbort === abort) {
+        // A card this turn was waiting on dies with the turn.
+        if (this.pendingChoiceSessionId === turnSessionId) {
+          this.pendingChoiceRequestId = null;
+          this.pendingChoiceSessionId = null;
+          this.pendingChoiceFrame = null;
+        }
         this.runningTurnAbort = undefined;
         this.toolInterrupt = undefined;
         this.runningTurnSession = undefined;
