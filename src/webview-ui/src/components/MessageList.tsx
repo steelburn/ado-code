@@ -212,7 +212,7 @@ function stripChoiceFences(content: string): string {
 
 // ── Sub-components ───────────────────────────────────────────────
 
-const ToolCallBlock: React.FC<{ tc: ToolCallInfo; defaultOpen?: boolean }> = ({ tc, defaultOpen = false }) => {
+const ToolCallBlock: React.FC<{ tc: ToolCallInfo; defaultOpen?: boolean; live?: boolean }> = ({ tc, defaultOpen = false, live = false }) => {
   // Live cards start expanded while the tool runs; completed cards collapse to
   // just the header + status badge. Finished turn records pass defaultOpen so
   // the tool's work stays visible after the loop ends. The user can always
@@ -224,7 +224,11 @@ const ToolCallBlock: React.FC<{ tc: ToolCallInfo; defaultOpen?: boolean }> = ({ 
   // all, and a tool whose result is the empty string was still a success —
   // treating "" as "not finished" pinned a "running…" spinner on a finished
   // card forever.
-  const done = !!tc.done || tc.result !== undefined;
+  // Completion is per-call information, liveness is per-TURN information: a
+  // card may only claim to be RUNNING while the turn it belongs to is live. A
+  // restored trace (aborted/crashed turn) or a result frame lost after the
+  // turn ended would otherwise leave the card spinning forever.
+  const done = !live || !!tc.done || tc.result !== undefined;
   const errored = !!tc.result && isErrorResult(tc.result);
   const expanded = userExpanded ?? (defaultOpen || !done);
 
@@ -385,22 +389,27 @@ const MarkdownWithCodeCopy: React.FC<{ content: string }> = ({ content }) => {
 };
 
 /**
- * Compact disclosure for tool calls the user asked to keep out of chat
- * (chat.showToolCalls=false). The host never forwards arguments or result
- * payloads in this mode — this card only lists which tools ran and their
- * status, revealed on an explicit click. Nothing here is persisted to chat
- * history (hidden calls are excluded from the final message merge).
+ * Compact disclosure for tool calls shown without their payloads: either
+ * chat.showToolCalls=false (the host forwards no arguments or results) or
+ * calls flagged showDetails=false. This card only lists which tools ran
+ * and their status, revealed on an explicit click, and it is also what a
+ * finished turn renders through — so it must never keep claiming to be
+ * "Working…" once every call has landed.
  */
-const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
+const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[]; live?: boolean }> = ({ calls, live = true }) => {
   const [expanded, setExpanded] = useState(false);
-  const doneCount = calls.filter(c => c.done || !!c.result).length;
+  const doneCount = live ? calls.filter(c => c.done || !!c.result).length : calls.length;
+  // A finished turn is rendered through this component too (persisted
+  // trace with chat.showToolCalls off / calls kept out of the cards), so
+  // the header only claims to be working while a call is outstanding.
+  const busy = live && doneCount < calls.length;
 
   return (
     <div className={expanded ? 'tool-hidden-group expanded' : 'tool-hidden-group'} style={{ marginTop: 4 }}>
       <button
         className="activity-indicator tool-hidden-toggle"
         onClick={() => setExpanded(!expanded)}
-        title={expanded ? 'Hide tool activity' : 'Reveal the tools the agent is running'}
+        title={expanded ? 'Hide tool activity' : busy ? 'Reveal the tools the agent is running' : 'Reveal the tools this turn ran'}
       >
         <span
           className="tool-hidden-chevron"
@@ -408,8 +417,8 @@ const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
         >
           ▶
         </span>
-        <div className="activity-spinner" />
-        <span className="activity-text">Working…</span>
+        {busy && <div className="activity-spinner" />}
+        <span className="activity-text">{busy ? 'Working…' : 'Done'}</span>
         <span className="tool-hidden-count">
           {doneCount}/{calls.length} tools
         </span>
@@ -419,7 +428,7 @@ const HiddenToolCalls: React.FC<{ calls: ToolCallInfo[] }> = ({ calls }) => {
         <div className="tool-hidden-list">
           {calls.map(tc => {
             const err = !!tc.result && isErrorResult(tc.result);
-            const done = tc.done || !!tc.result;
+            const done = !live || tc.done || !!tc.result;
             return (
               <div key={tc.id} className="tool-hidden-row">
                 <span className="tool-hidden-row-icon">🔧</span>
@@ -462,7 +471,7 @@ const ReasoningText: React.FC<{ text: string }> = ({ text }) => (
  * (chat-declutter item 1). `defaultOpen` marks the live / just-finished turn so
  * its tools stay visible while they land; completed turns collapse to the row.
  */
-const ToolActivityRow: React.FC<{ calls: ToolCallInfo[]; defaultOpen?: boolean; forceOpen?: boolean | null }> = ({ calls, defaultOpen = false, forceOpen = null }) => {
+const ToolActivityRow: React.FC<{ calls: ToolCallInfo[]; defaultOpen?: boolean; forceOpen?: boolean | null; live?: boolean }> = ({ calls, defaultOpen = false, forceOpen = null, live = false }) => {
   const [rawOpen, setOpen] = useState(defaultOpen);
   // A collapse/expand-all override (kebab, item 6) wins over the per-turn
   // default; `null` = no override, so the row's own open/closed state stands.
@@ -484,7 +493,7 @@ const ToolActivityRow: React.FC<{ calls: ToolCallInfo[]; defaultOpen?: boolean; 
       {open && (
         <div className="tool-activity-body">
           {calls.map((tc, i) => (
-            <ToolCallBlock key={tc.id || `tc-act-${i}`} tc={tc} defaultOpen />
+            <ToolCallBlock key={tc.id || `tc-act-${i}`} tc={tc} defaultOpen live={live} />
           ))}
         </div>
       )}
@@ -764,9 +773,9 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                             seg.kind === 'thinking' ? (
                               <ReasoningText key={`th-${j}`} text={seg.text} />
                             ) : showToolCalls ? (
-                              <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen={isLiveTurn} forceOpen={activityOverride} />
+                              <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen={isLiveTurn} forceOpen={activityOverride} live={loading} />
                             ) : (
-                              <HiddenToolCalls key={`act-${j}`} calls={seg.calls} />
+                              <HiddenToolCalls key={`act-${j}`} calls={seg.calls} live={loading} />
                             )
                           )}
                         </div>
@@ -798,10 +807,10 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                             chronological one. */}
                         {showToolCalls ? (
                           toolCalls.map((tc) => (
-                            <ToolCallBlock key={tc.id} tc={tc} defaultOpen />
+                            <ToolCallBlock key={tc.id} tc={tc} defaultOpen live={loading} />
                           ))
                         ) : (
-                          <HiddenToolCalls calls={toolCalls} />
+                          <HiddenToolCalls calls={toolCalls} live={loading} />
                         )}
 
                         {/* Fallback: if no text and no tool calls, render raw */}
@@ -836,7 +845,7 @@ export function MessageList({ messages, loading, liveTrace = [], streamText, act
                     ) : (
                       // Live tool runs stay expanded so the user watches work
                       // land; hidden calls (showToolCalls off) render below.
-                      <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen forceOpen={activityOverride} />
+                      <ToolActivityRow key={`act-${j}`} calls={seg.calls} defaultOpen forceOpen={activityOverride} live />
                     )
                   )}
                   {(!showToolCalls || liveTrace.some(seg => seg.kind === 'tool' && seg.call.showDetails === false)) && (

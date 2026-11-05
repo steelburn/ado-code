@@ -81,7 +81,7 @@ suite('webview/chat - one-click tool-call toggle', () => {
       'the completed-turn trace no longer gates ToolActivityRow on showToolCalls',
     );
     assert.ok(
-      /\) : \(\s*<HiddenToolCalls key=\{`act-\$\{j\}`\} calls=\{seg\.calls\} \/>/.test(src),
+      /\) : \(\s*<HiddenToolCalls key=\{`act-\$\{j\}`\} calls=\{seg\.calls\} live=\{loading\} \/>/.test(src),
       'hidden tool calls are no longer folded into the HiddenToolCalls disclosure',
     );
   });
@@ -93,7 +93,7 @@ suite('webview/chat - one-click tool-call toggle', () => {
       'fence-parsed tool cards ignore the toggle',
     );
     assert.ok(
-      /<HiddenToolCalls calls=\{toolCalls\} \/>/.test(src),
+      /<HiddenToolCalls calls=\{toolCalls\} live=\{loading\} \/>/.test(src),
       'fence-parsed tool cards do not fall back to the hidden disclosure',
     );
     assert.ok(
@@ -103,6 +103,62 @@ suite('webview/chat - one-click tool-call toggle', () => {
     assert.ok(
       /\(!showToolCalls \|\| liveTrace\.some\(seg => seg\.kind === 'tool' && seg\.call\.showDetails === false\)\)/.test(src),
       'the live hidden-calls disclosure does not open when the toggle is off',
+    );
+  });
+
+  test('a finished turn still folds its tools away without claiming to run', () => {
+    const src = messageListSource();
+    // A completed turn renders through HiddenToolCalls too (persisted trace
+    // while the toggle is off), so its header must derive "working" from the
+    // calls instead of assuming a live turn.
+    assert.ok(
+      /const busy = live && doneCount < calls\.length;/.test(src),
+      'HiddenToolCalls lost its busy flag - a restored turn would spin forever',
+    );
+    assert.ok(
+      /\{busy && <div className="activity-spinner" \/>\}/.test(src),
+      'the hidden-calls spinner is no longer gated on busy',
+    );
+    assert.ok(
+      /\{busy \? 'Working…' : 'Done'\}/.test(src),
+      'the hidden-calls label is no longer conditional',
+    );
+  });
+
+  test('no tool card claims to be running once the turn is over', () => {
+    // Liveness is per-TURN information: `live` is the host turn flag threaded
+    // into every card. A trace restored from an aborted or crashed turn - or a
+    // result frame lost after the turn ended - has no live turn behind it and
+    // must therefore render as finished instead of spinning forever.
+    const src = messageListSource();
+    assert.ok(
+      /const done = !live \|\| !!tc\.done \|\| tc\.result !== undefined;/.test(src),
+      'ToolCallBlock derives running from the call alone - a stale entry would spin forever',
+    );
+    assert.ok(
+      /const done = !live \|\| tc\.done \|\| !!tc\.result;/.test(src),
+      'the hidden-call rows ignore the turn flag',
+    );
+    assert.ok(
+      /const doneCount = live \? calls\.filter/.test(src),
+      'the hidden-call header counts unfinished calls while no turn is live',
+    );
+    const status = read('src', 'webview-ui', 'src', 'components', 'StatusLine.tsx');
+    assert.ok(
+      /if \(!loading\) return null;/.test(status),
+      'the status line paints a leftover running-tools line after the turn ended',
+    );
+  });
+
+  test('a turn that ends records every tool call as finished', () => {
+    const src = appSource();
+    assert.ok(
+      !/done: seg\.call\.done,/.test(src),
+      'the turn trace still copies the live done flag - a call whose result never arrived would restore as a spinner',
+    );
+    assert.ok(
+      /never reported back must not restore from history as a spinner[\s\S]{0,120}done: true,/.test(src),
+      'the finished-turn trace no longer forces done:true on every recorded call',
     );
   });
 });

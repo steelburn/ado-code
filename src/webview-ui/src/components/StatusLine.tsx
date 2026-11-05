@@ -25,6 +25,11 @@ const hasVisibleThinking = (trace: StatusTraceEntry[]): boolean =>
  * nothing when idle (the line collapses entirely).
  */
 export function StatusLine({ loading, activity, streamText, trace = [] }: Props) {
+  // No live turn ⇒ nothing can be running. A leftover trace entry (restored
+  // from an aborted turn, or a result frame lost after the turn ended) must
+  // not keep a "N tools running" line pinned above the input forever.
+  if (!loading) return null;
+
   const runningTools = countRunningTools(trace);
   const text = deriveStatusText({
     loading,

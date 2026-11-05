@@ -383,7 +383,9 @@ function App() {
                         arguments: seg.call.arguments,
                         result: capRecord(seg.call.result, 8000),
                         showDetails: seg.call.showDetails,
-                        done: seg.call.done,
+                        // The turn is ending: no call can still be running, so a call that
+                        // never reported back must not restore from history as a spinner.
+                        done: true,
                       },
                     }
               );

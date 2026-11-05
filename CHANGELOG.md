@@ -4,6 +4,20 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A finished turn no longer keeps claiming it is still "Working…".** Tool
+  cards derived "running" from the call alone, never from whether a turn was
+  live, so any call whose result never reached the webview (aborted turn, a
+  tool that threw, a result frame lost after the turn ended) kept spinning in
+  the thread - and with `adoCode.chat.showToolCalls` off the folded
+  "Working… 3/3 tools" header was hard-wired to the live spinner, so a
+  restored conversation showed it forever. Cards now take turn liveness from
+  the host's turn flag (`live`), the folded row counts only calls that are
+  genuinely outstanding, and a turn that ends records every call as finished.
+  A turn that is over also stops painting the transient "N tools running"
+  line above the input.
+
 ## [0.8.3] - 2026-10-30
 
 ### Added
