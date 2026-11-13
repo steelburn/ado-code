@@ -16,3 +16,6 @@ out/**
 .env.*
 tmp-*
 *.tmp
+.ado-scratch-probe/**
+.tmp-*
+.tmp-*/**

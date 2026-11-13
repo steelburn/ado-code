@@ -4,6 +4,8 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-13
+
 ### Added
 
 - **`explore_codebase` — an in-process, read-only search subagent.** A search-heavy
