@@ -95,8 +95,19 @@ suite('changelogMarkdown', () => {
     const section = extractChangelogSection(markdown, version) ?? extractChangelogSection(markdown, 'Unreleased');
     assert.ok(section, `a changelog section exists for ${version}`);
 
-    const rendered = words(stripTags(renderChangelogMarkdown(section!)));
-    const tails = wrappedBulletTails(section!.split('\n'));
+    // The shipped changelog keeps one line per bullet, so fall back to a fixture
+    // that does wrap when the real file has no wrapped bullet to exercise.
+    const shipped = section!.split('\n');
+    const source =
+      wrappedBulletTails(shipped).length > 0
+        ? shipped
+        : [
+            '- a bullet whose text wraps onto',
+            '  a second line and must keep its tail',
+            '  when it is reflowed',
+          ];
+    const rendered = words(stripTags(renderChangelogMarkdown(source.join('\n'))));
+    const tails = wrappedBulletTails(source);
     assert.ok(tails.length > 0, 'the section has wrapped bullets to check');
     for (const tail of tails) {
       assert.ok(containsSequence(rendered, tail), `wrapped bullet lost its tail "${tail.join(' ')}"`);
