@@ -44,12 +44,14 @@ export const TOOL_GROUPS = TOOL_GROUP_MAP;
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_MODES: ModeConfig[] = [
-  { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['todo', 'read', 'write', 'execute'] },
+  { slug: 'inline', name: 'Inline', role: 'Direct code edits with consent', toolGroups: ['todo', 'read', 'write', 'execute', 'memory'] },
   // Plan mode is read-only, but the session to-do list is allowed: writing the
-  // plan down as a task ledger is the point of planning.
+  // plan down as a task ledger is the point of planning. The memory group is
+  // NOT offered: every memory write is in MUTATING_TOOLS, which plan blocks
+  // outright, so it would only advertise tools the executor always rejects.
   { slug: 'plan', name: 'Plan', role: 'Read-only planning, no edits', toolGroups: ['todo', 'read'] },
-  { slug: 'act', name: 'Act', role: 'Full auto-approve mode', toolGroups: ['todo', 'read', 'write', 'execute'] },
-  { slug: 'yolo', name: 'YOLO', role: 'Full autonomy — auto-approves everything including shell commands', toolGroups: ['todo', 'read', 'write', 'execute'] },
+  { slug: 'act', name: 'Act', role: 'Full auto-approve mode', toolGroups: ['todo', 'read', 'write', 'execute', 'memory'] },
+  { slug: 'yolo', name: 'YOLO', role: 'Full autonomy — auto-approves everything including shell commands', toolGroups: ['todo', 'read', 'write', 'execute', 'memory'] },
 ];
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,8 @@ import * as assert from 'assert';
 import { buildAgentPrompt, wrapMemoryContext, buildChildChecklist, parseDeliveryReport, extractDeliveryReport, extractDelegationSuggestion, formatWorkItemContext } from '../../../llm/prompts';
 import { generateSystemPrompt } from '../../../llm/prompts/system';
 import { getDefaultMode, getModeBySlug } from '../../../llm/modes';
+import { DEFAULT_MODES, getToolsForMode } from '../../../llm/modes';
+import { TOOL_GROUP_MAP } from '../../../llm/tools/types';
 import { WorkItemContext } from '../../../shared/messages';
 
 const baseItem: WorkItemContext = {
@@ -374,5 +376,39 @@ suite('System prompt size budget', () => {
     const firstDynamic = prompt.indexOf('## Current To-do List');
     assert.ok(lastStatic > 0 && firstDynamic > 0, 'both sections present');
     assert.ok(lastStatic < firstDynamic, 'static sections precede the per-turn ones so prefix caching hits');
+  });
+});
+
+suite('Memory tool wiring', () => {
+  test('every writing mode enables the memory group, plan does not', () => {
+    for (const mode of DEFAULT_MODES.filter((m) => m.slug !== 'plan')) {
+      assert.ok(mode.toolGroups.includes('memory'), `${mode.slug} must expose the memory group`);
+    }
+    // Memory writes are in MUTATING_TOOLS, which plan mode blocks outright —
+    // offering the group there would advertise tools that always error.
+    const plan = DEFAULT_MODES.find((m) => m.slug === 'plan');
+    assert.ok(plan && !plan.toolGroups.includes('memory'), 'plan must not offer mutating memory tools');
+  });
+
+  test('the memory group resolves to all five memory tools, delete included', () => {
+    const tools = getToolsForMode(getDefaultMode());
+    const expected = [
+      'delete_memory',
+      'list_workspace_memory',
+      'read_workspace_memory',
+      'set_memory',
+      'write_workspace_memory',
+    ];
+    for (const name of expected) {
+      assert.ok(tools.includes(name as any), `${name} is missing from the default mode`);
+    }
+    assert.deepStrictEqual([...TOOL_GROUP_MAP.memory].sort(), expected);
+  });
+
+  test('the prompt explains when to write and when to delete a memory', () => {
+    const prompt = generateSystemPrompt({ mode: getDefaultMode(), workspacePath: '/tmp/ws', os: 'linux' } as any);
+    assert.ok(prompt.includes('delete_memory'), 'no guidance on retiring a memory');
+    assert.ok(prompt.includes('write_workspace_memory'), 'no user-vs-workspace scope guidance');
+    assert.ok(prompt.includes('Memory is for what outlives this task'), 'no memory guidance block');
   });
 });

@@ -251,12 +251,14 @@ suite('memory budgets', () => {
     let dir: string;
     let memory: WorkspaceMemory;
     let userCalls: Array<{ key: string; category: string; content: string }>;
+    let userDeletes: string[];
     let executor: ReturnType<typeof createToolExecutor>;
 
     setup(() => {
       dir = makeScratchDir('ado-memory-tool-');
       memory = new WorkspaceMemory(dir);
       userCalls = [];
+      userDeletes = [];
       executor = createToolExecutor(
         {
           ado: {},
@@ -267,6 +269,7 @@ suite('memory budgets', () => {
             set: (key: string, category: string, content: string) => {
               userCalls.push({ key, category, content });
             },
+            delete: (key: string) => { userDeletes.push(key); return true; },
           },
           workspaceMemory: memory,
         } as any,
@@ -288,6 +291,31 @@ suite('memory budgets', () => {
       }
     });
 
+    test('delete_memory removes a workspace entry and reports it', async () => {
+      memory.write('stack', 'Node + TypeScript');
+      const result = JSON.parse(String(await executor.execute('delete_memory', { key: 'stack' }))) as any;
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.scope, 'workspace');
+      assert.strictEqual(result.deleted, true);
+      assert.strictEqual(memory.read('stack'), null, 'the file is gone');
+    });
+
+    test('delete_memory on a missing key reports deleted:false instead of failing', async () => {
+      const result = JSON.parse(String(await executor.execute('delete_memory', { key: 'nope' }))) as any;
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.deleted, false);
+    });
+
+    test('delete_memory with scope user hits the user store, not the workspace', async () => {
+      const result = JSON.parse(String(await executor.execute('delete_memory', { key: 'style', scope: 'user' }))) as any;
+      assert.strictEqual(result.scope, 'user');
+      assert.deepStrictEqual(userDeletes, ['style']);
+    });
+
+    test('delete_memory without a key is an error, never a silent no-op', async () => {
+      const result = String(await executor.execute('delete_memory', {}));
+      assert.ok(result.includes('error'), `expected an error, got: ${result}`);
+    });
     test('write_workspace_memory rejects an oversized entry and stores nothing', async () => {
       const long = 'detail '.repeat(300);
       const result = String(await executor.execute('write_workspace_memory', { key: 'big', value: long }));

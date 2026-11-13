@@ -86,7 +86,7 @@ export class WorkspaceMemory {
    * an LLM system prompt. Returns an empty string if there are no entries.
    */
   toPromptString(budget: MemoryBudget = DEFAULT_MEMORY_BUDGET): string {
-    const keys = this.list();
+    const keys = this.listByRecency();
     if (keys.length === 0) {
       return '';
     }
@@ -106,6 +106,24 @@ export class WorkspaceMemory {
         },
       }
     );
+  }
+
+  /**
+   * List memory keys newest-first (by file mtime). The prompt budget keeps
+   * the head of this list, so the entries dropped are the oldest ones.
+   */
+  listByRecency(): string[] {
+    const mtime = (key: string): number => {
+      try {
+        return fs.statSync(this.getFilePath(key)).mtimeMs;
+      } catch {
+        return 0;
+      }
+    };
+    return this.list()
+      .map((key) => ({ key, at: mtime(key) }))
+      .sort((x, y) => y.at - x.at || x.key.localeCompare(y.key))
+      .map((e) => e.key);
   }
 
   /**

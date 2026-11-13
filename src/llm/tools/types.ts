@@ -43,6 +43,7 @@ export type ToolName =
   | 'write_workspace_memory'
   | 'list_workspace_memory'
   | 'set_memory'
+  | 'delete_memory'
   | 'execute_skill'
   | 'list_doc_templates'
   | 'build_documentation'
@@ -108,7 +109,7 @@ export interface ToolGroupMap {
   execute: ('execute_command' | 'delegate_to_agent')[]
   mcp: never[]
   ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment' | 'create_work_item')[]
-  memory: ('read_workspace_memory' | 'write_workspace_memory' | 'list_workspace_memory' | 'set_memory')[]
+  memory: ('read_workspace_memory' | 'write_workspace_memory' | 'list_workspace_memory' | 'set_memory' | 'delete_memory')[]
   // The session goal + to-do list are the model's OWN task ledger, not
   // workspace source: they are available in every mode (plan included) so the
   // objective and its plan can be written down while planning and ticked off
@@ -123,7 +124,7 @@ export const TOOL_GROUP_MAP: ToolGroupMap = {
   execute: ['execute_command', 'delegate_to_agent'],
   mcp: [],
   ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment', 'create_work_item'],
-  memory: ['read_workspace_memory', 'write_workspace_memory', 'list_workspace_memory', 'set_memory'],
+  memory: ['read_workspace_memory', 'write_workspace_memory', 'list_workspace_memory', 'set_memory', 'delete_memory'],
   todo: ['set_goal', 'update_todo_list', 'read_todo_list'],
 }
 
@@ -148,6 +149,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   write_workspace_memory: 'Write workspace memory',
   list_workspace_memory: 'List workspace memory',
   set_memory: 'Set user memory',
+  delete_memory: 'Delete memory',
   execute_skill: 'Execute skill',
   list_doc_templates: 'List documentation templates',
   build_documentation: 'Build documentation',
@@ -164,7 +166,7 @@ export const TOOL_PARAM_NAMES = [
   'command', 'path', 'content', 'regex', 'file_pattern', 'recursive',
   'diff', 'skillId', 'input',
   'startLine', 'endLine', 'offset', 'limit', 'glob',
-  'id', 'state', 'prompt', 'agent', 'oldText', 'newText',
+  'id', 'state', 'prompt', 'agent', 'oldText', 'newText', 'key', 'scope',
 ] as const
 
 export type ToolParamName = (typeof TOOL_PARAM_NAMES)[number]

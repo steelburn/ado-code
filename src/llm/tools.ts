@@ -223,7 +223,7 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts', 'list_doc_templates', 'explore_codebase']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request', 'build_documentation']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'delete_memory', 'commit_worktree', 'push_worktree', 'create_pull_request', 'build_documentation']);
 // The session goal + to-do list are the MODEL'S OWN task ledger, persisted
 // under `.ado-code/todos/` — they never touch workspace source. They are
 // therefore allowed in EVERY mode (plan included: the goal and its plan are
@@ -745,6 +745,18 @@ export function createToolExecutor(
           taskId: { type: 'string', description: 'Task ID the checkpoint belongs to' },
         },
         required: ['checkpointId', 'taskId'],
+      },
+    },
+    {
+      name: 'delete_memory',
+      description: 'Delete a stored memory entry by key — the only way to retire one. Use it the moment a memory becomes wrong, is superseded, or the user retracts it; overwriting is not enough when the fact no longer applies. Returns { ok, deleted } where deleted=false means the key did not exist.',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Memory key to delete' },
+          scope: { type: 'string', enum: ['user', 'workspace'], description: 'Which store: "user" (set_memory) or "workspace" (write_workspace_memory). Default: workspace' },
+        },
+        required: ['key'],
       },
     },
     {
@@ -1399,6 +1411,17 @@ export function createToolExecutor(
           }
           services.memory.set(args.key, args.category, content);
           return JSON.stringify({ ok: true, key: args.key, category: args.category });
+        }
+        case 'delete_memory': {
+          const memoryKey = String(args.key ?? '').trim();
+          if (!memoryKey) {
+            return JSON.stringify({ error: 'delete_memory requires a key' });
+          }
+          const scope = args.scope === 'user' ? 'user' : 'workspace';
+          const deleted = scope === 'user'
+            ? services.memory.delete(memoryKey)
+            : services.workspaceMemory.delete(memoryKey);
+          return JSON.stringify({ ok: true, key: memoryKey, scope, deleted });
         }
         case 'execute_skill': {
           // Pure loader: returns the skill's prompt/knowledge combined with the

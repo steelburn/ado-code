@@ -99,6 +99,11 @@ function buildToolGuidelines(mode: ModeConfig): string {
   );
 
   const guidelines: Record<string, string[]> = {
+    memory: [
+      'Memory is for what outlives this task: a preference, a correction, or a durable repo fact. `set_memory` is user scope (all repos), `write_workspace_memory` is this repo.',
+      'Keys are the identity: reuse one lowercase snake_case key to update, never add a near-duplicate.',
+      'Delete stale or retracted entries with `delete_memory` — a wrong memory keeps being followed.',
+    ],
     todo: [
       'When the objective is clear and the work is more than a trivial one-step change, record it with `set_goal` — ONE short outcome line that stays fixed. A DIFFERENT objective replaces it (its steps are archived); a reword of the same objective keeps the list.',
       'Then break that goal into steps with `update_todo_list` BEFORE you start working — always when the user asks for a plan, a multi-file change or a migration — and keep the list current as you go.',

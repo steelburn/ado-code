@@ -94,15 +94,36 @@ actually used by the model — several entries in this workspace's memory are
 operational gotchas (CRLF editing, hook collisions) that demonstrably change
 behaviour turn to turn.
 
+### Withdrawal and recency
+
+An append-only store rots in two ways: a fact the user has since contradicted
+cannot be withdrawn, and the budget evicts by insertion order rather than by
+anything meaningful. Both are closed.
+
+- **`delete_memory(key, scope?)`** removes an entry from either scope. The only
+  repair path used to be overwriting a key, so a stale instruction survived
+  until its key happened to be reused.
+- **The digests are recency-ordered.** User memory sorts by `timestamp`
+  descending (an update moves the entry to the front); workspace memory sorts by
+  file mtime descending, with a key tiebreak for same-millisecond writes.
+  `renderMemoryBlock` keeps the head of the list, so the budget now drops the
+  *oldest* entries instead of the newest.
+- **The `memory` group is advertised.** Every mode lists it in `modes.ts`, so the
+  memory tools appear in the prompt's tool section, and a `memory` guidelines
+  block states when a fact deserves an entry, that the key is the entry's
+  identity, and that user vs workspace is a real distinction.
+
 ### The gap
 
-- **No relevance selection at read time.** All entries in scope go into the
-  prompt until the budget is hit; there is no scoring of which memories are
-  relevant to the current task, so a large store degrades into noise.
+- **Relevance is by recency, not by task.** All entries in scope go into the
+  prompt until the budget is hit; recency decides what survives, but nothing
+  scores an entry against the current task, so a large store degrades into
+  noise.
 - **No decay or reinforcement.** A memory that has never mattered is exactly as
   prominent as one that matters daily.
-- **No conflict detection.** Two memories can contradict each other and both get
-  injected.
+- **No conflict detection.** Two memories can contradict each other — including
+  one per scope — and both get injected; user scope wins only by being rendered
+  first.
 - **No automatic extraction.** Persisting a fact is a model decision each time;
   there is no post-turn pass that proposes "this looked worth remembering".
 
@@ -114,6 +135,7 @@ markers, condensation, invalidation) and absent at the *semantic* half
 
 Memory engineering is genuinely inventive: write-time rejection with a split
 instruction is a stronger control than most memory systems apply anywhere, and it
-solves the maintenance problem that usually kills these stores. It loses the A
-only because selection and conflict handling are missing, which matters more as
-a store grows — A−.
+solves the maintenance problem that usually kills these stores. Withdrawal and
+recency ordering are now in place, so it loses the A only on task-relevance
+selection, cross-scope conflict handling and decay — which matter more as a
+store grows — A−.

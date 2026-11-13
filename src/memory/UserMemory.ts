@@ -59,7 +59,9 @@ export class UserMemory {
    * Returns an empty string if no memories exist.
    */
   toPromptString(budget: MemoryBudget = DEFAULT_MEMORY_BUDGET): string {
-    const entries = this.getAll();
+    // Newest first: renderMemoryBlock keeps the head of the list, so the
+    // entries dropped by the budget must be the oldest ones, not the newest.
+    const entries = [...this.getAll()].reverse().sort((x, y) => timestampMs(y) - timestampMs(x));
     if (entries.length === 0) return '';
 
     const renderEntries = entries.map((entry) => ({
@@ -124,4 +126,10 @@ export class UserMemory {
     this.context.globalState.update(GLOBAL_STATE_KEY, { entries: [] } satisfies MemoryStore);
     this._onDidChange.fire();
   }
+}
+
+/** Parse an entry timestamp; malformed values sort as oldest. */
+function timestampMs(entry: UserMemoryEntry): number {
+  const ms = Date.parse(entry.timestamp ?? '');
+  return Number.isFinite(ms) ? ms : 0;
 }

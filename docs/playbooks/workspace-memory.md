@@ -164,6 +164,18 @@ Small memories are unaffected: below the budgets the rendering is what it
 was before. All three budgets live in `src/memory/memoryBudget.ts`; the
 helpers are pure so they are unit-tested without a VS Code host.
 
+Ordering matters as much as the cap: the digest is emitted **newest first**
+(user memory by `timestamp` descending, workspace memory by file mtime
+descending, key tiebreak), because the renderer keeps the head of the list —
+so a truncated block drops the *oldest* entries, not the newest. For the same
+reason, rewriting an entry is how you move it back to the front.
+
+Removal: `delete_memory` takes a `key` and an optional
+`scope: 'user' | 'workspace'` (default workspace) and is the way to retire an
+entry that is wrong or superseded — overwriting a key is no longer the only
+repair path. The `memory` tool group is enabled for every mode in
+`src/llm/modes.ts`, so all five memory tools appear in the system prompt.
+
 ## Writing Workspace Memory
 
 ### From Chat Commands

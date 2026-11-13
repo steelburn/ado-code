@@ -136,6 +136,16 @@ Store a user preference or learned context:
 
 Implementation in the chat handler:
 
+> **Current shape (checked against `src/memory/UserMemory.ts`).** The live store
+> is the key `adoCode.userMemory` holding
+> `{ entries: Array<{ key, category, content, timestamp }> }` — not a
+> `string[]` under `adoCode.userFacts` as the sketch below shows. Writes go
+> through `UserMemory.set()` (or the `set_memory` tool), which validates the
+> entry against `adoCode.memory.maxCharsPerEntry` and rejects an oversized one,
+> and `/forget` clears the whole store. To retire a single entry use the
+> `delete_memory` tool with `scope: 'user'`; the digest itself is rendered
+> newest-first, so an updated entry moves to the front.
+
 ```typescript
 if (content.startsWith('/remember ')) {
   const fact = content.slice('/remember '.length).trim()

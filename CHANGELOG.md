@@ -4,6 +4,28 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The memory tools are now actually available to the model, and it can
+  withdraw an entry it wrote.** `TOOL_GROUP_MAP.memory` listed `set_memory`,
+  `read_workspace_memory`, `write_workspace_memory` and `list_workspace_memory`,
+  but no mode ever enabled the group - so the tools were missing from the
+  prompt's `## Available Tools` section and the model had no way to persist a
+  preference. `memory` is now enabled in `inline`, `act` and `yolo` (not
+  `plan`, which blocks every mutating tool), a `memory` guidelines entry says
+  which facts deserve an entry, which scope they belong to and that keys are
+  identity, and a new `delete_memory` tool (`scope: 'user' | 'workspace'`)
+  gives the model the same repair path the status panel already had - a stale
+  instruction can be retired instead of silently overwritten.
+
+- **Memory digests are ordered newest-first, so the budget drops the oldest
+  entries instead of the newest.** `UserMemory` rendered `getAll()` in
+  insertion order (an updated entry kept its old slot) and `WorkspaceMemory`
+  listed keys alphabetically, so `maxEntries: 25` truncated the *newest* user
+  memories and the alphabetically late workspace entries. Both now sort by
+  recency - the stored `timestamp` for user memory, file mtime for workspace
+  memory, malformed dates sorting oldest - with the key as a tiebreak.
+
 ### Fixed
 
 - **The Setup Wizard no longer opens in both areas when the chat lives in an
