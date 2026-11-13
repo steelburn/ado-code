@@ -4,6 +4,22 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Setup Wizard no longer opens in both areas when the chat lives in an
+  editor tab.** `rerunWizard()` broadcasts `config` with `configured: false` to
+  the sidebar view and the editor panel alike, and the sidebar webview gated the
+  welcome screen *before* its "chat is open in the editor area" placeholder - so
+  re-running the wizard from the Command Palette painted it in the sidebar and
+  the editor tab at the same time (the sidebar also reported `maximizeWizard`,
+  collapsing sibling sidebar views for a wizard it was not even showing). The
+  placeholder now wins over every full-page screen (`configured: false`, the
+  Configuration page and `maximizeWizard`), so the wizard opens only in the
+  surface that owns the conversation and the sidebar keeps its "Return Chat to
+  Side Bar" button. The skill-catalog overlay is gated the same way, and moving
+  the chat back to the sidebar drops a wizard it never painted instead of
+  landing on the Configuration page.
+
 ## [0.8.5] - 2026-11-13
 
 ### Added

@@ -924,6 +924,14 @@ function App() {
 
         case 'chatMovedToEditor':
           setChatMovedToEditor(msg.inEditor);
+          // A full-page wizard belongs to the surface that hosts the chat. When
+          // the chat comes back here, drop wizard state this placeholder never
+          // painted — otherwise the sidebar lands on the Configuration page.
+          if (!msg.inEditor) {
+            setShowConfig(false);
+            setShowProjectWizard(false);
+            setShowSkillCatalog(false);
+          }
           break;
       }
     };
@@ -982,10 +990,19 @@ function App() {
     });
   }, [messages, detail, showProjectWizard, showSkillCatalog, attachedFiles, confirmationsBySession, activeSessionId]);
 
+  // A chat that lives in an editor tab leaves this sidebar view as a placeholder
+  // only ("chat is open in the editor area"). The host broadcasts `config` with
+  // `configured: false` to BOTH surfaces when the Setup Wizard is re-run, and
+  // this view used to gate the welcome screen before its placeholder - so the
+  // wizard painted here as well as in the editor tab. Every full-page screen
+  // therefore defers to the placeholder.
+  const chatMovedToEditorSurface = chatMovedToEditor && !config?.isEditor;
+
   // Wizard focus: while a full-page wizard is open (first-run setup,
   // Configuration page, project creation) ask the host to collapse the
   // sibling sidebar views so this webview gets the whole container height.
-  const wizardOpen = Boolean(config && !config.configured) || showConfig || showProjectWizard;
+  const wizardOpen =
+    !chatMovedToEditorSurface && (Boolean(config && !config.configured) || showConfig || showProjectWizard);
   useEffect(() => {
     vscode.postMessage({ type: 'maximizeWizard', active: wizardOpen });
   }, [wizardOpen]);
@@ -1313,7 +1330,7 @@ function App() {
   // ── Render ─────────────────────────────────────────────────────
 
   // Welcome screen when not configured
-  if (config && !config.configured) {
+  if (config && !config.configured && !chatMovedToEditorSurface) {
     return (
       <div className="app">
         <WelcomeScreen
@@ -1386,7 +1403,7 @@ function App() {
   }
 
   // Configuration page
-  if (showConfig) {
+  if (showConfig && !chatMovedToEditorSurface) {
     return (
       <div className="app">
         <ConfigurationPage
@@ -1403,7 +1420,7 @@ function App() {
     );
   }
   // Skill catalog
-  if (showSkillCatalog) {
+  if (showSkillCatalog && !chatMovedToEditorSurface) {
     return (
       <div className="app">
         <SkillCatalog
@@ -1417,7 +1434,7 @@ function App() {
     );
   }
 
-  if (chatMovedToEditor && !config?.isEditor) {
+  if (chatMovedToEditorSurface) {
     return (
       <div className="app chat-layout">
         <div className="chat-moved-placeholder">
