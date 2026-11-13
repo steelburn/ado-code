@@ -513,33 +513,19 @@ All notable changes to ADO Code will be documented in this file.
 - **Changelog on update** — After a version change, a one-time notification offers to show the new version's changelog in a styled webview panel
 - **Generate tasks from user story** — New `create_work_item` LLM tool creates ADO work items; `/generate-tasks` slash command and context menu action trigger the AI to analyze…
 - **Agent progress in chat** — Agent delegation now shows start/completion messages in the chat thread alongside the streaming output panel
-- **Merge-flow guardrails round 2**
+- **Merge-flow guardrails round 2** — Committing a FAILED agent run is refused unless the assistant explicitly passes `allowFailed` (after reviewing)…
 - **Child task delegation** — When delegating a work item to an agent (via `delegate_to_agent` tool or `/delegate` slash command)…
 - **Clean Up After Merge** — New context-menu action on the Worktrees view and auto-offer after a merged PR — removes the run's worktree and deletes its branch…
 - **Capability overrides**
-- **Live model capabilities**
+- **Live model capabilities** — Detection is now three layers — user override > live gateway data > name heuristic
 - Removed redundant "Select Work Item" context menu entry (was duplicated across two menu groups)
+- **Protected PR targets** — `adoCode.git.protectedBranches` (default `["main", "master"]`) — `create_pull_request` refuses to open a PR against a protected base…
 
 ### Bug Fixes
 
 - **Choice-card answers went stale** — Clicking an option on an AI-posed question posted `sendMessage`, which the host silently dropped…
 - **"spawn git ENOENT" on legacy worktrees** — Commit & Push / Clean Up After Merge failed on worktrees created by older versions (`run-run-…` directories)…
 - **Pre-commit hook git env var pollution**
-
-## [0.5.6] - 2026-08-07
-
-### Features
-
-- **Capability overrides**
-- **Live model capabilities** — Detection is now three layers — user override > live gateway data > name heuristic
-- **Protected PR targets** — `adoCode.git.protectedBranches` (default `["main", "master"]`) — `create_pull_request` refuses to open a PR against a protected base…
-- **Merge-flow guardrails** — Committing a FAILED agent run is refused unless the assistant explicitly passes `allowFailed` (after reviewing)…
-- **Clean Up After Merge** — New context-menu action (and auto-offer after a merged PR) that removes the run's worktree and deletes its branch…
-
-### Bug Fixes
-
-- **Choice-card answers went stale** — Clicking an option on an AI-posed question posted `sendMessage`, which the host silently dropped…
-- **"spawn git ENOENT" on legacy worktrees** — Commit & Push / Clean Up After Merge failed on worktrees created by older versions (`run-run-…` directories)…
 
 ## [0.5.6] - 2026-08-06
 
@@ -628,6 +614,16 @@ All notable changes to ADO Code will be documented in this file.
 - **Status panel only shows installed agents** — Non-installed agents are hidden from the Status tree view — no more "not found" clutter
 - **AGENTS.md check on new sessions** — Opening a workspace without AGENTS.md prompts the user to generate it with detected project structure
 
+## [0.5.2] - 2026-08-04
+
+### Improvements
+
+- **Tag/chip input for array settings** — Configuration page array fields (Terminal allowlist, Enabled agents) now use a visual tag/chip interface…
+
+### Bug Fixes
+
+- **Secondary Side Bar support** — Added `secondaryBar` views container registration so ADO Code views can be moved to the Secondary Side Bar via right-click context menu
+
 ## [0.5.1] - 2026-08-04
 
 ### Features
@@ -639,16 +635,6 @@ All notable changes to ADO Code will be documented in this file.
   - **Deny**
   - Works in both `act` and `inline` modes
   - Session approvals reset when chat is cleared or a new session starts
-
-## [0.5.2] - 2026-08-04
-
-### Improvements
-
-- **Tag/chip input for array settings** — Configuration page array fields (Terminal allowlist, Enabled agents) now use a visual tag/chip interface…
-
-### Bug Fixes
-
-- **Secondary Side Bar support** — Added `secondaryBar` views container registration so ADO Code views can be moved to the Secondary Side Bar via right-click context menu
 
 ## [0.5.0] - 2026-08-04
 
