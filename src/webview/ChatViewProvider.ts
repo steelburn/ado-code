@@ -17,6 +17,7 @@ import { isTurnVisible, foreignRunningTurn, runningElsewhereNotice, sessionRunIn
 import { AdoClient, parentIdOf, isTerminalState, terminalStateForType } from '../ado/client';
 import type { AdoWorkItem } from '../ado/types';
 import { Services } from '../services';
+import { collectTurnDiff } from '../services/review/turnDiff';
 import {
   getSettings,
   getActiveOrg,
@@ -32,6 +33,7 @@ import { generateSystemPrompt } from '../llm/prompts/system';
 import { logger } from '../services/logger';
 import { readMemoryBudget, remainingMemoryBudget, renderMemoryBlock } from '../memory/memoryBudget';
 import { createToolExecutor, ToolExecutor } from '../llm/tools';
+import { SUBAGENT_TOOL_ALLOWLIST, runSubagent } from '../llm/subagent';
 import { runAgenticChat } from '../llm/agentic';
 import { parseSkillMd, skillFromParsedMd, slugify } from '../shared/parseSkillMd';
 import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
@@ -57,6 +59,8 @@ import { collectDocumentationExport } from './documentation/exportDocumentation'
 import { promptAndSaveBinary } from './saveBinary';
 import { evaluateAgentsMdSync, replaceManagedBlock, AgentsMdSyncDecision, AgentsMdSyncPrior, writeManagedFileIfChanged } from './agentsMd';
 import { SessionMirror, MirroredSessions } from './SessionMirror';
+import { TurnRecord, classifyTurnOutcome } from '../services/metrics/turnOutcome';
+import { TurnSignals, emptyTurnSignals } from '../shared/turnSignals';
 import { getModelCapabilities, ModelInfo } from '../llm/modelCapabilities';
 import { ContextManager, SYSTEM_PROMPT_OVERHEAD_TOKENS } from '../llm/context/contextManager';
 import { ConversationCondenser } from '../llm/context/condenser';
@@ -328,6 +332,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'adoCode.chat';
   private _view?: vscode.WebviewView;
   private _editorPanel?: vscode.WebviewPanel;
+  /** Turns already folded into the outcome counters (see recordTurnOutcome). */
+  private readonly countedTurns = new WeakSet<object>();
   /** Capability hints from the last /models fetch — live data wins over the heuristic. */
   private lastModelInfos: ModelInfo[] = [];
   // Task 24 (H5): wired via setAgentRunner AFTER both exist (services built
@@ -687,6 +693,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     logger.info(`Chat: migrated ${legacySessionKeys.length} project-scoped session bucket(s) to folder scope`);
   }
 
+  /**
+   * Fold a finished turn into the persistent outcome counters (AI-engineering
+   * roadmap #1, stage 1). These counters OBSERVE — they never gate anything — so
+   * this is fire-and-forget and idempotent per turn (`turnKey` is the abort
+   * controller, which is created once per run): a metrics failure must never be
+   * able to fail a turn, and a turn must never be counted twice.
+   */
+  private recordTurnOutcome(
+    turnKey: object,
+    mode: string,
+    result:
+      | { signals?: TurnSignals; loopDetected?: boolean; reachedIterationLimit?: boolean }
+      | undefined,
+    flags: { aborted?: boolean; error?: boolean } = {}
+  ): void {
+    if (this.countedTurns.has(turnKey)) return;
+    this.countedTurns.add(turnKey);
+    const record: TurnRecord = {
+      at: new Date().toISOString(),
+      mode,
+      outcome: classifyTurnOutcome({
+        ...flags,
+        loopDetected: result?.loopDetected,
+        reachedIterationLimit: result?.reachedIterationLimit,
+      }),
+      signals: { ...(result?.signals ?? emptyTurnSignals()) },
+    };
+    void this.services.outcomes.record(record);
+  }
+
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly services: Services,
@@ -807,6 +843,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.executor = createToolExecutor(this.services, this._context, {
       onUpdateState: (id, state) => this.updateWorkItemState(id, state),
       onDelegate: (prompt, agent) => this.delegateToAgent(prompt, agent),
+      onSubagent: (task, signal) => this.runSearchSubagent(task, signal),
       // Consent: inline mode mutating tools flow through the webview consent
       // card (Approve/Reject), with a native QuickPick fallback when the
       // webview isn't available, and a hard timeout so the agentic loop can
@@ -5723,6 +5760,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Roadmap #8: run the nested read-only search subagent (explore_codebase).
+   *
+   * A separate, narrowed executor on purpose: the child gets only read tools,
+   * cannot consume the parent's session-approval cache, and a runaway search
+   * cannot change the parent's mode. The abort signal is the turn's, so pressing
+   * Stop kills the child too.
+   */
+  private async runSearchSubagent(task: string, signal?: AbortSignal): Promise<string> {
+    const child = createToolExecutor(this.services, this._context, {
+      allowedTools: SUBAGENT_TOOL_ALLOWLIST,
+    });
+    const result = await runSubagent(this.llmClient(), child, task, { signal });
+    logger.debug(
+      `Subagent: ${result.iterations} iteration(s), ${result.signals.toolCalls} tool call(s), timedOut=${result.timedOut}`
+    );
+    return result.report;
+  }
+
+  /**
    * Drain any buffered steer messages (chat.inputWhileBusy = 'steer') into the
    * turn conversation and return them for injection into the next agentic
    * iteration. Called by the loop at the top of each iteration.
@@ -6099,11 +6155,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Steer mode: hand the loop any user text typed mid-run so it is
         // injected on the next iteration instead of aborting the turn.
         drainSteering: () => this.takePendingSteer(turnConversation),
+        // Review gate (roadmap #3): the diff of what THIS turn changed, handed to
+        // one review round-trip before a clean finish is accepted.
+        reviewDiff: (paths: string[]) => collectTurnDiff(this.services.git.workspaceRoot, paths),
         // Interrupt-on-message: the loop asks, per tool call, for the signal to
         // cancel it. Recreate the controller once a previous signal was consumed
         // so a later tool in the same turn is not born already-cancelled.
         getToolSignal: () => this.toolSignalForRun(),
       });
+      this.recordTurnOutcome(abort, mode, result);
       // Token optimization diagnostics: log how much this turn actually cost
       // (iterations, tool calls, and request payload tokens incl. system+tools).
       const limitReason = result.loopDetected
@@ -6217,6 +6277,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.postMessage(frame as any);
       }
     } catch (err) {
+      this.recordTurnOutcome(abort, mode, undefined, {
+        aborted: abort.signal.aborted,
+        error: !abort.signal.aborted,
+      });
       if (abort.signal.aborted) {
         await this.reconcileStoppedTurn(abort, pushedUser, turnSessionId, turnConversation);
         return;

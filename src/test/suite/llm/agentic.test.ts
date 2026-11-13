@@ -904,3 +904,378 @@ suite('runAgenticChat — internal bookkeeping tools are exempt from the iterati
     assert.strictEqual(result.reachedIterationLimit, true, 'runaway internal loop is force-concluded');
   });
 });
+
+suite('agentic reflection (roadmap #2)', () => {
+  test('a halt that names a different next step resumes instead of wrapping up', async () => {
+    const bodies: any[] = [];
+    let repeats = 0;
+    let recovered = false;
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      const all = body.messages as Array<{ role: string; content: string }>;
+      const last = all[all.length - 1];
+
+      // The reflection round-trip: name the mistake and pick a DIFFERENT step.
+      if (last.role === 'user' && last.content.includes('[reflection checkpoint]')) {
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: 'I kept repeating the same echo.\nVERDICT: continue\nGAP: nothing was verified\nNEXT: echo a different value',
+            },
+          }],
+        });
+      }
+
+      // The accepted continuation must be acted on, not re-reflected.
+      if (last.role === 'user' && last.content.includes('[reflection accepted]')) {
+        recovered = true;
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{
+                id: 'call_fresh',
+                type: 'function',
+                function: { name: 'echo', arguments: '{"value":"different"}' },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        });
+      }
+
+      // After the new step ran, the turn is finished.
+      if (recovered) {
+        return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'recovered and done' } }] });
+      }
+
+      // Otherwise keep issuing the SAME call until the loop detector blocks it
+      // and the circuit breaker trips.
+      repeats++;
+      if (repeats <= 8) {
+        return jsonResponse({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{
+                id: `call_${repeats}`,
+                type: 'function',
+                function: { name: 'echo', arguments: '{"value":"looping"}' },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        });
+      }
+      return jsonResponse({ choices: [{ message: { role: 'assistant', content: 'unreached' } }] });
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const exec = stubExecutor();
+    exec.canAutoExecute = () => true;
+    exec.execute = async (_name: string, args: Record<string, any>) => `echo: ${args.value}`;
+
+    const result = await runAgenticChat(new LlmClient(config), exec, [
+      { role: 'user', content: 'test reflection' },
+    ], undefined, 20);
+
+    assert.strictEqual(result.text, 'recovered and done',
+      `expected the reflected turn to finish its work, got: ${result.text}`);
+    assert.strictEqual(result.signals?.reflectionTurns, 1, 'expected exactly one reflection turn');
+    assert.ok(result.iterations < 20, `reflection should recover well inside the budget, got ${result.iterations}`);
+
+    // The checkpoint carried real facts about the turn, not an empty prompt.
+    const checkpoint = bodies.find((b) =>
+      String(b.messages[b.messages.length - 1]?.content).includes('[reflection checkpoint]'));
+    assert.ok(checkpoint, 'expected a reflection round-trip');
+    const checkpointText = String(checkpoint.messages[checkpoint.messages.length - 1].content);
+    assert.ok(checkpointText.includes('Calls blocked as exact repeats:'),
+      `digest should report the blocked repeats, got: ${checkpointText}`);
+    assert.ok(checkpointText.includes('echo x'), 'digest should name the repeated tool');
+    assert.ok(checkpointText.includes('VERDICT: continue|conclude'));
+
+    // The accepted verdict became the instruction that resumed the loop.
+    const resumed = bodies.find((b) =>
+      String(b.messages[b.messages.length - 1]?.content).includes('[reflection accepted]'));
+    assert.ok(resumed, 'expected the loop to resume with the accepted reflection');
+    const resumedText = String(resumed.messages[resumed.messages.length - 1].content);
+    assert.ok(resumedText.includes('echo a different value'));
+  });
+});
+
+suite('agentic review gate (roadmap #3)', () => {
+  const reviewTools: LlmTool[] = [
+    {
+      name: 'edit_file',
+      description: 'edit a file',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    },
+  ];
+
+  function editingExecutor(executed: string[]) {
+    return {
+      tools: reviewTools,
+      mode: 'act' as const,
+      setMode(_m: 'inline' | 'plan' | 'act' | 'yolo') {},
+      beginTurn() {},
+      canAutoExecute(_name: string, _args: Record<string, any>): boolean {
+        return true;
+      },
+      async execute(name: string, args: Record<string, any>): Promise<string> {
+        executed.push(`${name}:${args.path}`);
+        return `edited ${args.path}`;
+      },
+    } as any;
+  }
+
+  function reply(payload: any) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    } as any;
+  }
+
+  function says(text: string) {
+    return reply({ choices: [{ message: { role: 'assistant', content: text }, finish_reason: 'stop' }] });
+  }
+
+  function calls(name: string, args: Record<string, any>, id: string) {
+    return reply({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+    });
+  }
+
+  const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const a = 1;\n+const a = 2;';
+
+  test('a revise that names its fix resumes the turn instead of finishing', async () => {
+    const bodies: any[] = [];
+    const progress: any[] = [];
+    const executed: string[] = [];
+    let reviewed = false;
+
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      const msgs = body.messages as Array<{ role: string; content: string }>;
+      const last = msgs[msgs.length - 1];
+      const content = typeof last.content === 'string' ? last.content : '';
+      if (content.includes('REVIEW TURN')) {
+        return says('VERDICT: revise\nISSUE: the caller of a.ts was never updated\nNEXT: update src/b.ts');
+      }
+      if (content.includes('failed an automated review')) {
+        reviewed = true;
+        return calls('edit_file', { path: 'src/b.ts' }, 'c3');
+      }
+      if (reviewed) {
+        return says('fixed the caller too');
+      }
+      if (msgs.some((m) => m.role === 'tool')) {
+        return says('done, changed a.ts');
+      }
+      return calls('edit_file', { path: 'src/a.ts' }, 'c1');
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const exec = editingExecutor(executed);
+    const result = await runAgenticChat(
+      client,
+      exec,
+      [{ role: 'user', content: 'make a 2' }],
+      undefined,
+      10,
+      (u) => progress.push(u),
+      { reviewDiff: async () => DIFF },
+    );
+
+    // The turn ends on the FIXED reply, not on the reply the review rejected.
+    assert.strictEqual(result.text, 'fixed the caller too');
+    assert.deepStrictEqual(executed, ['edit_file:src/a.ts', 'edit_file:src/b.ts']);
+    assert.strictEqual(result.signals!.reviewTurns, 1);
+    assert.strictEqual(result.signals!.reviewRevisions, 1);
+
+    // Exactly one review: the resumed finish is not reviewed again.
+    const reviewRequests = bodies.filter((b) =>
+      (b.messages as Array<{ content: string }>).some((m) => typeof m.content === 'string' && m.content.includes('REVIEW TURN')),
+    );
+    assert.strictEqual(reviewRequests.length, 1, 'the gate is once-per-turn');
+    // The review saw the real diff and the mutated path.
+    const reviewText = String(
+      (reviewRequests[0].messages as Array<{ content: string }>).find((m) => String(m.content).includes('REVIEW TURN'))!.content,
+    );
+    assert.ok(reviewText.includes('const a = 2'), 'the review must see the diff, not a summary');
+    assert.ok(reviewText.includes('src/a.ts'), 'the review must know which files changed');
+    // The review round-trip is tool-free, so the provider omits the field.
+    assert.strictEqual(reviewRequests[0].tools, undefined, 'a review must not send tools: []');
+
+    // The rejected completion never reached the user as final.
+    const finals = progress.filter((p) => p.final && typeof p.text === 'string');
+    assert.ok(!finals.some((p) => p.text.includes('done, changed a.ts')), 'the pre-review reply must not be emitted as final');
+    assert.ok(finals.length > 0 && finals[finals.length - 1].text === 'fixed the caller too');
+  });
+
+  test('a ship accepts the finish and changes nothing', async () => {
+    const bodies: any[] = [];
+    const executed: string[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      const msgs = body.messages as Array<{ role: string; content: string }>;
+      const last = msgs[msgs.length - 1];
+      if (typeof last.content === 'string' && last.content.includes('REVIEW TURN')) {
+        return says('VERDICT: ship\nISSUE: none\nNEXT: none');
+      }
+      if (msgs.some((m) => m.role === 'tool')) {
+        return says('done, changed a.ts');
+      }
+      return calls('edit_file', { path: 'src/a.ts' }, 'c1');
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      editingExecutor(executed),
+      [{ role: 'user', content: 'make a 2' }],
+      undefined,
+      10,
+      undefined,
+      { reviewDiff: async () => DIFF },
+    );
+
+    assert.strictEqual(result.text, 'done, changed a.ts');
+    assert.deepStrictEqual(executed, ['edit_file:src/a.ts'], 'a ship must not resume the loop');
+    assert.strictEqual(result.signals!.reviewTurns, 1);
+    assert.strictEqual(result.signals!.reviewRevisions, 0);
+    assert.ok(!bodies.some((b) => (b.messages as Array<{ content: string }>).some((m) => String(m.content).includes('failed an automated review'))));
+  });
+
+  test('a revise with no next step is ignored', async () => {
+    const executed: string[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      const msgs = body.messages as Array<{ role: string; content: string }>;
+      const last = msgs[msgs.length - 1];
+      if (typeof last.content === 'string' && last.content.includes('REVIEW TURN')) {
+        return says('VERDICT: revise\nISSUE: something feels off\nNEXT: none');
+      }
+      if (msgs.some((m) => m.role === 'tool')) {
+        return says('done, changed a.ts');
+      }
+      return calls('edit_file', { path: 'src/a.ts' }, 'c1');
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      editingExecutor(executed),
+      [{ role: 'user', content: 'make a 2' }],
+      undefined,
+      10,
+      undefined,
+      { reviewDiff: async () => DIFF },
+    );
+
+    assert.strictEqual(result.text, 'done, changed a.ts');
+    assert.strictEqual(result.signals!.reviewRevisions, 0, 'a plan-less revise is not actionable');
+  });
+
+  test('a turn that changed nothing is never reviewed', async () => {
+    let diffs = 0;
+    const fetchStub = async () => says('nothing to do here');
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      editingExecutor([]),
+      [{ role: 'user', content: 'what does this file do?' }],
+      undefined,
+      10,
+      undefined,
+      {
+        reviewDiff: async () => {
+          diffs++;
+          return DIFF;
+        },
+      },
+    );
+
+    assert.strictEqual(diffs, 0, 'a read-only turn must not pay for a review');
+    assert.strictEqual(result.signals!.reviewTurns, 0);
+  });
+
+  test('a broken diff provider cannot fail the turn', async () => {
+    const executed: string[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      const msgs = body.messages as Array<{ role: string; content: string }>;
+      if (msgs.some((m) => m.role === 'tool')) {
+        return says('done, changed a.ts');
+      }
+      return calls('edit_file', { path: 'src/a.ts' }, 'c1');
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      editingExecutor(executed),
+      [{ role: 'user', content: 'make a 2' }],
+      undefined,
+      10,
+      undefined,
+      {
+        reviewDiff: async () => {
+          throw new Error('git exploded');
+        },
+      },
+    );
+
+    assert.strictEqual(result.text, 'done, changed a.ts', 'the gate must never break a turn');
+    assert.strictEqual(result.signals!.reviewTurns, 0);
+  });
+
+  test('an empty diff is not reviewed', async () => {
+    const executed: string[] = [];
+    const fetchStub = async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      const msgs = body.messages as Array<{ role: string; content: string }>;
+      if (msgs.some((m) => m.role === 'tool')) {
+        return says('done, changed a.ts');
+      }
+      return calls('edit_file', { path: 'src/a.ts' }, 'c1');
+    };
+    (globalThis as any).fetch = fetchStub;
+
+    const client = new LlmClient(config);
+    const result = await runAgenticChat(
+      client,
+      editingExecutor(executed),
+      [{ role: 'user', content: 'make a 2' }],
+      undefined,
+      10,
+      undefined,
+      { reviewDiff: async () => '' },
+    );
+
+    assert.strictEqual(result.text, 'done, changed a.ts');
+    assert.strictEqual(result.signals!.reviewTurns, 0, 'nothing to look at means no round-trip');
+  });
+});

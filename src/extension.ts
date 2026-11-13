@@ -36,6 +36,7 @@ import { CONSOLE_HTML } from './remote/consolePage';
 import { resolveRemoteUrl } from './remote/remoteUrl';
 import { isOnPath, sharedShellEnv } from './shared/shellEnv';
 import { logger } from './services/logger';
+import { showTurnOutcomesCommand } from './services/metrics/turnOutcomeCommand';
 import {
   changelogAnnouncement,
   changelogNotificationText,
@@ -220,6 +221,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('adoCode.compactArtifacts', () => compactArtifactsCommand()),
     vscode.commands.registerCommand('adoCode.showContextCost', () => showContextCostCommand()),
+    vscode.commands.registerCommand('adoCode.showRunOutcomes', () => showTurnOutcomesCommand(services.outcomes)),
   );
   scheduleArtifactPrune();
 

@@ -25,6 +25,7 @@ const SERVICE_KEYS = [
     'logger',
     'mcp',
     'memory',
+    'outcomes',
     'projectCreation',
     'skillRegistry',
     'skills',

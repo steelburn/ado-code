@@ -220,7 +220,7 @@ export interface ToolExecutor {
 // Q8: read-only tools are always allowed (inline/plan/act).
 // search_files = pure grep (no mutation); execute_skill loads skill
 // instructions for the model to follow (no side effects of its own).
-const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts', 'list_doc_templates']);
+const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts', 'list_doc_templates', 'explore_codebase']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
 const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'commit_worktree', 'push_worktree', 'create_pull_request', 'build_documentation']);
@@ -274,9 +274,17 @@ type GateAction =
 function gateTool(
   name: string,
   args: Record<string, any>,
-  state: { mode: 'inline' | 'plan' | 'act' | 'yolo'; deniedKeys: Set<string> },
+  state: { allowedTools?: readonly string[];  mode: 'inline' | 'plan' | 'act' | 'yolo'; deniedKeys: Set<string> },
   hooks: { onApprove?: (name: string, args: Record<string, any>) => Promise<boolean> },
 ): GateAction {
+  // ── executor narrowing ──────────────────────────────────────────────
+  // First rule, so a narrowed executor reports the narrowing instead of a
+  // confusing mode error. A model that calls a tool it was not offered gets an
+  // error here, never an execution.
+  if (state.allowedTools && !state.allowedTools.includes(name)) {
+    return { action: 'block', error: `tool '${name}' is not available in this scope` };
+  }
+
   // ── Q8 mode gating ────────────────────────────────────────────────
   if (state.mode === 'plan' && !READ_ONLY_TOOLS.has(name) && !TODO_TOOLS.has(name)) {
     return { action: 'block', error: `tool '${name}' is not read-only and not allowed in plan mode` };
@@ -435,6 +443,10 @@ export function createToolExecutor(
   context: vscode.ExtensionContext, // M4: for getActiveOrg (workspaceState)
   hooks?: {
     onDelegate?: (prompt: string, agent?: string) => Promise<string>;
+    /** Nested read-only search subagent (roadmap #8). Wired by the host. */
+    onSubagent?: (task: string, signal?: AbortSignal) => Promise<string>;
+    /** Restrict this executor to a named tool subset — advertised AND enforced. */
+    allowedTools?: readonly string[];
     onUpdateState?: (id: number, state: string) => Promise<void>;
     onApprove?: (name: string, args: Record<string, any>) => Promise<boolean>;
     // Merge flow for finished agent runs (wired by ChatViewProvider).
@@ -458,7 +470,13 @@ export function createToolExecutor(
   // `deniedKeys` = per-turn set of consent denials, keyed so a NEW command or
   // tool still prompts: terminal commands by exact command string, other
   // mutating tools by tool name.
-  const state = { mode: 'inline' as 'inline' | 'plan' | 'act' | 'yolo', deniedKeys: new Set<string>() };
+  const state = {
+    mode: 'inline' as 'inline' | 'plan' | 'act' | 'yolo',
+    deniedKeys: new Set<string>(),
+    // Set only for narrowed executors (the search subagent's). Enforced in
+    // gateTool, so it binds execute() and the auto-run decision alike.
+    allowedTools: hooks?.allowedTools,
+  };
   // In-turn file read cache: repeated reads of the same file within a single turn
   // are served from memory to eliminate redundant disk I/O and re-reads.
   const turnFileCache = new Map<string, string>();
@@ -611,6 +629,28 @@ export function createToolExecutor(
       name: 'get_selection',
       description: 'Return the text currently selected in the active editor',
       parameters: { type: 'object', properties: {} },
+    },
+    {
+      // Roadmap #8: a nested read-only search loop. Cheap to call, bounded by its
+      // own iteration budget, and it returns a report instead of a transcript.
+      name: 'explore_codebase',
+      description:
+        'Run a focused, read-only search subagent over the workspace and return its report. ' +
+        'Use it for questions that need several searches before anything can be concluded ' +
+        '("where is X decided?", "which callers break if Y changes?"). It cannot edit, run ' +
+        'commands or touch work items. Cite-check its findings before acting on them.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description:
+              'The single question the subagent should answer, plus any scope hints ' +
+              '(directories, symbols, file patterns). Be specific: it cannot ask you back.',
+          },
+        },
+        required: ['task'],
+      },
     },
     {
       name: 'list_workspace',
@@ -849,10 +889,16 @@ export function createToolExecutor(
    * reduces the chance of the model attempting a blocked tool. Other modes
    * send the full set.
    */
-  const filteredTools = (): LlmTool[] =>
-    state.mode === 'plan'
-      ? allTools.filter(t => READ_ONLY_TOOLS.has(t.name) || TODO_TOOLS.has(t.name))
+  const filteredTools = (): LlmTool[] => {
+    // A narrowed executor advertises only its own surface; the same list is
+    // enforced in gateTool, so this is convenience, not the boundary.
+    const scoped = state.allowedTools
+      ? allTools.filter(t => state.allowedTools!.includes(t.name))
       : allTools;
+    return state.mode === 'plan'
+      ? scoped.filter(t => READ_ONLY_TOOLS.has(t.name) || TODO_TOOLS.has(t.name))
+      : scoped;
+  };
 
   const normalizePath = (p: string) => p.replace(/\\/g, '/').toLowerCase();
 
@@ -1193,6 +1239,20 @@ export function createToolExecutor(
         case 'get_selection': {
           const editor = vscode.window.activeTextEditor;
           return editor ? editor.document.getText(editor.selection) : '';
+        }
+        case 'explore_codebase': {
+          const subagent = hooks?.onSubagent;
+          // Nested read-only loop. Wired through a hook so this module never
+          // imports the loop that runs it (that loop imports this module).
+          if (!subagent) {
+            return JSON.stringify({ error: 'no search subagent is wired in this host' });
+          }
+          const task = typeof args.task === 'string' ? args.task.trim() : '';
+          if (!task) {
+            return JSON.stringify({ error: 'explore_codebase requires a non-empty task' });
+          }
+          // The child caps its own report; do not cap it twice here.
+          return await subagent(task, signal);
         }
         case 'list_workspace': {
           // C4/M18: exclude .git, node_modules, dist, and common secret dirs

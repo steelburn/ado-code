@@ -6,7 +6,7 @@ AI coding assistant with Azure DevOps work item integration for VS Code.
 
 - Fetch work items from Azure DevOps in one tree view with a mode toggle — My Work Items / All Work Items / Unassigned — rendered as a real hierarchy (Epic → Feature → User Story → Task)
 - AI chat assistant with OpenAI-compatible and Anthropic-compatible LLM support
-- Tool calling with agentic loop for autonomous coding tasks (Chat/Plan/Act/YOLO modes) — independent tool calls run in parallel (even in mixed batches: consent-free calls don't wait behind approval cards), batched `edit_file` edits, batch `get_work_item` `ids` / `run_terminal_command` `commands` arrays, and a `search_files` grep tool with per-line truncation
+a review gate that inspects the turn’s own diff before accepting a clean finish, and a bounded read-only `explore_codebase` subagent for search-heavy questions
 - Git-based task workflow: auto-create branch on pickup, update CHANGELOG.md on completion
 - **Remote Agent Oversight**: a phone-sized console mirrors agent runs off this machine — status bar toggle, QR code for the resolved URL, optional cloudflared/custom tunnel. See [docs/remote.md](docs/remote.md)
 - External agent orchestration (Claude Code, Codex, OpenCode, Hermes, Pi, and more)
@@ -291,6 +291,7 @@ The extension infers the active model's capabilities from its id:
 | [docs/remote.md](docs/remote.md) | Remote console: setup, QR and token, answering approvals, sessions, tunnels, troubleshooting |
 | [docs/documentation-projects.md](docs/documentation-projects.md) | Role-based documentation projects (doc-ba, doc-writer, doc-tester) and the export flow |
 | [docs/playbooks/](docs/playbooks) | Task recipes: add a tool, a message type, an MCP server or an agent adapter; release bump; user and workspace memory |
+| [docs/ai-engineering/](docs/ai-engineering) | AI-engineering maturity assessment: prompt, agentic, harness, loop, graph, context, memory, tool-use, routing and eval — graded, with file evidence and a ranked roadmap |
 | [AGENTS.md](AGENTS.md) | Repository conventions, build commands and constraints for contributors |
 
 ## Release Notes

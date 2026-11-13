@@ -251,7 +251,7 @@ export class AnthropicProvider implements LlmProvider {
       model: config.model,
       max_tokens: 4096,
       messages: anthropicMessages,
-      tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })),
+      ...(tools.length > 0 ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}),
     };
     if (systemMessage) {
       body.system = systemBlocks(systemMessage.content);

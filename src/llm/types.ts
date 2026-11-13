@@ -1,3 +1,5 @@
+import type { TurnSignals } from '../shared/turnSignals';
+
 export type LlmProviderType = 'openai' | 'anthropic';
 
 export interface ContentBlockText {
@@ -103,6 +105,10 @@ export interface LlmAgenticResult {
   reachedIterationLimit?: boolean;
   /** True when the loop was terminated early due to a detected degenerate tool loop. */
   loopDetected?: boolean;
+  /** Per-turn counters of the corrective signals this loop emitted (see
+   *  `shared/turnSignals`). Optional so existing callers stay valid; the
+   *  outcome counters fall back to zeros when it is absent. */
+  signals?: TurnSignals;
 }
 
 /**

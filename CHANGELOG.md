@@ -4,6 +4,82 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`explore_codebase` — an in-process, read-only search subagent.** A search-heavy
+  question ("where is this decided?", "which callers break if that changes?")
+  used to spend the parent's iteration budget and then fill its context with the
+  transcript. It now runs as a nested agentic loop with its own budget (12
+  iterations), its own executor narrowed to six read tools, and a report capped
+  at 2,500 tokens. The narrowing is enforced at the consent gate (`allowedTools`
+  is the first rule in `gateTool`), not merely advertised, so a model that calls
+  `edit_file` inside the child gets an error instead of an edit. The child cannot
+  touch the parent's session-approval cache or mode and shares the turn's abort
+  signal, so Stop kills it too. An exhausted budget returns a report marked
+  partial; an empty answer degrades to "treat this as unanswered" rather than a
+  blank result the parent would read as "nothing found".
+
+- **Three `AGENTS.md` invariants are now tests.** `specInvariants.test.ts` pins
+  zero runtime dependencies (including optional/peer), exactly one non-test
+  `generateSystemPrompt()` call site, and an `api-version` allowlist of `7.1`
+  plus the documented comments preview. Each was verified to fail against an
+  injected violation before being kept.
+
+- **Fixed: `signals.iterations` was never incremented.** The turn-outcome
+  counters and the reflection digest reported 0 iterations for every turn that
+  finished normally; only the limit path filled the field. It now counts every
+  model round-trip on the shared signals object, so all exit paths report it.
+
+- **Review gate before a clean finish — the harness can now see a turn that ends
+  wrong.** A tool-call-free reply used to be accepted on trust. When that turn
+  mutated files, the loop now spends one tool-free round-trip reviewing the
+  ACTUAL diff — scoped to the paths the turn touched, capped at 12,000 chars with
+  head and tail kept — instead of another heuristic on the trace. Only an
+  actionable `revise` (a defect AND a `NEXT:` step) changes anything: the loop
+  resumes with six bonus iterations, and the rejected reply is re-emitted as
+  non-final so the user never sees it as the answer. `ship`, `unknown`, an empty
+  diff, an abort, a provider error or a throwing diff provider all fall through to
+  the previous behaviour, so the gate can never make a turn worse. At most one
+  review per turn, reported as `reviewTurns`, with `reviewRevisions` counting the
+  gates that caught something. Providers no longer send `tools: []` for a
+  tool-free round-trip (both APIs reject it).
+
+- **Reflection turn at a loop halt — the loop can now recover instead of
+  confessing.** When the repeat-loop circuit breaker trips, the turn no longer
+  wraps up immediately: the loop asks the same model to review a factual digest
+  of what it did (iterations, per-tool call counts and failures, files touched,
+  blocked repeats, read-only streak, queued steering) and to answer
+  `VERDICT` / `GAP` / `NEXT`. A `continue` that names a *different* next step
+  resumes the turn with four extra iterations; anything else — including a
+  `continue` with no plan, which would just re-trip the same heuristic — falls
+  through to the existing wrap-up, which now quotes the gap the model named.
+  Deliberately not run when the iteration budget itself is exhausted: the user's
+  limit is not an invitation to spend more. Costs at most one round-trip per
+  turn, counted as `reflectionTurns` in the outcome counters.
+
+- **Turn outcome counters — the first feedback loop on model behaviour.** Every
+  corrective signal the agentic loop already detects (iteration-limit stop,
+  repeat-loop halt, read-synthesis nudges, blocked repeats, truncated results,
+  failed tools, mid-run steering) is now counted per turn and returned on
+  `LlmAgenticResult.signals`. `src/services/metrics/` folds each finished turn into
+  `.ado-code/metrics/turn-outcomes.json` and reports a completion rate, a
+  per-100-turns signal rate, tool-failure rate and a last-50-turns window through
+  the new **ADO Code: Show Turn Outcome Counters** command. The counters observe
+  only — they never gate a turn, and a metrics failure can never fail one.
+
+
+### Fixed
+
+- **The Setup Wizard opened to a blank page (0.8.4 regression).** The startup
+  watchdog `useEffect` in the webview `App` had been added *below* the
+  "not configured" early return, so the first render (no config yet) ran one
+  hook more than the render that follows the host posting `configured: false`.
+  React rejects that hook-count change and tears the tree down — the surface
+  went white, so the wizard could not be opened at all. The effect now lives
+  with the other hooks, above every conditional return, and
+  `src/test/suite/webview/hookOrder.test.ts` pins the invariant (no lint rule
+  or DOM test harness sees this class of bug).
+
 ## [0.8.4] - 2026-11-05
 
 ### Added

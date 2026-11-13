@@ -10,6 +10,7 @@ import { SkillRegistryService } from './services/SkillRegistryService';
 import { ProjectCreationService } from './webview/ProjectCreationService';
 import { WorkspaceMemory } from './memory/WorkspaceMemory';
 import { TodoStore } from './services/todo/TodoStore';
+import { TurnOutcomeStore } from './services/metrics/TurnOutcomeStore';
 import { UnderstandingService } from './services/understanding/UnderstandingService';
 import { getSettings, getActiveOrg } from './config/settings';
 import { UserMemory } from './memory/UserMemory';
@@ -34,6 +35,8 @@ export interface Services {
   memory: UserMemory;
   /** Per-session AI to-do lists (`.ado-code/todos/`) behind the To-do view. */
   todos: TodoStore;
+  /** Per-turn outcome counters (`.ado-code/metrics/`), AI-engineering roadmap #1. */
+  outcomes: TurnOutcomeStore;
   /** Durable, fingerprinted cache of repository + work-item understanding. */
   understanding: UnderstandingService;
   logger: typeof logger;
@@ -95,6 +98,7 @@ export function createServiceFactories(
     todos: () => new TodoStore(workspaceRoot),
     understanding: (services) =>
       new UnderstandingService(workspaceRoot, services.git, services.workspaceMemory),
+    outcomes: () => new TurnOutcomeStore(() => workspaceRoot),
     logger: () => logger,
   };
 }

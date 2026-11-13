@@ -64,6 +64,7 @@
     "onCommand:adoCode.showTokenUsage",
     "onCommand:adoCode.compactArtifacts",
     "onCommand:adoCode.showContextCost",
+    "onCommand:adoCode.showRunOutcomes",
     "onCommand:adoCode.mcpDisconnect",
     "onCommand:adoCode.mcpReconnect",
     "onCommand:adoCode.mcpViewDetails",
@@ -430,6 +431,11 @@
       {
         "command": "adoCode.compactArtifacts",
         "title": "Compact Artifacts",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.showRunOutcomes",
+        "title": "Show Turn Outcome Counters",
         "category": "ADO Code"
       },
       {

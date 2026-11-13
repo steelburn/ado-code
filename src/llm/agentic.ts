@@ -3,6 +3,77 @@ import { LlmMessage, LlmTool, ToolCall, LlmAgenticResult } from './types';
 import { ToolExecutor } from './tools';
 import { logger } from '../services/logger';
 import { DEFAULT_MAX_ITERATIONS, INTERNAL_TODO_TOOLS, MAX_INTERNAL_ITERATIONS } from '../shared/agenticLimits';
+import { TurnSignals, emptyTurnSignals, isToolErrorResult, isTruncatedResult } from '../shared/turnSignals';
+import {
+  REFLECTION_BONUS_ITERATIONS,
+  ReflectionDigest,
+  ReflectionVerdict,
+  buildContinuationInstruction,
+  buildReflectionInstruction,
+  buildWrapUpAddendum,
+  isActionableContinue,
+  parseReflectionVerdict,
+} from './reflection';
+import {
+  REVIEW_BONUS_ITERATIONS,
+  buildReviewInstruction,
+  formatReviewResume,
+  isActionableRevise,
+  parseReviewVerdict,
+  truncateDiff,
+} from './reviewGate';
+
+/**
+ * One review round-trip over the turn's own diff (AI-engineering roadmap #3).
+ *
+ * Returns the resume instruction only when the reviewer named a defect AND the
+ * fix for it; every other path returns undefined, which the caller treats as
+ * "accept the finish" — exactly the behaviour the loop had before this gate.
+ *
+ * The exchange is not appended to `messages`: the diff is large, the model wrote
+ * it, and `formatReviewResume` carries the two facts the resumed turn needs.
+ */
+async function reviewChange(
+  client: LlmClient,
+  messages: LlmMessage[],
+  signal: AbortSignal | undefined,
+  getDiff: (paths: string[]) => Promise<string | undefined>,
+  files: readonly string[],
+  signals: TurnSignals,
+): Promise<string | undefined> {
+  if (signal?.aborted) {
+    return undefined;
+  }
+  try {
+    const raw = await getDiff([...files]);
+    if (!raw || raw.trim().length === 0) {
+      return undefined;
+    }
+    const sliced = truncateDiff(raw);
+    signals.reviewTurns++;
+    // No tools: the review DECIDES, the resumed turn acts. That keeps this
+    // round-trip cheap and makes the verdict the only thing to parse.
+    const { text } = await client.chatWithTools(
+      [...messages, { role: 'user', content: buildReviewInstruction({ ...sliced, files }) }],
+      [],
+      signal,
+    );
+    if (!text || text.trim().length === 0) {
+      return undefined;
+    }
+    const verdict = parseReviewVerdict(text);
+    if (!isActionableRevise(verdict)) {
+      logger.info(`agentic: review gate accepted the change (verdict=${verdict.verdict})`);
+      return undefined;
+    }
+    signals.reviewRevisions++;
+    logger.warn(`agentic: review gate demanded a revision — ${verdict.issue ?? 'unspecified'}`);
+    return formatReviewResume(verdict);
+  } catch (err) {
+    logger.warn(`agentic: review gate skipped: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
 
 /**
  * User-turn appended as the final message when the model exhausts its
@@ -60,6 +131,47 @@ function fallbackLimitConclusion(maxIterations: number, executedCalls: ToolCall[
  * the last must be the concluding reply.
  */
 const MAX_WRAPUP_ROUNDS = 3;
+/** Tools whose `path` argument counts as a touched file in the reflection digest. */
+const FILE_MUTATING_TOOL_NAMES = new Set(['edit_file', 'write_to_file', 'apply_diff', 'delete_file']);
+
+/**
+ * One self-review round-trip at a distress point (AI-engineering roadmap #2).
+ *
+ * The loop halts on the shape of a failure (repeated calls, exhausted budget),
+ * not its cause, so the wrap-up it produces is a confession rather than a plan.
+ * This asks the SAME model, with a factual digest of what the turn actually did,
+ * to name the gap and pick continue-or-conclude.
+ *
+ * Cost is exactly one non-budgeted round-trip, at most once per turn. Never
+ * throws: a failed reflection must not turn a recoverable turn into an error.
+ */
+async function reflectOnTurn(
+  client: LlmClient,
+  executor: ToolExecutor,
+  messages: LlmMessage[],
+  signal: AbortSignal | undefined,
+  digest: ReflectionDigest,
+): Promise<ReflectionVerdict | undefined> {
+  if (signal?.aborted) {
+    return undefined;
+  }
+  try {
+    const { text } = await client.chatWithTools(
+      [...messages, { role: 'user', content: buildReflectionInstruction(digest) }],
+      executor.tools,
+      signal,
+    );
+    if (!text || text.trim().length === 0) {
+      return undefined;
+    }
+    const verdict = parseReflectionVerdict(text);
+    logger.info(`agentic: reflection verdict=${verdict.verdict}${verdict.nextStep ? ` next="${verdict.nextStep}"` : ''}`);
+    return verdict;
+  } catch (err) {
+    logger.warn(`agentic: reflection round-trip failed: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
 
 /**
  * Graceful end-of-turn when the model exhausts its iteration budget while
@@ -80,7 +192,9 @@ async function concludeAtIterationLimit(
   signal: AbortSignal | undefined,
   maxIterations: number,
   executedCalls: ToolCall[],
+  signals: TurnSignals,
   reason?: 'limit' | 'loop',
+  addendum?: string,
 ): Promise<LlmAgenticResult> {
   // The caller reconciles user-stopped turns itself — never spend a wrap-up
   // round-trip (or a deterministic message) after the user asked to stop.
@@ -90,7 +204,7 @@ async function concludeAtIterationLimit(
   const canBookkeep = executor.tools.some((t: LlmTool) => INTERNAL_TODO_TOOLS.has(t.name));
   const conversation: LlmMessage[] = [
     ...messages,
-    { role: 'user', content: wrapUpInstruction(maxIterations, reason, canBookkeep) },
+    { role: 'user', content: wrapUpInstruction(maxIterations, reason, canBookkeep) + (addendum ? '\n\n' + addendum : '') },
   ];
   const wrapUpCalls: ToolCall[] = [];
   try {
@@ -112,6 +226,7 @@ async function concludeAtIterationLimit(
           iterations: maxIterations,
           reachedIterationLimit: true,
           loopDetected: reason === 'loop',
+          signals,
         };
       }
       // Truncated output: the arguments may be incomplete — record nothing.
@@ -141,7 +256,10 @@ async function concludeAtIterationLimit(
           content = await executor.execute(call.name, call.arguments, signal);
         } catch (err) {
           content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+          signals.toolErrors++;
         }
+        signals.toolCalls++;
+        signals.toolResults++;
         conversation.push({ role: 'tool', content, toolCallId: call.id });
       }
       wrapUpCalls.push(...bookkeeping);
@@ -162,6 +280,7 @@ async function concludeAtIterationLimit(
     iterations: maxIterations,
     reachedIterationLimit: true,
     loopDetected: reason === 'loop',
+    signals,
   };
 }
 
@@ -422,6 +541,10 @@ export async function runAgenticChat(
   // injected as `user` turns on the next iteration (see the steer behavior).
   options?: {
     drainSteering?: () => string[];
+    // Review gate (roadmap #3): returns the diff of the paths this turn changed,
+    // or '' / undefined when there is nothing to review. Injected so the loop
+    // stays free of git and vscode — see src/services/review/turnDiff.ts.
+    reviewDiff?: (paths: string[]) => Promise<string | undefined>;
     // Interrupt-on-message: returns the AbortSignal for the tool ABOUT to run.
     // A fresh signal per call lets a new user message cancel only the in-flight
     // tool (without aborting the whole turn). Absent → no interruption.
@@ -431,6 +554,10 @@ export async function runAgenticChat(
   const messages = [...initialMessages];
   const allToolCalls: ToolCall[] = [];
   const loopDetector = new ToolLoopDetector();
+  // Counters for what this turn had to correct (AI-engineering roadmap #1,
+  // stage 1). Attached to every exit path so the host can aggregate a
+  // completion rate from events the loop detects anyway instead of guessing.
+  const signals = emptyTurnSignals();
   // Index into `messages` where the most recent iteration's messages begin.
   // Tool results strictly before it were consumed by an earlier request and
   // can be stubbed to save re-send cost (see compactOldToolResults).
@@ -442,8 +569,41 @@ export async function runAgenticChat(
   // (`i`, still used for iteration numbers and the loop detector).
   let i = 0;                  // total model round-trips this turn
   let billableIterations = 0; // round-trips that count against maxIterations
+  // Reflection state (AI-engineering roadmap #2). At most ONE self-review per
+  // turn, and the extra iterations it can unlock are bounded and additive to
+  // the budget — a recoverable heuristic halt may spend them, the user's
+  // hard limit may not.
+  let reflectionUsed = false;
+  let reflectionBonus = 0;
+  // Review-gate state (AI-engineering roadmap #3). At most ONE review per turn,
+  // and the iterations an actionable revise unlocks are additive to the budget
+  // exactly like the reflection bonus: the gate may extend a turn that finished
+  // WRONG, never a turn that already used up the user's budget.
+  let reviewBonus = 0;
+  let reviewUsed = false;
+  const toolUseCounts = new Map<string, { count: number; errors: number }>();
+  const filesTouched: string[] = [];
+  let blockedCallsTotal = 0;
+  let consecutiveReadIterations = 0;
+  const buildDigest = (): ReflectionDigest => ({
+    iterations: billableIterations,
+    maxIterations,
+    toolUses: [...toolUseCounts.entries()].map(([name, v]) => ({ name, count: v.count, errors: v.errors })),
+    filesTouched: [...filesTouched],
+    toolErrors: signals.toolErrors,
+    blockedCalls: blockedCallsTotal,
+    readIterations: consecutiveReadIterations,
+    steeringMessages: signals.steeringMessages,
+  });
   let internalIterations = 0; // internal-only round-trips (capped for safety)
-  while (billableIterations < maxIterations && internalIterations < MAX_INTERNAL_ITERATIONS) {
+  while (
+    billableIterations < maxIterations + reflectionBonus + reviewBonus &&
+    internalIterations < MAX_INTERNAL_ITERATIONS
+  ) {
+    // Count every round-trip, not only the billable ones: a final text-only call
+    // still cost the turn a request, and `signals.iterations` is what the outcome
+    // counters and the subagent report read.
+    signals.iterations++;
     // Steering: user messages typed while this run was in flight are drained
     // at the top of every iteration and appended as a `user` turn, so the
     // model sees them on its NEXT round-trip. This deliberately does NOT abort
@@ -451,6 +611,7 @@ export async function runAgenticChat(
     // cancelling it.
     for (const steerText of options?.drainSteering?.() ?? []) {
       messages.push({ role: 'user', content: steerText });
+      signals.steeringMessages++;
       onProgress?.({ steering: steerText });
     }
     // Token optimization: stub tool results older than the last iteration
@@ -463,10 +624,34 @@ export async function runAgenticChat(
     // otherwise stays silent until the final result. `final` marks the
     // terminal answer (no further tools), which the host renders as the
     // reply rather than as thinking text.
-    if (text) onProgress?.({ text, final: !toolCalls || toolCalls.length === 0 });
+    const finished = !toolCalls || toolCalls.length === 0;
 
-    if (!toolCalls || toolCalls.length === 0) {
-      return { text, toolCalls: allToolCalls, iterations: i + 1 };
+    // Review gate (AI-engineering roadmap #3). A clean finish is NOT evidence
+    // that the work is right: the loop stops because the MODEL decided to stop,
+    // and until now nothing ever looked at what the turn actually produced. When
+    // the turn mutated files, spend one round-trip reviewing the diff before the
+    // finish is accepted — a turn that ends WRONG is the one failure this
+    // harness could not see. It fires at most once per turn, and only an
+    // actionable revise changes anything: no diff, an abort, a provider error or
+    // an unparseable verdict all fall through to the ordinary finish.
+    if (finished && !reviewUsed && options?.reviewDiff && filesTouched.length > 0 && !!text) {
+      reviewUsed = true;
+      const resume = await reviewChange(client, messages, signal, options.reviewDiff, filesTouched, signals);
+      if (resume) {
+        // The proposed completion is thinking, not the answer — sending it as
+        // final would hand the user a reply the loop is about to contradict.
+        onProgress?.({ text, final: false });
+        messages.push({ role: 'assistant', content: text });
+        messages.push({ role: 'user', content: resume });
+        reviewBonus += REVIEW_BONUS_ITERATIONS;
+        continue;
+      }
+    }
+
+    if (text) onProgress?.({ text, final: finished });
+
+    if (finished) {
+      return { text, toolCalls: allToolCalls, iterations: i + 1, signals };
     }
 
     // Internal-only round-trips (set_goal / update_todo_list) are ADO Code
@@ -478,6 +663,7 @@ export async function runAgenticChat(
     }
 
     allToolCalls.push(...toolCalls);
+    signals.toolCalls += toolCalls.length;
 
     // C1 fix: the assistant message MUST carry the tool_calls so the provider
     // can emit its native tool_calls / tool_use block in the next request.
@@ -530,6 +716,7 @@ export async function runAgenticChat(
       const check = loopDetector.checkCall(call.name, call.arguments, i + 1);
       if (check.action === 'block') {
         blockedCount++;
+        signals.loopBlocks++;
         logger.warn(`agentic: loop detected: blocked tool [${call.name}] on iteration ${i + 1}`);
         resultsByCall.set(call.id, check.message ?? 'tool call blocked: repeated call');
       } else {
@@ -552,6 +739,14 @@ export async function runAgenticChat(
       // Iteration budget is counted in model round-trips, so a tool inside a
       // batch reports the ITERATION it belongs to, not a per-tool counter.
       logger.info(`Tool call [iteration ${i + 1}/${maxIterations}]: ${call.name} ${argsSummary}`);
+      // Reflection digest bookkeeping: what was called, and which files moved.
+      const useEntry = toolUseCounts.get(call.name) ?? { count: 0, errors: 0 };
+      useEntry.count++;
+      toolUseCounts.set(call.name, useEntry);
+      const touchedPath = call.arguments.path;
+      if (typeof touchedPath === 'string' && FILE_MUTATING_TOOL_NAMES.has(call.name) && !filesTouched.includes(touchedPath)) {
+        filesTouched.push(touchedPath);
+      }
       // Live "running" tool card in the chat (plus status-bar detail).
       onProgress?.({ tool: { id: call.id, name: call.name, args: call.arguments } });
       try {
@@ -601,8 +796,10 @@ export async function runAgenticChat(
     // Exploration synthesis nudge: after 5+ consecutive read-only iterations,
     // nudge the model to synthesize findings rather than endlessly reading files.
     const isReadIteration = toolCalls.length > 0 && toolCalls.every(c => READ_ONLY_TOOL_NAMES.has(c.name));
+    consecutiveReadIterations = isReadIteration ? consecutiveReadIterations + 1 : 0;
     const synthesisNudge = loopDetector.recordReadIteration(isReadIteration);
     if (synthesisNudge) {
+      signals.readSynthesisNudges++;
       logger.info(`agentic: exploration synthesis nudge triggered at iteration ${i + 1}`);
       const lastCall = toolCalls[toolCalls.length - 1];
       if (lastCall) {
@@ -618,6 +815,13 @@ export async function runAgenticChat(
       const content = resultsByCall.get(call.id);
       if (content === undefined) continue;
       // Flip the card to "completed" with the result.
+      signals.toolResults++;
+      if (isToolErrorResult(content)) {
+          signals.toolErrors++;
+          const failedEntry = toolUseCounts.get(call.name);
+          if (failedEntry) failedEntry.errors++;
+        }
+      else if (isTruncatedResult(content)) signals.truncatedResults++;
       onProgress?.({ toolResult: { id: call.id, name: call.name, content } });
       messages.push({ role: 'tool', content, toolCallId: call.id });
     }
@@ -628,12 +832,35 @@ export async function runAgenticChat(
 
     // Circuit breaker: if consecutive iterations had ALL tool calls blocked by loop detector
     const allBlocked = toolCalls.length > 0 && blockedCount === toolCalls.length;
+    if (allBlocked) blockedCallsTotal += blockedCount;
     const tripCircuitBreaker = loopDetector.recordIterationResult(allBlocked);
     if (tripCircuitBreaker) {
       logger.warn(
         `agentic: breaking out of degenerate loop at iteration ${i + 1}/${maxIterations} after consecutive blocked iterations — forcing concluding reply`
       );
-      return concludeAtIterationLimit(client, executor, messages, signal, i + 1, allToolCalls, 'loop');
+      // One chance to change strategy before the turn is wrapped up: the halt
+      // is a heuristic, not the user's budget, so a model that can name a
+      // DIFFERENT next step earns a bounded number of extra iterations.
+      if (!reflectionUsed && !signal?.aborted) {
+        reflectionUsed = true;
+        signals.reflectionTurns++;
+        const verdict = await reflectOnTurn(client, executor, messages, signal, buildDigest());
+        if (verdict && isActionableContinue(verdict) && !signal?.aborted) {
+          reflectionBonus = REFLECTION_BONUS_ITERATIONS;
+          messages.push({ role: 'user', content: buildContinuationInstruction(verdict, REFLECTION_BONUS_ITERATIONS) });
+          logger.info(`agentic: reflection continued the turn with ${REFLECTION_BONUS_ITERATIONS} extra iteration(s)`);
+          internalIterations++;
+          i++;
+          continue;
+        }
+        if (verdict && !signal?.aborted) {
+          return concludeAtIterationLimit(
+            client, executor, messages, signal, billableIterations, allToolCalls, signals, 'loop',
+            buildWrapUpAddendum(verdict),
+          );
+        }
+      }
+      return concludeAtIterationLimit(client, executor, messages, signal, billableIterations, allToolCalls, signals, 'loop');
     }
 
     i++;
@@ -645,5 +872,10 @@ export async function runAgenticChat(
   logger.warn(
     `agentic: exhausted ${maxIterations} iteration(s) after ${allToolCalls.length} tool call(s) — forcing a concluding reply`
   );
-  return concludeAtIterationLimit(client, executor, messages, signal, maxIterations, allToolCalls);
+  // Deliberately NO reflection here: the budget is the user's, and the
+  // wrap-up already spends one round-trip asking for a summary + what
+  // remains. A reflection at the hard limit would double the cost of every
+  // exhausting turn and could not change the outcome. Reflection is for the
+  // RECOVERABLE halt (a heuristic that may be wrong) — not for a real limit.
+  return concludeAtIterationLimit(client, executor, messages, signal, maxIterations, allToolCalls, signals);
 }

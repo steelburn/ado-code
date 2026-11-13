@@ -132,7 +132,7 @@ export class OpenAiProvider implements LlmProvider {
       body: JSON.stringify({
         model: config.model,
         messages: nativeMessages,
-        tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })),
+        ...(tools.length > 0 ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) } : {}),
         stream: false,
       }),
     });

@@ -145,6 +145,19 @@ function App() {
   // spinner and no way out — after a couple of seconds we explain the wait and
   // offer retry, the host-independent What's New panel, the log and a reload.
   const [startupSlow, setStartupSlow] = useState(false);
+  // Arm the watchdog only while there is no config to render. It MUST sit
+  // with the other hooks: the render section below returns early for the
+  // setup wizard, and a hook after that early return changes the hook count
+  // between renders (React then throws and the whole webview goes blank).
+  useEffect(() => {
+    if (config) {
+      setStartupSlow(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setStartupSlow(true), STARTUP_SLOW_MS);
+    return () => clearTimeout(timer);
+  }, [config]);
+
   // Messages the user sent while the AI was still working (queue behavior).
   const [queued, setQueued] = useState<Array<{ id: string; fullContent: string; displayContent: string; images?: ImageAttachment[] }>>([]);
   // Whether a message sent mid-turn steers the current run or waits its turn.
@@ -1316,16 +1329,6 @@ function App() {
       </div>
     );
   }
-
-  // Arm the watchdog only while there is no config to render.
-  useEffect(() => {
-    if (config) {
-      setStartupSlow(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => setStartupSlow(true), STARTUP_SLOW_MS);
-    return () => clearTimeout(timer);
-  }, [config]);
 
   // Loading state before config arrives — a spinner, never a dead end.
   if (!config) {
