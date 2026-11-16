@@ -2,6 +2,16 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Forced "Clean Up After Merge" when the merge state cannot be verified.** When the ADO pull-request lookup fails *and* the branch is not merged into the base locally (a squash-merge looks unmerged to `git branch --merged`), the cleanup command no longer dead-ends: it warns with the ADO error and offers **Force Clean Up**, which removes the worktree and deletes the branch with `git branch -D`. The override is honoured only when the guard could not be evaluated — an explicit "not merged" answer from ADO still refuses, so an open pull request can never be force-deleted.
+
+### Fixed
+
+- **"Clean Up After Merge" no longer dies on an ADO 401.** The post-merge cleanup action (Worktrees context menu and the auto-offer) required an ADO pull-request lookup to succeed, so a worktree unrelated to any work item — or a machine with a missing/expired `adoCode.adoPat`, or an org that does not host the repo — failed the whole action with `ADO API error: 401`. The lookup is advisory now: when it fails, the verdict falls back to the local merged state (`git branch --merged` via the new `GitService.isBranchMerged`), the ADO error is reported in the result message, and cleanup is refused only when the branch genuinely is not merged.
+
 ## [0.8.6] - 2026-11-16
 
 ### Added

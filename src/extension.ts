@@ -1850,17 +1850,43 @@ context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose
       if (!meta?.runId) return;
       try {
         const project = getActiveOrg(context, getSettings()).project;
-        const result = await cleanupMergedRun(meta.runId, project, {
+        const deps = {
           git: services.git,
           ado: services.ado,
-          getRun: (id) => agentRunner.listRuns().find(r => r.id === id),
-        });
+          getRun: (id: string) => agentRunner.listRuns().find(r => r.id === id),
+        };
+        let result = await cleanupMergedRun(meta.runId, project, deps);
+        // ADO is advisory here: a 401/404 from the PR lookup is reported,
+        // never fatal — the local merged state decides (see mergeCleanup.ts).
+        let prNote = result.prCheckError
+          ? ` ADO could not confirm the PR (${result.prCheckError}) — used the local merge check.`
+          : '';
+        // ...but when NEITHER source can vouch for the merge (ADO unreachable
+        // AND the branch is not locally merged — e.g. a squash-merge), offer an
+        // explicit override instead of dead-ending the cleanup.
+        if (!result.cleaned && result.prCheckError) {
+          const pick = await vscode.window.showWarningMessage(
+            `ADO Code: the merge state of ${meta.branch ?? 'this branch'} could not be verified.`,
+            {
+              modal: true,
+              detail: `${result.prCheckError}\n\n${result.reason ?? ''}\n\nForcing the cleanup removes the worktree and DELETES the branch (git branch -D). Commits that were not merged anywhere else are lost.`,
+            },
+            'Force Clean Up',
+            'Cancel'
+          );
+          if (pick !== 'Force Clean Up') {
+            vscode.window.showInformationMessage(`ADO Code: cleanup cancelled — ${result.reason}`);
+            return;
+          }
+          result = await cleanupMergedRun(meta.runId, project, deps, { force: true });
+          if (result.forced) prNote = ' Forced — the merge state could not be verified.';
+        }
         if (!result.cleaned) {
           vscode.window.showInformationMessage(`ADO Code: nothing to clean up — ${result.reason}`);
           return;
         }
         vscode.window.showInformationMessage(
-          `ADO Code: worktree ${meta.branch ?? ''} removed.${result.branchDeleted ? ' Merged branch deleted.' : ' Branch kept (not merged).'}`
+          `ADO Code: worktree ${meta.branch ?? ''} removed.${result.branchDeleted ? (result.forced ? ' Branch force-deleted (merge unverified).' : ' Merged branch deleted.') : ' Branch kept (not merged).'}${prNote}`
         );
       } catch (err) {
         vscode.window.showErrorMessage(`ADO Code: cleanup failed — ${gitErrorMessage(err, services.git.resolveWorktreePath(meta.runId))}`);

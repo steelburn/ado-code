@@ -520,16 +520,46 @@ export class GitService {
   }
 
   /**
+   * True when the local branch exists and is fully merged into the base branch.
+   * The local counterpart of a merged PR: post-merge cleanup uses it when ADO
+   * cannot be asked (missing/expired PAT, an org that does not host this repo).
+   */
+  public async isBranchMerged(branch: string): Promise<boolean> {
+    if (!(await this.branchExists(branch))) return false;
+    const base = await this.getBaseBranch();
+    if (branch === base) return false;
+    try {
+      const { stdout } = await execFile('git', ['branch', '--merged', base], { cwd: this.workspaceRoot });
+      return stdout.split('\n').some(l => l.trim().replace(/^\*/, '').trim() === branch);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Post-merge cleanup guardrail: delete a local branch ONLY when it is
    * fully merged into the base branch (safe — no commits lost).
    */
   public async deleteBranchIfMerged(branch: string): Promise<boolean> {
-    if (!(await this.branchExists(branch))) return false;
-    const base = await this.getBaseBranch();
+    if (!(await this.isBranchMerged(branch))) return false;
     try {
-      const { stdout } = await execFile('git', ['branch', '--merged', base], { cwd: this.workspaceRoot });
-      if (!stdout.split('\n').some(l => l.trim().replace(/^\*/, '').trim() === branch)) return false;
       await execFile('git', ['branch', '-d', branch], { cwd: this.workspaceRoot });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Remove a local branch UNCONDITIONALLY (`git branch -D`). Only the forced
+   * post-merge cleanup calls this: the merge state could not be verified (ADO
+   * unreachable, branch not locally merged) and the user explicitly accepted
+   * losing commits that exist nowhere else.
+   */
+  public async forceDeleteBranch(branch: string): Promise<boolean> {
+    if (!(await this.branchExists(branch))) return false;
+    try {
+      await execFile('git', ['branch', '-D', branch], { cwd: this.workspaceRoot });
       return true;
     } catch {
       return false;

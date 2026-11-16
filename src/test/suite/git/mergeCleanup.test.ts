@@ -17,6 +17,8 @@ function makeDeps(overrides?: Partial<MergeCleanupDeps>): {
       workspaceRoot: '/tmp/repo',
       removeWorktree: async (runId) => { calls.push(`remove:${runId}`); },
       deleteBranchIfMerged: async (branch) => { calls.push(`delete:${branch}`); return true; },
+      isBranchMerged: async (branch) => { calls.push(`local-merged:${branch}`); return false; },
+      forceDeleteBranch: async (branch) => { calls.push(`force-delete:${branch}`); return true; },
     },
     ado: {
       getPullRequestsBySourceBranch: async () => {
@@ -66,6 +68,62 @@ suite('mergeCleanup', () => {
     const res = await cleanupMergedRun('run-1', 'Proj', deps);
     assert.strictEqual(res.cleaned, false);
     assert.deepStrictEqual(calls, ['fetchPRs']);
+  });
+
+  test('cleanupMergedRun degrades to the local merge check when ADO returns 401', async () => {
+    const calls: string[] = [];
+    const { deps } = makeDeps({
+      git: {
+        workspaceRoot: '/tmp/repo',
+        removeWorktree: async (runId) => { calls.push(`remove:${runId}`); },
+        deleteBranchIfMerged: async (branch) => { calls.push(`delete:${branch}`); return true; },
+        isBranchMerged: async (branch) => { calls.push(`local-merged:${branch}`); return true; },
+      },
+      ado: {
+        getPullRequestsBySourceBranch: async () => {
+          calls.push('fetchPRs');
+          throw new Error('ADO API error: 401 TF400813: The user is not authorized');
+        },
+      },
+    });
+    const res = await cleanupMergedRun('run-1', 'Proj', deps);
+    assert.strictEqual(res.cleaned, true, 'locally merged branch is still cleaned up');
+    assert.strictEqual(res.branchDeleted, true);
+    assert.strictEqual(res.localFallback, true);
+    assert.ok(String(res.prCheckError).includes('401'), 'the 401 is reported, not swallowed');
+    assert.deepStrictEqual(calls, ['fetchPRs', 'local-merged:feature/ado-42', 'remove:run-1', 'delete:feature/ado-42']);
+  });
+
+  test('cleanupMergedRun still refuses when ADO fails and the branch is unmerged', async () => {
+    const calls: string[] = [];
+    const { deps } = makeDeps({
+      git: {
+        workspaceRoot: '/tmp/repo',
+        removeWorktree: async (runId) => { calls.push(`remove:${runId}`); },
+        deleteBranchIfMerged: async (branch) => { calls.push(`delete:${branch}`); return true; },
+        isBranchMerged: async (branch) => { calls.push(`local-merged:${branch}`); return false; },
+      },
+      ado: {
+        getPullRequestsBySourceBranch: async () => {
+          calls.push('fetchPRs');
+          throw new Error('ADO API error: 401 TF400813: The user is not authorized');
+        },
+      },
+    });
+    const res = await cleanupMergedRun('run-1', 'Proj', deps);
+    assert.strictEqual(res.cleaned, false, 'never deletes work that is not merged');
+    assert.strictEqual(res.localFallback, true);
+    assert.ok(String(res.reason).includes('401'), 'reason names the ADO failure');
+    assert.deepStrictEqual(calls, ['fetchPRs', 'local-merged:feature/ado-42']);
+  });
+
+  test('hasMergedPullRequest never throws on an ADO failure', async () => {
+    const { deps } = makeDeps({
+      ado: {
+        getPullRequestsBySourceBranch: async () => { throw new Error('ADO API error: 401 nope'); },
+      },
+    });
+    assert.strictEqual(await hasMergedPullRequest({ id: 'run-1', branch: 'feature/ado-42' }, 'Proj', deps), false);
   });
 
   test('cleanupMergedRun no-ops for an unknown run', async () => {
@@ -184,5 +242,62 @@ suite('mergeCleanup', () => {
     } finally {
       cleanTempDir(tmp);
     }
+  });
+
+  test('forced cleanup lifts the guard when ADO is unreachable', async () => {
+    const { deps, calls } = makeDeps({
+      ado: {
+        getPullRequestsBySourceBranch: async () => {
+          calls.push('fetchPRs');
+          throw new Error('ADO API error: 401 Unauthorized');
+        },
+      },
+    });
+    const res = await cleanupMergedRun('run-1', 'Proj', deps, { force: true });
+    assert.strictEqual(res.cleaned, true, 'forced cleanup must proceed');
+    assert.strictEqual(res.forced, true, 'result must report the override');
+    assert.strictEqual(res.branchDeleted, true);
+    assert.ok(res.prCheckError, 'the 401 stays reported');
+    assert.deepStrictEqual(calls.filter(c => c.startsWith('force-delete:')), [
+      'force-delete:feature/ado-42',
+    ]);
+  });
+
+  test('force is ignored when ADO answered: an open PR is never force-cleaned', async () => {
+    const { deps, calls } = makeDeps({
+      ado: {
+        getPullRequestsBySourceBranch: async () => {
+          calls.push('fetchPRs');
+          return [{ pullRequestId: 9, status: 'active', mergeStatus: 'notSet' }];
+        },
+      },
+    });
+    const res = await cleanupMergedRun('run-1', 'Proj', deps, { force: true });
+    assert.strictEqual(res.cleaned, false, 'an explicit not-merged answer stands');
+    assert.strictEqual(res.forced, undefined);
+    assert.strictEqual(calls.filter(c => c.startsWith('force-delete:')).length, 0);
+    assert.strictEqual(calls.filter(c => c.startsWith('remove:')).length, 0);
+  });
+
+  test('force keeps the safe branch delete when the local check already merged', async () => {
+    const { deps, calls } = makeDeps({
+      git: {
+        workspaceRoot: '/tmp/repo',
+        removeWorktree: async (runId) => { calls.push(`remove:${runId}`); },
+        deleteBranchIfMerged: async (branch) => { calls.push(`delete:${branch}`); return true; },
+        isBranchMerged: async (branch) => { calls.push(`local-merged:${branch}`); return true; },
+        forceDeleteBranch: async (branch) => { calls.push(`force-delete:${branch}`); return true; },
+      },
+      ado: {
+        getPullRequestsBySourceBranch: async () => {
+          calls.push('fetchPRs');
+          throw new Error('ADO API error: 401 Unauthorized');
+        },
+      },
+    });
+    const res = await cleanupMergedRun('run-1', 'Proj', deps, { force: true });
+    assert.strictEqual(res.cleaned, true);
+    assert.strictEqual(res.forced, undefined, 'no override needed when git agrees');
+    assert.strictEqual(calls.filter(c => c.startsWith('force-delete:')).length, 0);
   });
 });
