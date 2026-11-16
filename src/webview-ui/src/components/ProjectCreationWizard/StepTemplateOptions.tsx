@@ -9,7 +9,14 @@ interface Props {
 
 export function StepTemplateOptions({ templateId, options, onChange }: Props) {
   const template = PROJECT_TEMPLATES.find(t => t.id === templateId);
-  if (!template || template.options.length === 0) {
+  // `showWhen` is the wizard's conditional-visibility hook (docs/project-scaffolding.md
+  // F5): a control that cannot apply to the answers so far is hidden rather than
+  // rendered dead. The test-automation group uses it for `reporting`, which only
+  // means something once at least one suite is enabled.
+  const visibleOptions = (template?.options ?? []).filter(
+    option => !option.showWhen || option.showWhen(options)
+  );
+  if (!template || visibleOptions.length === 0) {
     return (
       <div className="wizard-step">
         <h3 className="wizard-step-title">Template Options</h3>
@@ -23,7 +30,7 @@ export function StepTemplateOptions({ templateId, options, onChange }: Props) {
       <h3 className="wizard-step-title">Template Options</h3>
       <p className="wizard-step-desc">Customize your {template.name} project</p>
 
-      {template.options.map(option => (
+      {visibleOptions.map(option => (
         <div key={option.id} className="wizard-form-group">
           {option.type === 'boolean' ? (
             <label className="wizard-toggle-label">
@@ -43,7 +50,7 @@ export function StepTemplateOptions({ templateId, options, onChange }: Props) {
                 onChange={e => onChange(option.id, e.target.value)}
               >
                 {option.options?.map(opt => (
-                  <option key={opt} value={opt}>{opt}</option>
+                  <option key={opt} value={opt}>{option.optionLabels?.[opt] ?? opt}</option>
                 ))}
               </select>
             </>

@@ -5,6 +5,21 @@ import { PostCreateStep, ProjectCreationRequest, PROJECT_TEMPLATES } from '../we
 import { DocProjectSpec, DOC_PROJECT_SPECS } from '../shared/documentation/docTemplates';
 import { scaffoldDocumentationProject } from '../shared/documentation/scaffoldDocs';
 import { ScaffoldContext, resolveContainerization } from '../shared/scaffoldContext';
+import { resolveArchitecture } from '../shared/architectureStyles';
+import {
+  MONOREPO_STACKS,
+  MonorepoStackId,
+  MonorepoTreePlan,
+  monorepoStackForTemplate,
+  planMonorepoTree,
+  resolveMonorepoStack,
+} from '../shared/monorepoStacks';
+import { planContainerFiles, supportsContainerization } from '../shared/containerization';
+import {
+  isSuiteEnabled,
+  scaffoldTestAutomationSuite,
+  TestAutomationOptions,
+} from '../shared/testAutomationSuite';
 
 /**
  * The values the three monorepo writers share.
@@ -204,6 +219,28 @@ export class ProjectCreationService {
 
     const documents: string[] = [];
 
+    // The architecture select only reaches us through templateOptions, and
+    // `microservices` is the one style with a writer today: the cross-stack
+    // monorepo tree this class already produces (docs/project-scaffolding.md
+    // §2.1, F2). Routing here instead of adding a second writer is what the old
+    // `monorepo-microservices` template's comment anticipated — that template
+    // stays as a rewriting alias so existing callers keep their exact tree.
+    const architecture = resolveArchitecture(request.templateOptions);
+    if (architecture === 'microservices') {
+      const monorepoStackId = monorepoStackForTemplate(request.templateId);
+      if (monorepoStackId) {
+        await this.scaffoldMonorepoMicroservices(dir, request, warnings);
+        this.appendTestAutomationSuite(dir, request, warnings, postCreateSteps);
+        return documents;
+      }
+      // Say it rather than fake it: silently emitting a layered tree would look
+      // like the architecture choice was honoured. Every stack that *has* a
+      // monorepo writer is named, so the user knows what to pick instead.
+      warnings.push(
+        `Architecture "microservices" is not scaffolded for "${request.templateId}"; it was generated with the layered layout. Monorepo stacks: ${MONOREPO_STACKS.map((stack) => stack.label).join(', ')}.`
+      );
+    }
+
     switch (request.templateId) {
       case 'node-ts':
         await this.scaffoldNodeTs(dir, request);
@@ -247,6 +284,11 @@ export class ProjectCreationService {
       case 'empty':
         await this.scaffoldEmpty(dir, request);
         break;
+      case 'test-automation':
+        fs.mkdirSync(dir, { recursive: true });
+        this.writeGitignore(dir, 'test-automation');
+        this.appendTestAutomationSuite(dir, request, warnings, postCreateSteps, '');
+        break;
       case 'doc-ba':
       case 'doc-writer':
       case 'doc-tester':
@@ -257,6 +299,16 @@ export class ProjectCreationService {
       default:
         throw new Error(`No scaffolder for template: ${request.templateId}`);
     }
+    // App templates carry the same option group; there the suite is a sibling
+    // of the app under tests/ rather than the project root (§7).
+    if (request.templateId !== 'test-automation') {
+      this.appendTestAutomationSuite(dir, request, warnings, postCreateSteps);
+    }
+
+    // Containerization belongs to the stack, not to each writer. Only two
+    // templates wrote a Dockerfile before this, so the rest silently shipped
+    // nothing — this is the one place that fills the gap.
+    this.applyContainerization(dir, request);
 
     return documents;
   }
@@ -2263,6 +2315,20 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
   ): Promise<void> {
     fs.mkdirSync(dir, { recursive: true });
 
+    // The monorepo project type carries its own stack select, and a .NET,
+    // Laravel or Python tree is a different tree entirely — leave before the
+    // npm-workspace writer below runs. A *stack* template fixes the stack
+    // itself: `python` + microservices is a Python monorepo even though the
+    // request carries no stack option.
+    const stack =
+      request.templateId === 'monorepo-microservices'
+        ? resolveMonorepoStack(request.templateOptions)
+        : monorepoStackForTemplate(request.templateId) ?? resolveMonorepoStack(request.templateOptions);
+    if (stack !== 'node-ts') {
+      await this.scaffoldStackMonorepo(dir, request, warnings, stack);
+      return;
+    }
+
     const containerization = resolveContainerization({
       architecture: 'microservices',
       docker: request.templateOptions.docker !== false,
@@ -3163,6 +3229,89 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
     );
   }
 
+  /**
+   * The monorepo layout for a non-TypeScript stack.
+   *
+   * The plan — services, gateway, broker, containerization — is resolved the
+   * same way the Node writer resolves it, and the tree comes from
+   * `planMonorepoTree`, so a .NET or Laravel monorepo is data instead of a
+   * third copy of this writer. Container files are dropped when the wizard
+   * opted out of containerization, which the README explains.
+   */
+  private async scaffoldStackMonorepo(
+    dir: string,
+    request: ProjectCreationRequest,
+    warnings: string[],
+    stack: MonorepoStackId
+  ): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+
+    const containerization = resolveContainerization({
+      architecture: 'microservices',
+      docker: request.templateOptions.docker !== false,
+      honourDockerOption: true,
+    });
+    const serviceNames = this.parseServiceNames(request.templateOptions.services);
+    const gateway = request.templateOptions.gateway === false ? '' : 'gateway';
+    const domainServices = serviceNames.filter((name) => name !== gateway);
+    const plan: MonorepoTreePlan = {
+      projectName: request.projectName,
+      description: request.projectDescription ?? '',
+      version: request.projectVersion || '0.1.0',
+      services: domainServices.length > 0 ? domainServices : ['api', 'worker'],
+      gateway,
+      broker: String(request.templateOptions.messageBroker ?? 'none'),
+      sharedPackage: request.templateOptions.sharedPackage !== false,
+      containerization: containerization.policy.dockerEnabled,
+    };
+
+    for (const [relPath, content] of Object.entries(planMonorepoTree(stack, plan))) {
+      const isContainerFile = /(^|\/)(Dockerfile|docker-compose\.yml)$/.test(relPath);
+      if (isContainerFile && !plan.containerization) {
+        continue;
+      }
+      this.writeProjectFile(dir, relPath, content);
+    }
+
+    if (!plan.containerization) {
+      warnings.push(
+        `Containerization is disabled, so this ${stack} monorepo ships no Dockerfiles and no docker-compose.yml — run it with the stack tooling listed in README.md.`
+      );
+    }
+
+    const ignoreTemplate =
+      stack === 'dotnet' ? 'dotnet-webapi' : stack === 'php-laravel' ? 'php-laravel' : stack === 'python' ? 'python' : 'node-ts';
+    this.writeGitignore(dir, ignoreTemplate);
+  }
+
+  /**
+   * Promote containerization on every project type.
+   *
+   * Only `node-ts` and `dotnet-webapi` used to write a Dockerfile, so picking
+   * any other stack silently produced a project that could not be containerized
+   * from the wizard. The stack decides now: unless the wizard opted out (or the
+   * template writer already emitted a tailored Dockerfile), the stack container
+   * setup is written. Mobile/documentation/empty templates are a no-op.
+   */
+  private applyContainerization(dir: string, request: ProjectCreationRequest): void {
+    if (!supportsContainerization(request.templateId)) {
+      return;
+    }
+    if (request.templateOptions.docker === false) {
+      return;
+    }
+    if (fs.existsSync(path.join(dir, 'Dockerfile'))) {
+      return;
+    }
+    const files = planContainerFiles(request.templateId, {
+      projectName: request.projectName,
+      version: request.projectVersion,
+    });
+    for (const [relPath, content] of Object.entries(files)) {
+      this.writeProjectFile(dir, relPath, content);
+    }
+  }
+
   private async scaffoldEmpty(
     dir: string,
     request: ProjectCreationRequest
@@ -3205,6 +3354,61 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
   // ──────────────────────────────────────────────
   //  .gitignore templates
   // ──────────────────────────────────────────────
+  /**
+   * Write the generated test-automation suite, when the template carries the
+   * `testAutomation` option group and at least one suite is switched on.
+   *
+   * The module is pure: it returns files, ignore lines, warnings and
+   * post-create steps and writes nothing, so every byte of I/O stays here.
+   * `prefix` is '' for the standalone template (the suite IS the project) and
+   * 'tests' for an app template, where the suite is a sibling of the app.
+   */
+  private appendTestAutomationSuite(
+    dir: string,
+    request: ProjectCreationRequest,
+    warnings: string[],
+    postCreateSteps: PostCreateStep[],
+    prefix = 'tests'
+  ): void {
+    // Only a template whose catalogue entry actually offers the group may get a
+    // suite. `isSuiteEnabled` reads an ABSENT option as enabled and the wizard
+    // always sends defaults, so undefined options only happen for templates
+    // without the group — and every other template's tree is pinned by a golden
+    // fixture under src/test/suite/services/fixtures/.
+    const template = PROJECT_TEMPLATES.find((t) => t.id === request.templateId);
+    if (!template?.options.some((o) => o.id === 'e2e')) {
+      return;
+    }
+    const options = (request.templateOptions ?? {}) as unknown as TestAutomationOptions;
+    if (prefix !== '' && !isSuiteEnabled(request.templateOptions ?? {})) {
+      return; // the group is offered but every suite is switched off
+    }
+    const suite = scaffoldTestAutomationSuite(options);
+    for (const file of suite.files) {
+      this.writeProjectFile(dir, prefix ? `${prefix}/${file.path}` : file.path, file.content);
+    }
+    this.appendIgnoreLines(dir, suite.ignoreLines);
+    warnings.push(...suite.warnings);
+    postCreateSteps.push(...suite.postCreateSteps);
+  }
+
+  /**
+   * Merge lines into the existing .gitignore instead of rewriting it: the
+   * template's own writer owns that file, this only adds what the generated
+   * suite needs (docs/project-scaffolding.md F4). Existing lines are never
+   * touched, so a template's ignore set keeps its exact bytes.
+   */
+  private appendIgnoreLines(dir: string, lines: readonly string[]): void {
+    if (lines.length === 0) return;
+    const file = path.join(dir, '.gitignore');
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const present = new Set(existing.split(/\r?\n/).map(line => line.trim()));
+    const missing = lines.filter(line => !present.has(line.trim()));
+    if (missing.length === 0) return;
+    const glue = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+    fs.writeFileSync(file, `${existing}${glue}${missing.join('\n')}\n`, 'utf8');
+  }
+
   private writeGitignore(dir: string, templateId: string): void {
     const gitignores: Record<string, string> = {
       'node-ts': 'node_modules/\ndist/\n.env\n.env.local\n',

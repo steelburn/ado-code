@@ -1,9 +1,12 @@
 # Project Scaffolding — Architecture Options
 
-> **Status: PHASES 1–3 IMPLEMENTED, 4–11 PLAN ONLY.** The shared architecture/
-> context modules, the golden fixtures and the monorepo decomposition are in the tree and
-> green; the wizard, the stack branches, `showWhen`, the containerization layer and
-> `/new-service` are not. Section 11 records what the first three phases actually did and
+> **Status: PHASES 1–3 IMPLEMENTED, PLUS THE WIZARD SELECT, `showWhen`, THE MULTI-STACK
+> MONOREPO WRITERS AND CONTAINERIZATION FOR EVERY PROJECT TYPE; 4 AND 6–11 PLAN ONLY.** The shared architecture/context modules, the golden fixtures, the monorepo
+> decomposition, the `architecture` select on the five stack templates, `showWhen` and the
+> `testAutomation` option group are in the tree and green. `microservices` on the TypeScript
+> stack now routes to the phase-3 monorepo writer; the per-stack layout branches, the
+> containerization layer, the non-TypeScript microservices writers and `/new-service` are
+> not. Section 11 records what the first three phases actually did and
 > the four things phase 4 has to pick up. It is the agreed design for extending the New
 > Project wizard with cross-stack *modular monolith* and *microservices* architecture
 > options plus the `/new-service` command. Test automation is split out to
@@ -459,3 +462,43 @@ fixture's request and compares the whole tree, then the warnings.
    option until phase 6. Phase 1 instead pins the capability table, the resolution
    rule and the containerization matrix in
    `src/test/suite/shared/architectureStyles.test.ts`.
+
+## 12. Project type review (implemented)
+
+Every project type the wizard offers, reviewed end to end: which stack it builds, how it
+containerizes, and whether it can be a microservices monorepo. `docker` is the catalogue
+default of the Docker toggle; "Compose" is what `planContainerFiles()` / `planMonorepoTree()`
+emit for it.
+
+| Project type | Category | Stack / runtime | `docker` default | Container files | Microservices monorepo |
+| --- | --- | --- | --- | --- | --- |
+| Node.js (TypeScript) | backend | node-ts | on | template writer (tailored) | yes (legacy workspace writer) |
+| Node.js (JavaScript) | backend | node-ts | on | `Dockerfile` + compose | yes (TypeScript workspace) |
+| Python | backend | python | on | `Dockerfile` + compose | yes (`uv` workspace, FastAPI) |
+| PHP (Laravel) | backend | php-laravel | on | `Dockerfile` + compose | yes (Composer path repos) |
+| .NET Web API | backend | dotnet | on | template writer (tailored) | yes (`.sln` + ASP.NET per service) |
+| .NET Console | cli | dotnet | on | runtime image | no (no service to expose) |
+| React (TypeScript) | frontend | react | on | nginx static build | no (frontend only) |
+| Next.js | fullstack | next | on | `Dockerfile` + compose | no (frontend only) |
+| React Native (Expo) | mobile | — | — | none (built on device) | no |
+| Flutter | mobile | — | — | none | no |
+| .NET MAUI | mobile | — | — | none | no |
+| Monorepo (Microservices) | monorepo | **stack select** | on | per-service `Dockerfile` + compose | yes, for all four stacks |
+| Test Automation Suite | testing | TS (Playwright/vitest/k6) | — | none (runs beside a project) | no |
+| Documentation templates (BA / writer / tester) | documentation | Markdown | — | none | no |
+| Empty project | — | — | — | none | no |
+
+Three rules fall out of the table and are enforced by tests:
+
+1. **A containerizable project type always offers the Docker toggle, defaulting on.**
+   `src/shared/containerization.ts` owns the template → target map; the catalogue test fails
+   when a containerizable template has no `docker` option or defaults it off.
+2. **A microservices choice is never faked.** Either the stack has a writer and the monorepo is
+   emitted, or the request is generated layered *and* the warning names the stacks that work.
+   `monorepoStackForTemplate()` is the single table that decides this.
+3. **A monorepo is scaffolded in its own stack tooling.** A `.NET`, Laravel or Python monorepo
+   never contains a `package.json`, never tells the user to run `npm`, and gets a `.gitignore`
+   for its own stack.
+
+Phase 4 of this document (per-stack layout branches for the *layered* templates) remains queued;
+this section covers the project types as they are offered today.

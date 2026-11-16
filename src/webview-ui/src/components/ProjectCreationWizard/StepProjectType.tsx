@@ -15,6 +15,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   mobile: 'Mobile',
   monorepo: 'Monorepo & Microservices',
   documentation: 'Documentation',
+  testing: 'Testing & QA',
 };
 
 export function StepProjectType({ selectedTemplateId, onSelect }: Props) {

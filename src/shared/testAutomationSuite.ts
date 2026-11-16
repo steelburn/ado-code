@@ -131,7 +131,7 @@ const IGNORE_LINES: readonly string[] = [
 ];
 
 /** Reported only when at least one of the two executable suites is on. */
-const isSuiteEnabled = (values: Record<string, unknown>): boolean =>
+export const isSuiteEnabled = (values: Record<string, unknown>): boolean =>
     values.e2e !== false || values.api !== false;
 
 /**

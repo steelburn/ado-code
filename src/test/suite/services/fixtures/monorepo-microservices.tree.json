@@ -10,6 +10,7 @@
     "workspaceTool": "npm",
     "services": "gateway,users,orders,notifications",
     "sharedPackage": true,
+    "stack": "node-ts",
     "messageBroker": "nats",
     "docker": true,
     "k8s": false,

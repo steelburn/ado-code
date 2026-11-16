@@ -72,6 +72,7 @@ export function architectureOption(defaultStyle: ArchitectureStyle = 'layered'):
     type: 'select',
     default: defaultStyle,
     options: ARCHITECTURE_STYLES.map((style) => style.id),
+    optionLabels: Object.fromEntries(ARCHITECTURE_STYLES.map((style) => [style.id, style.label])),
     description: 'Layered keeps the classic layout; the other two change the folder tree and how the project is deployed.',
   };
 }

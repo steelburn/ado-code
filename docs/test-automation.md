@@ -1,9 +1,15 @@
 # Test Automation Scaffolding — Plan
 
-> **Status: PLAN ONLY.** Nothing in this document is implemented. Split out of
-> [project-scaffolding.md](project-scaffolding.md) §5, which keeps only the pointer and the
-> sequencing constraint. Sections marked **Finding** were verified against the code; §2 also
-> records one earlier assumption that verification disproved.
+> **Status: SUITE GENERATOR AND WIZARD WIRING IMPLEMENTED; the rest is plan-only.**
+> `src/shared/testAutomationSuite.ts` emits the suite, the standalone `test-automation`
+> template writes it at the project root, and the `testAutomation` option group on the five
+> stack templates writes it under `tests/` (§4, §5, §7, §9). Still open: the `qaDocs`
+> hand-off to the documentation renderer (the generator takes the files as a hint nobody
+> passes yet), the §5 option ids exactly as written (the shipped group uses `e2e`/`api`/
+> `perf` booleans instead of a single `testAutomation` select) and the §8 dependency-case
+> refinements. Split out of [project-scaffolding.md](project-scaffolding.md) §5, which keeps
+> only the pointer and the sequencing constraint. Sections marked **Finding** were verified
+> against the code; §2 also records one earlier assumption that verification disproved.
 
 ## 1. Scope
 

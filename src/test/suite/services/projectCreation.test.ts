@@ -100,6 +100,7 @@ suite('ProjectCreationService', () => {
     flutter: ['pubspec.yaml', 'analysis_options.yaml', 'lib/main.dart', 'lib/app.dart', 'lib/core/api_client.dart', 'lib/state/counter_provider.dart', 'test/widget_test.dart', '.gitignore'],
     'dotnet-maui': ['DemoApp.csproj', 'App.xaml', 'AppShell.xaml', 'MainPage.xaml', 'MauiProgram.cs', 'ViewModels/MainViewModel.cs', 'Platforms/Android/MainActivity.cs', '.gitignore'],
     'monorepo-microservices': ['package.json', 'tsconfig.base.json', 'ARCHITECTURE.md', 'docker-compose.yml', 'services/gateway/src/index.ts', 'services/users/Dockerfile', 'packages/shared/src/index.ts', '.github/workflows/ci.yml', '.gitignore'],
+    'test-automation': ['package.json', 'tsconfig.json', '.env.example', 'README.md', 'e2e/playwright.config.ts', 'api/vitest.config.ts', 'testdata/seed.json', '.gitignore'],
     empty: ['README.md', '.gitignore', 'LICENSE'],
     'doc-ba': ['README.md', '.gitignore', '00-project-control/project-charter.md', '01-business-analysis/brs.md', '05-traceability/rtm.md', '05-traceability/rtm.csv', '.ado-code/documentation.json'],
     'doc-writer': ['README.md', '.gitignore', '01-design/srs.md', '02-user-docs/user-manual.md', 'export/pandoc.yaml', '.ado-code/documentation.json'],

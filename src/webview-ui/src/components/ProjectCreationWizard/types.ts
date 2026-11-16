@@ -1,9 +1,13 @@
+import { architectureOption } from '../../../../shared/architectureStyles';
+import { TEST_AUTOMATION_OPTIONS } from '../../../../shared/testAutomationSuite';
+import { monorepoStackOption } from '../../../../shared/monorepoStacks';
+
 export interface ProjectTemplate {
   id: string;
   name: string;
   description: string;
   icon: string;
-  category: 'frontend' | 'backend' | 'fullstack' | 'cli' | 'library' | 'documentation' | 'mobile' | 'monorepo';
+  category: 'frontend' | 'backend' | 'fullstack' | 'cli' | 'library' | 'documentation' | 'mobile' | 'monorepo' | 'testing';
   options: TemplateOption[];
 }
 
@@ -13,7 +17,11 @@ export interface TemplateOption {
   type: 'boolean' | 'select' | 'input';
   default: any;
   options?: string[];  // For select type
+  /** Friendly labels for a `select`'s ids — a raw id like `modular-monolith` is not a UI string. */
+  optionLabels?: Record<string, string>;
   description?: string;
+  /** Conditional visibility: the options step hides a control when this returns false. */
+  showWhen?: (options: Record<string, any>) => boolean;
 }
 
 /**
@@ -71,10 +79,12 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '📦',
     category: 'backend',
     options: [
+      architectureOption(),
+      ...TEST_AUTOMATION_OPTIONS,
       { id: 'eslint', label: 'Add ESLint', type: 'boolean', default: true },
       { id: 'prettier', label: 'Add Prettier', type: 'boolean', default: true },
       { id: 'jest', label: 'Add Jest testing', type: 'boolean', default: true },
-      { id: 'docker', label: 'Add Dockerfile', type: 'boolean', default: false },
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
     ],
   },
   {
@@ -84,6 +94,9 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '📦',
     category: 'backend',
     options: [
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
+      architectureOption(),
+      ...TEST_AUTOMATION_OPTIONS,
       { id: 'eslint', label: 'Add ESLint', type: 'boolean', default: true },
       { id: 'jest', label: 'Add Jest testing', type: 'boolean', default: true },
     ],
@@ -95,6 +108,9 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '🐍',
     category: 'backend',
     options: [
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
+      architectureOption(),
+      ...TEST_AUTOMATION_OPTIONS,
       { id: 'pytest', label: 'Add pytest', type: 'boolean', default: true },
       { id: 'black', label: 'Add Black formatter', type: 'boolean', default: true },
       { id: 'mypy', label: 'Add mypy type checking', type: 'boolean', default: false },
@@ -107,6 +123,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '⚛️',
     category: 'frontend',
     options: [
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
       { id: 'tailwind', label: 'Add Tailwind CSS', type: 'boolean', default: false },
       { id: 'eslint', label: 'Add ESLint', type: 'boolean', default: true },
       { id: 'prettier', label: 'Add Prettier', type: 'boolean', default: true },
@@ -119,6 +136,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '▲',
     category: 'fullstack',
     options: [
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
       { id: 'tailwind', label: 'Add Tailwind CSS', type: 'boolean', default: true },
       { id: 'prisma', label: 'Add Prisma ORM', type: 'boolean', default: false },
       { id: 'auth', label: 'Add NextAuth.js', type: 'boolean', default: false },
@@ -131,6 +149,9 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '🐘',
     category: 'backend',
     options: [
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
+      architectureOption(),
+      ...TEST_AUTOMATION_OPTIONS,
       { id: 'sail', label: 'Add Laravel Sail (Docker)', type: 'boolean', default: true },
       { id: 'pest', label: 'Use Pest for testing', type: 'boolean', default: true },
     ],
@@ -142,8 +163,10 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     icon: '🔷',
     category: 'backend',
     options: [
+      architectureOption(),
+      ...TEST_AUTOMATION_OPTIONS,
       { id: 'swagger', label: 'Add Swagger/OpenAPI', type: 'boolean', default: true },
-      { id: 'docker', label: 'Add Dockerfile', type: 'boolean', default: false },
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },
     ],
   },
   {
@@ -152,7 +175,8 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     description: '.NET console application',
     icon: '🔷',
     category: 'cli',
-    options: [],
+    options: [
+      { id: 'docker', label: 'Containerize with Docker', type: 'boolean', default: true, description: 'Dockerfile, .dockerignore and docker-compose.yml so the project runs with `docker compose up`' },],
   },
   {
     id: 'react-native',
@@ -201,18 +225,19 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     id: 'monorepo-microservices',
     name: 'Monorepo (Microservices)',
-    description: 'TypeScript microservices monorepo — shared packages, one folder per service, Docker Compose',
+    description: 'Microservices monorepo for Node.js, .NET, Laravel or Python — shared packages, one folder per service, Docker Compose',
     icon: '🧩',
     category: 'monorepo',
     options: [
-      { id: 'workspaceTool', label: 'Workspace tooling', type: 'select', default: 'npm', options: ['npm', 'pnpm', 'yarn', 'turborepo', 'nx'], description: 'npm/pnpm/yarn workspaces, optionally orchestrated by Turborepo or Nx' },
+      monorepoStackOption(),
+      { id: 'workspaceTool', label: 'Workspace tooling', type: 'select', default: 'npm', options: ['npm', 'pnpm', 'yarn', 'turborepo', 'nx'], description: 'npm/pnpm/yarn workspaces, optionally orchestrated by Turborepo or Nx', showWhen: (options) => (options.stack ?? 'node-ts') === 'node-ts' },
       { id: 'services', label: 'Services (comma-separated)', type: 'input', default: 'gateway,users,orders,notifications', description: 'One folder per service under services/; a service named gateway gets API-gateway proxying' },
-      { id: 'sharedPackage', label: 'Shared contracts package', type: 'boolean', default: true, description: 'packages/shared: DTOs, event schemas, health and error types' },
+      { id: 'sharedPackage', label: 'Shared contracts package', type: 'boolean', default: true, description: 'shared/: DTOs, event schemas, health and error types, linked by every service in the stack\'s own way' },
       { id: 'messageBroker', label: 'Message broker', type: 'select', default: 'nats', options: ['none', 'nats', 'kafka', 'rabbitmq'] },
       { id: 'docker', label: 'Add Docker Compose + per-service Dockerfile', type: 'boolean', default: true },
       { id: 'k8s', label: 'Add Kubernetes manifests', type: 'boolean', default: false },
       { id: 'ci', label: 'Add GitHub Actions CI', type: 'boolean', default: true },
-      { id: 'tooling', label: 'Add ESLint + Prettier + shared tsconfig', type: 'boolean', default: true },
+      { id: 'tooling', label: 'Add ESLint + Prettier + shared tsconfig', type: 'boolean', default: true, showWhen: (options) => (options.stack ?? 'node-ts') === 'node-ts' },
     ],
   },
   {
@@ -296,5 +321,13 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
       { id: 'captureInputs', label: 'Source inputs folder (meeting notes, transcripts, sketches)', type: 'boolean', default: true },
       { id: 'krisaCompliance', label: 'KRiSA compliance matrix', type: 'boolean', default: false },
     ],
+  },
+  {
+    id: 'test-automation',
+    name: 'Test Automation Suite',
+    description: 'Runnable Playwright + Vitest + k6 suite with reporting and optional CI',
+    icon: '🤖',
+    category: 'testing',
+    options: [...TEST_AUTOMATION_OPTIONS],
   },
 ];
