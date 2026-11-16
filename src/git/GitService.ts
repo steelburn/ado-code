@@ -3,11 +3,33 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
 import { delegationBranchName } from '../shared/delegationPlan';
+import {
+  WorktreeChange,
+  isApplied,
+  isDeletion,
+  isNewFile,
+  mergeWorktreeChanges,
+  parseNameStatus,
+  parsePorcelain,
+} from '../shared/worktreeChanges';
 
 const execFile = promisify(cp.execFile);
 
 /** Worktree directory name prefix under .ado-code/worktrees/. */
 const WORKTREE_PREFIX = 'run-';
+
+/** Changed files of one worktree (see GitService.listWorktreeChanges). */
+export interface WorktreeChangeSet {
+  /** Merge base the change list was computed against ('' when unknown). */
+  base: string;
+  changes: WorktreeChange[];
+}
+
+/** Outcome of a bulk accept/reject run. */
+export interface WorktreeApplyResult {
+  applied: string[];
+  failed: { path: string; error: string }[];
+}
 
 /** Per-worktree git details (see GitService.getWorktreeInfo). */
 export interface WorktreeInfo {
@@ -527,8 +549,11 @@ export class GitService {
    * Used by verifyWork to get accurate per-agent change tracking.
    */
   async gitInWorktree(worktreePath: string, args: string[]): Promise<string> {
-    const { stdout } = await execFile('git', args, { cwd: worktreePath });
-    return stdout;
+    const { stdout } = await execFile('git', args, {
+      cwd: worktreePath,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return String(stdout);
   }
 
   /**
@@ -566,4 +591,259 @@ export class GitService {
       return empty;
     }
   }
+
+  // --- Worktree change review -----------------------------------------------
+
+  /**
+   * Record per change whether this workspace already holds the worktree s
+   * copy (WorktreeChange.applied). Byte comparison, not a git call: an
+   * earlier Accept nobody touched since is a no-op, not an overwrite.
+   */
+  private async annotateApplied(
+    worktreePath: string,
+    changes: WorktreeChange[]
+  ): Promise<WorktreeChange[]> {
+    return changes.map((change) => {
+      const workspaceContent = readFileMaybe(
+        this.resolveInsideRoot(this.workspaceRoot, change.path)
+      );
+      const worktreeContent = readFileMaybe(
+        this.resolveInsideRoot(worktreePath, change.path)
+      );
+      return {
+        ...change,
+        applied: isApplied(change.status, workspaceContent, worktreeContent),
+      };
+    });
+  }
+
+  /**
+   * Repo-relative paths this workspace s own `git status` reports — the set
+   * an Accept from a worktree would overwrite.
+   */
+  async listWorkspaceDirtyPaths(): Promise<string[]> {
+    try {
+      // -z on purpose: parsePorcelain splits on NUL records, while
+      // getStatusPorcelain() is newline-separated (and would collapse to one
+      // bogus path). --no-renames keeps a rename as two plain paths.
+      const { stdout } = await execFile(
+        'git',
+        ['status', '--porcelain', '-z', '-uall', '--no-renames'],
+        { cwd: this.workspaceRoot }
+      );
+      return parsePorcelain(stdout).map((c) => c.path);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Resolve `relPath` under `root`, returning null when it escapes the root
+   * (absolute path, `..` traversal or NUL byte). Every read/accept/reject goes
+   * through here: the paths come from git output, but a node can be clicked
+   * with any meta attached.
+   */
+  private resolveInsideRoot(root: string, relPath: string): string | null {
+    const rel = (relPath || '').replace(/\\/g, '/');
+    if (!rel || rel.includes('\u0000') || path.isAbsolute(rel)) return null;
+    const abs = path.resolve(root, rel);
+    const inside = path.relative(root, abs);
+    if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) return null;
+    return abs;
+  }
+
+  /** Merge base of the worktree HEAD and the workspace HEAD ('' when unknown). */
+  async getWorktreeBaseRef(worktreePath: string): Promise<string> {
+    try {
+      const { stdout } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: this.workspaceRoot });
+      const workspaceHead = String(stdout).trim();
+      if (!workspaceHead) return '';
+      const out = await execFile('git', ['merge-base', 'HEAD', workspaceHead], { cwd: worktreePath });
+      return String(out.stdout).trim();
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Changed files of a worktree against its base: what the run branch already
+   * committed plus what is still uncommitted. Never throws — an unreadable
+   * worktree yields an empty list so the tree stays usable.
+   */
+  async listWorktreeChanges(worktreePath: string): Promise<WorktreeChangeSet> {
+    const base = await this.getWorktreeBaseRef(worktreePath);
+    const committed: WorktreeChange[] = [];
+    const pending: WorktreeChange[] = [];
+    if (base) {
+      try {
+        const out = await this.gitInWorktree(worktreePath, [
+          'diff', '--name-status', '-z', '--no-renames', base,
+        ]);
+        committed.push(...parseNameStatus(out));
+      } catch {
+        // Base ref unreadable — fall back to the pending list only.
+      }
+    }
+    try {
+      const out = await this.gitInWorktree(worktreePath, [
+        'status', '--porcelain', '-z', '-uall', '--no-renames',
+      ]);
+      pending.push(...parsePorcelain(out));
+    } catch {
+      // Ignore — the committed list still renders.
+    }
+    return {
+      base,
+      changes: await this.annotateApplied(
+        worktreePath,
+        mergeWorktreeChanges(committed, pending)
+      ),
+    };
+  }
+
+  /** Content of `relPath` at `ref` inside the worktree ('' when absent). */
+  async readWorktreeFileAtRef(worktreePath: string, ref: string, relPath: string): Promise<string> {
+    const rel = (relPath || '').replace(/\\/g, '/');
+    if (!rel || !ref || rel.includes('\u0000') || ref.includes('\u0000')) return '';
+    try {
+      const { stdout } = await execFile('git', ['show', `${ref}:${rel}`], {
+        cwd: worktreePath,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      return String(stdout);
+    } catch {
+      return '';
+    }
+  }
+
+  /** On-disk content of a worktree file ('' when missing or out of tree). */
+  async readWorktreeWorkingFile(worktreePath: string, relPath: string): Promise<string> {
+    const abs = this.resolveInsideRoot(worktreePath, relPath);
+    if (!abs) return '';
+    try {
+      return await fs.promises.readFile(abs, 'utf8');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Accept one change: apply the worktree version of the file onto the main
+   * workspace. A file the worktree deleted is deleted in the workspace too.
+   */
+  async acceptWorktreeFile(worktreePath: string, change: WorktreeChange): Promise<void> {
+    const src = this.resolveInsideRoot(worktreePath, change.path);
+    const dest = this.resolveInsideRoot(this.workspaceRoot, change.path);
+    if (!src || !dest) throw new Error(`refusing out-of-tree path: ${change.path}`);
+    if (isDeletion(change.status)) {
+      await fs.promises.rm(dest, { force: true });
+      return;
+    }
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+  }
+
+  /** Accept every change; a failure is reported per file instead of aborting. */
+  async acceptWorktreeChanges(
+    worktreePath: string,
+    changes: WorktreeChange[]
+  ): Promise<WorktreeApplyResult> {
+    const result: WorktreeApplyResult = { applied: [], failed: [] };
+    for (const change of changes) {
+      try {
+        await this.acceptWorktreeFile(worktreePath, change);
+        result.applied.push(change.path);
+      } catch (err) {
+        result.failed.push({ path: change.path, error: errorText(err) });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Reject one change: discard it inside the worktree by restoring the file
+   * from the base (or deleting it when the change added it). When the run
+   * branch already committed the change, the revert is committed as well so a
+   * pull request cannot carry the rejected file into main.
+   */
+  async rejectWorktreeFile(
+    worktreePath: string,
+    change: WorktreeChange,
+    base: string
+  ): Promise<void> {
+    const rel = change.path.replace(/\\/g, '/');
+    let restored = false;
+    if (base && !isNewFile(change.status)) {
+      try {
+        await this.gitInWorktree(worktreePath, ['checkout', base, '--', rel]);
+        restored = true;
+      } catch {
+        restored = false;
+      }
+    }
+    if (!restored) {
+      const abs = this.resolveInsideRoot(worktreePath, rel);
+      if (!abs) throw new Error(`refusing out-of-tree path: ${rel}`);
+      await fs.promises.rm(abs, { force: true });
+    }
+    await this.commitWorktreeRevert(worktreePath, base, rel);
+  }
+
+  /** Reject every change, collecting per-file failures. */
+  async rejectWorktreeChanges(
+    worktreePath: string,
+    changes: WorktreeChange[],
+    base: string
+  ): Promise<WorktreeApplyResult> {
+    const result: WorktreeApplyResult = { applied: [], failed: [] };
+    for (const change of changes) {
+      try {
+        await this.rejectWorktreeFile(worktreePath, change, base);
+        result.applied.push(change.path);
+      } catch (err) {
+        result.failed.push({ path: change.path, error: errorText(err) });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Record a path-limited revert commit when the run branch already carried
+   * the change; only that path is staged, so unrelated pending work in the
+   * worktree is left untouched.
+   */
+  private async commitWorktreeRevert(
+    worktreePath: string,
+    base: string,
+    relPath: string
+  ): Promise<void> {
+    if (!base) return;
+    try {
+      const diff = await this.gitInWorktree(worktreePath, [
+        'diff', '--name-only', base, 'HEAD', '--', relPath,
+      ]);
+      if (!diff.trim()) return;
+      await this.gitInWorktree(worktreePath, ['add', '-A', '--', relPath]);
+      await this.gitInWorktree(worktreePath, [
+        'commit', '-q', '--no-verify', '-m', `reject: ${relPath}`, '--', relPath,
+      ]);
+    } catch {
+      // Nothing staged for that path — the working-tree revert stands.
+    }
+  }
+}
+
+/** Message text for an unknown thrown value. */
+/** Raw bytes of a file, or undefined when it cannot be read. */
+function readFileMaybe(absPath: string | null): Buffer | undefined {
+  if (!absPath) return undefined;
+  try {
+    return fs.readFileSync(absPath);
+  } catch {
+    return undefined;
+  }
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

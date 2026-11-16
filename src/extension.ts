@@ -9,6 +9,18 @@ import { defaultRunCommitMessage, runAdoRef } from './shared/delegationPlan';
 import { DeferredStartup } from './shared/deferredStartup';
 import { StatusPanelProvider } from './webview/StatusPanelProvider';
 import { WorktreesTreeProvider } from './webview/WorktreesTreeProvider';
+import { pickWorktreeForReview } from './webview/worktreePicker';
+import {
+  WORKTREE_DIFF_SCHEME,
+  WORKTREE_WORKING_REF,
+  WorktreeDiffContentProvider,
+  worktreeRefUri,
+} from './git/worktreeDiff';
+import {
+  WorktreeChange,
+  describeOverwriteWarning,
+  detectWorkspaceOverwrites,
+} from './shared/worktreeChanges';
 import { TodoTreeProvider, TodoItemNode, TodoSessionNode } from './webview/TodoTreeProvider';
 import { WorkItemDetailPanel } from './webview/WorkItemDetailPanel';
 import { AgentSummaryPanel } from './webview/AgentSummaryPanel';
@@ -199,7 +211,27 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Worktrees Panel: dedicated view of agent worktrees with per-worktree
   // details (run status, dirty files, last commit, ahead/behind).
+  // Virtual documents behind the worktree diff editor: one side is a file at
+  // a git ref (merge base / worktree working tree), so added and deleted
+  // files diff too.
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      WORKTREE_DIFF_SCHEME,
+      new WorktreeDiffContentProvider(services.git)
+    )
+  );
+
   const worktreesProvider = new WorktreesTreeProvider(services);
+  // View-title review buttons (Accept All / Reject All from a worktree) are
+  // gated on this key: on an empty tree the picker could only report that there
+  // is nothing to review, so the buttons stay hidden.
+  const setWorktreeReviewContext = (count: number): void => {
+    void vscode.commands.executeCommand('setContext', 'adoCode.worktrees.hasWorktrees', count > 0);
+  };
+  worktreesProvider.onWorktreeCountChanged = setWorktreeReviewContext;
+  // Sync with whatever the constructor's own reload already found (it can land
+  // before the hook above is assigned).
+  setWorktreeReviewContext(worktreesProvider.getWorktreeCount());
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('adoCode.worktrees', worktreesProvider),
     vscode.commands.registerCommand('adoCode.refreshWorktrees', () => {
@@ -1980,6 +2012,216 @@ context.subscriptions.push(remoteControl, { dispose: () => remoteQrPanel.dispose
           `ADO Code: failed to show worktree changes — ${err instanceof Error ? err.message : err}`
         );
       }
+    })
+  );
+
+  // Worktree change review: a changed file opens its diff on click; Accept
+  // applies the worktree version onto this workspace, Reject discards the
+  // change inside the worktree.
+  const worktreeChangeFromMeta = (meta: any): WorktreeChange | null => {
+    if (!meta?.path || !meta?.filePath) return null;
+    return {
+      path: String(meta.filePath),
+      status: (meta.status ?? 'M') as WorktreeChange['status'],
+      pending: !!meta.pending,
+    };
+  };
+
+  /**
+   * Target worktree for a review action: the node the command was invoked
+   * on, or — when it came from the Command Palette, where there is no node —
+   * the worktree picker. An undefined result means the user cancelled.
+   */
+  const resolveWorktreeForReview = async (
+    item: any,
+    action: 'accept' | 'reject'
+  ): Promise<string | undefined> => {
+    const explicit = item?.meta?.path;
+    if (explicit) return String(explicit);
+    return pickWorktreeForReview(services, agentRunner, action);
+  };
+
+  const applyAllWorktreeChanges = async (worktreePath: string, mode: 'accept' | 'reject') => {
+    let set: { base: string; changes: WorktreeChange[] };
+    try {
+      set = await services.git.listWorktreeChanges(worktreePath);
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `ADO Code: could not read worktree changes — ${err instanceof Error ? err.message : err}`
+      );
+      return;
+    }
+    if (!set.changes.length) {
+      vscode.window.showInformationMessage('ADO Code: this worktree has no changes.');
+      return;
+    }
+    const verb = mode === 'accept' ? 'Accept' : 'Reject';
+    // A path already dirty here — local edits, or a file an earlier accept
+    // from another worktree wrote — will be clobbered. Say so before asking.
+    const overwrites =
+      mode === 'accept'
+        ? detectWorkspaceOverwrites(
+            set.changes,
+            await services.git.listWorkspaceDirtyPaths()
+          )
+        : [];
+    const overwriteNote = describeOverwriteWarning(overwrites);
+    const detail =
+      mode === 'accept'
+        ? `${set.changes.length} file(s) will be written onto this workspace from the worktree.${
+            overwriteNote ? `\n\n${overwriteNote}` : ''
+          }`
+        : `${set.changes.length} file(s) will be discarded inside the worktree${
+            set.base ? ' (reverted to the merge base)' : ''
+          }.`;
+    const pick = await vscode.window.showWarningMessage(
+      `${verb} all changes? ${detail}`,
+      { modal: true },
+      verb
+    );
+    if (pick !== verb) return;
+    try {
+      const result =
+        mode === 'accept'
+          ? await services.git.acceptWorktreeChanges(worktreePath, set.changes)
+          : await services.git.rejectWorktreeChanges(worktreePath, set.changes, set.base);
+      const done =
+        `${result.applied.length}/${set.changes.length} file(s) ` +
+        (mode === 'accept' ? 'applied to the workspace' : 'rejected in the worktree');
+      // Await the reload: the tree must already carry the new per-file state
+      // (applied markers, pruned list, worktree dirty flag) when the user
+      // reads the outcome, otherwise the view looks unchanged.
+      await worktreesProvider.refresh();
+      statusProvider.refreshLight();
+      const notes: string[] = [];
+      if (overwrites.length) notes.push(`${overwrites.length} overwritten`);
+      if (result.failed.length) notes.push(`${result.failed.length} failed`);
+      const summary =
+        `ADO Code: ${done}` + (notes.length ? ` (${notes.join(', ')})` : '') + '.';
+      if (result.failed.length) {
+        const first = result.failed
+          .slice(0, 3)
+          .map((f) => `${f.path} (${f.error})`)
+          .join(', ');
+        vscode.window.showWarningMessage(`${summary} ${first}`);
+      } else {
+        const pick = await vscode.window.showInformationMessage(
+          summary,
+          'Copy File List'
+        );
+        if (pick === 'Copy File List') {
+          await vscode.env.clipboard.writeText(result.applied.join('\n'));
+        }
+      }
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `ADO Code: ${verb.toLowerCase()} all failed — ${err instanceof Error ? err.message : err}`
+      );
+    }
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.worktreeOpenFileDiff', async (item: any) => {
+      const meta = item?.meta;
+      if (!meta?.path || !meta?.filePath) {
+        vscode.window.showWarningMessage(
+          'ADO Code: open a file from a worktree\'s Changes list to diff it.'
+        );
+        return;
+      }
+      const worktreePath = String(meta.path);
+      const relPath = String(meta.filePath);
+      const base = String(meta.base ?? '');
+      const onDisk = path.join(worktreePath, relPath);
+      const refSide = worktreeRefUri(
+        worktreePath,
+        base || WORKTREE_WORKING_REF,
+        relPath
+      );
+      const right = fs.existsSync(onDisk)
+        ? vscode.Uri.file(onDisk)
+        : worktreeRefUri(worktreePath, WORKTREE_WORKING_REF, relPath);
+      const title =
+        `${relPath}${base ? ` (${base.slice(0, 7)} ↔ worktree)` : ' (worktree)'}`;
+      await vscode.commands.executeCommand('vscode.diff', refSide, right, title, {
+        preview: true,
+      });
+    }),
+    vscode.commands.registerCommand('adoCode.worktreeAcceptFile', async (item: any) => {
+      const meta = item?.meta;
+      const change = worktreeChangeFromMeta(meta);
+      if (!change) {
+        vscode.window.showWarningMessage(
+          'ADO Code: right-click a file under a worktree\'s Changes list to accept it.'
+        );
+        return;
+      }
+      try {
+        await services.git.acceptWorktreeFile(String(meta.path), change);
+        await worktreesProvider.refresh();
+        vscode.window.showInformationMessage(
+          `ADO Code: applied ${change.path} to this workspace.`
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `ADO Code: could not accept ${change.path} — ${
+            err instanceof Error ? err.message : err
+          }`
+        );
+      }
+    }),
+    vscode.commands.registerCommand('adoCode.worktreeRejectFile', async (item: any) => {
+      const meta = item?.meta;
+      const change = worktreeChangeFromMeta(meta);
+      if (!change) {
+        vscode.window.showWarningMessage(
+          'ADO Code: right-click a file under a worktree\'s Changes list to reject it.'
+        );
+        return;
+      }
+      if (change.pending) {
+        // Uncommitted work has no history to recover from — confirm first.
+        const pick = await vscode.window.showWarningMessage(
+          `Discard the uncommitted change to ${change.path} in this worktree?` +
+            ' The agent edits are not recoverable.',
+          { modal: true },
+          'Reject Change'
+        );
+        if (pick !== 'Reject Change') return;
+      }
+      try {
+        await services.git.rejectWorktreeFile(
+          String(meta.path),
+          change,
+          String(meta.base ?? '')
+        );
+        await worktreesProvider.refresh();
+        vscode.window.showInformationMessage(
+          `ADO Code: rejected ${change.path} in the worktree.`
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `ADO Code: could not reject ${change.path} — ${
+            err instanceof Error ? err.message : err
+          }`
+        );
+      }
+    }),
+    vscode.commands.registerCommand('adoCode.worktreeAcceptAllPick', async () => {
+      const target = await pickWorktreeForReview(services, agentRunner, 'accept');
+      if (target) await applyAllWorktreeChanges(target, 'accept');
+    }),
+    vscode.commands.registerCommand('adoCode.worktreeRejectAllPick', async () => {
+      const target = await pickWorktreeForReview(services, agentRunner, 'reject');
+      if (target) await applyAllWorktreeChanges(target, 'reject');
+    }),
+    vscode.commands.registerCommand('adoCode.worktreeAcceptAllChanges', async (item: any) => {
+      const target = await resolveWorktreeForReview(item, 'accept');
+      if (target) await applyAllWorktreeChanges(target, 'accept');
+    }),
+    vscode.commands.registerCommand('adoCode.worktreeRejectAllChanges', async (item: any) => {
+      const target = await resolveWorktreeForReview(item, 'reject');
+      if (target) await applyAllWorktreeChanges(target, 'reject');
     })
   );
 

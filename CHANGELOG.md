@@ -2,7 +2,24 @@
 
 All notable changes to ADO Code will be documented in this file.
 
-## [Unreleased]
+## [0.8.6] - 2026-11-16
+
+### Added
+
+- **The Worktrees view now lists every changed file of a run.** Each worktree gets a `Changes:` group holding what its branch carries against the merge base plus anything still uncommitted, marked added/modified/deleted/untracked and `uncommitted` when the agent has not committed it yet.
+- **Changed files are reviewable from the tree itself.** Clicking a file opens a diff against the merge base; right-click offers **Accept** (write it onto this workspace) and **Reject** (revert it inside the worktree), and **Accept All** / **Reject All** on the worktree node or on its `Changes:` group reviews a whole run behind one confirmation prompt.
+- **Bulk Accept warns before clobbering.** A target path that is already dirty in this workspace — a local edit, or a file an earlier accept from a different worktree wrote — is named in the confirmation prompt instead of silently losing the later run, which is what accepting two runs onto one workspace otherwise does.
+- **Commands invoked from the Command Palette no longer do nothing.** The node-bound Accept All / Reject All fall back to the worktree picker when there is no tree node, and the per-file commands say what to right-click instead of returning silently.
+- **Rejecting a committed file reverts it in the worktree instead of only on disk.** The revert is recorded as a path-scoped `reject: <file>` commit, so a pull request from that branch cannot carry the discarded file into main and unrelated pending edits stay staged as they were.
+- **Bulk review is reachable from the Worktrees view title.** New Accept All / Reject All title buttons first ask which worktree to apply them to, listing targets with the most changes first, so a whole run can be reviewed without opening its context menu — and they stay hidden while there is no worktree to review.
+- **Review actions report what they did.** Accept All / Reject All answer with a summary (files applied, how many overwrote existing workspace changes, how many failed, plus a Copy File List action) instead of a five-second status-bar blip, and the tree is reloaded before the message appears, so the per-file state the user reads matches the outcome.
+- **Accepted files are marked in the tree.** A file this workspace already holds byte-for-byte shows `· ✓ applied`, derived from a content comparison rather than a stored flag, so a file edited after an accept loses the marker and a repeat accept is recognised as a no-op.
+- **The `Changes:` summary separates what is still uncommitted from what you already accepted.** It reads e.g. `3 files · 2 uncommitted · 1 applied` and the worktree row shows `2/3 applied`, so accepting a run visibly drains its review backlog instead of leaving the line unchanged. `uncommitted` deliberately does not move: accept leaves the worktree untouched, so its branch can still carry the file into the pull request.
+- **The scaffolder now resolves an architecture, not just a template.** `src/shared/architectureStyles.ts` (layered / modular-monolith / microservices) and `src/shared/scaffoldContext.ts` resolve the layout, the docker requirement and the gateway into one `ScaffoldContext` that the layout writers, the ignore-file writers and the dependency planner all read — so "a database or broker needs compose, compose needs docker" is decided once, and an explicit `docker: false` is dropped with a warning instead of emitting a compose file with nothing to build.
+- **`monorepo-microservices` is assembled from a plan.** The writer was decomposed into root / service-body / compose emitters fed by one `MonorepoPlan`, so the root files, every service body and the compose file cannot disagree; two golden fixtures pin the emitted tree byte for byte.
+- **The dependency plan says when it could not plan.** `ProjectDependencyPlan.advisories` reports an unknown template id or an option the template cannot honour, and the `testAutomation` option adds that suite's toolchain to the plan — Node/npm joins even a Python or .NET project, because the suite is TypeScript.
+- **A generator for the `test-automation` suite.** `src/shared/testAutomationSuite.ts` emits a runnable Playwright + Vitest + k6 suite (sample tests, test data, reporting wiring, optional CI workflow, README) for either the `test-automation` template or an app template's `tests/` folder. It is wired to no caller yet: phases 4–5 of `docs/test-automation.md` (the wizard surface) are still plan-only.
+- **Plan docs for the remaining phases.** `docs/project-scaffolding.md` and `docs/test-automation.md` record the architecture/scaffolding design, the decisions behind it and what is implemented versus queued.
 
 ## [0.8.5] - 2026-11-13
 

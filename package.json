@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "license": "MIT",
   "publisher": "steelburn",
   "repository": {
@@ -74,6 +74,13 @@
     "onCommand:adoCode.workItemsSearch",
     "onCommand:adoCode.workItemsClearFilters",
     "onCommand:adoCode.worktreeShowChanges",
+    "onCommand:adoCode.worktreeOpenFileDiff",
+    "onCommand:adoCode.worktreeAcceptFile",
+    "onCommand:adoCode.worktreeRejectFile",
+    "onCommand:adoCode.worktreeAcceptAllChanges",
+    "onCommand:adoCode.worktreeRejectAllChanges",
+    "onCommand:adoCode.worktreeAcceptAllPick",
+    "onCommand:adoCode.worktreeRejectAllPick",
     "onCommand:adoCode.generateTasks",
     "onCommand:adoCode.sendSelectionToChat",
     "onCommand:adoCode.sendFileToChat",
@@ -289,6 +296,48 @@
         "command": "adoCode.openWorktreeInTerminal",
         "title": "Open Worktree in Terminal",
         "icon": "$(terminal)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeOpenFileDiff",
+        "title": "Open Change in Diff",
+        "icon": "$(diff)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeAcceptFile",
+        "title": "Accept Change (Apply to Workspace)",
+        "icon": "$(check)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeRejectFile",
+        "title": "Reject Change (Discard in Worktree)",
+        "icon": "$(discard)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeAcceptAllChanges",
+        "title": "Accept All Changes from Worktree",
+        "icon": "$(check-all)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeRejectAllChanges",
+        "title": "Reject All Changes in Worktree",
+        "icon": "$(clear-all)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeAcceptAllPick",
+        "title": "Accept All Changes from a Worktree…",
+        "icon": "$(check-all)",
+        "category": "ADO Code"
+      },
+      {
+        "command": "adoCode.worktreeRejectAllPick",
+        "title": "Reject All Changes in a Worktree…",
+        "icon": "$(clear-all)",
         "category": "ADO Code"
       },
       {
@@ -633,6 +682,16 @@
       ],
       "view/title": [
         {
+          "command": "adoCode.worktreeAcceptAllPick",
+          "when": "view == adoCode.worktrees && adoCode.worktrees.hasWorktrees",
+          "group": "navigation@1"
+        },
+        {
+          "command": "adoCode.worktreeRejectAllPick",
+          "when": "view == adoCode.worktrees && adoCode.worktrees.hasWorktrees",
+          "group": "navigation@2"
+        },
+        {
           "command": "adoCode.todos.setGoal",
           "when": "view == adoCode.todos",
           "group": "navigation@1"
@@ -918,6 +977,61 @@
           "command": "adoCode.worktreeShowChanges",
           "when": "viewItem == worktreeNode",
           "group": "1_worktree@3"
+        },
+        {
+          "command": "adoCode.worktreeAcceptFile",
+          "when": "view == adoCode.worktrees && viewItem == worktreeFileNode",
+          "group": "inline@1"
+        },
+        {
+          "command": "adoCode.worktreeRejectFile",
+          "when": "view == adoCode.worktrees && viewItem == worktreeFileNode",
+          "group": "inline@2"
+        },
+        {
+          "command": "adoCode.worktreeOpenFileDiff",
+          "when": "view == adoCode.worktrees && viewItem == worktreeFileNode",
+          "group": "1_file@1"
+        },
+        {
+          "command": "adoCode.worktreeAcceptFile",
+          "when": "view == adoCode.worktrees && viewItem == worktreeFileNode",
+          "group": "2_file@1"
+        },
+        {
+          "command": "adoCode.worktreeRejectFile",
+          "when": "view == adoCode.worktrees && viewItem == worktreeFileNode",
+          "group": "2_file@2"
+        },
+        {
+          "command": "adoCode.worktreeAcceptAllChanges",
+          "when": "view == adoCode.worktrees && viewItem == worktreeChangesNode",
+          "group": "inline@1"
+        },
+        {
+          "command": "adoCode.worktreeRejectAllChanges",
+          "when": "view == adoCode.worktrees && viewItem == worktreeChangesNode",
+          "group": "inline@2"
+        },
+        {
+          "command": "adoCode.worktreeAcceptAllChanges",
+          "when": "view == adoCode.worktrees && viewItem == worktreeChangesNode",
+          "group": "2_review@1"
+        },
+        {
+          "command": "adoCode.worktreeRejectAllChanges",
+          "when": "view == adoCode.worktrees && viewItem == worktreeChangesNode",
+          "group": "2_review@2"
+        },
+        {
+          "command": "adoCode.worktreeAcceptAllChanges",
+          "when": "view == adoCode.worktrees && viewItem == worktreeNode",
+          "group": "2_review@1"
+        },
+        {
+          "command": "adoCode.worktreeRejectAllChanges",
+          "when": "view == adoCode.worktrees && viewItem == worktreeNode",
+          "group": "2_review@2"
         },
         {
           "command": "adoCode.worktreeShowChanges",
