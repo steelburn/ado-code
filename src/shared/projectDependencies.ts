@@ -71,6 +71,13 @@ export interface AutoInstallStep {
 export interface ProjectDependencyPlan {
   checks: DependencySpec[];
   autoInstall: AutoInstallStep[];
+  /**
+   * Plan-level advisories about the plan *itself* — an unknown template id whose
+   * toolchain cannot be derived, a step the user has to run by hand. A warning is
+   * never a gate: creation and *Next* ignore it. Optional so a healthy plan stays
+   * byte-identical to the shape the wizard has always received.
+   */
+  warnings?: string[];
 }
 
 /** Probe outcome for one spec, shaped for the wizard UI. */
@@ -140,6 +147,12 @@ export interface DependencyReport {
   missingOptional: string[];
   /** Set when the probe itself broke (the wizard then shows a soft warning). */
   error?: string;
+  /**
+   * Plan-level advisories (unknown template id, manual post-create steps), copied
+   * from `ProjectDependencyPlan.warnings`. Absent when the plan has nothing to say,
+   * so a known template's report keeps its legacy shape.
+   */
+  warnings?: string[];
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -457,15 +470,87 @@ function pandocCheck(): DependencySpec {
   };
 }
 
+/**
+ * Playwright's browser download, represented as an OPTIONAL check — never an
+ * auto-install step (docs/test-automation.md §8, decision T7).
+ *
+ * `npx playwright install --with-deps` pulls a few hundred megabytes and fails
+ * behind a corporate proxy, so the wizard only warns and hands the user the
+ * command. Being optional it lands in `missingOptional` and can never gate *Next*.
+ *
+ * The probe asks whether a `playwright` CLI answers on PATH. A project that has
+ * not run `npm install` yet therefore reports "missing" — which is the honest
+ * answer, because its browsers are not there either.
+ */
+function playwrightBrowsersCheck(): DependencySpec {
+  const command = 'npx playwright install --with-deps';
+  return {
+    id: 'playwright',
+    label: 'Playwright browsers (optional)',
+    why: `The e2e specs drive Chromium/Firefox/WebKit; run \`${command}\` once after installing packages.`,
+    kind: 'cli',
+    // Optional: a missing browser never blocks the wizard, it only warns.
+    required: false,
+    probes: [{ cmd: 'playwright', args: ['--version'] }],
+    install: {
+      win: command,
+      mac: command,
+      linux: command,
+      url: 'https://playwright.dev/docs/browsers',
+      note: `Downloads the browsers, so it needs the network and can fail behind a corporate proxy — re-run \`${command}\` when it does. It is deliberately never part of the automatic install.`,
+    },
+  };
+}
+
 // ──────────────────────────────────────────────────────────────
 // Template mapping
 // ──────────────────────────────────────────────────────────────
 
 /**
- * What a template needs on this machine. Unknown template ids fall back to the
- * Git-only plan so an added template never crashes the wizard.
+ * Template ids whose plan is intentionally Git-only: the empty scaffold writes a
+ * README, a .gitignore and a licence, so there is no toolchain to probe. Derived
+ * from the catalogue in
+ * `src/webview-ui/src/components/ProjectCreationWizard/types.ts` — anything else
+ * that reaches the fallback is an unknown id and must say so (finding T-F7).
+ */
+export const GIT_ONLY_TEMPLATE_IDS: readonly string[] = ['empty'];
+
+/**
+ * App templates that carry the `testAutomation` option group
+ * (docs/test-automation.md §6), plus the monorepo, whose suite also lives at the
+ * repo root and covers every service.
+ */
+const TEST_AUTOMATION_APP_TEMPLATES: readonly string[] = [
+  'node-ts',
+  'node-js',
+  'python',
+  'php-laravel',
+  'dotnet-webapi',
+  'monorepo-microservices',
+];
+
+/** Where the suite lands inside an app project (§7) — one level down, own manifest. */
+const SUITE_DIR = 'tests';
+
+/**
+ * What a template needs on this machine.
+ *
+ * `options` is the request's template options, which makes the plan
+ * context-aware: the `testAutomation` option group adds the suite's Node
+ * toolchain and its install to an app template's plan. With that option absent —
+ * or `'none'` — every catalogue template keeps exactly the plan it had before
+ * the group existed.
  */
 export function planForTemplate(
+  templateId: string,
+  options: Record<string, unknown> = {},
+  opts: { gitInit?: boolean } = {},
+): ProjectDependencyPlan {
+  return withTestAutomationSuite(basePlanForTemplate(templateId, options, opts), templateId, options);
+}
+
+/** The per-template table; `planForTemplate` layers the option group on top. */
+function basePlanForTemplate(
   templateId: string,
   options: Record<string, unknown> = {},
   opts: { gitInit?: boolean } = {},
@@ -476,6 +561,7 @@ export function planForTemplate(
 
   const str = (key: string): string => (typeof options[key] === 'string' ? (options[key] as string) : '');
   const bool = (key: string): boolean => options[key] !== false;
+  const truthy = (key: string): boolean => !!options[key];
 
   switch (templateId) {
     case 'node-ts':
@@ -564,12 +650,92 @@ export function planForTemplate(
         },
       ]);
 
+    // Standalone suite repo (docs/test-automation.md §3–§5): a TypeScript suite
+    // whatever the app stack, so the toolchain is Node/npm plus the VCS. k6 is
+    // documented, never installed (§8) — no check, no auto-install for it.
+    case 'test-automation': {
+      const checks = nodeChecks();
+      // qaDocs renders the tester document set; its Word/PDF export needs pandoc,
+      // which stays optional (the Markdown sources are the source of truth).
+      if (truthy('qaDocs')) checks.push(pandocCheck());
+      // Browsers are a warned, optional item — never an automatic download (§8).
+      if (bool('e2e')) checks.push(playwrightBrowsersCheck());
+      return withGit(checks, nodeAutoInstall());
+    }
+
     case 'doc-ba':
     case 'doc-writer':
     case 'doc-tester':
       return { checks: [pandocCheck(), gitCheck(false)], autoInstall: [] };
 
-    default:
+    // Documented Git-only target: nothing to install, nothing to warn about.
+    case 'empty':
       return { checks: [gitCheck(false)], autoInstall: [] };
+
+    default:
+      // A template id the catalogue does not know. Say so instead of the old
+      // silent git-only fallback, which made a suite look dependency-free (T-F7).
+      return {
+        checks: [gitCheck(false)],
+        autoInstall: [],
+        warnings: [
+          `Unknown project template "${templateId}" — its toolchain cannot be derived, so only Git is checked. Verify the template id.`,
+        ],
+      };
   }
+}
+
+/** Suite option as the wizard writes it: `none | playwright | api | playwright+api`. */
+function testAutomationKind(options: Record<string, unknown>): string {
+  const raw = options.testAutomation;
+  if (typeof raw !== 'string') return 'none';
+  const value = raw.trim().toLowerCase();
+  return value === '' ? 'none' : value;
+}
+
+function suiteAutoInstall(): AutoInstallStep {
+  return {
+    id: 'npm-install-suite',
+    label: `Install the test suite packages (npm install --prefix ${SUITE_DIR})`,
+    cmd: 'npm',
+    args: ['install', '--prefix', SUITE_DIR],
+    requiresFile: `${SUITE_DIR}/package.json`,
+  };
+}
+
+/**
+ * Context-awareness for the app templates (docs/test-automation.md §6): when the
+ * request asks for a test suite the tree grows a `tests/` folder, and that suite
+ * is TypeScript for every stack — so Node/npm join the plan even on a Python or
+ * .NET app, and the template's own checks are kept.
+ *
+ * The install stays one root-level step (`npm install --prefix tests` run from the
+ * project root) because the multi-manifest rule forbids a step per manifest;
+ * `requiresFile` gates it on the suite's own package.json, so a stack that ships
+ * the suite's manifest elsewhere simply skips it. Nothing is added when
+ * `testAutomation` is absent or `'none'`, which keeps legacy plans byte-identical.
+ */
+function withTestAutomationSuite(
+  plan: ProjectDependencyPlan,
+  templateId: string,
+  options: Record<string, unknown>,
+): ProjectDependencyPlan {
+  if (!TEST_AUTOMATION_APP_TEMPLATES.includes(templateId)) return plan;
+  const kind = testAutomationKind(options);
+  if (kind === 'none') return plan;
+
+  const git = plan.checks.find(check => check.id === 'git');
+  const checks = plan.checks.filter(check => check.id !== 'git');
+  if (!checks.some(check => check.id === 'node')) checks.push(...nodeChecks());
+  if (kind.includes('playwright') && !checks.some(check => check.id === 'playwright')) {
+    checks.push(playwrightBrowsersCheck());
+  }
+  // Git stays the last check, where every template keeps it.
+  if (git) checks.push(git);
+
+  const autoInstall = plan.autoInstall.some(step => step.id === 'npm-install-suite')
+    ? plan.autoInstall
+    : [...plan.autoInstall, suiteAutoInstall()];
+
+  return { checks, autoInstall };
 }

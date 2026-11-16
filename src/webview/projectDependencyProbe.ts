@@ -146,7 +146,14 @@ export interface CheckOptions {
   isCancelled?: () => boolean;
 }
 
-/** Full report for a template; the `error` field is set instead of throwing. */
+/**
+ * Full report for a template; the `error` field is set instead of throwing.
+ *
+ * Plan-level advisories (`plan.warnings`, e.g. an unknown template id) ride along
+ * in `report.warnings` so the wizard can show them instead of guessing. The field
+ * is omitted when the plan has nothing to say, which keeps known templates' reports
+ * exactly as they were.
+ */
 export async function checkProjectDependencies(
   templateId: string,
   options: Record<string, unknown> = {},
@@ -170,6 +177,7 @@ export async function checkProjectDependencies(
       autoInstall: plan.autoInstall,
       missingRequired: checks.filter(c => !c.ok && c.required).map(c => c.label),
       missingOptional: checks.filter(c => !c.ok && !c.required).map(c => c.label),
+      ...(plan.warnings?.length ? { warnings: plan.warnings } : {}),
     };
   } catch (e) {
     return {
@@ -179,6 +187,7 @@ export async function checkProjectDependencies(
       missingRequired: [],
       missingOptional: [],
       error: (e as Error)?.message || String(e),
+      ...(plan.warnings?.length ? { warnings: plan.warnings } : {}),
     };
   }
 }

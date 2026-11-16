@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import {
+    GIT_ONLY_TEMPLATE_IDS,
     compareVersions,
     dependencyGate,
     guidanceFor,
@@ -7,6 +8,7 @@ import {
     parseVersion,
     planForTemplate,
 } from '../../../shared/projectDependencies';
+import { PROJECT_TEMPLATES } from '../../../webview-ui/src/components/ProjectCreationWizard/types';
 import {
     checkProjectDependencies,
     runAutoInstalls,
@@ -172,6 +174,144 @@ suite('shared/projectDependencies', () => {
         test('unknown template falls back to the git-only plan', () => {
             assert.deepStrictEqual(planForTemplate('does-not-exist').checks.map(c => c.id), ['git']);
         });
+
+        // ── the standalone suite repo (docs/test-automation.md §8) ───────────────
+
+        test('test-automation needs Node + npm + git and installs packages itself', () => {
+            const plan = planForTemplate('test-automation');
+            assert.deepStrictEqual(plan.checks.map(c => c.id), ['node', 'npm', 'playwright', 'git']);
+            const node = plan.checks.find(c => c.id === 'node')!;
+            const npm = plan.checks.find(c => c.id === 'npm')!;
+            // Same specs the Node app templates probe — one toolchain, one table.
+            const nodeTemplate = planForTemplate('node-ts');
+            assert.deepStrictEqual(node, nodeTemplate.checks.find(c => c.id === 'node'));
+            assert.deepStrictEqual(npm, nodeTemplate.checks.find(c => c.id === 'npm'));
+            assert.strictEqual(node.required, true);
+            assert.strictEqual(npm.required, true);
+            assert.strictEqual(plan.checks.find(c => c.id === 'git')!.required, true, 'git is required like the other templates');
+            assert.deepStrictEqual(
+                plan.autoInstall.map(s => [s.id, s.cmd, s.args, s.requiresFile]),
+                [['npm-install', 'npm', ['install'], 'package.json']],
+            );
+            assert.strictEqual(plan.warnings, undefined, 'a catalogue template needs no advisory');
+        });
+
+        test('test-automation keeps k6 and the browser download out of the plan', () => {
+            const plan = planForTemplate('test-automation');
+            assert.ok(!plan.checks.some(c => c.id === 'k6'), 'k6 is documented, never installed — so no check');
+            assert.ok(
+                !plan.autoInstall.some(s => s.args.some(a => a.includes('playwright'))),
+                'the browser download must never be automatic',
+            );
+            const browsers = plan.checks.find(c => c.id === 'playwright')!;
+            assert.strictEqual(browsers.required, false, 'a proxy-blocked download is a warning, not a gate');
+            assert.ok(browsers.why.includes('npx playwright install --with-deps'), 'the item names the command to run');
+            assert.ok(browsers.install?.note?.includes('never part of the automatic install'));
+            // The plan type has checks + autoInstall only, so the optional check IS
+            // the non-blocking channel (the generator's postCreateSteps are not ours).
+            assert.deepStrictEqual(Object.keys(plan), ['checks', 'autoInstall']);
+        });
+
+        test('an api-only suite still needs Node/npm, but has no browsers to fetch', () => {
+            const plan = planForTemplate('test-automation', { e2e: false, api: false });
+            assert.ok(plan.checks.some(c => c.id === 'node' && c.required), 'the suite still needs a toolchain');
+            assert.ok(plan.checks.some(c => c.id === 'npm' && c.required));
+            assert.ok(!plan.checks.some(c => c.id === 'playwright'), 'no e2e folder, nothing to download');
+            assert.deepStrictEqual(plan.autoInstall.map(s => s.id), ['npm-install']);
+        });
+
+        test('qaDocs adds pandoc as an optional export check', () => {
+            const plan = planForTemplate('test-automation', { qaDocs: true });
+            assert.strictEqual(plan.checks.find(c => c.id === 'pandoc')!.required, false);
+            assert.ok(!planForTemplate('test-automation').checks.some(c => c.id === 'pandoc'), 'off by default');
+        });
+
+        // ── the option group on app templates (§6) ──────────────────────────────
+
+        test('an app template with a requested suite adds Node/npm and the suite install', () => {
+            const legacy = planForTemplate('node-ts');
+            const plan = planForTemplate('node-ts', { testAutomation: 'playwright' });
+            assert.deepStrictEqual(plan.checks.map(c => c.id), ['node', 'npm', 'playwright', 'git']);
+            // The template's own checks survive untouched, git stays last.
+            assert.deepStrictEqual(plan.checks.slice(0, 2), legacy.checks.slice(0, 2));
+            assert.strictEqual(plan.checks[plan.checks.length - 1].id, 'git');
+            assert.deepStrictEqual(plan.autoInstall.map(s => s.id), ['npm-install', 'npm-install-suite']);
+            const suite = plan.autoInstall[1];
+            assert.deepStrictEqual(suite.args, ['install', '--prefix', 'tests'], 'root-only: one step, from the project root');
+            assert.strictEqual(suite.requiresFile, 'tests/package.json', 'gated on the suite manifest');
+        });
+
+        test('a non-Node app keeps its toolchain and gains npm for the suite', () => {
+            const plan = planForTemplate('python', { testAutomation: 'api' });
+            assert.deepStrictEqual(plan.checks.map(c => c.id), ['python', 'pip', 'node', 'npm', 'git']);
+            assert.deepStrictEqual(plan.autoInstall.map(s => s.id), ['pip-install', 'npm-install-suite']);
+            assert.ok(!plan.checks.some(c => c.id === 'playwright'), 'api-only: no browser download');
+        });
+
+        test("'none' is the legacy plan for every catalogue template", () => {
+            for (const template of PROJECT_TEMPLATES) {
+                assert.deepStrictEqual(
+                    planForTemplate(template.id, { testAutomation: 'none' }),
+                    planForTemplate(template.id),
+                    `${template.id}: testAutomation 'none' must not change the plan`,
+                );
+            }
+        });
+
+        // Hard constraint (decision T4): the context-aware plan must still reproduce
+        // today's plan byte for byte when no suite is requested. The table is that
+        // frozen legacy shape — ids, order and the install steps.
+        const LEGACY_PLANS: Array<[string, string[], string[]]> = [
+            ['node-ts', ['node', 'npm', 'git'], ['npm-install']],
+            ['node-js', ['node', 'npm', 'git'], ['npm-install']],
+            ['react-ts', ['node', 'npm', 'git'], ['npm-install']],
+            ['python', ['python', 'pip', 'git'], ['pip-install']],
+            ['php-laravel', ['php', 'composer', 'git'], ['composer-install']],
+            ['dotnet-webapi', ['dotnet', 'git'], ['dotnet-restore']],
+            ['flutter', ['flutter', 'dart', 'java', 'git'], ['flutter-pub-get']],
+            ['doc-ba', ['pandoc', 'git'], []],
+            ['empty', ['git'], []],
+        ];
+        for (const [id, checkIds, installIds] of LEGACY_PLANS) {
+            test(`"${id}" keeps its plan shape when no suite is requested`, () => {
+                const plan = planForTemplate(id);
+                assert.deepStrictEqual(plan.checks.map(c => c.id), checkIds);
+                assert.deepStrictEqual(plan.autoInstall.map(s => s.id), installIds);
+                assert.deepStrictEqual(Object.keys(plan), ['checks', 'autoInstall'], 'no extra plan fields');
+                assert.strictEqual(plan.warnings, undefined);
+            });
+        }
+
+        // ── finding T-F7: an unknown id must not be silent ──────────────────────
+
+        test('an unknown id warns instead of silently probing only git', () => {
+            const plan = planForTemplate('definitely-not-a-template');
+            assert.deepStrictEqual(plan.checks.map(c => c.id), ['git'], 'the fallback plan is still git-only');
+            assert.strictEqual(plan.warnings?.length, 1);
+            assert.ok(plan.warnings[0].includes('definitely-not-a-template'), 'the warning names the id');
+            assert.ok(plan.warnings[0].includes('only Git is checked'), 'and says what the plan could do');
+        });
+
+        test('the documented git-only template is silent, unlike an unknown id', () => {
+            assert.deepStrictEqual(GIT_ONLY_TEMPLATE_IDS, ['empty'], 'derived from the catalogue, not invented');
+            for (const id of GIT_ONLY_TEMPLATE_IDS) {
+                const plan = planForTemplate(id);
+                assert.strictEqual(plan.warnings, undefined, `${id} is a documented git-only target`);
+                assert.deepStrictEqual(plan.checks.map(c => c.id), ['git']);
+            }
+        });
+
+        // Drift guard: catalogue, plan table and warning must agree — a template
+        // added without a plan case fails here instead of probing git only.
+        test('every catalogue template is handled by the plan table', () => {
+            for (const template of PROJECT_TEMPLATES) {
+                assert.strictEqual(
+                    planForTemplate(template.id).warnings,
+                    undefined,
+                    `"${template.id}" fell through to the unknown-template warning`,
+                );
+            }
+        });
     });
 
     suite('checkProjectDependencies', () => {
@@ -220,6 +360,25 @@ suite('shared/projectDependencies', () => {
             const report = await checkProjectDependencies('python', {}, {}, { run, platform: 'darwin', env: false });
             assert.strictEqual(report.checks.find(c => c.id === 'python')!.version, '3.11.4');
             assert.deepStrictEqual(report.missingRequired, []);
+        });
+
+        test('plan advisories travel with the report and never gate', async () => {
+            const run = fakeRunner({ git: { ok: true, output: 'git version 2.44.0' } });
+            const report = await checkProjectDependencies('definitely-not-a-template', {}, {}, { run, platform: 'linux', env: false });
+            assert.strictEqual(report.warnings?.length, 1, 'the plan warning is surfaced');
+            assert.ok(report.warnings[0].includes('definitely-not-a-template'));
+            assert.deepStrictEqual(report.missingRequired, []);
+            assert.strictEqual(dependencyGate(report, false).blocked, false);
+        });
+
+        test('a known template carries no warnings field, so the legacy shape stays', async () => {
+            const run = fakeRunner({
+                node: { ok: true, output: 'v20.11.1' },
+                npm: { ok: true, output: '10.2.4' },
+                git: { ok: true, output: 'git version 2.44.0' },
+            });
+            const report = await checkProjectDependencies('node-ts', {}, {}, { run, platform: 'win32', env: false });
+            assert.strictEqual('warnings' in report, false);
         });
 
         test('a thrown runner becomes a soft error, never a rejection', async () => {

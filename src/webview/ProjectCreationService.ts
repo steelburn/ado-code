@@ -4,6 +4,45 @@ import { execFile } from 'child_process';
 import { PostCreateStep, ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
 import { DocProjectSpec, DOC_PROJECT_SPECS } from '../shared/documentation/docTemplates';
 import { scaffoldDocumentationProject } from '../shared/documentation/scaffoldDocs';
+import { ScaffoldContext, resolveContainerization } from '../shared/scaffoldContext';
+
+/**
+ * The values the three monorepo writers share.
+ *
+ * Derived once per request so a writer cannot invent its own ports, workspace
+ * tooling or script names: ports feed the gateway routes, the Dockerfiles, the
+ * compose file and the README, and a mismatch there stays invisible until
+ * `docker compose up` fails. The phase-2 golden tree pins every value.
+ */
+interface MonorepoPlan {
+  name: string;
+  version: string;
+  description: string;
+  /** npm scope for package names, e.g. `demo-app`. */
+  scope: string;
+  /** Workspace tool: npm / pnpm / yarn / turborepo / nx. */
+  tool: string;
+  /** Every service, gateway first. */
+  services: string[];
+  /** The `gateway` service when one was requested, else ''. */
+  gateway: string;
+  domainServices: string[];
+  withShared: boolean;
+  broker: string;
+  k8s: boolean;
+  tooling: boolean;
+  isPnpm: boolean;
+  /** npm/yarn carry a `workspaces` field; pnpm uses pnpm-workspace.yaml. */
+  useWorkspacesField: boolean;
+  buildScript: string;
+  devScript: string;
+  testScript: string;
+  installCommand: string;
+  sharedName: string;
+  brokerUrl: string;
+  portOf: (service: string) => number;
+  envVar: (service: string) => string;
+}
 
 /**
  * Scaffolds new projects from wizard requests. Deliberately vscode-free so it
@@ -2205,18 +2244,68 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
   // ──────────────────────────────────────────────
   //  Monorepo — Microservices
   // ──────────────────────────────────────────────
+
+  /**
+   * Deprecated `monorepo-microservices` entry point: a TypeScript Node
+   * workspace, so the shape is `monorepoRoot` + one `serviceBody` per service +
+   * `compose`.
+   *
+   * The template predates the architecture rule and still owns its own `docker`
+   * flag, so it asks `resolveContainerization` to honour that flag rather than
+   * forcing containerization on — existing requests must keep their exact tree.
+   * Phase 6 replaces this entry point with `node-ts` + `architecture:
+   * microservices`; the three writers stay as they are.
+   */
   private async scaffoldMonorepoMicroservices(
     dir: string,
     request: ProjectCreationRequest,
     warnings: string[] = []
   ): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+
+    const containerization = resolveContainerization({
+      architecture: 'microservices',
+      docker: request.templateOptions.docker !== false,
+      honourDockerOption: true,
+    });
+    const context: ScaffoldContext = {
+      templateId: 'monorepo-microservices',
+      stack: 'node-ts',
+      architecture: 'microservices',
+      containerization: containerization.policy,
+      ci: request.templateOptions.ci === false ? 'none' : 'github',
+    };
+    const plan = this.monorepoPlan(request);
+
+    this.monorepoRoot(dir, context, plan);
+    for (const service of plan.services) {
+      this.serviceBody(dir, context, plan, service);
+    }
+    this.compose(dir, context, plan);
+
+    warnings.push(...containerization.warnings);
+    if (plan.broker !== 'none' && !context.containerization.dockerEnabled) {
+      warnings.push(
+        `A ${plan.broker} broker is expected at ${plan.brokerUrl} — start it yourself or regenerate with Docker Compose enabled.`
+      );
+    }
+    if (!plan.gateway) {
+      warnings.push('No `gateway` service was requested: clients must call each service port directly.');
+    }
+  }
+
+  /**
+   * Derive the monorepo shape from the wizard request. Everything here is
+   * deterministic — same request, same ports, script names and broker URL —
+   * which is what makes the golden tree reproducible.
+   */
+  private monorepoPlan(request: ProjectCreationRequest): MonorepoPlan {
     const {
       projectName: name,
       projectVersion: version,
       projectDescription: description,
       templateOptions: opts,
     } = request;
-    fs.mkdirSync(dir, { recursive: true });
 
     const scope = this.slug(name, 'platform');
     const tool = typeof opts.workspaceTool === 'string' ? opts.workspaceTool : 'npm';
@@ -2225,9 +2314,7 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
     const domainServices = services.filter((service) => service !== gateway);
     const withShared = opts.sharedPackage !== false;
     const broker = typeof opts.messageBroker === 'string' ? opts.messageBroker : 'none';
-    const docker = opts.docker !== false;
     const k8s = opts.k8s === true;
-    const ci = opts.ci !== false;
     const tooling = opts.tooling !== false;
 
     // Deterministic ports: gateway first, then one port per domain service.
@@ -2283,6 +2370,59 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
             ? 'nx run-many -t test'
             : 'npm run test --workspaces --if-present';
     const installCommand = isPnpm ? 'pnpm install --frozen-lockfile=false' : 'npm install';
+
+    return {
+      name,
+      version,
+      description,
+      scope,
+      tool,
+      services: gateway ? [gateway, ...domainServices] : domainServices,
+      gateway,
+      domainServices,
+      withShared,
+      broker,
+      k8s,
+      tooling,
+      isPnpm,
+      useWorkspacesField,
+      buildScript,
+      devScript,
+      testScript,
+      installCommand,
+      sharedName: `@${scope}/shared`,
+      brokerUrl,
+      portOf,
+      envVar,
+    };
+  }
+
+  /** Workspace root: manifests, tooling config, shared package, root docs + CI. */
+  private monorepoRoot(dir: string, ctx: ScaffoldContext, plan: MonorepoPlan): void {
+    const {
+      name,
+      version,
+      description,
+      scope,
+      tool,
+      services,
+      gateway,
+      withShared,
+      broker,
+      tooling,
+      portOf,
+      isPnpm,
+      useWorkspacesField,
+      buildScript,
+      devScript,
+      testScript,
+      installCommand,
+      sharedName,
+      brokerUrl,
+      k8s,
+    } = plan;
+    const docker = ctx.containerization.dockerEnabled;
+    const ci = ctx.ci !== 'none';
 
     // ── root package.json ─────────────────────────
     const rootDevDependencies: Record<string, string> = {
@@ -2410,7 +2550,6 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
     }
 
     // ── shared contracts package ──────────────────
-    const sharedName = `@${scope}/shared`;
     if (withShared) {
       this.writeProjectFile(
         dir,
@@ -2544,71 +2683,220 @@ export function createBroker(): MessageBroker {
       }
     }
 
-    // ── services ──────────────────────────────────
-    const serviceNames = gateway ? [gateway, ...domainServices] : domainServices;
-    for (const service of serviceNames) {
-      const isGateway = service === gateway;
-      const port = portOf(service);
-      const packageName = `@${scope}/${service}`;
-      const serviceDependencies: Record<string, string> = withShared ? { [sharedName]: '*' } : {};
-
+    // ── CI, architecture and README ───────────────
+    if (ci) {
+      const installStep = isPnpm
+        ? `      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile=false`
+        : tool === 'yarn'
+          ? '      - run: yarn install --immutable'
+          : '      - run: npm ci';
+      const buildStep = isPnpm
+        ? `pnpm --filter @${scope}/\${{ matrix.service }}... build`
+        : tool === 'yarn'
+          ? `yarn workspace @${scope}/\${{ matrix.service }} build`
+          : tool === 'turborepo'
+            ? `npx turbo run build --filter=@${scope}/\${{ matrix.service }}`
+            : tool === 'nx'
+              ? `npx nx run @${scope}/\${{ matrix.service }}:build`
+              : `npm run build --workspace @${scope}/\${{ matrix.service }}`;
       this.writeProjectFile(
         dir,
-        `services/${service}/package.json`,
-        `${JSON.stringify(
-          {
-            name: packageName,
-            version: version || '0.1.0',
-            private: true,
-            main: 'dist/index.js',
-            scripts: {
-              build: 'tsc -p tsconfig.json',
-              dev: 'tsx watch src/index.ts',
-              start: 'node dist/index.js',
-              test: 'node --test',
-            },
-            dependencies: serviceDependencies,
-            devDependencies: { tsx: '^4.16.2', typescript: '^5.5.4', '@types/node': '^20.14.12' },
-          },
-          null,
-          2
-        )}\n`
-      );
+        '.github/workflows/ci.yml',
+        `name: ci
 
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [${services.join(', ')}]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: ${isPnpm ? 'pnpm' : tool === 'yarn' ? 'yarn' : 'npm'}
+${installStep}
+      - run: ${buildStep}
+      - name: Verify docker build
+        run: docker build -f services/$\{{ matrix.service }}/Dockerfile .
+`
+      );
+    }
+
+    this.writeProjectFile(
+      dir,
+      'ARCHITECTURE.md',
+      `# ${name} — microservices architecture
+
+${description || 'Monorepo hosting a set of independently deployable services.'}
+
+## Service catalog
+
+| Service | Folder | Port | Responsibility |
+| --- | --- | --- | --- |
+${services
+  .map(
+    (service) =>
+      `| ${service} | \`services/${service}\` | ${portOf(service)} | ${
+        service === gateway ? 'single entry point, routes traffic to domain services' : 'domain service (owns its own data)'
+      } |`
+  )
+  .join('\n')}
+
+${withShared ? `## Shared contracts
+
+\`packages/${sharedName.split('/')[1]}\` (\`${sharedName}\`) holds DTOs, event envelopes and the health payload. It is
+versioned with the repo and consumed as a workspace dependency — never copy types between services.
+
+` : ''}## Rules
+
+1. **One deployable per folder.** A service never imports another service's source; cross-service calls go
+   through HTTP or the broker.
+2. **Data ownership.** Each service owns its store; no shared database schema.
+3. **Contracts first.** Change \`${sharedName}\` before changing producers/consumers, and keep events backward compatible.
+4. **Failure isolation.** Every service exposes \`/health\` and \`/ready\`; callers set timeouts and degrade gracefully.
+${broker !== 'none' ? `5. **Async by default.** Use the ${broker} broker for side effects (notifications, projections) and HTTP only for request/response.\n` : ''}${gateway ? `${broker !== 'none' ? '6' : '5'}. **Single entry point.** Clients talk to \`${gateway}\` only; it maps \`/<service>\` prefixes to service URLs (see \`services/${gateway}/src/index.ts\`).\n` : ''}
+## Local development
+
+\`\`\`bash
+${installCommand}
+${devScript.replace(/^npm run dev/, 'npm run dev')}
+\`\`\`
+${docker ? '\nOr the whole stack in containers:\n\n```bash\ndocker compose up --build\n```\n' : ''}`
+    );
+
+    this.writeProjectFile(
+      dir,
+      'README.md',
+      `# ${name}
+
+${description || 'TypeScript microservices monorepo.'}
+
+Workspace tooling: **${tool}** · Services: ${services.map((service) => `\`${service}\``).join(', ')}
+${broker !== 'none' ? `\nMessage broker: **${broker}** (\`${brokerUrl}\`)` : ''}
+
+## Getting started
+
+\`\`\`bash
+${installCommand}
+${devScript}
+\`\`\`
+${docker ? '\nEverything in containers:\n\n```bash\ndocker compose up --build\ndocker compose down\n```\n' : ''}
+## Layout
+
+\`\`\`
+${useWorkspacesField ? 'package.json          workspaces: services/*, packages/*' : 'pnpm-workspace.yaml    workspaces: services/*, packages/*'}
+${tooling ? 'tsconfig.base.json    shared TypeScript config\n' : ''}${tool === 'turborepo' ? 'turbo.json            task graph + caching\n' : ''}${tool === 'nx' ? 'nx.json               task graph\n' : ''}services/
+${services.map((service) => `  ${service}/           src/index.ts${docker ? ', Dockerfile' : ''}`).join('\n')}
+${withShared ? `packages/shared/      contracts, health, ${broker !== 'none' ? 'broker' : 'shared helpers'}\n` : ''}${docker ? 'docker-compose.yml    local stack\n' : ''}${k8s ? 'deploy/k8s/           Kubernetes manifests\n' : ''}ARCHITECTURE.md       service boundaries and rules
+\`\`\`
+
+## Scripts
+
+| Script | Does |
+| --- | --- |
+| \`build\` | ${buildScript} |
+| \`dev\` | ${devScript} |
+| \`test\` | ${testScript} |
+${docker ? '| `docker:up` | `docker compose up --build` |\n| `docker:down` | `docker compose down` |\n' : ''}
+Every service listens on its own port and exposes \`/health\` and \`/ready\`.
+`
+    );
+
+    this.writeGitignore(dir, ctx.templateId);
+  }
+
+  /** One self-contained service: manifest, tsconfig, entrypoint, Dockerfile, k8s. */
+  private serviceBody(dir: string, ctx: ScaffoldContext, plan: MonorepoPlan, service: string): void {
+    const {
+      version,
+      scope,
+      withShared,
+      sharedName,
+      tooling,
+      isPnpm,
+      installCommand,
+      broker,
+      brokerUrl,
+      domainServices,
+      gateway,
+      k8s,
+      portOf,
+      envVar,
+    } = plan;
+    const docker = ctx.containerization.dockerEnabled;
+    const isGateway = service === gateway;
+    const port = portOf(service);
+    const packageName = `@${scope}/${service}`;
+    const serviceDependencies: Record<string, string> = withShared ? { [sharedName]: '*' } : {};
+
+    this.writeProjectFile(
+      dir,
+      `services/${service}/package.json`,
+      `${JSON.stringify(
+        {
+          name: packageName,
+          version: version || '0.1.0',
+          private: true,
+          main: 'dist/index.js',
+          scripts: {
+            build: 'tsc -p tsconfig.json',
+            dev: 'tsx watch src/index.ts',
+            start: 'node dist/index.js',
+            test: 'node --test',
+          },
+          dependencies: serviceDependencies,
+          devDependencies: { tsx: '^4.16.2', typescript: '^5.5.4', '@types/node': '^20.14.12' },
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    this.writeProjectFile(
+      dir,
+      `services/${service}/tsconfig.json`,
+      `${JSON.stringify(
+        {
+          extends: tooling ? '../../tsconfig.base.json' : undefined,
+          compilerOptions: {
+            rootDir: 'src',
+            outDir: 'dist',
+            ...(tooling ? {} : { target: 'ES2022', module: 'commonjs', strict: true, declaration: true }),
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    const healthImport = withShared ? "import { healthResponse } from '" + sharedName + "';" : '';
+    const healthInline = withShared
+      ? 'JSON.stringify(healthResponse(SERVICE, VERSION))'
+      : "JSON.stringify({ status: 'ok', service: SERVICE, version: VERSION })";
+
+    if (isGateway) {
+      const routeLines = domainServices
+        .map(
+          (target) =>
+            `  '/${target}': process.env.${envVar(target)} ?? 'http://localhost:${portOf(target)}',`
+        )
+        .join('\n');
       this.writeProjectFile(
         dir,
-        `services/${service}/tsconfig.json`,
-        `${JSON.stringify(
-          {
-            extends: tooling ? '../../tsconfig.base.json' : undefined,
-            compilerOptions: {
-              rootDir: 'src',
-              outDir: 'dist',
-              ...(tooling ? {} : { target: 'ES2022', module: 'commonjs', strict: true, declaration: true }),
-            },
-            include: ['src/**/*.ts'],
-          },
-          null,
-          2
-        )}\n`
-      );
-
-      const healthImport = withShared ? "import { healthResponse } from '" + sharedName + "';" : '';
-      const healthInline = withShared
-        ? 'JSON.stringify(healthResponse(SERVICE, VERSION))'
-        : "JSON.stringify({ status: 'ok', service: SERVICE, version: VERSION })";
-
-      if (isGateway) {
-        const routeLines = domainServices
-          .map(
-            (target) =>
-              `  '/${target}': process.env.${envVar(target)} ?? 'http://localhost:${portOf(target)}',`
-          )
-          .join('\n');
-        this.writeProjectFile(
-          dir,
-          `services/${service}/src/index.ts`,
-          `import { createServer, request } from 'node:http';
+        `services/${service}/src/index.ts`,
+        `import { createServer, request } from 'node:http';
 ${healthImport}
 
 const SERVICE = 'gateway';
@@ -2663,12 +2951,12 @@ server.listen(PORT, () => {
   }
 });
 `
-        );
-      } else {
-        this.writeProjectFile(
-          dir,
-          `services/${service}/src/index.ts`,
-          `import { createServer } from 'node:http';
+      );
+    } else {
+      this.writeProjectFile(
+        dir,
+        `services/${service}/src/index.ts`,
+        `import { createServer } from 'node:http';
 ${healthImport}
 
 const SERVICE = '${service}';
@@ -2704,14 +2992,14 @@ server.listen(PORT, () => {
   console.log('[' + SERVICE + '] listening on http://localhost:' + PORT);
 ${broker !== 'none' ? "  console.log('[' + SERVICE + '] broker ' + BROKER_URL);\n" : ''}});
 `
-        );
-      }
+      );
+    }
 
-      if (docker) {
-        this.writeProjectFile(
-          dir,
-          `services/${service}/Dockerfile`,
-          `# Build from the repo root: docker build -f services/${service}/Dockerfile .
+    if (docker) {
+      this.writeProjectFile(
+        dir,
+        `services/${service}/Dockerfile`,
+        `# Build from the repo root: docker build -f services/${service}/Dockerfile .
 FROM node:20-alpine AS build
 WORKDIR /workspace
 COPY package*.json ${isPnpm ? 'pnpm-workspace.yaml ' : ''}./
@@ -2730,14 +3018,14 @@ COPY --from=build /workspace/node_modules ./node_modules
 EXPOSE ${port}
 CMD ["node", "dist/index.js"]
 `
-        );
-      }
+      );
+    }
 
-      if (k8s) {
-        this.writeProjectFile(
-          dir,
-          `deploy/k8s/${service}.yaml`,
-          `apiVersion: apps/v1
+    if (k8s) {
+      this.writeProjectFile(
+        dir,
+        `deploy/k8s/${service}.yaml`,
+        `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ${service}
@@ -2787,13 +3075,16 @@ spec:
     - port: ${port}
       targetPort: ${port}
 `
-        );
-      }
+      );
     }
+  }
 
-    // ── compose, env, CI, docs ────────────────────
-    if (docker) {
-      const composeServices = serviceNames
+  /** Containerization: the compose file, the root .dockerignore and the env sample. */
+  private compose(dir: string, ctx: ScaffoldContext, plan: MonorepoPlan): void {
+    const { services, domainServices, gateway, broker, brokerUrl, k8s, portOf, envVar } = plan;
+
+    if (ctx.containerization.compose) {
+      const composeServices = services
         .map((service) => {
           const port = portOf(service);
           const targets = domainServices
@@ -2864,151 +3155,12 @@ ${k8s ? 'deploy\n' : ''}`
       dir,
       '.env.example',
       `# Copy to .env and adjust for local runs (compose supplies these automatically)
-${serviceNames
+${services
   .map((service) => `PORT_${service.replace(/-/g, '_').toUpperCase()}=${portOf(service)}`)
   .join('\n')}
 ${domainServices.map((service) => `${envVar(service)}=http://localhost:${portOf(service)}`).join('\n')}
 ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
     );
-
-    if (ci) {
-      const installStep = isPnpm
-        ? `      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - run: pnpm install --frozen-lockfile=false`
-        : tool === 'yarn'
-          ? '      - run: yarn install --immutable'
-          : '      - run: npm ci';
-      const buildStep = isPnpm
-        ? `pnpm --filter @${scope}/\${{ matrix.service }}... build`
-        : tool === 'yarn'
-          ? `yarn workspace @${scope}/\${{ matrix.service }} build`
-          : tool === 'turborepo'
-            ? `npx turbo run build --filter=@${scope}/\${{ matrix.service }}`
-            : tool === 'nx'
-              ? `npx nx run @${scope}/\${{ matrix.service }}:build`
-              : `npm run build --workspace @${scope}/\${{ matrix.service }}`;
-      this.writeProjectFile(
-        dir,
-        '.github/workflows/ci.yml',
-        `name: ci
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [${serviceNames.join(', ')}]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: ${isPnpm ? 'pnpm' : tool === 'yarn' ? 'yarn' : 'npm'}
-${installStep}
-      - run: ${buildStep}
-      - name: Verify docker build
-        run: docker build -f services/$\{{ matrix.service }}/Dockerfile .
-`
-      );
-    }
-
-    this.writeProjectFile(
-      dir,
-      'ARCHITECTURE.md',
-      `# ${name} — microservices architecture
-
-${description || 'Monorepo hosting a set of independently deployable services.'}
-
-## Service catalog
-
-| Service | Folder | Port | Responsibility |
-| --- | --- | --- | --- |
-${serviceNames
-  .map(
-    (service) =>
-      `| ${service} | \`services/${service}\` | ${portOf(service)} | ${
-        service === gateway ? 'single entry point, routes traffic to domain services' : 'domain service (owns its own data)'
-      } |`
-  )
-  .join('\n')}
-
-${withShared ? `## Shared contracts
-
-\`packages/${sharedName.split('/')[1]}\` (\`${sharedName}\`) holds DTOs, event envelopes and the health payload. It is
-versioned with the repo and consumed as a workspace dependency — never copy types between services.
-
-` : ''}## Rules
-
-1. **One deployable per folder.** A service never imports another service's source; cross-service calls go
-   through HTTP or the broker.
-2. **Data ownership.** Each service owns its store; no shared database schema.
-3. **Contracts first.** Change \`${sharedName}\` before changing producers/consumers, and keep events backward compatible.
-4. **Failure isolation.** Every service exposes \`/health\` and \`/ready\`; callers set timeouts and degrade gracefully.
-${broker !== 'none' ? `5. **Async by default.** Use the ${broker} broker for side effects (notifications, projections) and HTTP only for request/response.\n` : ''}${gateway ? `${broker !== 'none' ? '6' : '5'}. **Single entry point.** Clients talk to \`${gateway}\` only; it maps \`/<service>\` prefixes to service URLs (see \`services/${gateway}/src/index.ts\`).\n` : ''}
-## Local development
-
-\`\`\`bash
-${installCommand}
-${devScript.replace(/^npm run dev/, 'npm run dev')}
-\`\`\`
-${docker ? '\nOr the whole stack in containers:\n\n```bash\ndocker compose up --build\n```\n' : ''}`
-    );
-
-    this.writeProjectFile(
-      dir,
-      'README.md',
-      `# ${name}
-
-${description || 'TypeScript microservices monorepo.'}
-
-Workspace tooling: **${tool}** · Services: ${serviceNames.map((service) => `\`${service}\``).join(', ')}
-${broker !== 'none' ? `\nMessage broker: **${broker}** (\`${brokerUrl}\`)` : ''}
-
-## Getting started
-
-\`\`\`bash
-${installCommand}
-${devScript}
-\`\`\`
-${docker ? '\nEverything in containers:\n\n```bash\ndocker compose up --build\ndocker compose down\n```\n' : ''}
-## Layout
-
-\`\`\`
-${useWorkspacesField ? 'package.json          workspaces: services/*, packages/*' : 'pnpm-workspace.yaml    workspaces: services/*, packages/*'}
-${tooling ? 'tsconfig.base.json    shared TypeScript config\n' : ''}${tool === 'turborepo' ? 'turbo.json            task graph + caching\n' : ''}${tool === 'nx' ? 'nx.json               task graph\n' : ''}services/
-${serviceNames.map((service) => `  ${service}/           src/index.ts${docker ? ', Dockerfile' : ''}`).join('\n')}
-${withShared ? `packages/shared/      contracts, health, ${broker !== 'none' ? 'broker' : 'shared helpers'}\n` : ''}${docker ? 'docker-compose.yml    local stack\n' : ''}${k8s ? 'deploy/k8s/           Kubernetes manifests\n' : ''}ARCHITECTURE.md       service boundaries and rules
-\`\`\`
-
-## Scripts
-
-| Script | Does |
-| --- | --- |
-| \`build\` | ${buildScript} |
-| \`dev\` | ${devScript} |
-| \`test\` | ${testScript} |
-${docker ? '| `docker:up` | `docker compose up --build` |\n| `docker:down` | `docker compose down` |\n' : ''}
-Every service listens on its own port and exposes \`/health\` and \`/ready\`.
-`
-    );
-
-    this.writeGitignore(dir, 'monorepo-microservices');
-    if (broker !== 'none' && !docker) {
-      warnings.push(
-        `A ${broker} broker is expected at ${brokerUrl} — start it yourself or regenerate with Docker Compose enabled.`
-      );
-    }
-    if (!gateway) {
-      warnings.push('No `gateway` service was requested: clients must call each service port directly.');
-    }
   }
 
   private async scaffoldEmpty(
