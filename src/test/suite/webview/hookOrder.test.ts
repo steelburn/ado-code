@@ -16,7 +16,7 @@ const APP = 'src/webview-ui/src/App.tsx';
 
 /** A top-level (two-space) React hook call or declaration. */
 const TOP_LEVEL_HOOK =
-  /^  (?:(?:const|let|var)\s+[\w{[\s\S]*?\buse(?:State|Effect|Callback|Memo|Ref|Reducer|LayoutEffect|Context)\s*\(|use(?:Effect|LayoutEffect|Memo|Callback|Reducer)\s*\()/;
+  /^ {2}(?:(?:const|let|var)\s+[\w{[\s\S]*?\buse(?:State|Effect|Callback|Memo|Ref|Reducer|LayoutEffect|Context)\s*\(|use(?:Effect|LayoutEffect|Memo|Callback|Reducer)\s*\()/;
 
 const HOOK_NAMES = ['useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useReducer', 'useLayoutEffect', 'useContext'];
 
@@ -34,7 +34,7 @@ suite('Webview hook order — no hook after an early return', () => {
 
     let firstEarlyReturn = -1;
     for (let i = 0; i < lines.length && firstEarlyReturn < 0; i++) {
-      if (!/^  if \(/.test(lines[i])) {
+      if (!/^ {2}if \(/.test(lines[i])) {
         continue;
       }
       // The return of a top-level `if` sits on the next non-blank line at four
@@ -44,7 +44,7 @@ suite('Webview hook order — no hook after an early return', () => {
         if (/^\s*$/.test(line) || /^\s*\/\//.test(line)) {
           continue;
         }
-        if (/^    return\b/.test(line)) {
+        if (/^ {4}return\b/.test(line)) {
           firstEarlyReturn = i;
         }
         break;
