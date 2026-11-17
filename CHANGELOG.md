@@ -19,6 +19,18 @@ All notable changes to ADO Code will be documented in this file.
 - **`/api/v1` is the only route prefix** in generated services: the Node service, the gateway,
   the Python app, the .NET `MapGet` routes and Laravel's `apiPrefix` all mount under it.
 - `contracts/README.md` documents the layout and how the files are produced.
+- **Every generated service logs JSON, exposes `/metrics` and propagates a correlation id.**
+  `src/shared/observabilityArtifacts.ts` emits the `packages/shared/src` modules the services
+  actually run: `logger.ts` (one JSON object per line on stdout, `LOG_LEVEL` threshold, `child()`
+  bindings, `Error` → name/message/stack, and a fallback so a log call can never throw),
+  `metrics.ts` (zero-dependency Prometheus exposition with escaped labels, `+Inf` bucket and sorted,
+  newline-terminated output), `correlation.ts` (`X-Correlation-ID` reused when sane and minted only
+  when absent, bounded to 128 chars, echoed on the response and forwarded upstream) and
+  `lifecycle.ts` (`installGracefulShutdown()`: withdraw readiness → drain in-flight requests →
+  `onDrain()` for broker handles → force-exit on timeout, idempotent across SIGTERM and SIGINT).
+- **Liveness and readiness are separate endpoints.** Node, .NET, Python and Laravel services now
+  serve `/healthz/live`, `/healthz/ready` and `/metrics`; readiness can answer 503 while liveness
+  keeps answering, which is what stops a draining pod from being restarted or from holding traffic.
 
 ### Changed
 
@@ -50,6 +62,18 @@ All notable changes to ADO Code will be documented in this file.
   into the extension. The published 0.8.7 build carries two harmless dev scripts
   (`tmp/pack.js`, `tmp/verify-vsix.js`); Marketplace and Open VSX versions are immutable, so the
   exclusion lands in 0.8.8.
+- **The gateway minted a second correlation id when a client sent none.** It called
+  `correlationHeaders(req)`, which re-resolved the id and produced a fresh UUID — breaking the trace
+  at the one hop meant to stitch it. `correlationHeaders(req, resolvedId?)` now forwards the id that
+  `attachCorrelationId` already resolved.
+- **`/healthz/live?x=1` fell through to 404.** Generated routers matched the raw `req.url`; both the
+  service and the gateway now match on the query-stripped path.
+- **Readiness was a constant on .NET, Python and Laravel.** Liveness and readiness returned the same
+  body, so the split was cosmetic: .NET now flips a flag from `Lifetime.ApplicationStopping`, and
+  Python/PHP consult an `APP_DRAINING` marker (Python also `/tmp/app-draining`).
+- **`/metrics` output was not exposition-clean**: the body had no trailing newline and `_sum` leaked
+  float noise (`1.5000000000000002`). Both fixed, and the serializer emits labels sorted so the body
+  is diff-stable.
 
 ## [0.8.7] - 2026-11-17
 

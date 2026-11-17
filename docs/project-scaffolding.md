@@ -601,8 +601,8 @@ block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses
 (`ZEN-STD-*`) so gates and evidence reports can cite them.
 
 **Phases (review §8).** **P1 container hardening — shipped (§14.1)** · **P2 contract-first
-`contracts/` — shipped (§14.2)** · P3 observability and lifecycle (`/metrics`, JSON logs,
-correlation id, `/healthz/live|ready`, SIGTERM drain) · P4 resilience kit · P5 CI gates, compose DB
+`contracts/` — shipped (§14.2)** · **P3 observability and lifecycle — shipped (§14.3)** ·
+P4 resilience kit · P5 CI gates, compose DB
 and k8s hardening · P6 `zen-microservices` preset plus the `AGENTS.md` managed block · P7 ADR
 document type and clause-id traceability.
 
@@ -612,7 +612,8 @@ the pipeline stages of §2.1 — they are writer-level changes, plus one preset 
 
 **Clause score.** At the time of the review (`814f011`) §4.2 runtime standards stood at **0 of 6
 fully met**, 3 partial and 3 unmet; §4.3 CI gates at 1 of 7 met, 2 partial, 4 unmet. P1 moved CON‑01
-and P2 CON‑02 to met — **2 of 6** now. Both are expected to reach "all met" at the end of P5.
+and P2 CON‑02 to met, and P3 moved CON‑04 to met — **3 of 6** now, CON‑03 being partial only
+because no tracing is emitted. The rest is expected to reach "all met" at the end of P5.
 
 ### 14.1 P1 — container hardening (shipped)
 
@@ -698,3 +699,51 @@ against the document's own components, envelope/event `required` parity, the nam
 walk over every monorepo stack asserting one contract per domain service and that no route file
 still serves the bare unprefixed service name. `projectCreation.test.ts` asserts the emitted paths
 and a pinned `eventType`; both golden fixtures were regenerated (11 and 8 contract files).
+
+
+### 14.3 P3 — observability and lifecycle (shipped)
+
+CON‑04 asked for a liveness/readiness split and a graceful SIGTERM drain; CON‑03 for JSON logs, a
+`/metrics` endpoint and a correlation id. `src/shared/observabilityArtifacts.ts` is now the single
+source for both, and the generated `packages/shared/src/*.ts` bodies are what a service actually runs,
+so the tests assert against that text rather than against the planner.
+
+| Generated file | Responsibility |
+|---|---|
+| `health.ts` | `HEALTH_LIVE_PATH` / `HEALTH_READY_PATH` / `HEALTH_LEGACY_PATH` / `HEALTH_LEGACY_READY_PATH` / `METRICS_PATH` plus `setReady()` — liveness and readiness answer different questions |
+| `logger.ts` | JSON per line on stdout, `LOG_LEVEL` threshold, `child()` bindings, `Error` → name/message/stack, and a fallback so a log call can never throw |
+| `correlation.ts` | `X-Correlation-ID` reuse-or-mint (inbound id bounded to 128 chars), echoed on the response and forwarded upstream |
+| `metrics.ts` | Prometheus text exposition — `Counter`/`Gauge`/`Histogram`, escaped labels, `+Inf` bucket, sorted, newline-terminated |
+| `lifecycle.ts` | `installGracefulShutdown()`: withdraw readiness → `server.close()` with in-flight drain → `onDrain()` for broker handles → force-exit on timeout |
+
+**Why the split matters.** Liveness failing means "restart me"; readiness failing means "stop routing
+to me". All three non-Node stacks returned the *same* body from both before this phase, which gets a
+draining pod killed mid-shutdown or leaves it holding traffic — the exact failure CON‑04 exists to
+prevent. Node keeps `setReady()` as the one readiness source, and `lifecycle.ts` imports it rather
+than owning a second flag.
+
+**A second bug of the same class.** The gateway called `correlationHeaders(req)`, which re-resolved
+the id and therefore minted a *second* UUID when the client sent none — the trace broke at the one hop
+meant to stitch it. It now forwards the id `attachCorrelationId` already resolved.
+
+**Drain per stack.** Node: `installGracefulShutdown` as above, force-exit so a stuck client cannot
+hold the pod past its grace period. .NET: readiness consults a flag flipped from
+`Lifetime.ApplicationStopping`, the host's own SIGTERM hook. Python: readiness consults `APP_DRAINING`
+or `/tmp/app-draining` while uvicorn drains in-flight requests. PHP: request-scoped, so readiness
+consults `APP_DRAINING` and has no in-flight work to wait for.
+
+**Deliberately not claimed.** No OpenTelemetry instrumentation is emitted, so CON‑03 stays partial —
+the clause asks for OTel *plus* `X-Correlation-ID`, and the id is already propagated for a tracer to
+join on. The Docker `HEALTHCHECK` still probes the legacy `/health`, which every stack continues to
+serve, so no rename can strand a probe; `observabilityArtifacts.test.ts` asserts that invariant
+against `HEALTHCHECK_PATH` itself.
+
+**Evidence.** `observabilityArtifacts.test.ts` — 40 tests over the generated text: path constants
+distinct and absolute, one JSON object per line, `console` never used, the `LOG_LEVEL` threshold,
+correlation reuse-vs-mint and forward-not-re-mint, exposition shape with escaped labels and a trailing
+newline, and the drain order (readiness withdrawn *before* the listener closes, second signal a no-op).
+The stack suite adds, for .NET/PHP/Python, that each service serves liveness, readiness and metrics,
+that readiness can answer 503 without touching liveness, that the legacy route its `HEALTHCHECK`
+probes is still served, and that business routes sit under `/api/v1`. Shared batch **1284 passing**,
+services batch **284 passing** (one `react-native` test exceeds the 30 s batch timeout cold and passes
+in isolation at 828 ms), golden fixtures **6/6**, `tsc` clean.

@@ -1,5 +1,6 @@
 import * as assert from 'assert';
-import { BASE_IMAGES } from '../../../shared/containerHardening';
+import { BASE_IMAGES, HEALTHCHECK_PATH } from '../../../shared/containerHardening';
+import { OBSERVABILITY_PATHS } from '../../../shared/observabilityArtifacts';
 import {
   containerTargetForTemplate,
   planContainerFiles,
@@ -307,5 +308,79 @@ suite('Monorepo stacks — brokers and per-stack wizard options', () => {
     const template = PROJECT_TEMPLATES.find((candidate) => candidate.id === 'monorepo-microservices')!;
     const stack = template.options.find((candidate) => candidate.id === STACK_OPTION_ID)!;
     assert.strictEqual(stack.showWhen, undefined, 'hiding the stack select would make the project type Node-only again');
+  });
+});
+
+suite('Monorepo stacks — platform routes (CON-03/CON-04)', () => {
+  const stacks = MONOREPO_STACKS.filter((stack) => stack.id !== 'node-ts');
+
+  function sources(stackId: Parameters<typeof planMonorepoTree>[0]): string {
+    const files = planMonorepoTree(stackId, PLAN);
+    return Object.keys(files)
+      .filter((file) => /\.(ts|tsx|py|cs|php)$/.test(file))
+      .map((file) => files[file])
+      .join('\n');
+  }
+
+  test('only the stacks with a shared planner are covered here', () => {
+    assert.deepStrictEqual(
+      stacks.map((stack) => stack.id),
+      ['dotnet', 'php-laravel', 'python'],
+      'node-ts keeps its dedicated writer and is covered by the golden fixture'
+    );
+  });
+
+  for (const stack of stacks) {
+    test(`${stack.id} serves liveness, readiness and metrics`, () => {
+      const source = sources(stack.id);
+      assert.ok(source.includes(OBSERVABILITY_PATHS.live), `${stack.id} has no liveness route`);
+      assert.ok(source.includes(OBSERVABILITY_PATHS.ready), `${stack.id} has no readiness route`);
+      assert.ok(source.includes(OBSERVABILITY_PATHS.metrics), `${stack.id} has no metrics route`);
+    });
+
+    test(`${stack.id} keeps serving the legacy route its HEALTHCHECK probes`, () => {
+      // The Dockerfile probe and the app must agree, or every container is unhealthy.
+      const source = sources(stack.id);
+      assert.ok(source.includes(HEALTHCHECK_PATH), `${stack.id} does not serve ${HEALTHCHECK_PATH}`);
+    });
+
+    test(`${stack.id} withdraws readiness without failing liveness`, () => {
+      // A constant readiness endpoint either gets a draining pod killed or keeps
+      // routing traffic to it, which is exactly what CON-04 forbids.
+      const source = sources(stack.id);
+      assert.ok(/draining/i.test(source), `${stack.id} readiness can never fail`);
+      assert.ok(/503/.test(source), `${stack.id} readiness cannot signal "stop routing"`);
+    });
+
+    test(`${stack.id} versions its business routes under /api/v1`, () => {
+      if (stack.id === 'php-laravel') {
+        // Laravel applies apiPrefix centrally; see the dedicated test below.
+        return;
+      }
+      const source = sources(stack.id);
+      assert.ok(source.includes('/api/v1'), `${stack.id} does not expose a versioned surface`);
+    });
+  }
+
+  test('the PHP routes file stays relative because the prefix is applied centrally', () => {
+    const files = planMonorepoTree('php-laravel', PLAN);
+    const routes = files['services/orders/routes/api.php'];
+    assert.ok(routes, 'missing routes/api.php');
+    assert.strictEqual(
+      routes.includes('/api/v1'),
+      false,
+      'a per-route prefix would double up with apiPrefix'
+    );
+    const bootstrap = files['services/orders/bootstrap/app.php'];
+    assert.ok(bootstrap && bootstrap.includes("apiPrefix: 'api/v1'"), 'apiPrefix is not set');
+  });
+
+  test('.NET and python serve the versioned resource route directly', () => {
+    for (const stackId of ['dotnet', 'python'] as const) {
+      assert.ok(
+        sources(stackId).includes('/api/v1/orders'),
+        `${stackId} does not serve /api/v1/orders`
+      );
+    }
   });
 });

@@ -44,6 +44,11 @@ import {
   planContractFiles,
   resourceNameFor,
 } from '../shared/contractArtifacts';
+import {
+  OBSERVABILITY_PATHS,
+  planObservabilityFiles,
+  sharedObservabilityBarrelLines,
+} from '../shared/observabilityArtifacts';
 import type { ServiceContract } from '../shared/contractArtifacts';
 import { planContainerFiles, supportsContainerization } from '../shared/containerization';
 import {
@@ -2738,7 +2743,7 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
         dir,
         'packages/shared/src/index.ts',
         `export * from './contracts';
-export * from './health';
+${sharedObservabilityBarrelLines().join('\n')}
 ${broker !== 'none' ? "export * from './broker';\n" : ''}`
       );
       this.writeProjectFile(
@@ -2777,29 +2782,12 @@ ${plan.domainServices
 export type EventName = (typeof eventNames)[keyof typeof eventNames];
 `
       );
-      this.writeProjectFile(
-        dir,
-        'packages/shared/src/health.ts',
-        `/** Health payload every service exposes at GET /health. */
-export interface HealthResponse {
-  status: 'ok' | 'degraded';
-  service: string;
-  version: string;
-  uptimeSeconds: number;
-  checks: Record<string, 'up' | 'down'>;
-}
-
-export function healthResponse(service: string, version = '0.1.0'): HealthResponse {
-  return {
-    status: 'ok',
-    service,
-    version,
-    uptimeSeconds: Math.round(process.uptime()),
-    checks: { self: 'up' },
-  };
-}
-`
-      );
+      // Observability and lifecycle (§4.2 — CON-03/CON-04): JSON logs, a correlation id,
+      // /metrics and the /healthz/{live,ready} split with a SIGTERM drain live in the
+      // shared package so every service reports the same shape.
+      for (const file of planObservabilityFiles()) {
+        this.writeProjectFile(dir, file.path, file.content);
+      }
       if (broker !== 'none') {
         const brokerHint =
           broker === 'nats'
@@ -2921,8 +2909,10 @@ versioned with the repo and consumed as a workspace dependency — never copy ty
    through HTTP or the broker.
 2. **Data ownership.** Each service owns its store; no shared database schema.
 3. **Contracts first.** Change \`${sharedName}\` before changing producers/consumers, and keep events backward compatible.
-4. **Failure isolation.** Every service exposes \`/health\` and \`/ready\`; callers set timeouts and degrade gracefully.
-${broker !== 'none' ? `5. **Async by default.** Use the ${broker} broker for side effects (notifications, projections) and HTTP only for request/response.\n` : ''}${gateway ? `${broker !== 'none' ? '6' : '5'}. **Single entry point.** Clients talk to \`${gateway}\` only; it maps \`/<service>\` prefixes to service URLs (see \`services/${gateway}/src/index.ts\`).\n` : ''}
+4. **Failure isolation.** Every service exposes liveness (\`/healthz/live\`), readiness
+   (\`/healthz/ready\`) and a Prometheus \`/metrics\` endpoint; callers set timeouts
+   and degrade gracefully.
+${broker !== 'none' ? `5. **Async by default.** Use the ${broker} broker for side effects (notifications, projections) and HTTP only for request/response.\n` : ''}${gateway ? `${broker !== 'none' ? '6' : '5'}. **Single entry point.** Clients talk to \`${gateway}\` only; it maps \`${API_PREFIX}/<service>\` prefixes to service URLs (see \`services/${gateway}/src/index.ts\`).\n` : ''}
 ## Local development
 
 \`\`\`bash
@@ -2966,7 +2956,8 @@ ${withShared ? `packages/shared/      contracts, health, ${broker !== 'none' ? '
 | \`dev\` | ${devScript} |
 | \`test\` | ${testScript} |
 ${docker ? '| `docker:up` | `docker compose up --build` |\n| `docker:down` | `docker compose down` |\n' : ''}
-Every service listens on its own port and exposes \`/health\` and \`/ready\`.
+Every service listens on its own port and exposes \`${OBSERVABILITY_PATHS.live}\` (liveness),
+\`${OBSERVABILITY_PATHS.ready}\` (readiness) and \`${OBSERVABILITY_PATHS.metrics}\` (Prometheus).
 `
     );
 
@@ -3039,10 +3030,92 @@ Every service listens on its own port and exposes \`/health\` and \`/ready\`.
       )}\n`
     );
 
-    const healthImport = withShared ? "import { healthResponse } from '" + sharedName + "';" : '';
+    // Observability and lifecycle (§4.2 — CON-03/CON-04). The logger, correlation helper,
+    // metrics registry, health/readiness split and drain handler are emitted into
+    // packages/shared by observabilityArtifacts.ts; the entrypoint only wires them.
+    const observabilityNames = [
+      'attachCorrelationId',
+      'correlationHeaders',
+      'createLogger',
+      'healthResponse',
+      'HEALTH_LIVE_PATH',
+      'HEALTH_LEGACY_PATH',
+      'HEALTH_LEGACY_READY_PATH',
+      'HEALTH_READY_PATH',
+      'installGracefulShutdown',
+      'instrumentRoute',
+      'logRequest',
+      'METRICS_PATH',
+      'processStartTimeSeconds',
+      'readinessResponse',
+      'renderMetrics',
+    ].join(',\n  ');
+    const healthImport = withShared
+      ? 'import {' + '\n  ' + observabilityNames + ',\n' + "} from '" + sharedName + "';"
+      : '';
     const healthInline = withShared
       ? 'JSON.stringify(healthResponse(SERVICE, VERSION))'
       : "JSON.stringify({ status: 'ok', service: SERVICE, version: VERSION })";
+    const obsPrelude = withShared
+      ? [
+          '',
+          'const logger = createLogger({ service: SERVICE, version: VERSION });',
+          'processStartTimeSeconds.set(Math.round(Date.now() / 1000 - process.uptime()));',
+        ].join('\n')
+      : '';
+    const obsRouter = withShared
+      ? [
+          '',
+          '  const requestStartedAt = Date.now();',
+          '  const correlationId = attachCorrelationId(req, res);',
+          '  logRequest(logger.child({ correlationId }), req);',
+          "  res.on('finish', () => {",
+          "    instrumentRoute(req.method ?? 'GET', url, res.statusCode, requestStartedAt);",
+          '  });',
+          '',
+          '  if (url === HEALTH_LIVE_PATH || url === HEALTH_LEGACY_PATH) {',
+          "    res.writeHead(200, { 'content-type': 'application/json' });",
+          '    res.end(JSON.stringify(healthResponse(SERVICE, VERSION)));',
+          '    return;',
+          '  }',
+          '',
+          "  if (url === HEALTH_READY_PATH || url === HEALTH_LEGACY_READY_PATH) {",
+          '    const payload = readinessResponse(SERVICE, VERSION);',
+          "    res.writeHead(payload.status === 'ok' ? 200 : 503, { 'content-type': 'application/json' });",
+          '    res.end(JSON.stringify(payload));',
+          '    return;',
+          '  }',
+          '',
+          '  if (url === METRICS_PATH) {',
+          "    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });",
+          '    res.end(renderMetrics());',
+          '    return;',
+          '  }',
+        ].join('\n')
+      : '';
+    const legacyHealth = withShared
+      ? ''
+      : [
+          "  if (url === '/health' || url === '/ready') {",
+          "    res.writeHead(200, { 'content-type': 'application/json' });",
+          '    res.end(' + healthInline + ');',
+          '    return;',
+          '  }',
+          '',
+        ].join('\n');
+    const obsShutdown = withShared ? 'installGracefulShutdown(server, logger);\n' : '';
+    const listenLog = withShared
+      ? "logger.info('server.listening', { port: PORT });"
+      : "console.log('[' + SERVICE + '] listening on http://localhost:' + PORT);";
+    const routeListLog = withShared
+      ? "for (const [prefix, base] of Object.entries(routes)) {\n    logger.info('gateway.route', { prefix, base });\n  }"
+      : "for (const [prefix, base] of Object.entries(routes)) {\n    console.log('  ' + prefix + ' -> ' + base);\n  }";
+    const brokerLog = withShared
+      ? "logger.info('broker.configured', { brokerUrl: BROKER_URL });"
+      : "console.log('[' + SERVICE + '] broker ' + BROKER_URL);";
+    const gatewayHeaders = withShared
+      ? 'headers: { ...req.headers, host: target.host, ...correlationHeaders(req, correlationId) }'
+      : 'headers: { ...req.headers, host: target.host }';
 
     if (isGateway) {
       const routeLines = domainServices
@@ -3059,7 +3132,7 @@ ${healthImport}
 
 const SERVICE = 'gateway';
 const VERSION = '${version || '0.1.0'}';
-const PORT = Number(process.env.PORT ?? ${port});
+const PORT = Number(process.env.PORT ?? ${port});${obsPrelude}
 
 /** Path prefix → upstream service base URL. */
 const routes: Record<string, string> = {
@@ -3067,13 +3140,8 @@ ${routeLines}
 };
 
 const server = createServer((req, res) => {
-  const url = req.url ?? '/';
-  if (url === '/health' || url === '/ready') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(${healthInline});
-    return;
-  }
-
+  const url = (req.url ?? '/').split('?')[0];${obsRouter}
+${legacyHealth}
   const prefix = Object.keys(routes).find((key) => url === key || url.startsWith(key + '/'));
   if (!prefix) {
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -3088,7 +3156,7 @@ const server = createServer((req, res) => {
       port: target.port,
       path: target.pathname + target.search,
       method: req.method,
-      headers: { ...req.headers, host: target.host },
+      ${gatewayHeaders},
     },
     (upstreamRes) => {
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
@@ -3102,11 +3170,9 @@ const server = createServer((req, res) => {
   req.pipe(upstream);
 });
 
-server.listen(PORT, () => {
-  console.log('[' + SERVICE + '] listening on http://localhost:' + PORT);
-  for (const [prefix, base] of Object.entries(routes)) {
-    console.log('  ' + prefix + ' -> ' + base);
-  }
+${obsShutdown}server.listen(PORT, () => {
+  ${listenLog}
+  ${routeListLog}
 });
 `
       );
@@ -3119,17 +3185,11 @@ ${healthImport}
 
 const SERVICE = '${service}';
 const VERSION = '${version || '0.1.0'}';
-const PORT = Number(process.env.PORT ?? ${port});
+const PORT = Number(process.env.PORT ?? ${port});${obsPrelude}
 ${broker !== 'none' ? `const BROKER_URL = process.env.BROKER_URL ?? '${brokerUrl}';\n` : ''}
 const server = createServer((req, res) => {
-  const url = req.url ?? '/';
-
-  if (url === '/health' || url === '/ready') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(${healthInline});
-    return;
-  }
-
+  const url = (req.url ?? '/').split('?')[0];${obsRouter}
+${legacyHealth}
   if (url === '${API_PREFIX}/${resource}' || url.startsWith('${API_PREFIX}/${resource}/')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
@@ -3158,9 +3218,9 @@ const server = createServer((req, res) => {
   res.end(JSON.stringify({ error: 'not found' }));
 });
 
-server.listen(PORT, () => {
-  console.log('[' + SERVICE + '] listening on http://localhost:' + PORT);
-${broker !== 'none' ? "  console.log('[' + SERVICE + '] broker ' + BROKER_URL);\n" : ''}});
+${obsShutdown}server.listen(PORT, () => {
+  ${listenLog}
+${broker !== 'none' ? `  ${brokerLog}\n` : ''}});
 `
       );
     }
@@ -3224,12 +3284,12 @@ spec:
               value: '${port}'
 ${broker !== 'none' ? `            - name: BROKER_URL\n              value: '${brokerUrl}'\n` : ''}          readinessProbe:
             httpGet:
-              path: /ready
+              path: ${OBSERVABILITY_PATHS.ready}
               port: ${port}
             initialDelaySeconds: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: ${OBSERVABILITY_PATHS.live}
               port: ${port}
             initialDelaySeconds: 10
 ---
