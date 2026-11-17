@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { vscode } from '../../vscode';
 import { PostCreateStep, WizardState, PROJECT_TEMPLATES } from './types';
 import { StepProjectType } from './StepProjectType';
+import { WizardPreset } from '../../../../shared/wizardPresets';
 import { StepProjectDetails } from './StepProjectDetails';
 import { StepTemplateOptions } from './StepTemplateOptions';
 import { StepAdoIntegration } from './StepAdoIntegration';
@@ -156,6 +157,14 @@ export function ProjectCreationWizard({ onClose, error, onClearError, result, on
       case 0:
         return (
           <StepProjectType
+            onApplyPreset={(preset: WizardPreset) =>
+              updateState({
+                templateId: preset.templateId,
+                // Preset values win over the template defaults — selecting the
+                // compliant options is the whole point of the preset.
+                templateOptions: { ...defaultsFor(preset.templateId), ...preset.options },
+              })
+            }
             selectedTemplateId={state.templateId}
             onSelect={id => updateState({ templateId: id, templateOptions: defaultsFor(id) })}
           />

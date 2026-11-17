@@ -472,3 +472,38 @@
   gap: 8px;
   margin-top: 12px;
 }
+
+/* Presets — the compliant option set, one click */
+.preset-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+}
+
+.preset-strip-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  margin-right: 4px;
+}
+
+.preset-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--vscode-button-background);
+  border-radius: 12px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+}
+
+.preset-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}

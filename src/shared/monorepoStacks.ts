@@ -36,6 +36,7 @@ import { OBSERVABILITY_PATHS } from './observabilityArtifacts';
 import { API_PREFIX, defaultEventsFor, planContractFiles, resourceNameFor } from './contractArtifacts';
 import type { ContractPlan } from './contractArtifacts';
 import { planDeliveryFiles } from './deliveryFiles';
+import { planStandardsAgentsMd } from './standardsArtifacts';
 
 export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
   {
@@ -880,7 +881,11 @@ function contractPlan(plan: MonorepoTreePlan): ContractPlan {
  * first in exactly the same sense a TypeScript one is.
  */
 export function planMonorepoTree(stack: MonorepoStackId, plan: MonorepoTreePlan): Record<string, string> {
-  const tree = { ...stackTree(stack, plan), ...planContractFiles(contractPlan(plan)) };
+  const tree = {
+    ...stackTree(stack, plan),
+    ...planContractFiles(contractPlan(plan)),
+    ...standardsFiles(stack, plan),
+  };
   return { ...tree, ...planDeliveryFiles(deliveryPlan(stack, plan)) };
 }
 
@@ -903,6 +908,23 @@ function deliveryPlan(stack: MonorepoStackId, plan: MonorepoTreePlan) {
     k8s: plan.k8s === true,
     contracts: true,
     compose: plan.containerization,
+  };
+}
+
+/**
+ * The repository's `AGENTS.md` — the managed ZEN standards block every agent
+ * reads. It rides with the tree rather than with the delivery envelope because a
+ * team that turns CI or k8s off still needs to know the rules.
+ */
+function standardsFiles(stack: MonorepoStackId, plan: MonorepoTreePlan): Record<string, string> {
+  return {
+    'AGENTS.md': planStandardsAgentsMd({
+      projectName: plan.projectName,
+      description: plan.description,
+      stack,
+      services: plan.services,
+      gateway: plan.gateway,
+    }),
   };
 }
 

@@ -16,6 +16,7 @@ import {
   planMonorepoTree,
   resolveMonorepoStack,
 } from '../shared/monorepoStacks';
+import { appendStandardsService, planStandardsAgentsMd } from '../shared/standardsArtifacts';
 import {
   planCiWorkflow,
   planDatabaseOverlay,
@@ -2900,6 +2901,21 @@ export function createBroker(): MessageBroker {
       this.writeProjectFile(dir, EVENT_SCHEMA_VALIDATOR_PATH, EVENT_SCHEMA_VALIDATOR);
     }
 
+    // AGENTS.md rides with every scaffold, whether or not CI and the shared package
+    // were asked for: the clause ids are what make the standard binding for the
+    // agent that works in the generated repository.
+    this.writeProjectFile(
+      dir,
+      'AGENTS.md',
+      planStandardsAgentsMd({
+        projectName: name,
+        description,
+        stack: 'node-ts',
+        services,
+        gateway,
+      })
+    );
+
     // Each handbook obligation is a row whose right-hand column is a real symbol, so a
     // rule without an implementation is visible as a gap instead of reading as policy.
     const resilienceRulesDoc = withShared
@@ -3856,6 +3872,17 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
           writes.push({ relPath: archRelPath, content: next });
           patched.push(archRelPath);
         }
+      }
+    }
+
+    // AGENTS.md carries the clause ids, so a service that exists but is unlisted
+    // there is invisible to the next agent. Patch the one line, not the file.
+    const agentsText = this.readFileIfPresent(path.join(root, 'AGENTS.md'));
+    if (agentsText !== null) {
+      const next = appendStandardsService(agentsText, service);
+      if (next !== null && next !== agentsText) {
+        writes.push({ relPath: 'AGENTS.md', content: next });
+        patched.push('AGENTS.md');
       }
     }
 

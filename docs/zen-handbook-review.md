@@ -1,7 +1,9 @@
 # ZEN Engineering Handbook — Alignment Review
 
-> **Status: REVIEW COMPLETE — ALIGNMENT PHASES P1–P5 SHIPPED (CON‑01, CON‑02, CON‑04 MET, CON‑06
-> MET FOR THE NODE STACK; CON‑03 PARTIAL — NO TRACER; ALL SEVEN §4.3 CI GATES MET).** This is the review of the external
+> **Status: REVIEW COMPLETE — ALIGNMENT PHASES P1–P6 SHIPPED (CON‑01, CON‑02, CON‑04 MET, CON‑06
+> MET FOR THE NODE STACK; CON‑03 PARTIAL — NO TRACER; CON‑05 UNMET; ALL SEVEN §4.3 CI GATES MET).**
+> P6 makes the standard the *default*: a named `zen-microservices` preset and a standards `AGENTS.md`
+> in every scaffold. This is the review of the external
 > standard *ZEN Computer Systems Internal Engineering Handbook: Microservices Architecture &
 > Governance, v1.0* against ADO Code's scaffolding templates and boilerplates. The outcome is a
 > decision record (§3) plus a phase plan (§8) that closes the gaps **in the boilerplates**, not in
@@ -191,8 +193,8 @@ reports (`06-evidence/security-test-report.md`, `06-evidence/performance-test-re
 ## 8. Alignment phases
 
 Each phase is independently shippable and lands with tests plus regenerated golden fixtures. Phase
-order matters: P1–P5 change emitted files, P6 makes the preset emit them, P7 makes the standard
-traceable.
+order matters: P1–P5 change emitted files, P6 (shipped) makes them reachable and binding, P7 makes
+the standard traceable.
 
 | Phase | Change | Touch points | Acceptance |
 |---|---|---|---|
@@ -202,7 +204,7 @@ traceable.
 | **P4 — resilience kit ✅ shipped (node stack)** | `packages/shared/src/resilience.ts`: `withTimeout` (aborts the signal it hands you), `retry`/`backoffDelay` (full jitter, 2500 ms, 3 attempts), `CircuitBreaker` (`closed`/`open`/`half-open` per dependency), `IdempotencyGuard` (replay, fingerprint conflict, concurrent duplicate awaits in-flight) | `resilienceArtifacts.ts`, shared-package writers, gateway, `ARCHITECTURE.md` rule table | 31 tests transpile and *run* the generated module: timeout fires and aborts, jitter stays in `[0, cap]` over 200 samples, all four breaker transitions, duplicate replays, conflicting key throws; every `ARCHITECTURE.md` rule names an exported symbol. **Non-node stacks pending as P4b.** |
 | **P4b — resilience for the non-node stacks** | the same four primitives in Python, C# and PHP under the same symbol names, so `ARCHITECTURE.md` stays stack-neutral | `monorepoStacks.ts` | each stack's generated kit passes the same behavioural tests as the TypeScript one |
 | **P5 — delivery gates + data ✅ shipped** | `deliveryArtifacts.ts` renders three artifacts from one source: `ci.yml` with five blocking gates (GATE‑01…05), `docker-compose.databases.yml` (one database per service), and `deploy/k8s/<service>.yaml` (ConfigMap + Secret + Deployment + Service with resources, securityContext and observability probes). Emitted for **all four** stacks via `planMonorepoTree` and for the node writer via the host | `deliveryArtifacts.ts`, `deliveryFiles.ts`, `ProjectCreationService.ts`, `monorepoStacks.ts` | 35 tests: five gates present/ordered/cited by id, deploy blocked by all four and only from `main`, pinned scanners, matrix patchable by `/new-service`, per-stack commands, overlay one-DB-per-service with no shared URL, manifests carry resources + non-root + real probe paths and never `:latest`, k8s opt-in per tree. Residual: `azure-pipelines.yml` parity and digest pins not emitted — see §14.5 |
-| **P6 — preset + AGENTS.md** | named `zen-microservices` preset resolving the D3 option set; managed `AGENTS.md` block in scaffolded repos carrying the CON/CI rules | wizard preset table, `src/webview/agentsMd.ts` managed block, catalogue test | choosing the preset yields every P1–P5 artifact with zero manual steps; the scaffolded `AGENTS.md` names the clause ids; catalogue test fails if a new template forgets the block |
+| **P6 — preset + AGENTS.md ✅ shipped** | `src/shared/wizardPresets.ts` — one `zen-microservices` preset per catalogue stack (`node-ts` is the default id), `resolvePreset` validating rather than coercing, and a `satisfies` list that omits CON‑05 and, outside Node, CON‑06. `src/shared/standardsArtifacts.ts` — clause catalogue (`ZEN-STD-CON-01…06`, `ZEN-STD-CI-01…07`) plus the generated `AGENTS.md` with a `zen-standards`-delimited managed block, per-stack artifact paths and `appendStandardsService` for `/new-service`. Wizard: preset strip in `StepProjectType`, applied in `index.tsx` | `wizardPresets.ts` (new), `standardsArtifacts.ts` (new), `StepProjectType.tsx`, `index.tsx`, `styles.css`, `monorepoStacks.ts` (`standardsFiles` merged into every stack tree), `ProjectCreationService.ts` (node writer + `/new-service`) — §14.6 | **met**: 20 new tests. `wizardPresets.test.ts` checks every preset against `PROJECT_TEMPLATES` itself (template exists, option ids rendered, values accepted) and scaffolds the preset end-to-end, asserting contracts, all five shared modules, `ci.yml`, both compose files, the Dockerfile, `deploy/k8s/` and every `satisfies` id in the generated `AGENTS.md`. `standardsArtifacts.test.ts` covers clause coverage, marker integrity, per-stack paths, prose-preserving replacement and the service append. Golden fixtures 52 / 25 files. The `AGENTS.md` write was found to sit inside the `if (ci)` branch — the two fixtures disagreeing (52 vs 24) exposed it; now unconditional. Residual: no OTel/JWT artifact, so CON‑03 stays partial and CON‑05 unmet |
 | **P7 — traceability docs** | `ADR-###` document type in `doc-writer` (`01-design/adr/`), clause-id column in the RTM, KRiSA matrix entry | `docTemplates.ts`, register columns | `doc-writer` emits an ADR template traceable to `CR-###` and citable back to `ZEN-STD-*` |
 
 ## 9. Verification

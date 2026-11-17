@@ -5,6 +5,21 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **The handbook itself ships with the generator: a `zen-microservices` preset and a
+  standards `AGENTS.md`.** `src/shared/wizardPresets.ts` adds one preset per catalogue stack
+  (`node-ts` is the default) that turns the gates, the shared package, the broker and k8s on, so
+  one click yields every artifact above with zero manual steps; `resolvePreset()` throws on an
+  unknown preset, an option the template does not render, or a stack outside the catalogue,
+  because a silently dropped typo produces a tree nobody chose.
+  `src/shared/standardsArtifacts.ts` writes the scaffolded repo's `AGENTS.md` with the clause
+  ids an agent can be held to — `ZEN-STD-REPO-01`, `ZEN-STD-CON-01`…`06`,
+  `ZEN-STD-CI-01`…`07` — inside a `<!-- zen-standards:begin -->` block that is deliberately
+  *not* ADO Code's own managed markers, since the understanding sync would rewrite those. Each
+  rule is paired with the artifact that satisfies it in that stack, and the per-stack
+  `satisfies` lists leave out `CON-05` everywhere and `CON-06` outside Node rather than
+  claim coverage the stack does not have. `/new-service` appends the new service to the
+  managed block and preserves the prose around it.
+
 - **Delivery gates (ZEN §4.3):** generated projects now ship five blocking CI gates (`GATE-01`…`GATE-05`: lint/typecheck, gitleaks + Semgrep, tests + contract lint + 80 % coverage, image build + Trivy scan, approved deploy), a `docker-compose.databases.yml` overlay with one database per service, and Kubernetes manifests with ConfigMap/Secret, resource limits, a non-root read-only container and observability-path probes — emitted for all four monorepo stacks.
 
 - **Scaffolded projects are contract-first.** Every generated service ships machine-readable
@@ -44,6 +59,7 @@ All notable changes to ADO Code will be documented in this file.
   enforces `Idempotency-Key` on writes, wraps each upstream call in `withTimeout()` and trips a
   breaker per route; the `ARCHITECTURE.md` resilience rules are generated from
   `RESILIENCE_RULES`, one row per rule naming an exported symbol.
+
 ### Changed
 
 - **Every scaffolded container is pinned, non-root and health-checked.** Generated Dockerfiles

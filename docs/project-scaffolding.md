@@ -602,9 +602,9 @@ block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses
 
 **Phases (review §8).** **P1 container hardening — shipped (§14.1)** · **P2 contract-first
 `contracts/` — shipped (§14.2)** · **P3 observability and lifecycle — shipped (§14.3)** ·
-**P4 resilience kit — shipped (§14.4)** · **P5 delivery gates — shipped (§14.5)** · P6
-`zen-microservices` preset plus the `AGENTS.md` managed block · P7 ADR document type and
-clause-id traceability.
+**P4 resilience kit — shipped (§14.4)** · **P5 delivery gates — shipped (§14.5)** ·
+**P6 `zen-microservices` preset + standards `AGENTS.md` — shipped (§14.6)** · P7 ADR document type
+and clause-id traceability.
 
 P1–P5 change what §2.3 and §13 describe, so they land before any further template work: a new
 template added first would have to be retrofitted through every one of them. None of P1–P7 changes
@@ -614,7 +614,9 @@ the pipeline stages of §2.1 — they are writer-level changes, plus one preset 
 fully met**, 3 partial and 3 unmet; §4.3 CI gates at 1 of 7 met, 2 partial, 4 unmet. P1 moved CON‑01,
 P2 CON‑02, P3 CON‑04 and P4 CON‑06 (node stack) to met — **4 of 6**, CON‑03 still partial because no
 tracer is emitted. P5 closed **all seven §4.3 gates**, and it did so for every stack, not just Node.
-Remaining: CON‑03 (tracing) and CON‑05 (application security) belong to P6.
+P6 changed no clause verdict — it makes P1–P5's artifacts *reachable* (one preset instead of
+six option screens) and *binding* (the clause ids an agent reads). Remaining: CON‑03 (tracing) and
+CON‑05 (application security).
 
 ### 14.1 P1 — container hardening (shipped)
 
@@ -849,3 +851,60 @@ flakiness — the same batch passes 285/285 at the standard timeout), golden fix
 only delivery file); digests are not pinned, tags are (`node:20.18.0-alpine3.20`); CodeQL is not used —
 Semgrep stands in as the SAST engine because it covers PHP as well, which CodeQL does not; the workflow
 was not executed under `act`, its shape is asserted by tests instead.
+
+### 14.6 P6 — `zen-microservices` preset and the standards `AGENTS.md` (shipped)
+
+P1–P5 made the clauses true in the emitted files; P6 makes them the **default** and tells the agent
+that works in the generated repository about them.
+
+**The preset** (`src/shared/wizardPresets.ts`) is one row per catalogue stack, `zen-microservices`
+being the `node-ts` one:
+
+| Option | Value | Why |
+|---|---|---|
+| `stack` | `node-ts` \| `dotnet` \| `php-laravel` \| `python` | one preset per stack, generated from `MONOREPO_STACKS` |
+| `services` | `gateway,users,orders` | a gateway is mandatory — `/api/v1` needs one entry point |
+| `sharedPackage` | `true` | CON‑03/04/06 live in `packages/shared` |
+| `messageBroker` | `rabbitmq` | events are part of the contract, not an add-on |
+| `docker` / `k8s` / `ci` | `true` | CON‑01, CI‑06 and the seven §4.3 gates |
+
+`resolvePreset(id, overrides)` validates rather than coerces: an unknown preset, an option id the
+template does not render, or a stack outside the catalogue **throws**. A typo that is silently
+dropped produces a tree nobody chose, which is worse than a failure at the call site.
+`satisfies` lists the clause ids the preset is expected to leave satisfied — and deliberately omits
+`ZEN-STD-CON-05` (no JWT validation is scaffolded yet) and, outside `node-ts`, `ZEN-STD-CON-06`
+(no shared kit).
+
+**The standards `AGENTS.md`** (`src/shared/standardsArtifacts.ts`) is written into every scaffold —
+all four stacks, and independently of the CI/k8s/shared-package options, because a team that turns
+gates off still needs to know the rules. Its managed zone is delimited by `<!-- zen-standards:begin
+-->` / `<!-- zen-standards:end -->` — deliberately **not** ADO Code's own `ado-code:managed`
+markers, whose repository-understanding sync would otherwise delete the standards.
+
+The block carries two tables (six §4.2 clauses, seven §4.3 gates), each row naming the artifact that
+satisfies it *in that stack* — `packages/shared/src/resilience.ts` for Node, `app/main.py` for
+Python, and the honest `not scaffolded` where the kit does not ship. It also states the amended
+layout (§4.1 + D2), the gateway, the `/api/v1` prefix and a short "what an agent must not do here"
+list. `appendStandardsService` lets `/new-service` add a service name to the one `Services:` line
+without rewriting the team's prose.
+
+**Wizard wiring.** `StepProjectType` renders a preset strip above the template grid; applying one
+sets `templateId` and merges the preset options over the template defaults (`index.tsx`). The strip
+is an optional prop, so the step still renders where no preset host is wired.
+
+**Tests.** `standardsArtifacts.test.ts` (10) — clause coverage, marker integrity, per-stack artifact
+paths, prose-preserving replacement, the service append. `wizardPresets.test.ts` (10) — every
+preset's template, option ids and option values are checked against `PROJECT_TEMPLATES` itself;
+overrides validated; and one acceptance test that **scaffolds the preset** and asserts the artifacts
+(`contracts/`, `packages/shared/src/{health,logger,metrics,correlation,lifecycle,resilience}.ts`,
+`ci.yml`, both compose files, `services/users/Dockerfile`, `deploy/k8s/`) plus every `satisfies`
+id appearing in the generated `AGENTS.md`. Golden fixtures: 52 and 25 files.
+
+**Defect found by comparing the two fixtures.** The `AGENTS.md` write was first placed inside the
+`if (ci)` branch, so a project with `ci: false` shipped without the standards file — the options
+fixture stayed at 24 files while the default one moved to 52, which is what exposed it. The write is
+now unconditional.
+
+**Residual.** No OpenTelemetry SDK and no JWT middleware are emitted (CON‑03 partial, CON‑05 unmet),
+and the preset is not yet reachable from `/new-project` when the wizard is opened with an existing
+folder — it applies at project-creation time only.
