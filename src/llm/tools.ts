@@ -223,7 +223,7 @@ export interface ToolExecutor {
 const READ_ONLY_TOOLS = new Set(['get_work_items', 'get_work_item', 'read_file', 'search_files', 'get_selection', 'list_workspace', 'read_workspace_memory', 'list_workspace_memory', 'execute_skill', 'resolve_pr_conflicts', 'list_doc_templates', 'explore_codebase']);
 // Q8: mutating tools need approval in inline mode; auto-approved in act mode;
 // BLOCKED in plan mode (plan must never change state).
-const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'delete_memory', 'commit_worktree', 'push_worktree', 'create_pull_request', 'build_documentation']);
+const MUTATING_TOOLS = new Set(['update_work_item_state', 'add_comment', 'create_work_item', 'delegate_to_agent', 'apply_diff', 'edit_file', 'delete_file', 'run_terminal_command', 'write_to_file', 'write_workspace_memory', 'set_memory', 'delete_memory', 'commit_worktree', 'push_worktree', 'create_pull_request', 'build_documentation', 'add_service']);
 // The session goal + to-do list are the MODEL'S OWN task ledger, persisted
 // under `.ado-code/todos/` — they never touch workspace source. They are
 // therefore allowed in EVERY mode (plan included: the goal and its plan are
@@ -888,6 +888,25 @@ export function createToolExecutor(
         required: ['templateId', 'projectName'],
       },
     },
+    {
+      name: 'add_service',
+      description:
+        'Add ONE service to an existing microservices repo (services/ + compose + .env.example + README/docs/CI when they have a block to extend). Append-only: refuses a non-kebab-case or duplicate name, never rewrites an existing file wholesale. Use dryRun to preview the files and the compose block first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'kebab-case service name, e.g. "orders-api" — must not already exist' },
+          kind: {
+            type: 'string',
+            enum: ['api', 'worker'],
+            description: 'api (default) serves HTTP and publishes a port; worker consumes the broker and publishes none',
+          },
+          description: { type: 'string', description: 'One-line purpose, used for the README row and the service manifest' },
+          dryRun: { type: 'boolean', description: 'Preview the files and compose block without writing anything (default false)' },
+        },
+        required: ['name'],
+      },
+    },
   ];
 
   const settings = getSettings();
@@ -1539,6 +1558,23 @@ export function createToolExecutor(
             remaining: list.items.length - done,
             checklist: renderTodoChecklist(list),
           });
+        }
+        case 'add_service': {
+          const root = vscode.workspace.workspaceFolders?.[0];
+          if (!root) {
+            return JSON.stringify({ error: 'no workspace folder is open — /new-service needs an existing repo to grow' });
+          }
+          return capToolResult(
+            JSON.stringify(
+              services.projectCreation.addService({
+                workspaceRoot: root.uri.fsPath,
+                name: args.name,
+                kind: args.kind,
+                description: args.description,
+                dryRun: args.dryRun === true,
+              })
+            )
+          );
         }
         case 'list_doc_templates': {
           return JSON.stringify(describeDocTemplates(args.templateId));

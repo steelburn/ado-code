@@ -281,6 +281,22 @@ suite('ToolExecutor batched edits (pi parity)', () => {
 });
 
 suite('ToolExecutor canAutoExecute (parallel/sequential batch decision)', () => {
+  test('add_service is gated exactly like the other mutating tools', async () => {
+    const args = { name: 'payments-api' };
+    assert.strictEqual(
+      makeExecutor('inline').canAutoExecute('add_service', args),
+      false,
+      'inline mode must raise an approval card before scaffolding'
+    );
+    // canAutoExecute answers "would this prompt?", so a plan-mode block reads as
+    // true — nothing prompts because nothing runs. The block itself is proven
+    // against execute() below.
+    assert.strictEqual(makeExecutor('act').canAutoExecute('add_service', args), true, 'act is the auto-approve mode');
+    assert.strictEqual(makeExecutor('yolo').canAutoExecute('add_service', args), true);
+    const blocked = await makeExecutor('plan').execute('add_service', args);
+    assert.ok(String(blocked).includes('not allowed in plan mode'), `got: ${blocked}`);
+  });
+
   test('read-only tools are parallel-safe in every mode', () => {
     assert.strictEqual(makeExecutor('inline').canAutoExecute('read_file', { path: 'a.ts' }), true);
     assert.strictEqual(makeExecutor('plan').canAutoExecute('get_work_items', {}), true);

@@ -48,6 +48,7 @@ import type { AgentRun } from '../agents/types';
 import { getMergeConflicts } from '../git/mergeConflicts';
 import { buildCompletionEntry } from '../changelog/ChangelogService';
 import { parseSlashCommand, SLASH_COMMANDS } from '../shared/slashCommands';
+import { describeAddServiceResult } from '../shared/addServiceReport';
 import { truncateConsentArgs } from '../shared/consentPreview';
 import { parseChoicePrompt, detectChoicePrompt, parseChoiceFence, stripChoiceFence } from '../llm/parseChoicePrompt';
 import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnoreTargets } from '../services/ignoreFiles';
@@ -6938,6 +6939,12 @@ First analyze the user story and explain your breakdown reasoning, then output t
         this.postMessage({ type: 'loading', loading: false });
         break;
       }
+      case 'new-service': {
+        logger.info('ChatViewProvider: /new-service command received');
+        await this.runNewServiceCommand(args ?? '');
+        this.postMessage({ type: 'loading', loading: false });
+        break;
+      }
       case 'skills': {
         logger.info('ChatViewProvider: /skills command received');
         this.postMessage({ type: 'openSkillCatalog' });
@@ -6959,6 +6966,63 @@ First analyze the user story and explain your breakdown reasoning, then output t
       'Cancel',
     );
     return confirmed === 'Yes, enable YOLO';
+  }
+
+  /**
+   * `/new-service <name> [--kind api|worker] [--dry-run] [--description "…"]`
+   *
+   * One service is appended to the repo that owns the open workspace folder.
+   * The work itself lives in `ProjectCreationService.addService()` so the
+   * palette command and the `add_service` tool share this exact behaviour.
+   */
+  private async runNewServiceCommand(args: string): Promise<void> {
+    const tokens = args.match(/"[^"]*"|\S+/g) ?? [];
+    const positional: string[] = [];
+    let kind: 'api' | 'worker' | undefined;
+    let description: string | undefined;
+    let dryRun = false;
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--kind') {
+        const value = tokens[++i];
+        if (value !== 'api' && value !== 'worker') {
+          vscode.window.showWarningMessage('ADO Code: --kind takes "api" or "worker".');
+          return;
+        }
+        kind = value;
+      } else if (token === '--dry-run') {
+        dryRun = true;
+      } else if (token === '--description') {
+        description = (tokens[++i] ?? '').replace(/^"|"$/g, '');
+      } else if (!token.startsWith('--')) {
+        positional.push(token);
+      }
+    }
+    const name = positional[0];
+    if (!name) {
+      vscode.window.showWarningMessage(
+        'ADO Code: /new-service needs a name — `/new-service orders-api [--kind api|worker] [--dry-run]`.'
+      );
+      return;
+    }
+    const root = vscode.workspace.workspaceFolders?.[0];
+    if (!root) {
+      vscode.window.showWarningMessage(
+        'ADO Code: open the microservices repo first — /new-service grows an existing one.'
+      );
+      return;
+    }
+    const result = this.services.projectCreation.addService({
+      workspaceRoot: root.uri.fsPath,
+      name,
+      kind,
+      description,
+      dryRun,
+    });
+    this.injectChatMessage(describeAddServiceResult(result));
+    if (!result.ok) {
+      vscode.window.showWarningMessage(`ADO Code: /new-service failed — ${result.error}`);
+    }
   }
 
   /** Mode selector (Q8) — updates the setting AND the executor when wired (Task 24). */

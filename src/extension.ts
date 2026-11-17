@@ -47,6 +47,7 @@ import { RemoteTunnel } from './remote/RemoteTunnel';
 import { CONSOLE_HTML } from './remote/consolePage';
 import { resolveRemoteUrl } from './remote/remoteUrl';
 import { isOnPath, sharedShellEnv } from './shared/shellEnv';
+import { serviceNameError } from './shared/serviceScaffold';
 import { logger } from './services/logger';
 import { showTurnOutcomesCommand } from './services/metrics/turnOutcomeCommand';
 import {
@@ -243,6 +244,73 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('ADO Code: no completed worktrees to remove.');
       } else {
         vscode.window.showInformationMessage(`ADO Code: removed ${removed} completed worktree(s).`);
+      }
+    })
+  );
+
+  // `/new-service` from the palette: same implementation as the slash command
+  // and the `add_service` tool, with the two answers it needs collected up
+  // front (name + kind) so the write never starts half-configured.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('adoCode.addService', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0];
+      if (!root) {
+        vscode.window.showWarningMessage('ADO Code: open the microservices repo first — this command grows an existing one.');
+        return;
+      }
+      // Live-validate against the service folders that already exist, so a
+      // duplicate name is rejected before anything is written.
+      const existingServices = (): string[] => {
+        try {
+          return fs
+            .readdirSync(path.join(root.uri.fsPath, 'services'), { withFileTypes: true })
+            .filter(entry => entry.isDirectory())
+            .map(entry => entry.name);
+        } catch {
+          return [];
+        }
+      };
+      const name = await vscode.window.showInputBox({
+        title: 'Add a service',
+        prompt: 'kebab-case service name (e.g. orders-api)',
+        placeHolder: 'orders-api',
+        validateInput: value => serviceNameError(value.trim(), existingServices()),
+      });
+      if (!name) {
+        return;
+      }
+      const kindPick = await vscode.window.showQuickPick(
+        [
+          { label: 'api', description: 'Serves HTTP and publishes a port' },
+          { label: 'worker', description: 'Consumes the broker, publishes no port' },
+        ],
+        { title: `Add ${name.trim()}`, placeHolder: 'Service kind' }
+      );
+      if (!kindPick) {
+        return;
+      }
+      const result = services.projectCreation.addService({
+        workspaceRoot: root.uri.fsPath,
+        name: name.trim(),
+        kind: kindPick.label === 'worker' ? 'worker' : 'api',
+      });
+      if (!result.ok) {
+        vscode.window.showWarningMessage(`ADO Code: could not add the service — ${result.error}`);
+        return;
+      }
+      const open = 'Open the folder';
+      const choice = await vscode.window.showInformationMessage(
+        `ADO Code: added ${result.service} (${result.kind}${result.port ? `, port ${result.port}` : ''}) — ${
+          result.written?.length ?? 0
+        } new file(s), ${result.patched?.length ?? 0} extended.`,
+        ...(result.warnings ?? []).slice(0, 1),
+        open
+      );
+      if (choice === open) {
+        void vscode.commands.executeCommand(
+          'vscode.openFolder',
+          vscode.Uri.file(path.join(root.uri.fsPath, 'services', result.service ?? ''))
+        );
       }
     })
   );

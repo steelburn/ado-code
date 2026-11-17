@@ -403,6 +403,12 @@
         "category": "ADO Code"
       },
       {
+        "command": "adoCode.addService",
+        "title": "Add Service to This Microservices Repo",
+        "icon": "$(add)",
+        "category": "ADO Code"
+      },
+      {
         "command": "adoCode.showAgentOutput",
         "title": "Show Agent Output",
         "category": "ADO Code"

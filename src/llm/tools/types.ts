@@ -47,6 +47,7 @@ export type ToolName =
   | 'execute_skill'
   | 'list_doc_templates'
   | 'build_documentation'
+  | 'add_service'
   | 'delete_file'
   | 'update_todo_list'
   | 'read_todo_list'
@@ -75,6 +76,7 @@ export interface NativeToolArgs {
   execute_skill: { skillId: string; input: string }
   list_doc_templates: { templateId?: string }
   build_documentation: { templateId: string; projectName: string; directory?: string; version?: string; description?: string; options?: Record<string, unknown>; overwrite?: boolean }
+  add_service: { name: string; kind?: string; description?: string; dryRun?: boolean }
   update_todo_list: { todos: Array<{ content: string; status?: string; activeForm?: string }> }
   read_todo_list: Record<string, never>
   set_goal: { goal: string }
@@ -105,7 +107,7 @@ export type ToolGroup = 'read' | 'write' | 'execute' | 'mcp' | 'ado' | 'memory' 
 /** Maps each ToolGroup to its member ToolNames. */
 export interface ToolGroupMap {
   read: ('read_file' | 'search_files' | 'get_selection' | 'list_workspace' | 'execute_skill' | 'list_doc_templates')[]
-  write: ('edit_file' | 'write_to_file' | 'apply_diff' | 'delete_file' | 'build_documentation')[]
+  write: ('edit_file' | 'write_to_file' | 'apply_diff' | 'delete_file' | 'build_documentation' | 'add_service')[]
   execute: ('execute_command' | 'delegate_to_agent')[]
   mcp: never[]
   ado: ('get_work_items' | 'get_work_item' | 'update_work_item_state' | 'add_comment' | 'create_work_item')[]
@@ -120,7 +122,7 @@ export interface ToolGroupMap {
 /** Default group-to-tools mapping. */
 export const TOOL_GROUP_MAP: ToolGroupMap = {
   read: ['read_file', 'search_files', 'get_selection', 'list_workspace', 'execute_skill', 'list_doc_templates'],
-  write: ['edit_file', 'write_to_file', 'apply_diff', 'delete_file', 'build_documentation'],
+  write: ['edit_file', 'write_to_file', 'apply_diff', 'delete_file', 'build_documentation', 'add_service'],
   execute: ['execute_command', 'delegate_to_agent'],
   mcp: [],
   ado: ['get_work_items', 'get_work_item', 'update_work_item_state', 'add_comment', 'create_work_item'],
@@ -153,6 +155,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   execute_skill: 'Execute skill',
   list_doc_templates: 'List documentation templates',
   build_documentation: 'Build documentation',
+  add_service: 'Add service',
   update_todo_list: 'Update to-do list',
   read_todo_list: 'Read to-do list',
   set_goal: 'Set session goal',

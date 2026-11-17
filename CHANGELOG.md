@@ -6,6 +6,15 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Added
 
+- **`/new-service`, `Add Service` and the `add_service` tool.** One implementation appends a
+  single service to an existing microservices repo: it detects the stack from
+  `.ado-project.json` (or by sniffing `services/*`), validates the name, picks the next free
+  port, writes the per-stack service body and patches `docker-compose.yml`, `.env.example`,
+  the README service table, the architecture doc and the CI matrix — append-only, so a file it
+  cannot parse is reported instead of reformatted. `--kind worker` is honoured only on stacks
+  that own a worker command (Laravel's `artisan queue:work` counts, .NET is refused rather than
+  given a portless container), `--dry-run` previews the exact patches, and the LLM tool is in
+  `MUTATING_TOOLS` so it raises the approval card like every other write.
 - **Forced "Clean Up After Merge" when the merge state cannot be verified.** When the ADO pull-request lookup fails *and* the branch is not merged into the base locally (a squash-merge looks unmerged to `git branch --merged`), the cleanup command no longer dead-ends: it warns with the ADO error and offers **Force Clean Up**, which removes the worktree and deletes the branch with `git branch -D`. The override is honoured only when the guard could not be evaluated — an explicit "not merged" answer from ADO still refuses, so an open pull request can never be force-deleted.
 
 ### Fixed

@@ -1,18 +1,12 @@
 # Project Scaffolding — Architecture Options
 
-> **Status: PHASES 1–3 IMPLEMENTED, PLUS THE WIZARD SELECT, `showWhen`, THE MULTI-STACK
-> MONOREPO WRITERS AND CONTAINERIZATION FOR EVERY PROJECT TYPE; 4 AND 6–11 PLAN ONLY.** The shared architecture/context modules, the golden fixtures, the monorepo
-> decomposition, the `architecture` select on the five stack templates, `showWhen` and the
-> `testAutomation` option group are in the tree and green. `microservices` on the TypeScript
-> stack now routes to the phase-3 monorepo writer; the per-stack layout branches, the
-> containerization layer, the non-TypeScript microservices writers and `/new-service` are
-> not. Section 11 records what the first three phases actually did and
-> the four things phase 4 has to pick up. It is the agreed design for extending the New
-> Project wizard with cross-stack *modular monolith* and *microservices* architecture
-> options plus the `/new-service` command. Test automation is split out to
-> [test-automation.md](test-automation.md). Sections marked **Finding** were verified
-> against the code; section 3 records two claims that verification disproved, and §11
-> corrects a third (F3).
+> **Status: PHASES 1–3 AND 5–8 IMPLEMENTED; PHASE 4 HAS ONE OPEN RESIDUAL (F2), 9–11 ARE
+> OPEN.** The shared architecture/context modules, the golden fixtures, the monorepo
+> decomposition, the `architecture` select on the five stack templates, `showWhen`, the
+> `testAutomation` option group, the per-stack monorepo writers, the containerization layer
+> and `/new-service` (§13) are in the tree and green. Section 3 records the findings behind
+> the design and §11 records what the first phases actually changed; two claims that
+> verification disproved are in §3, and §11 corrects a third (F3).
 
 ## 1. Scope
 
@@ -502,3 +496,48 @@ Three rules fall out of the table and are enforced by tests:
 
 Phase 4 of this document (per-stack layout branches for the *layered* templates) remains queued;
 this section covers the project types as they are offered today.
+
+
+## 13. Phase 8 — `/new-service` (implemented)
+
+One implementation behind three entry points:
+
+| Entry point | Where | Notes |
+|---|---|---|
+| `/new-service` | `ChatViewProvider.runNewServiceCommand()` | `--kind api|worker`, `--dry-run`, `--description` |
+| `ADO Code: Add Service` | `adoCode.addService` (`extension.ts`) | the input box validates the name against `services/*` as you type, then a kind QuickPick |
+| `add_service` | `src/llm/tools.ts` | registered in `ToolName`, `NativeToolArgs`, `TOOL_GROUP_MAP.write`, `TOOL_DISPLAY_NAMES` **and `MUTATING_TOOLS`** |
+
+All three call `ProjectCreationService.addService()` — plan first, write second — and render the
+outcome through `describeAddServiceResult()` (`src/shared/addServiceReport.ts`) so the wording
+cannot drift between them. The pure half — marker parsing, name rules, compose handling and
+every file patcher — lives in `src/shared/serviceScaffold.ts` with no `fs` import, which is
+what the tests exercise directly.
+
+### 13.1 What the tests changed in the design
+
+1. **A worker is identified by its start command, not by an extra file.** `serviceSupportsWorker()`
+   keys on `workerCommand()`, so Laravel — which runs `artisan queue:work` from the api's own
+   code and generates no second entrypoint — counts, while `dotnet` is refused instead of
+   producing a portless container that runs the api's entrypoint and does nothing.
+2. **Every patcher is append-only or returns `null`.** `appendCiMatrixService()` learned the
+   wizard's own inline flow sequence (`service: [a, b]`) as well as block lists, and
+   `appendArchitectureService()` adds a row with the header's column count to the
+   `## Service catalog` **table** the wizard generates. A file that cannot be parsed is
+   reported to the caller, never reformatted.
+3. **A dry run reports the same warnings as a real run.** `addService()` returns the warning
+   list on both paths and the formatter prints it on both paths — the preview used to return
+   before the warnings were rendered.
+
+### 13.2 Deliberate refusals
+
+`/new-service` refuses, with the reason and the next step, when the folder is not a
+microservices repo (it points at `/new-project`), when the name is not kebab-case, is reserved
+(`shared`, `contracts`, `infra` — `gateway` is *not* reserved) or already exists, and when
+`--kind worker` is asked of a stack with no worker host. The name check runs before any write,
+so a second identical run is a refusal and never a duplicate.
+
+### 13.3 Still open
+
+Phase 4's F2 residual (`writeGitignore(dir, templateId: string)` is still keyed by the free-form
+label space instead of `templateId`), plus the dependency plans and the doc sweep in phases 9–11.

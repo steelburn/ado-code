@@ -34,6 +34,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'goal',      description: 'Set this chat session\'s goal, shown at the top of the To-do view (no arguments = edit the current one, --clear = remove it)',  usage: '/goal <objective>',  requiresArgs: false },
   { name: 'forget',    description: 'Remove all saved notes and preferences',                     usage: '/forget',             requiresArgs: false },
   { name: 'new-project', description: 'Open the project creation wizard',                         usage: '/new-project',         requiresArgs: false },
+  { name: 'new-service', description: 'Add one service to an existing microservices repo (append-only)', usage: '/new-service <name> [--kind api|worker] [--dry-run]', requiresArgs: true },
   { name: 'clear-sessions', description: 'Delete all chat sessions and start completely fresh', usage: '/clear-sessions', requiresArgs: false },
   { name: 'skills',      description: 'Open the skill catalog to browse and manage AI skills',    usage: '/skills',              requiresArgs: false },
 ];

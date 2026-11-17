@@ -14,6 +14,26 @@ import {
   planMonorepoTree,
   resolveMonorepoStack,
 } from '../shared/monorepoStacks';
+import {
+  PROJECT_MARKER_FILE,
+  ProjectMarker,
+  ServiceKind,
+  appendArchitectureService,
+  appendCiMatrixService,
+  appendComposeService,
+  appendEnvKeys,
+  appendReadmeServiceRow,
+  asWorkerComposeBlock,
+  composeServiceNames,
+  composeServicePorts,
+  extractComposeServiceBlock,
+  normalizeServiceKind,
+  parseProjectMarker,
+  serializeProjectMarker,
+  serviceNameError,
+  serviceSupportsWorker,
+  workerEntrypointFiles,
+} from '../shared/serviceScaffold';
 import { planContainerFiles, supportsContainerization } from '../shared/containerization';
 import {
   isSuiteEnabled,
@@ -987,8 +1007,18 @@ export class ProjectCreationService {
     return unique.length > 0 ? unique : ['api', 'worker'];
   }
 
+  /**
+   * When set, writes are *captured* instead of performed — `/new-service`
+   * needs the artifacts before it can decide to keep them.
+   */
+  private captureSink: Record<string, string> | null = null;
+
   /** Write a file below `dir`, creating parent folders as needed. */
   private writeProjectFile(dir: string, relPath: string, content: string): void {
+    if (this.captureSink) {
+      this.captureSink[relPath.replace(/\\/g, '/')] = content;
+      return;
+    }
     const full = path.join(dir, relPath);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, content);
@@ -3229,6 +3259,485 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
     );
   }
 
+  // ──────────────────────────────────────────────
+  //  /new-service — grow an existing microservices repo
+  // ──────────────────────────────────────────────
+
+  /**
+   * Capture every `writeProjectFile()` call instead of writing it.
+   *
+   * `/new-service` reuses the wizard's own service body and compose generator,
+   * so the artifacts have to exist *before* the decision to write (dry run,
+   * name clash, unparsable compose). Capturing keeps one implementation of the
+   * bodies while still letting the caller preview, refuse and append only.
+   */
+  private captureWrites(run: () => void): Record<string, string> {
+    const previous = this.captureSink;
+    const sink: Record<string, string> = {};
+    this.captureSink = sink;
+    try {
+      run();
+    } finally {
+      this.captureSink = previous;
+    }
+    return sink;
+  }
+
+  private readFileIfPresent(filePath: string): string | null {
+    try {
+      return fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
+  /** `orders-api` -> `ORDERS_API`; kept local so the module stays pure-friendly. */
+  private serviceStem(name: string): string {
+    return name.replace(/-/g, '_').toUpperCase();
+  }
+
+  /** Stack sniffing for a repo that predates the `.ado-project.json` marker. */
+  private sniffMonorepoStack(root: string): MonorepoStackId {
+    if (fs.existsSync(path.join(root, 'composer.json'))) {
+      return 'php-laravel';
+    }
+    if (fs.existsSync(path.join(root, 'pyproject.toml')) || fs.existsSync(path.join(root, 'requirements.txt'))) {
+      return 'python';
+    }
+    try {
+      if (fs.readdirSync(root).some(entry => entry.endsWith('.sln'))) {
+        return 'dotnet';
+      }
+    } catch {
+      // unreadable root — fall through to the Node default
+    }
+    return 'node-ts';
+  }
+
+  /**
+   * Resolve the microservices target for `root`.
+   *
+   * The `services/` folder is what makes a repo microservices (the marker only
+   * supplies the stack), so a repo without it is refused with the message that
+   * says what to do instead — never half-scaffolded.
+   */
+  private readServiceTarget(root: string): ServiceTarget | { error: string } {
+    const servicesDir = path.join(root, 'services');
+    let serviceDirs: string[] = [];
+    try {
+      serviceDirs = fs
+        .readdirSync(servicesDir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+        .map(entry => entry.name)
+        .sort();
+    } catch {
+      serviceDirs = [];
+    }
+    if (serviceDirs.length === 0) {
+      return {
+        error:
+          `${root} does not look like a microservices repo — no services/ folder with a service in it. ` +
+          'Use /new-project (Monorepo · Microservices) for a new repo, or point at the repo root that has one.',
+      };
+    }
+
+    const marker = parseProjectMarker(this.readFileIfPresent(path.join(root, PROJECT_MARKER_FILE)));
+    const stack: MonorepoStackId = marker ? marker.stack : this.sniffMonorepoStack(root);
+
+    const composeName = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yaml', 'compose.yml'].find(candidate =>
+      fs.existsSync(path.join(root, candidate))
+    );
+    const composePath = composeName ? path.join(root, composeName) : null;
+    const composeText = composePath ? this.readFileIfPresent(composePath) ?? '' : '';
+
+    const gateway = serviceDirs.includes('gateway') ? 'gateway' : '';
+    const domainServices = serviceDirs.filter(service => service !== gateway);
+    const broker = /image:\s*\S*rabbitmq/i.test(composeText)
+      ? 'rabbitmq'
+      : /image:\s*\S*kafka/i.test(composeText)
+        ? 'kafka'
+        : /image:\s*\S*redis/i.test(composeText)
+          ? 'redis'
+          : marker?.broker ?? 'none';
+
+    const ports = composeServicePorts(composeText);
+    const knownPorts = Object.values(ports).filter(port => Number.isFinite(port) && port > 0);
+    const base = stack === 'node-ts' ? 4000 : 8100;
+    const nextPort = knownPorts.length > 0 ? Math.max(...knownPorts) + 1 : base + serviceDirs.length;
+    const firstService = domainServices[0] ?? gateway;
+
+    return {
+      root,
+      stack,
+      marker,
+      services: serviceDirs,
+      domainServices,
+      gateway,
+      broker,
+      composePath,
+      composeName,
+      composeText,
+      nextPort,
+      knownPorts,
+      docker: firstService ? fs.existsSync(path.join(servicesDir, firstService, 'Dockerfile')) : false,
+      k8s: fs.existsSync(path.join(root, 'k8s')) || fs.existsSync(path.join(root, 'deploy', 'k8s')),
+      sharedPackage: fs.existsSync(path.join(root, 'shared')) || fs.existsSync(path.join(root, 'packages', 'shared')),
+    };
+  }
+
+  /**
+   * Rebuild the Node monorepo plan from what is on disk.
+   *
+   * `serviceBody()` only needs the plan's *shape* (scope, tooling, ports, the
+   * shared package), so every value is read back from the repo rather than
+   * guessed: ports from the existing compose file, the workspace tool from the
+   * lockfile, the scope from the root package name. A repo whose ports were
+   * hand-edited therefore keeps its numbering.
+   */
+  private nodeTsServicePlan(target: ServiceTarget, service: string): MonorepoPlan {
+    const root = target.root;
+    let rootPkg: Record<string, any> = {};
+    try {
+      rootPkg = JSON.parse(this.readFileIfPresent(path.join(root, 'package.json')) ?? '{}');
+    } catch {
+      rootPkg = {};
+    }
+    const tool = target.marker?.workspaceTool
+      ?? (fs.existsSync(path.join(root, 'pnpm-lock.yaml')) || fs.existsSync(path.join(root, 'pnpm-workspace.yaml'))
+        ? 'pnpm'
+        : fs.existsSync(path.join(root, 'yarn.lock'))
+          ? 'yarn'
+          : fs.existsSync(path.join(root, 'turbo.json'))
+            ? 'turborepo'
+            : fs.existsSync(path.join(root, 'nx.json'))
+              ? 'nx'
+              : 'npm');
+    const isPnpm = tool === 'pnpm';
+    const installCommand = isPnpm ? 'pnpm install' : tool === 'yarn' ? 'yarn' : 'npm install';
+    const portOf = (name: string): number => {
+      const existing = composeServicePorts(target.composeText)[name];
+      if (typeof existing === 'number') {
+        return existing;
+      }
+      const index = [target.gateway, ...target.domainServices].filter(Boolean).indexOf(name);
+      return index < 0 ? target.nextPort : 4000 + index;
+    };
+    const envVar = (name: string): string => `${this.serviceStem(name)}_URL`;
+    const services = target.gateway ? [target.gateway, ...target.domainServices, service] : [...target.domainServices, service];
+
+    return {
+      name: typeof rootPkg.name === 'string' && rootPkg.name ? rootPkg.name : path.basename(root),
+      version: typeof rootPkg.version === 'string' && rootPkg.version ? rootPkg.version : '0.1.0',
+      description: typeof rootPkg.description === 'string' && rootPkg.description ? rootPkg.description : `${service} service`,
+      scope: typeof rootPkg.name === 'string' && rootPkg.name.replace(/^@/, '').split('/')[0]
+        ? rootPkg.name.replace(/^@/, '').split('/')[0]
+        : path.basename(root),
+      tool,
+      services,
+      gateway: target.gateway,
+      domainServices: [...target.domainServices, service],
+      withShared: target.sharedPackage,
+      broker: target.broker,
+      k8s: target.k8s,
+      tooling: fs.existsSync(path.join(root, 'tsconfig.json')),
+      isPnpm,
+      useWorkspacesField: !isPnpm,
+      buildScript: 'build',
+      devScript: 'dev',
+      testScript: 'test',
+      installCommand,
+      sharedName: target.sharedPackage ? `${path.basename(root)}-shared` : '',
+      brokerUrl:
+        target.broker === 'rabbitmq'
+          ? 'amqp://guest:guest@broker:5672'
+          : target.broker === 'kafka'
+            ? 'broker:9092'
+            : target.broker === 'redis'
+              ? 'redis://broker:6379'
+              : '',
+      portOf,
+      envVar,
+    };
+  }
+
+  /** The env keys a generated single-service `.env.example` declares for `service`. */
+  private serviceEnvKeysFromExample(example: string, service: string): string[] {
+    const stem = this.serviceStem(service);
+    return example
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'))
+      .filter(line => line.startsWith(`${stem}_`) || line.startsWith(`PORT_${stem}=`))
+      .map(line => line.replace(/\s+$/, ''));
+  }
+
+  /**
+   * Add one service to an existing microservices repo — the single
+   * implementation behind `/new-service`, the palette command and the
+   * `add_service` tool.
+   *
+   * Append-only by construction: the service folder must not exist, and every
+   * other target (compose, `.env.example`, README, architecture doc, CI matrix)
+   * is *patched* through a helper that returns `null` instead of reformatting a
+   * file it cannot parse. Never re-inits git, never installs, never rewrites a
+   * file wholesale.
+   */
+  addService(request: AddServiceRequest): AddServiceResult {
+    const root = path.resolve(request.workspaceRoot ?? '');
+    const target = this.readServiceTarget(root);
+    if ('error' in target) {
+      return { ok: false, error: target.error, warnings: [] };
+    }
+
+    const existing = Array.from(new Set([...target.services, ...composeServiceNames(target.composeText)]));
+    const nameError = serviceNameError(request.name, existing);
+    if (nameError) {
+      return { ok: false, error: nameError, warnings: [] };
+    }
+    const service = request.name;
+    const kind = normalizeServiceKind(request.kind);
+    const warnings: string[] = [];
+    if (kind === 'worker' && !serviceSupportsWorker(target.stack)) {
+      return {
+        ok: false,
+        error:
+          `the ${target.stack} stack has no worker entrypoint — /new-service can only add an api there. ` +
+          'A worker would be a second service that publishes no port and never runs.',
+        warnings: [],
+      };
+    }
+
+    // 1. plan the body — captured, nothing on disk yet
+    let bodyFiles: Record<string, string> = {};
+    let composeBlock = '';
+    let envKeys: string[] = [];
+    try {
+      if (target.stack === 'node-ts') {
+        const plan = this.nodeTsServicePlan(target, service);
+        const ctx = {
+          containerization: { compose: !!target.composePath, dockerEnabled: target.docker },
+        } as unknown as ScaffoldContext;
+        const captured = this.captureWrites(() => {
+          this.serviceBody(root, ctx, plan, service);
+          this.compose(root, ctx, plan);
+        });
+        bodyFiles = Object.fromEntries(
+          Object.entries(captured).filter(([relPath]) => relPath.startsWith(`services/${service}/`))
+        );
+        composeBlock = extractComposeServiceBlock(captured['docker-compose.yml'] ?? '', service) ?? '';
+        envKeys = this.serviceEnvKeysFromExample(captured['.env.example'] ?? '', service);
+      } else {
+        const tree = planMonorepoTree(target.stack, {
+          projectName: path.basename(root),
+          description: request.description ?? `${service} service`,
+          version: '0.1.0',
+          services: [...target.domainServices, service],
+          gateway: target.gateway,
+          broker: target.broker,
+          sharedPackage: target.sharedPackage,
+          containerization: !!target.composePath,
+        });
+        bodyFiles = Object.fromEntries(
+          Object.entries(tree).filter(([relPath]) => relPath.startsWith(`services/${service}/`))
+        );
+        composeBlock = extractComposeServiceBlock(tree['docker-compose.yml'] ?? '', service) ?? '';
+        envKeys = this.serviceEnvKeysFromExample(tree['.env.example'] ?? '', service);
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not plan ${service}: ${error instanceof Error ? error.message : String(error)}`,
+        warnings,
+      };
+    }
+
+    if (Object.keys(bodyFiles).length === 0) {
+      return {
+        ok: false,
+        error: `the ${target.stack} generator produced no files for "${service}" — the service folder was left untouched.`,
+        warnings,
+      };
+    }
+
+    if (kind === 'worker') {
+      for (const [relPath, content] of Object.entries(workerEntrypointFiles(target.stack, service))) {
+        bodyFiles[relPath] = content;
+      }
+      if (composeBlock) {
+        composeBlock = asWorkerComposeBlock(composeBlock, target.stack, service);
+      }
+      envKeys = [];
+    }
+
+    const port = composeServicePorts(composeBlock)[service] ?? target.nextPort;
+    if (target.knownPorts.includes(port)) {
+      warnings.push(
+        `port ${port} is already published by another service in ${target.composeName} — the generated entry keeps the stack's numbering; renumber it if it clashes.`
+      );
+    }
+
+    // 2. patches — every helper returns null rather than reformatting
+    const writes: Array<{ relPath: string; content: string }> = Object.entries(bodyFiles).map(([relPath, content]) => ({
+      relPath,
+      content,
+    }));
+    const patched: string[] = [];
+
+    if (target.composePath && composeBlock) {
+      const next = appendComposeService(target.composeText, service, composeBlock);
+      if (next === null) {
+        warnings.push(`could not append ${service} to ${target.composeName} — add the entry by hand (see the preview).`);
+      } else {
+        writes.push({ relPath: target.composeName as string, content: next });
+        patched.push(target.composeName as string);
+      }
+    } else if (!target.composePath) {
+      warnings.push('no docker-compose.yml found — the service was scaffolded without a compose entry.');
+    }
+
+    const envPath = path.join(root, '.env.example');
+    const envText = this.readFileIfPresent(envPath);
+    if (envKeys.length > 0) {
+      if (envText === null) {
+        warnings.push('.env.example is missing — the new env keys are listed in the summary instead.');
+      } else {
+        const next = appendEnvKeys(envText, envKeys);
+        if (next !== envText) {
+          writes.push({ relPath: '.env.example', content: next });
+          patched.push('.env.example');
+        }
+      }
+    }
+
+    const readmeText = this.readFileIfPresent(path.join(root, 'README.md'));
+    if (readmeText !== null) {
+      const row = appendReadmeServiceRow(readmeText, [`\`${service}\``, kind, String(port), request.description ?? '']);
+      if (row === null) {
+        warnings.push('README.md has no service table to extend — add a row by hand if it keeps one.');
+      } else if (row !== readmeText) {
+        writes.push({ relPath: 'README.md', content: row });
+        patched.push('README.md');
+      }
+    }
+
+    const archRelPath = ['docs/architecture.md', 'ARCHITECTURE.md', 'docs/ARCHITECTURE.md'].find(candidate =>
+      fs.existsSync(path.join(root, candidate))
+    );
+    if (archRelPath) {
+      const archText = this.readFileIfPresent(path.join(root, archRelPath));
+      if (archText !== null) {
+        const next = appendArchitectureService(archText, service, kind, target.stack, port);
+        if (next !== null && next !== archText) {
+          writes.push({ relPath: archRelPath, content: next });
+          patched.push(archRelPath);
+        }
+      }
+    }
+
+    const workflowsDir = path.join(root, '.github', 'workflows');
+    try {
+      for (const file of fs.readdirSync(workflowsDir).filter(entry => /\.ya?ml$/.test(entry))) {
+        const relPath = `.github/workflows/${file}`;
+        const ciText = this.readFileIfPresent(path.join(workflowsDir, file));
+        if (ciText === null) {
+          continue;
+        }
+        const next = appendCiMatrixService(ciText, service);
+        if (next !== null && next !== ciText) {
+          writes.push({ relPath, content: next });
+          patched.push(relPath);
+          break;
+        }
+      }
+    } catch {
+      // no workflows folder — nothing to extend
+    }
+
+    let markerWritten = false;
+    if (!target.marker) {
+      const marker: ProjectMarker = { stack: target.stack, architecture: 'microservices', serviceKind: kind };
+      if (target.broker !== 'none') {
+        marker.broker = target.broker;
+      }
+      writes.push({ relPath: PROJECT_MARKER_FILE, content: serializeProjectMarker(marker) });
+      markerWritten = true;
+    }
+
+    const files = writes.map(write => write.relPath);
+
+    if (request.dryRun) {
+      return {
+        ok: true,
+        dryRun: true,
+        service,
+        stack: target.stack,
+        kind,
+        port,
+        files,
+        written: [],
+        patched: [],
+        warnings,
+        envKeys,
+        preview: { compose: composeBlock, files },
+        postCreateSteps: this.servicePostCreateSteps(target.stack, service, kind, port),
+      };
+    }
+
+    for (const write of writes) {
+      this.writeProjectFile(root, write.relPath, write.content);
+    }
+    if (markerWritten) {
+      patched.push(PROJECT_MARKER_FILE);
+    }
+
+    return {
+      ok: true,
+      service,
+      stack: target.stack,
+      kind,
+      port,
+      files,
+      written: files.filter(relPath => !patched.includes(relPath)),
+      patched,
+      warnings,
+      envKeys,
+      markerWritten,
+      postCreateSteps: this.servicePostCreateSteps(target.stack, service, kind, port),
+    };
+  }
+
+  /** The two commands that make a freshly added service run. */
+  private servicePostCreateSteps(
+    stack: MonorepoStackId,
+    service: string,
+    kind: ServiceKind,
+    port: number
+  ): PostCreateStep[] {
+    const install =
+      stack === 'node-ts'
+        ? 'npm install'
+        : stack === 'python'
+          ? 'pip install -e .'
+          : stack === 'dotnet'
+            ? 'dotnet build'
+            : 'composer install';
+    return [
+      {
+        label: `Install ${service} dependencies`,
+        command: `cd services/${service} && ${install}`,
+        detail: 'The service is a workspace member; this resolves its own manifest.',
+      },
+      {
+        label: kind === 'worker' ? `Start the ${service} worker` : `Run ${service}`,
+        command: `docker compose up ${service}`,
+        detail:
+          kind === 'worker'
+            ? 'Consumes the broker — a worker publishes no port.'
+            : `Serves on http://localhost:${port}.`,
+      },
+    ];
+  }
+
   /**
    * The monorepo layout for a non-TypeScript stack.
    *
@@ -3470,4 +3979,64 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
     await this.run('git', ['add', '.'], dir);
     await this.run('git', ['commit', '-m', `Initial commit: ${projectName}`], dir);
   }
+}
+
+/** The microservices repo `/new-service` resolved before writing anything. */
+export interface ServiceTarget {
+  root: string;
+  stack: MonorepoStackId;
+  /** `null` when the repo predates `.ado-project.json` and was sniffed. */
+  marker: ProjectMarker | null;
+  /** Every folder under `services/`, sorted. */
+  services: string[];
+  /** `services` minus the gateway. */
+  domainServices: string[];
+  /** The gateway folder, or '' when the repo has none. */
+  gateway: string;
+  broker: string;
+  composePath: string | null;
+  composeName?: string;
+  composeText: string;
+  /** First port above everything already published, or the stack base. */
+  nextPort: number;
+  /** Ports already published in the compose file. */
+  knownPorts: number[];
+  docker: boolean;
+  k8s: boolean;
+  sharedPackage: boolean;
+}
+
+/** Input of `ProjectCreationService.addService()`. */
+export interface AddServiceRequest {
+  /** Repo root — the folder that owns `services/`. */
+  workspaceRoot: string;
+  name: string;
+  /** `api` (default) or `worker` — a worker publishes no port. */
+  kind?: ServiceKind;
+  description?: string;
+  /** Plan and preview only; nothing is written. */
+  dryRun?: boolean;
+}
+
+/** Result of `ProjectCreationService.addService()`. */
+export interface AddServiceResult {
+  ok: boolean;
+  error?: string;
+  service?: string;
+  stack?: MonorepoStackId;
+  kind?: ServiceKind;
+  port?: number;
+  /** Every file the operation created or patched. */
+  files?: string[];
+  /** Files that did not exist before. */
+  written?: string[];
+  /** Existing files that were extended in place. */
+  patched?: string[];
+  warnings: string[];
+  /** Env keys for the new service, when `.env.example` had no home for them. */
+  envKeys?: string[];
+  markerWritten?: boolean;
+  dryRun?: boolean;
+  preview?: { compose: string; files: string[] };
+  postCreateSteps?: PostCreateStep[];
 }
