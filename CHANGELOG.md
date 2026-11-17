@@ -2,7 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 
-## [Unreleased]
+## [0.8.7] - 2026-11-17
 
 ### Added
 
