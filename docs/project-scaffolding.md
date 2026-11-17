@@ -1,12 +1,12 @@
 # Project Scaffolding — Architecture Options
 
-> **Status: PHASES 1–3 AND 5–8 IMPLEMENTED; PHASE 4 HAS ONE OPEN RESIDUAL (F2), 9–11 ARE
-> OPEN.** The shared architecture/context modules, the golden fixtures, the monorepo
-> decomposition, the `architecture` select on the five stack templates, `showWhen`, the
-> `testAutomation` option group, the per-stack monorepo writers, the containerization layer
-> and `/new-service` (§13) are in the tree and green. Section 3 records the findings behind
-> the design and §11 records what the first phases actually changed; two claims that
-> verification disproved are in §3, and §11 corrects a third (F3).
+> **Status: PHASES 1–8 IMPLEMENTED; 9–11 ARE OPEN.** The shared architecture/context modules,
+> the golden fixtures, the monorepo decomposition, the `architecture` select on the five stack
+> templates, `showWhen`, the `testAutomation` option group, the per-stack monorepo writers, the
+> containerization layer and `/new-service` (§13) are in the tree and green, and phase 4 has no
+> residual left — F2, the ignore-file label space, is retired too (§13.4). Section 3 records
+> the findings behind the design and §11 records what the first phases actually changed; two
+> claims that verification disproved are in §3, and §11 corrects a third (F3).
 
 ## 1. Scope
 
@@ -122,6 +122,13 @@ export interface ScaffoldContext {
 `dotnet-webapi`. Excluded: `react-ts`, `nextjs`, `react-native`, `flutter`, `dotnet-maui`,
 `dotnet-console`, `empty`, `doc-*`. A frontend has one deployable; "modular monolith" there
 means route groups, a different concept — out of scope deliberately.
+
+**F2 was retired on the label side, not the context side (§13.4).** `writeGitignore` now takes a
+`GitignoreLabel` — a typed union with an exhaustive `Record<GitignoreLabel, string>` body map in
+`src/shared/gitignoreTemplates.ts` and no `|| 'node_modules/'` default — so the ignore writers
+need no context at all: an exhaustive map is the stronger guarantee, because a label without a
+body fails the build instead of reaching a callee that would have had to interpret the context.
+The rest of this sketch (one context for the layout writers and the planner, F3/F5) stands.
 
 ### 4.2 Containerization rule
 
@@ -442,9 +449,9 @@ fixture's request and compares the whole tree, then the warnings.
 
 **What phase 4 needs (concrete)**
 
-1. `writeGitignore(dir, ctx)` — the monorepo writers now pass `ctx.templateId`, so
-   this is a one-line change at each call site; the `php` / `dotnet` label space
-   (F2) is retired at the same time.
+1. ~~`writeGitignore(dir, ctx)`~~ — **shipped as a typed label space (F2 retired, §13.4)**:
+   `writeGitignore(dir, label: GitignoreLabel)` against an exhaustive body map, which also
+   fixed the two call sites that passed a template id where a label belongs.
 2. A `.dockerignore` writer sized by `ctx.containerization` + `ctx.stack`, emitting
    a per-service `.dockerignore` for the monorepo shape (today's root one stays for
    the legacy template until the alias retires).
@@ -539,5 +546,34 @@ so a second identical run is a refusal and never a duplicate.
 
 ### 13.3 Still open
 
-Phase 4's F2 residual (`writeGitignore(dir, templateId: string)` is still keyed by the free-form
-label space instead of `templateId`), plus the dependency plans and the doc sweep in phases 9–11.
+The dependency plans and the doc sweep in phases 9–11. Phase 4 has no residual left: F2 was
+retired in §13.4.
+
+### 13.4 Phase 4's F2 residual — retired
+
+`writeGitignore` took a free-form `templateId: string` and fell back to `node_modules/` for
+anything it did not recognise. Two call sites were wrong in ways nothing caught:
+`scaffoldMonorepoReadme` passed `ctx.templateId` — a template id standing in for an ignore
+label — and the ternary in `scaffoldStackMonorepo` passed `dotnet-webapi`, a label that does not
+exist, so a .NET monorepo quietly received the Node body. The standalone `test-automation`
+template matched nothing either and got `node_modules/` from the fallback by accident.
+
+The label space now lives in `src/shared/gitignoreTemplates.ts`:
+
+- `GitignoreLabel` is the union of every body the scaffolder can write, and
+  `GITIGNORE_TEMPLATES` is an exhaustive `Record<GitignoreLabel, string>` — a label without a
+  body, or a body without a label, fails the build.
+- `gitignoreContent(label)` is total, so the wrong-bytes failure mode is gone rather than
+  merely detected: there is no default arm to fall through.
+- `gitignoreLabelForStack(stack)` is an exhaustive `Record<MonorepoStackId, GitignoreLabel>`,
+  which is the .NET monorepo regression (dotnet → `/bin/`, never `node_modules/`).
+- `isGitignoreLabel(value)` narrows a free-form string (a persisted option, an id read back
+  from disk) instead of leaving callers to invent a default. `isGitignoreLabel('dotnet-webapi')`
+  is deliberately `false` — that string is the bug.
+- `test-automation` is a real label now, carrying tooling ignores only: the suite keeps owning
+  `node_modules/`, `dist/` and the report folders through `IGNORE_LINES`.
+
+`writeGitignore(dir, label)` is three lines, and `gitignoreTemplates.test.ts` pins the label
+space, the stack mapping and both regressions. `php` and `dotnet` stay shared labels (the
+deprecated `php` alias and the two .NET templates reuse them) rather than becoming an id
+space of their own.

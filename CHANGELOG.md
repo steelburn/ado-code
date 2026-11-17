@@ -19,6 +19,13 @@ All notable changes to ADO Code will be documented in this file.
 
 ### Fixed
 
+- **A .NET monorepo no longer ships a Node `.gitignore`, and no template falls back to one.**
+  The ignore writers were keyed by free-form strings with a `|| 'node_modules/'` default: the
+  per-stack monorepo writer passed `dotnet-webapi` — a template id that is not an ignore label —
+  and the standalone test-automation template matched nothing at all, so both silently received
+  the Node body. The label space is a typed union with an exhaustive body map in
+  `src/shared/gitignoreTemplates.ts` now, so an unknown label is a compile error and there is no
+  default body left to write.
 - **"Clean Up After Merge" no longer dies on an ADO 401.** The post-merge cleanup action (Worktrees context menu and the auto-offer) required an ADO pull-request lookup to succeed, so a worktree unrelated to any work item — or a machine with a missing/expired `adoCode.adoPat`, or an org that does not host the repo — failed the whole action with `ADO API error: 401`. The lookup is advisory now: when it fails, the verdict falls back to the local merged state (`git branch --merged` via the new `GitService.isBranchMerged`), the ADO error is reported in the result message, and cleanup is refused only when the branch genuinely is not merged.
 
 ## [0.8.6] - 2026-11-16

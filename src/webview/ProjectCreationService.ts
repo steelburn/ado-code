@@ -5,6 +5,7 @@ import { PostCreateStep, ProjectCreationRequest, PROJECT_TEMPLATES } from '../we
 import { DocProjectSpec, DOC_PROJECT_SPECS } from '../shared/documentation/docTemplates';
 import { scaffoldDocumentationProject } from '../shared/documentation/scaffoldDocs';
 import { ScaffoldContext, resolveContainerization } from '../shared/scaffoldContext';
+import { GitignoreLabel, gitignoreContent, gitignoreLabelForStack } from '../shared/gitignoreTemplates';
 import { resolveArchitecture } from '../shared/architectureStyles';
 import {
   MONOREPO_STACKS,
@@ -2909,7 +2910,7 @@ Every service listens on its own port and exposes \`/health\` and \`/ready\`.
 `
     );
 
-    this.writeGitignore(dir, ctx.templateId);
+    this.writeGitignore(dir, 'monorepo-microservices');
   }
 
   /** One self-contained service: manifest, tsconfig, entrypoint, Dockerfile, k8s. */
@@ -3788,9 +3789,7 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
       );
     }
 
-    const ignoreTemplate =
-      stack === 'dotnet' ? 'dotnet-webapi' : stack === 'php-laravel' ? 'php-laravel' : stack === 'python' ? 'python' : 'node-ts';
-    this.writeGitignore(dir, ignoreTemplate);
+    this.writeGitignore(dir, gitignoreLabelForStack(stack));
   }
 
   /**
@@ -3918,25 +3917,16 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
     fs.writeFileSync(file, `${existing}${glue}${missing.join('\n')}\n`, 'utf8');
   }
 
-  private writeGitignore(dir: string, templateId: string): void {
-    const gitignores: Record<string, string> = {
-      'node-ts': 'node_modules/\ndist/\n.env\n.env.local\n',
-      'node-js': 'node_modules/\n.env\n.env.local\n',
-      python: '__pycache__/\n*.pyc\n.env\nvenv/\n.venv/\n*.egg-info/\n',
-      'php-laravel': '/vendor/\n.env\n.env.backup\n.phpunit.result.cache\nHomestead.json\nHomestead.yaml\nauth.json\nnpm-debug.log\nyarn-error.log\n/.fleet\n/.idea\n/.vscode\n',
-      php: '/vendor/\ncomposer.lock\n.phpunit.result.cache\n',
-      dotnet: '/bin/\n/obj/\n/user/\n*.user\n*.suo\n*.userosscache\n*.sln.docstates\n',
-      'react-native': 'node_modules/\n.expo/\ndist/\n*.log\n.env\n.env.local\nios/Pods/\nandroid/.gradle/\nandroid/app/build/\n*.jks\n*.p8\n*.p12\n*.key\n*.mobileprovision\n',
-      flutter: '**/build/\n.dart_tool/\n.packages\n.env\n*.iml\n.idea/\n.vscode/\nandroid/local.properties\nios/Pods/\n',
-      'dotnet-maui': '/bin/\n/obj/\n**/bin/\n**/obj/\n*.user\n*.suo\n.vs/\n',
-      'monorepo-microservices': 'node_modules/\ndist/\n**/dist/\n.env\n.env.local\n*.log\ncoverage/\n.turbo/\n.nx/\n',
-      empty: '.env\n.DS_Store\n',
-    };
-
-    const content = gitignores[templateId] || 'node_modules/\n';
-    if (content) {
-      fs.writeFileSync(path.join(dir, '.gitignore'), content);
-    }
+  /**
+   * Write the `.gitignore` for a label.
+   *
+   * The label space is typed (`src/shared/gitignoreTemplates.ts`), so an unknown
+   * template cannot reach this method and there is no default body to fall back
+   * to — the old `|| node_modules/` arm silently wrote the wrong file
+   * (docs/project-scaffolding.md, F2).
+   */
+  private writeGitignore(dir: string, label: GitignoreLabel): void {
+    fs.writeFileSync(path.join(dir, '.gitignore'), gitignoreContent(label));
   }
 
   /** RFC-4122-ish v4 GUID for generated .sln files (no crypto import needed). */
