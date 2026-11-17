@@ -603,8 +603,8 @@ block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses
 **Phases (review §8).** **P1 container hardening — shipped (§14.1)** · **P2 contract-first
 `contracts/` — shipped (§14.2)** · **P3 observability and lifecycle — shipped (§14.3)** ·
 **P4 resilience kit — shipped (§14.4)** · **P5 delivery gates — shipped (§14.5)** ·
-**P6 `zen-microservices` preset + standards `AGENTS.md` — shipped (§14.6)** · P7 ADR document type
-and clause-id traceability.
+**P6 `zen-microservices` preset + standards `AGENTS.md` — shipped (§14.6)** · **P7 ADR document
+type + clause-id traceability — shipped (§14.7)**.
 
 P1–P5 change what §2.3 and §13 describe, so they land before any further template work: a new
 template added first would have to be retrofitted through every one of them. None of P1–P7 changes
@@ -908,3 +908,58 @@ now unconditional.
 **Residual.** No OpenTelemetry SDK and no JWT middleware are emitted (CON‑03 partial, CON‑05 unmet),
 and the preset is not yet reachable from `/new-project` when the wizard is opened with an existing
 folder — it applies at project-creation time only.
+
+### 14.7 P7 — ADR document type and clause-id traceability (shipped)
+
+A standard nobody can cite is a document, not a standard. P7 gives the handbook's §4 clauses a home
+in the document set: `ADR-###` decision records, and a compliance matrix keyed on `ZEN-STD-*`.
+
+**`src/shared/documentation/zenTraceability.ts`** (new) turns the clause catalogue in
+`standardsArtifacts.ts` into rows rather than retyping rule text into a template:
+
+| Export | Purpose |
+|---|---|
+| `runtimeComplianceRows(family)` / `ciComplianceRows()` | CLAUSE-ID · RULE · WHERE IT LIVES · STATUS · EVIDENCE, one row per clause |
+| `clauseStatus(id, family)` | `Met` / `Partial` / `Not scaffolded` / `Deviation` — the honest column |
+| `complianceDeviations(family)` | the clauses that need an ADR, and only those |
+| `adrId(n)` / `adrPath(n, slug)` / `ADR_TEMPLATE_PATH` | ADR identity; the blank template carries **no** number |
+| `missingEvidenceIds()` | guard: every clause id must name an evidence artefact |
+
+**Four new documents in `doc-writer`** (doc types `ADL` / `ADT` / `ADR` / `ZCM`; the writer set goes
+21 → 25 specs):
+
+| Path | What it holds |
+|---|---|
+| `01-design/adr/README.md` | The decision log: the four statuses, how superseding works, and the generated deviations table |
+| `01-design/adr/template.md` | Status · Context · Decision · Consequences · Alternatives · Clause mapping |
+| `01-design/adr/ADR-001-monorepo-as-default.md` | The seeded record: why monorepo is the default, and where a per-service repository is still right |
+| `05-traceability/zen-standards-compliance.md` | Runtime and delivery matrices, the deviations table, and the citable id list |
+
+**Three decisions worth naming.**
+
+1. **No clause column in the RTM.** `RTM_COLUMNS` is the join contract shared with the `doc-tester`
+   project (`REQ-ID` is the key) and a clause is not a requirement. Adding a column would either
+   break the documented `rtm.csv` parity or force non-requirement rows into a requirements register.
+   The clause lives in its own matrix and links *out* to the tester's `EVD-###` reports.
+2. **ADR-001 ships as a real record, not a stub.** The monorepo decision (D2) is a decision the
+   organisation has taken, so it lands as an Accepted ADR that amends §4.1 and states its
+   consequences in both directions.
+3. **The blank template has no number.** It first shipped as `ADR-002-template.md`, which squats on
+   the id the next real decision needs; it is now `template.md`.
+
+**Defect found by the suite.** The ADR log's guidance contained `ADR-002-<slug>.md`, and
+`docBlocks.ts` reads `<slug>` as inline HTML — the generated document failed the zero-warning DOCX
+check. Fixed by phrasing (`…-event-schema-versioning.md`) and by removing the invented number.
+
+**Tests — 20 new in `zenTraceability.test.ts`**: catalogue coverage and id shape, per-stack status
+(node met, `python`/`dotnet`/`php` `Not scaffolded` for CON‑06), five non-empty columns per row,
+all seven delivery gates, deviations exactly `{CON‑03, CON‑05}`, ADR id padding, the template path
+carrying no number, **doc-type uniqueness across the writer set** (the `<PROJECT>-<ROLE>-<TYPE>-001`
+id would collide on a duplicate), option gating, the rendered matrix citing only catalogue ids and
+every catalogue id, and the deviation rows pointing at an ADR. `docTemplates.test.ts` and
+`docProjectScaffold.test.ts` pass unchanged (65 passing across the three suites).
+
+**Residuals.** The KRiSA matrix entry named in the original phase plan was not added: the ADR log
+carries the governance trail (decision → clause → evidence), and KRiSA mapping stays opt-in via
+`krisaCompliance`. `ADR-###` is not a standalone `list_doc_templates` type; it is emitted as part of
+`doc-writer`.

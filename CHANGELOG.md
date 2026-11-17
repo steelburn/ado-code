@@ -5,6 +5,15 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **The standard becomes citable: `ADR-###` decision records and a `ZEN-STD-*` compliance matrix.**
+  `src/shared/documentation/zenTraceability.ts` renders the clause catalogue into matrix rows, so
+  `doc-writer` now emits `01-design/adr/README.md` (the decision log, with a generated deviations
+  table), `01-design/adr/template.md`, a seeded `ADR-001-monorepo-as-default.md` recording why the
+  monorepo is the default, and `05-traceability/zen-standards-compliance.md` (runtime and delivery
+  matrices, deviations, citable ids). Every clause id must name an evidence artefact, and
+  `Not scaffolded` is a first-class status so a Python service never claims the TypeScript
+  resilience kit. The RTM deliberately keeps its `REQ-ID` contract; clauses trace through the new
+  matrix to the tester project reports.
 - **The handbook itself ships with the generator: a `zen-microservices` preset and a
   standards `AGENTS.md`.** `src/shared/wizardPresets.ts` adds one preset per catalogue stack
   (`node-ts` is the default) that turns the gates, the shared package, the broker and k8s on, so

@@ -7,11 +7,17 @@
  * three traceability matrices, so the mitigating rules are structural:
  *
  *  1. One ID vocabulary across all three: REQ-### / NFR-### / BR-### / TC-###
- *     / EX-#### / DEF-### / CR-### / EVD-### / DIA-### / FIG-###.
+ *     / EX-#### / DEF-### / CR-### / EVD-### / DIA-### / FIG-### / ADR-###
+ *     / ZEN-STD-*. The ZEN ids are the handbook clause ids, imported from
+ *     `standardsArtifacts.ts` rather than retyped, so the compliance matrix,
+ *     the scaffolded AGENTS.md and the CI job names cannot disagree.
  *  2. One column contract (`columns.ts`) so the three registers join in Excel.
  *  3. Every project records its `role` and `linkedProjects` in
  *     `.ado-code/documentation.json`, so a later cross-project roll-up does
  *     not have to guess.
+ *  4. One `docType` per emitted file. The document id is
+ *     `<PROJECT>-<ROLE>-<TYPE>-001` and a register row resolves by that
+ *     suffix, so two files sharing a type collide on both.
  *
  * Bodies are restricted to the pandoc- and docx-safe Markdown subset:
  * ATX headings, pipe tables, ordered/unordered lists, fenced code, and the one
@@ -24,6 +30,21 @@
 
 import { DocRole } from './krisa';
 import { markdownTableHeader } from './columns';
+import {
+  ADR_DIR,
+  ADR_LOG_DOC_TYPE,
+  ADR_SEEDED_DOC_TYPE,
+  ADR_STATUSES,
+  ADR_TEMPLATE_DOC_TYPE,
+  ADR_TEMPLATE_PATH,
+  ZEN_MATRIX_DOC_TYPE,
+  adrPath,
+  adrId,
+  citableClauseIds,
+  ciComplianceRows,
+  complianceDeviations,
+  runtimeComplianceRows,
+} from './zenTraceability';
 
 export interface DocOptions {
   governance?: string;
@@ -1073,6 +1094,7 @@ function writerDocs(): DocFileSpec[] {
       ],
       when: (o) => on(o.traceability),
     },
+    ...adrDocs(),
     ...commonDocs(),
   ];
 }
@@ -1589,6 +1611,296 @@ function testerDocs(): DocFileSpec[] {
       ];
     })(),
     ...commonDocs(),
+  ];
+}
+
+/**
+ * Architecture Decision Records, plus the ZEN compliance matrix that cites them.
+ *
+ * An ADR is the only place a project may say "we knowingly depart from a clause",
+ * so the deviations table is generated from the same catalogue the scaffolded
+ * AGENTS.md renders. A decision that outlives a sprint gets an ADR; the handbook
+ * section that prompted it gets a clause id.
+ */
+function adrDocs(): DocFileSpec[] {
+  const templatePath = ADR_TEMPLATE_PATH;
+  const seeded = adrPath(1, 'monorepo-as-default');
+  return [
+    {
+      path: ADR_DIR + '/README.md',
+      docType: ADR_LOG_DOC_TYPE,
+      titleEn: 'Architecture Decision Log',
+      titleBm: 'Log Keputusan Seni Bina',
+      purpose:
+        'The index of every architecture decision, what it decides, which clause it ' +
+        'satisfies or departs from, and which ADR superseded it.',
+      sections: [
+        {
+          heading: 'How this log works',
+          guidance:
+            'An ADR is one decision with its context and its consequences. The log is ' +
+            'append-only and the ids are never reused.',
+          bullets: [
+            'Raise an ADR before the change, not after it: the decision record is the review artefact.',
+            'An Accepted ADR is immutable. To change course, write a new ADR and set Supersedes on it.',
+            'Name the clause id the decision affects (ZEN-STD-*). A decision with no clause is still valid, it is just not compliance evidence.',
+            'Link the change request (CR-###) and the contract it alters (contracts/openapi.yaml).',
+            'A deviation from a Met clause is only acceptable with an Accepted ADR that states the residual risk.',
+          ],
+        },
+        {
+          heading: 'Status values',
+          table: {
+            header: ['STATUS', 'MEANING', 'SET BY'],
+            rows: [
+              [ADR_STATUSES[0], 'Written and under review; may change.', 'Author'],
+              [ADR_STATUSES[1], 'In force. Implementation may proceed against it.', 'Architect'],
+              [ADR_STATUSES[2], 'Replaced by a later ADR; kept for history.', 'Architect'],
+              [ADR_STATUSES[3], 'Considered and declined; record why.', 'Architect'],
+            ],
+          },
+        },
+        {
+          heading: 'Log',
+          guidance: 'Newest last. Every row is a document in this folder.',
+          table: {
+            header: ['ADR-ID', 'TITLE', 'STATUS', 'DATE', 'DECIDES', 'ZEN CLAUSE', 'SUPERSEDES'],
+            rows: [
+              [
+                adrId(1),
+                'Monorepo is the default topology',
+                ADR_STATUSES[1],
+                'TBC',
+                'Repository layout for microservices',
+                'ZEN-STD-REPO-01',
+                '-',
+              ],
+            ],
+          },
+        },
+        {
+          heading: 'Template',
+          guidance:
+            'Copy ' + templatePath + ' to the next free id with a kebab-case slug, ' +
+            'for example ' + adrId(2) + '-event-schema-versioning.md, when raising a record.',
+          bullets: [
+            'The slug is kebab-case and names the decision, not the ticket: ' + adrId(2) + '-event-schema-versioning.md.',
+            'Never renumber an ADR: the id is a permanent cross-reference from pull requests and evidence reports.',
+            'Superseding is two edits in one change: set Supersedes on the new ADR and flip this log row to Superseded.',
+            'The status in the ADR body is authoritative; this row follows it.',
+          ],
+        },
+        {
+          heading: 'Deviations that need an ADR',
+          guidance:
+            'Generated from the clause catalogue: these are the clauses the emitted ' +
+            'boilerplate does not fully satisfy, so each one needs a decision record ' +
+            'naming the residual risk and the compensating control.',
+          table: {
+            header: ['CLAUSE-ID', 'RULE', 'ACCEPTED BY'],
+            rows: complianceDeviations('node').map((c) => [c.id, c.rule, 'TBC']),
+          },
+        },
+      ],
+      when: (o) => on(o.includeDesign),
+    },
+    {
+      path: templatePath,
+      docType: ADR_TEMPLATE_DOC_TYPE,
+      titleEn: 'Architecture Decision Record Template',
+      titleBm: 'Templat Rekod Keputusan Seni Bina',
+      purpose: 'The blank ADR: status, context, decision, consequences and the clause it affects.',
+      sections: [
+        {
+          heading: 'Status',
+          guidance: 'One of the four status values, the date, and who accepted it.',
+          table: {
+            header: ['FIELD', 'VALUE'],
+            rows: [
+              ['Status', ADR_STATUSES[0]],
+              ['Date', 'TBC'],
+              ['Decided by', 'TBC'],
+              ['Supersedes', '-'],
+              ['Change request', 'CR-001'],
+            ],
+          },
+        },
+        {
+          heading: 'Context',
+          guidance:
+            'The forces at play: what the constraint is, what the current state is, and ' +
+            'what makes the decision necessary now. Facts, not preference.',
+        },
+        {
+          heading: 'Decision',
+          guidance:
+            'The decision in one assertive sentence, then the detail. State what the ' +
+            'project must now do, and what it must stop doing.',
+        },
+        {
+          heading: 'Consequences',
+          guidance: 'Both directions. An ADR that lists only benefits is a proposal, not a record.',
+          bullets: [
+            'Positive: what becomes cheaper, safer or faster.',
+            'Negative: what becomes harder, and what the team must now maintain.',
+            'Follow-up: the work this decision creates, with an owner.',
+          ],
+        },
+        {
+          heading: 'Alternatives considered',
+          table: {
+            header: ['OPTION', 'WHY REJECTED'],
+            rows: [['TBC', 'TBC']],
+          },
+        },
+        {
+          heading: 'Clause mapping',
+          guidance:
+            'Which ZEN-STD-* clauses this decision satisfies, satisfies in part, or ' +
+            'deliberately departs from. This table is what the compliance matrix links back to.',
+          table: {
+            header: ['CLAUSE-ID', 'EFFECT', 'EVIDENCE'],
+            rows: [['ZEN-STD-REPO-01', 'Satisfies', 'ARCHITECTURE.md']],
+          },
+        },
+      ],
+      when: (o) => on(o.includeDesign),
+    },
+    {
+      path: seeded,
+      docType: ADR_SEEDED_DOC_TYPE,
+      titleEn: 'ADR-001 Monorepo as the default topology',
+      titleBm: 'ADR-001 Monorepo sebagai topologi lalai',
+      purpose:
+        'The seeded decision that explains why the scaffolded repository is a monorepo ' +
+        'and where a per-service repository is still correct.',
+      sections: [
+        {
+          heading: 'Status',
+          table: {
+            header: ['FIELD', 'VALUE'],
+            rows: [
+              ['Status', ADR_STATUSES[1]],
+              ['Date', 'TBC'],
+              ['Decided by', 'Architect'],
+              ['Supersedes', '-'],
+              ['Change request', 'CR-001'],
+            ],
+          },
+        },
+        {
+          heading: 'Context',
+          guidance:
+            'The handbook specifies a per-service repository layout with contracts/ and ' +
+            'deploy/ inside each service. The emitted boilerplate is a monorepo: services/ ' +
+            'per service, packages/shared for the runtime kit, contracts/ at the root, one ' +
+            'CI workflow for every service.',
+          bullets: [
+            'A shared logging, health, resilience and contract kit cannot be shared across repositories without publishing it as a package.',
+            'One contract set per repository keeps the OpenAPI document and the event schemas reviewable in the same pull request as the code that changes them.',
+            'The CI gates run once per repository instead of once per service, so a five-service initiative does not need five pipeline definitions kept in step.',
+            'The team is small: a change routinely spans two services and their contracts.',
+          ],
+        },
+        {
+          heading: 'Decision',
+          guidance:
+            'Monorepo is the default for a microservices initiative in this organisation. ' +
+            'A per-service repository is permitted only when a service has an independent ' +
+            'release cadence, a separate owning team and a regulatory boundary the other ' +
+            'services do not share. The handbook layout is amended accordingly: contracts/, ' +
+            'deploy/ and the CI definition live at the repository root.',
+          bullets: [
+            'Generate with the zen-microservices preset; do not hand-write the layout.',
+            'Add a service with /new-service so the contract, the compose entry, the AGENTS.md services list and the CI matrix stay in step.',
+            'A per-service repository is an exception that needs this ADR rewritten, not a variant of the default.',
+          ],
+        },
+        {
+          heading: 'Consequences',
+          bullets: [
+            'Positive: one place for the shared kit, the contracts and the gates; one pull request can change a service, its contract and its database migration together.',
+            'Negative: a repository-wide CI run is longer than a per-service run, and the whole repository is checked out to change one service.',
+            'Follow-up: keep the service count inside the preset practical by defaulting to a modular monolith below the handbook team-size threshold.',
+          ],
+        },
+        {
+          heading: 'Alternatives considered',
+          table: {
+            header: ['OPTION', 'WHY REJECTED'],
+            rows: [
+              ['One repository per service', 'Shared kit and contracts would need publishing and versioning; the CI gates would be duplicated per service.'],
+              ['A single deployable application', 'Contradicts the independent-deployability requirement in the handbook readiness checklist.'],
+            ],
+          },
+        },
+        {
+          heading: 'Clause mapping',
+          table: {
+            header: ['CLAUSE-ID', 'EFFECT', 'EVIDENCE'],
+            rows: [
+              ['ZEN-STD-REPO-01', 'Amends (root layout)', 'ARCHITECTURE.md'],
+              ['ZEN-STD-CON-02', 'Satisfies', 'contracts/openapi.yaml'],
+              ['ZEN-STD-CI-01 to ZEN-STD-CI-07', 'Satisfies', '.github/workflows/ci.yml'],
+            ],
+          },
+        },
+      ],
+      when: (o) => on(o.includeDesign),
+    },
+    {
+      path: '05-traceability/zen-standards-compliance.md',
+      docType: ZEN_MATRIX_DOC_TYPE,
+      titleEn: 'ZEN Standards Compliance Matrix',
+      titleBm: 'Matriks Pematuhan Piawaian ZEN',
+      purpose:
+        'Clause by clause: the rule, where the boilerplate realises it, whether it is ' +
+        'met, and the document that proves it. The join key against the tester project ' +
+        'is the clause id.',
+      sections: [
+        {
+          heading: 'How to read this matrix',
+          guidance:
+            'Rows are generated from the same clause catalogue that renders the scaffolded ' +
+            'AGENTS.md, so the ids here are the ids a pull request can cite.',
+          bullets: [
+            'Met means the emitted boilerplate satisfies the clause and the evidence column names an artefact that exists.',
+            'Partial means part of the clause ships; the missing part is named in the row.',
+            'Not scaffolded means the artefact belongs to a stack this repository does not use.',
+            'A row may only be raised to Met with evidence, and only downgraded with an ADR that states the residual risk.',
+            'Security and performance evidence lives in the tester project (EVD-###); link the report id, not the file name alone.',
+          ],
+        },
+        {
+          heading: 'Runtime clauses (handbook section 4.2)',
+          table: {
+            header: ['CLAUSE-ID', 'RULE', 'WHERE IT LIVES', 'STATUS', 'EVIDENCE'],
+            rows: runtimeComplianceRows('node'),
+          },
+        },
+        {
+          heading: 'Delivery clauses (handbook section 4.3)',
+          table: {
+            header: ['CLAUSE-ID', 'RULE', 'WHERE IT LIVES', 'STATUS', 'EVIDENCE'],
+            rows: ciComplianceRows(),
+          },
+        },
+        {
+          heading: 'Deviations',
+          guidance: 'Each row needs an Accepted ADR in ' + ADR_DIR + ' before go-live.',
+          table: {
+            header: ['CLAUSE-ID', 'RULE', 'ADR'],
+            rows: complianceDeviations('node').map((c) => [c.id, c.rule, 'TBC']),
+          },
+        },
+        {
+          heading: 'Citable clause ids',
+          guidance: 'The full list, for quoting in a pull request or a work item.',
+          bullets: citableClauseIds(),
+        },
+      ],
+      when: (o) => on(o.traceability),
+    },
   ];
 }
 
