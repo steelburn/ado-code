@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
+import { BASE_IMAGES, CURL_INSTALL_LINES, hardeningLines } from '../shared/containerHardening';
 import { PostCreateStep, ProjectCreationRequest, PROJECT_TEMPLATES } from '../webview-ui/src/components/ProjectCreationWizard/types';
 import { DocProjectSpec, DOC_PROJECT_SPECS } from '../shared/documentation/docTemplates';
 import { scaffoldDocumentationProject } from '../shared/documentation/scaffoldDocs';
@@ -442,7 +443,25 @@ export class ProjectCreationService {
     if (opts.docker) {
       fs.writeFileSync(
         path.join(dir, 'Dockerfile'),
-        `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install\nCOPY . .\nRUN npm run build\nCMD ["node", "dist/index.js"]\n`
+        [
+          '# syntax=docker/dockerfile:1',
+          `FROM ${BASE_IMAGES.node} AS build`,
+          'WORKDIR /app',
+          'COPY package*.json ./',
+          'RUN npm install',
+          'COPY . .',
+          'RUN npm run build',
+          '',
+          `FROM ${BASE_IMAGES.node} AS runtime`,
+          'ENV NODE_ENV=production',
+          'WORKDIR /app',
+          'COPY --from=build /app/package*.json ./',
+          'COPY --from=build /app/node_modules ./node_modules',
+          'COPY --from=build /app/dist ./dist',
+          ...hardeningLines('node-alpine', 3000),
+          'EXPOSE 3000',
+          'CMD ["node", "dist/index.js"]',
+        ].join('\n')
       );
     }
 
@@ -718,7 +737,26 @@ export class ProjectCreationService {
     if (opts.docker) {
       fs.writeFileSync(
         path.join(dir, 'Dockerfile'),
-        `FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base\nWORKDIR /app\nEXPOSE 80\nEXPOSE 443\n\nFROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\nWORKDIR /src\nCOPY . .\nRUN dotnet restore\nRUN dotnet publish -c Release -o /app/publish\n\nFROM base AS final\nWORKDIR /app\nCOPY --from=build /app/publish .\nENTRYPOINT ["dotnet", "${name}.dll"]\n`
+        [
+          `FROM ${BASE_IMAGES.dotnetAspnet} AS base`,
+          'WORKDIR /app',
+          '# 8080, not 80: an unprivileged container cannot bind a privileged port.',
+          'EXPOSE 8080',
+          '',
+          `FROM ${BASE_IMAGES.dotnetSdk} AS build`,
+          'WORKDIR /src',
+          'COPY . .',
+          'RUN dotnet restore',
+          'RUN dotnet publish -c Release -o /app/publish',
+          '',
+          'FROM base AS final',
+          'WORKDIR /app',
+          'ENV ASPNETCORE_URLS=http://+:8080',
+          'COPY --from=build /app/publish .',
+          ...CURL_INSTALL_LINES,
+          ...hardeningLines('dotnet-web', 8080),
+          `ENTRYPOINT ["dotnet", "${name}.dll"]`,
+        ].join('\n')
       );
     }
 
@@ -3097,7 +3135,7 @@ ${broker !== 'none' ? "  console.log('[' + SERVICE + '] broker ' + BROKER_URL);\
         dir,
         `services/${service}/Dockerfile`,
         `# Build from the repo root: docker build -f services/${service}/Dockerfile .
-FROM node:20-alpine AS build
+FROM ${BASE_IMAGES.node} AS build
 WORKDIR /workspace
 COPY package*.json ${isPnpm ? 'pnpm-workspace.yaml ' : ''}./
 COPY tsconfig*.json ./
@@ -3106,12 +3144,13 @@ COPY services ./services
 RUN ${installCommand}
 RUN ${isPnpm ? `pnpm --filter ${packageName}... build` : `${withShared ? `npm run build --workspace ${sharedName} && ` : ''}npm run build --workspace ${packageName}`}
 
-FROM node:20-alpine AS runtime
+FROM ${BASE_IMAGES.node} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=${port}
 COPY --from=build /workspace/services/${service}/dist ./dist
 COPY --from=build /workspace/node_modules ./node_modules
+${hardeningLines('node-alpine', port).join('\n')}
 EXPOSE ${port}
 CMD ["node", "dist/index.js"]
 `

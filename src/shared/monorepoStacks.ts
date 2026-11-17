@@ -31,6 +31,8 @@ export interface MonorepoStackDescriptor {
   image: string;
 }
 
+import { BASE_IMAGES, CURL_INSTALL_LINES, hardeningLines } from './containerHardening';
+
 export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
   {
     id: 'node-ts',
@@ -41,7 +43,7 @@ export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
     install: 'npm install',
     build: 'npm run build',
     test: 'npm test',
-    image: 'node:20-alpine',
+    image: BASE_IMAGES.node,
   },
   {
     id: 'dotnet',
@@ -52,7 +54,7 @@ export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
     install: 'dotnet restore',
     build: 'dotnet build',
     test: 'dotnet test',
-    image: 'mcr.microsoft.com/dotnet/aspnet:8.0',
+    image: BASE_IMAGES.dotnetAspnet,
   },
   {
     id: 'php-laravel',
@@ -63,7 +65,7 @@ export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
     install: 'composer install',
     build: 'composer run-script build',
     test: 'composer test',
-    image: 'php:8.3-cli',
+    image: BASE_IMAGES.php,
   },
   {
     id: 'python',
@@ -74,7 +76,7 @@ export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
     install: 'uv sync',
     build: 'uv build',
     test: 'uv run pytest',
-    image: 'python:3.12-slim',
+    image: BASE_IMAGES.python,
   },
 ];
 
@@ -447,7 +449,7 @@ function dotnetTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
     );
     files[`${folder}/Dockerfile`] = [
       '# Build stage — the whole solution is the context so project references resolve.',
-      'FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build',
+      `FROM ${BASE_IMAGES.dotnetSdk} AS build`,
       'WORKDIR /src',
       'COPY . .',
       'RUN dotnet publish "services/' + pascal(name) + `/${type}.csproj" -c Release -o /app`,
@@ -456,6 +458,8 @@ function dotnetTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
       'WORKDIR /app',
       'COPY --from=build /app .',
       'ENV ASPNETCORE_URLS=http://+:8080',
+      ...CURL_INSTALL_LINES,
+      ...hardeningLines('dotnet-web', 8080),
       'EXPOSE 8080',
       `ENTRYPOINT ["dotnet", "${type}.dll"]`,
       '',
@@ -593,13 +597,18 @@ function phpLaravelTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor):
       '',
     ].join('\n');
     files[`${folder}/Dockerfile`] = [
-      `FROM ${stack.image}`,
+      `FROM ${stack.image} AS build`,
       'WORKDIR /app',
       'RUN apt-get update && apt-get install -y --no-install-recommends git unzip \\',
       '    && rm -rf /var/lib/apt/lists/*',
-      'COPY --from=composer:2 /usr/bin/composer /usr/bin/composer',
+      `COPY --from=${BASE_IMAGES.composer} /usr/bin/composer /usr/bin/composer`,
       'COPY . .',
       'RUN composer install --no-interaction --prefer-dist',
+      '',
+      `FROM ${stack.image} AS runtime`,
+      'WORKDIR /app',
+      'COPY --from=build /app ./',
+      ...hardeningLines('php-debian', portFor(orderedServices(plan).indexOf(name), plan)),
       `EXPOSE ${portFor(orderedServices(plan).indexOf(name), plan)}`,
       `CMD ["php", "-S", "0.0.0.0:${portFor(orderedServices(plan).indexOf(name), plan)}", "-t", "public"]`,
       '',
@@ -712,12 +721,19 @@ function pythonTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
       '',
     ].join('\n');
     files[`${folder}/Dockerfile`] = [
-      `FROM ${stack.image}`,
+      `FROM ${stack.image} AS build`,
       'WORKDIR /app',
       'ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1',
       'RUN pip install --no-cache-dir uv',
       'COPY . .',
-      'RUN uv pip install --system --no-cache .',
+      'RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python --no-cache .',
+      '',
+      `FROM ${stack.image} AS runtime`,
+      'WORKDIR /app',
+      'ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/opt/venv/bin:$PATH',
+      'COPY --from=build /opt/venv /opt/venv',
+      'COPY --from=build /app .',
+      ...hardeningLines('python-debian', portFor(orderedServices(plan).indexOf(name), plan)),
       `EXPOSE ${portFor(orderedServices(plan).indexOf(name), plan)}`,
       `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${portFor(orderedServices(plan).indexOf(name), plan)}"]`,
       '',

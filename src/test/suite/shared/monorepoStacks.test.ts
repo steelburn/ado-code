@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { BASE_IMAGES } from '../../../shared/containerHardening';
 import {
   containerTargetForTemplate,
   planContainerFiles,
@@ -119,8 +120,8 @@ suite('Monorepo stacks — .NET tree', () => {
 
   test('every service gets a Dockerfile that publishes its own project', () => {
     const dockerfile = files['services/Orders/Dockerfile'];
-    assert.ok(dockerfile.includes('mcr.microsoft.com/dotnet/sdk:8.0'), 'build stage');
-    assert.ok(dockerfile.includes('mcr.microsoft.com/dotnet/aspnet:8.0'), 'runtime stage');
+    assert.ok(dockerfile.includes(BASE_IMAGES.dotnetSdk), 'build stage');
+    assert.ok(dockerfile.includes(BASE_IMAGES.dotnetAspnet), 'runtime stage');
     assert.ok(
       dockerfile.includes('dotnet publish "services/Orders/Orders.Service.csproj"'),
       'each image must publish its own csproj'
@@ -177,7 +178,7 @@ suite('Monorepo stacks — PHP/Laravel tree', () => {
 
   test('every service is containerized on its own port', () => {
     assert.ok(files['services/Orders/Dockerfile'] === undefined, 'folders keep the service slug, not PascalCase');
-    assert.ok(files['services/orders/Dockerfile'].includes('php:8.3-cli'));
+    assert.ok(files['services/orders/Dockerfile'].includes(BASE_IMAGES.php));
     assert.ok(files['services/orders/Dockerfile'].includes('EXPOSE 8101'));
     assert.ok(files['docker-compose.yml'].includes('"8101:8101"'));
   });
@@ -205,7 +206,7 @@ suite('Monorepo stacks — Python tree', () => {
 
   test('each service has a container that runs uvicorn on the planned port', () => {
     const dockerfile = files['services/orders/Dockerfile'];
-    assert.ok(dockerfile.includes('python:3.12-slim'));
+    assert.ok(dockerfile.includes(BASE_IMAGES.python));
     assert.ok(dockerfile.includes('EXPOSE 8101'));
     assert.ok(dockerfile.includes('"--port", "8101"'));
     assert.ok(files['docker-compose.yml'].includes('context: ./services/orders'), 'each service builds itself');
@@ -263,7 +264,7 @@ suite('Containerization is promoted for every project type', () => {
 
   test('writes a Dockerfile, an ignore file and a Compose service', () => {
     const files = planContainerFiles('python', { projectName: 'Demo App' });
-    assert.ok(files.Dockerfile.includes('FROM python:3.12-slim'));
+    assert.ok(files.Dockerfile.includes(`FROM ${BASE_IMAGES.python}`));
     assert.ok(files['.dockerignore'].includes('node_modules'), 'the ignore set is shared across stacks');
     assert.ok(files['docker-compose.yml'].includes('  demo-app:'), 'the Compose service is slugged');
     assert.ok(files['docker-compose.yml'].includes('"8000:8000"'));
@@ -272,13 +273,13 @@ suite('Containerization is promoted for every project type', () => {
   test('the React target serves static files from nginx', () => {
     const files = planContainerFiles('react-ts', { projectName: 'demo' });
     assert.ok(files.Dockerfile.includes('RUN npm run build'));
-    assert.ok(files.Dockerfile.includes('nginx:1.27-alpine'));
-    assert.ok(files.Dockerfile.includes('EXPOSE 80'));
+    assert.ok(files.Dockerfile.includes(BASE_IMAGES.nginxUnprivileged));
+    assert.ok(files.Dockerfile.includes('EXPOSE 8080'));
   });
 
   test('a console app gets a runtime image, not the web one', () => {
     const files = planContainerFiles('dotnet-console', { projectName: 'demo' });
-    assert.ok(files.Dockerfile.includes('mcr.microsoft.com/dotnet/runtime:8.0'));
+    assert.ok(files.Dockerfile.includes(BASE_IMAGES.dotnetRuntime));
     assert.ok(!files.Dockerfile.includes('aspnet'), 'a console app must not pull the ASP.NET runtime');
   });
 });

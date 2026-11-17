@@ -12,6 +12,8 @@
  * and the tests can assert the generated content directly.
  */
 
+import { BASE_IMAGES, CURL_INSTALL_LINES, hardeningLines } from './containerHardening';
+
 export type ContainerTarget = 'node' | 'python' | 'php' | 'dotnet' | 'react' | 'next' | 'none';
 
 interface TargetSpec {
@@ -91,19 +93,20 @@ const SHARED_IGNORE = [
 function nodeFiles(port: number): string {
   return [
     '# syntax=docker/dockerfile:1',
-    'FROM node:20-alpine AS build',
+    `FROM ${BASE_IMAGES.node} AS build`,
     'WORKDIR /app',
     'COPY package*.json ./',
     'RUN npm ci',
     'COPY . .',
     'RUN npm run build --if-present',
     '',
-    'FROM node:20-alpine AS runtime',
+    `FROM ${BASE_IMAGES.node} AS runtime`,
     'ENV NODE_ENV=production',
     'WORKDIR /app',
     'COPY --from=build /app/package*.json ./',
     'RUN npm ci --omit=dev',
     'COPY --from=build /app/dist ./dist',
+    ...hardeningLines('node-alpine', port),
     `EXPOSE ${port}`,
     'CMD ["node", "dist/index.js"]',
     '',
@@ -112,13 +115,20 @@ function nodeFiles(port: number): string {
 
 function pythonFiles(port: number): string {
   return [
-    'FROM python:3.12-slim',
-    'ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1',
+    `FROM ${BASE_IMAGES.python} AS build`,
     'WORKDIR /app',
     'RUN pip install --no-cache-dir uv',
     'COPY pyproject.toml ./',
     'COPY . .',
-    'RUN uv pip install --system --no-cache .',
+    'RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python --no-cache .',
+    '',
+    `FROM ${BASE_IMAGES.python} AS runtime`,
+    'ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/opt/venv/bin:$PATH',
+    'WORKDIR /app',
+    'COPY --from=build /opt/venv /opt/venv',
+    'COPY --from=build /app/app ./app',
+    'COPY --from=build /app/pyproject.toml ./pyproject.toml',
+    ...hardeningLines('python-debian', port),
     `EXPOSE ${port}`,
     `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${port}"]`,
     '',
@@ -127,13 +137,18 @@ function pythonFiles(port: number): string {
 
 function phpFiles(port: number): string {
   return [
-    'FROM php:8.3-cli',
+    `FROM ${BASE_IMAGES.php} AS build`,
     'WORKDIR /app',
     'RUN apt-get update && apt-get install -y --no-install-recommends git unzip \\',
     '    && rm -rf /var/lib/apt/lists/*',
-    'COPY --from=composer:2 /usr/bin/composer /usr/bin/composer',
+    `COPY --from=${BASE_IMAGES.composer} /usr/bin/composer /usr/bin/composer`,
     'COPY . .',
     'RUN composer install --no-interaction --prefer-dist --no-dev || true',
+    '',
+    `FROM ${BASE_IMAGES.php} AS runtime`,
+    'WORKDIR /app',
+    'COPY --from=build /app ./',
+    ...hardeningLines('php-debian', port),
     `EXPOSE ${port}`,
     `CMD ["php", "-S", "0.0.0.0:${port}", "-t", "public"]`,
     '',
@@ -143,47 +158,51 @@ function phpFiles(port: number): string {
 function dotnetFiles(port: number, isWeb: boolean): string {
   if (!isWeb) {
     return [
-      'FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build',
+      `FROM ${BASE_IMAGES.dotnetSdk} AS build`,
       'WORKDIR /src',
       'COPY . .',
       'RUN dotnet publish -c Release -o /app',
       '',
-      'FROM mcr.microsoft.com/dotnet/runtime:8.0 AS runtime',
+      `FROM ${BASE_IMAGES.dotnetRuntime} AS runtime`,
       'WORKDIR /app',
       'COPY --from=build /app .',
+      ...hardeningLines('dotnet-console', port),
       'ENTRYPOINT ["dotnet", "app.dll"]',
       '',
     ].join('\n');
   }
   return [
-    'FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build',
+    `FROM ${BASE_IMAGES.dotnetSdk} AS build`,
     'WORKDIR /src',
     'COPY . .',
     'RUN dotnet publish -c Release -o /app',
     '',
-    'FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime',
+    `FROM ${BASE_IMAGES.dotnetAspnet} AS runtime`,
     'WORKDIR /app',
     'COPY --from=build /app .',
     `ENV ASPNETCORE_URLS=http://+:${port}`,
+    ...CURL_INSTALL_LINES,
+    ...hardeningLines('dotnet-web', port),
     `EXPOSE ${port}`,
     'ENTRYPOINT ["dotnet", "app.dll"]',
     '',
   ].join('\n');
 }
 
-function reactFiles(): string {
+function reactFiles(port: number): string {
   return [
     '# syntax=docker/dockerfile:1',
-    'FROM node:20-alpine AS build',
+    `FROM ${BASE_IMAGES.node} AS build`,
     'WORKDIR /app',
     'COPY package*.json ./',
     'RUN npm ci',
     'COPY . .',
     'RUN npm run build',
     '',
-    'FROM nginx:1.27-alpine AS runtime',
+    `FROM ${BASE_IMAGES.nginxUnprivileged} AS runtime`,
     'COPY --from=build /app/dist /usr/share/nginx/html',
-    'EXPOSE 80',
+    ...hardeningLines('nginx-static', port),
+    `EXPOSE ${port}`,
     '',
   ].join('\n');
 }
@@ -191,20 +210,21 @@ function reactFiles(): string {
 function nextFiles(port: number): string {
   return [
     '# syntax=docker/dockerfile:1',
-    'FROM node:20-alpine AS build',
+    `FROM ${BASE_IMAGES.node} AS build`,
     'WORKDIR /app',
     'COPY package*.json ./',
     'RUN npm ci',
     'COPY . .',
     'RUN npm run build',
     '',
-    'FROM node:20-alpine AS runtime',
+    `FROM ${BASE_IMAGES.node} AS runtime`,
     'ENV NODE_ENV=production',
     'WORKDIR /app',
     'COPY --from=build /app ./.next ./.next',
     'COPY --from=build /app/node_modules ./node_modules',
     'COPY --from=build /app/package.json ./package.json',
     'COPY --from=build /app/public ./public',
+    ...hardeningLines('node-alpine', port),
     `EXPOSE ${port}`,
     'CMD ["npm", "run", "start"]',
     '',
@@ -212,7 +232,7 @@ function nextFiles(port: number): string {
 }
 
 function specFor(target: ContainerTarget, templateId: string, port: number | undefined): TargetSpec | undefined {
-  const resolvedPort = port ?? (target === 'react' ? 80 : target === 'dotnet' ? 8080 : target === 'python' || target === 'php' ? 8000 : 3000);
+  const resolvedPort = port ?? (target === 'react' ? 8080 : target === 'dotnet' ? 8080 : target === 'python' || target === 'php' ? 8000 : 3000);
   switch (target) {
     case 'node':
       return { port: resolvedPort, dockerfile: nodeFiles(resolvedPort) };
@@ -223,7 +243,7 @@ function specFor(target: ContainerTarget, templateId: string, port: number | und
     case 'dotnet':
       return { port: resolvedPort, dockerfile: dotnetFiles(resolvedPort, templateId !== 'dotnet-console') };
     case 'react':
-      return { port: port ?? 80, dockerfile: reactFiles() };
+      return { port: resolvedPort, dockerfile: reactFiles(resolvedPort) };
     case 'next':
       return { port: resolvedPort, dockerfile: nextFiles(resolvedPort) };
     default:

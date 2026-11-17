@@ -4,8 +4,31 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [0.8.8]
 
+### Changed
+
+- **Every scaffolded container is pinned, non-root and health-checked.** Generated Dockerfiles
+  now pin a full base-image version (`node:20.18.0-alpine3.20`, `python:3.12.7-slim`,
+  `php:8.3.13-cli`, `dotnet/sdk:8.0.403`, …) instead of a drifting minor tag, end in a non-root
+  `USER`, and carry a `HEALTHCHECK` that probes the port the service actually listens on —
+  `wget` on Alpine, `urllib`/`php -r` on the slim Debian images, which ship neither `curl` nor
+  `wget`. `src/shared/containerHardening.ts` is the single source of truth (`BASE_IMAGES`,
+  `hardeningLines()`), so the pins and the probes cannot drift apart again.
+- **Python and PHP services build multi-stage**, keeping the toolchain and the pip/composer
+  caches out of the runtime layer.
+- **Static and React targets serve from `nginx-unprivileged` on port 8080** instead of
+  `nginx:alpine` on port 80. The old pair only worked because the container was root — an
+  unprivileged process cannot bind a privileged port.
+
 ### Fixed
 
+- **Generated PHP, Python and .NET services shipped without a start command.** The monorepo
+  writer's PHP and Python Dockerfiles had no `CMD` at all, and the .NET one lost its
+  `ENTRYPOINT` in the multi-stage rewrite, so `docker run` on them exited immediately. Each now
+  starts its own server.
+- **`node-ts`/`node-js` Dockerfiles declare `CMD ["node", "dist/index.js"]`** rather than
+  inheriting a base-image command that Alpine's `node` image does not have.
+- **The static-site Dockerfile states `USER 101`.** The image already ran unprivileged; the
+  Dockerfile now says so, so a scanner or a later edit cannot silently flip it back to root.
 - **The VSIX no longer ships the `tmp/` working directory.** `.vscodeignore` excluded `tmp-*`
   and `tmp-*/**` but not `tmp/`, so any patch script left in `tmp/` during a build was packaged
   into the extension. The published 0.8.7 build carries two harmless dev scripts

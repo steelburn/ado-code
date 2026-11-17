@@ -7,6 +7,11 @@
 > residual left — F2, the ignore-file label space, is retired too (§13.4). Section 3 records
 > the findings behind the design and §11 records what the first phases actually changed; two
 > claims that verification disproved are in §3, and §11 corrects a third (F3).
+>
+> **External standard:** alignment with the *ZEN Computer Systems Internal Engineering Handbook*
+> (containers, contracts, observability, resilience, CI gates, monorepo topology) is reviewed in
+> [zen-handbook-review.md](zen-handbook-review.md) — its phases P1–P7 are the outstanding work
+> against that standard, separate from the phases 9–11 listed here.
 
 ## 1. Scope
 
@@ -504,7 +509,6 @@ Three rules fall out of the table and are enforced by tests:
 Phase 4 of this document (per-stack layout branches for the *layered* templates) remains queued;
 this section covers the project types as they are offered today.
 
-
 ## 13. Phase 8 — `/new-service` (implemented)
 
 One implementation behind three entry points:
@@ -577,3 +581,75 @@ The label space now lives in `src/shared/gitignoreTemplates.ts`:
 space, the stack mapping and both regressions. `php` and `dotnet` stay shared labels (the
 deprecated `php` alias and the two .NET templates reuse them) rather than becoming an id
 space of their own.
+
+---
+
+## 14. Standard alignment — ZEN Engineering Handbook
+
+The boilerplate emitted by this pipeline is now measured against an external standard as well as
+against its own tests. The review, the clause-by-clause verdicts, the corrections to the first
+reading, the ready-to-paste handbook amendments and the phase plan live in
+[zen-handbook-review.md](zen-handbook-review.md); this section only records how the work relates to
+the phases above.
+
+**Decisions (review §3).** (D1) Where the handbook is stricter than the emitted baseline, the
+baseline moves — no clause is satisfied by documentation alone. (D2) Monorepo stays the default
+topology: the handbook's per-service repository layout is amended instead, with `contracts/` at the
+repository root, one matrix pipeline, and the hexagonal split kept inside each service. (D3)
+Handbook rules become executable — emitted files, then a named preset, then the managed `AGENTS.md`
+block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses get ids
+(`ZEN-STD-*`) so gates and evidence reports can cite them.
+
+**Phases (review §8).** **P1 container hardening — shipped (§14.1)** · P2 contract-first `contracts/` · P3 observability and lifecycle (`/metrics`, JSON
+PHP/Python) · P2 contract-first `contracts/` · P3 observability and lifecycle (`/metrics`, JSON
+logs, correlation id, `/healthz/live|ready`, SIGTERM drain) · P4 resilience kit · P5 CI gates,
+compose DB and k8s hardening · P6 `zen-microservices` preset plus the `AGENTS.md` managed block ·
+P7 ADR document type and clause-id traceability.
+
+P1–P5 change what §2.3 and §13 describe, so they land before any further template work: a new
+template added first would have to be retrofitted through every one of them. None of P1–P7 changes
+the pipeline stages of §2.1 — they are writer-level changes, plus one preset row in P6.
+
+**Baseline score at the time of the review (`814f011`).** §4.2 runtime standards: 1 of 6 fully met (CON‑01, shipped in P1),
+3 partial, 2 unmet. §4.3 CI gates: 1 of 7 met, 2 partial, 4 unmet. Both are expected to reach "all
+
+### 14.1 P1 — container hardening (shipped)
+
+The clause CON‑01 rules are now emitted, not documented: `src/shared/containerHardening.ts` is the
+single source for container policy and every Dockerfile writer consumes it.
+
+- **`BASE_IMAGES`** — every base image pinned to a full `major.minor.patch` tag
+  (`node:20.18.0-alpine3.20`, `python:3.12.7-slim`, `php:8.3.13-cli`, `composer:2.8.1`,
+  `dotnet/sdk:8.0.403`, `dotnet/aspnet:8.0.10`, `dotnet/runtime:8.0.10`,
+  `nginxinc/nginx-unprivileged:1.27.5-alpine3.21`). Minor-only pins (`node:20-alpine`) drift
+  silently on the next upstream rebuild; digest pins are stronger still and remain a follow-up.
+- **`hardeningLines(family, port)`** — the non-root `USER` plus `HEALTHCHECK` tail, behind an
+  exhaustive `never`-checked switch over the runtime families (`node-alpine`, `python-debian`,
+  `php-debian`, `dotnet-web`, `dotnet-console`, `nginx-static`). Each HTTP family probes its own
+  port with the interpreter that actually exists in that image (`wget`, `urllib`, `php -r`,
+  `curl`), because `slim` has neither `curl` nor `wget`. `dotnet-console` is the one family with
+  no `HEALTHCHECK` — it serves no endpoint to probe, and the test asserts that exception rather
+  than tolerating it.
+- **Multi-stage everywhere.** PHP (composer install in `build`, artefacts copied into `runtime`)
+  and Python (venv built in `build`, copied over) were single-stage; .NET web and console, Node and
+  the static targets were already staged or joined them.
+- **Unprivileged static servers.** React/Next moved from `nginx:1.27-alpine` on `EXPOSE 80` to
+  `nginxinc/nginx-unprivileged` on **8080** — an unprivileged container cannot bind a privileged
+  port, so the previous pair only worked *because* it ran as root.
+- **Start commands restored.** Writing the assertions exposed four real defects: the .NET monorepo
+  service had lost its `CMD` in the multi-stage rewrite, PHP and Python monorepo services had no
+  start command at all (`docker run` exited immediately), and `node-ts`/`node-js` relied on an
+  inherited base-image command Alpine does not define.
+
+Evidence: `src/test/suite/shared/containerHardening.test.ts` (10 tests) walks every monorepo stack
+and every containerizable catalogue template, asserting ≥2 `FROM … AS` stages, a non-root `USER`,
+a `HEALTHCHECK` (except the console family), a full-patch base image with no `:latest`, and a start
+command; `monorepoStacks.test.ts` asserts against `BASE_IMAGES` so the pins cannot drift from the
+tests. `HEALTHCHECK` targets `/health` and moves to `/healthz/live` in P3 — named in one constant so
+the rename is a one-line change.
+met" at the end of P5.
+
+Suite evidence: **2581 passing, 0 failing** (2571 before P1 + 10 new), 2 pending. Measured
+per-directory on this machine — the `git` and `services` batches do real I/O and together exceed the
+runner's 20 s hook timeout when all 161 files share one mocha process, which fails the `gitService`
+suite rather than any assertion. Each batch is green; no test was changed to make it pass.
