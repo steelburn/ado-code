@@ -32,6 +32,8 @@ export interface MonorepoStackDescriptor {
 }
 
 import { BASE_IMAGES, CURL_INSTALL_LINES, hardeningLines } from './containerHardening';
+import { API_PREFIX, defaultEventsFor, planContractFiles, resourceNameFor } from './contractArtifacts';
+import type { ContractPlan } from './contractArtifacts';
 
 export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
   {
@@ -431,7 +433,7 @@ function dotnetTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
       'app.UseSwaggerUI();',
       '',
       `app.MapGet("/health", () => new HealthResponse("ok", "${name}", "0.1.0"));`,
-      isGateway ? '' : `app.MapGet("/${name}", () => Results.Ok(new { service = "${name}" }));`,
+      isGateway ? '' : `app.MapGet("${API_PREFIX}/${resourceNameFor(name)}", () => Results.Ok(new { service = "${name}", items = Array.Empty<object>() }));`,
       isGateway ? 'app.MapGet("/routes", () => Results.Ok(new { routes = Array.Empty<string>() }));' : '',
       '',
       'app.Run();',
@@ -575,6 +577,7 @@ function phpLaravelTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor):
       'use Illuminate\\Support\\Facades\\Route;',
       '',
       `Route::get('/health', fn () => ['status' => 'ok', 'service' => '${name}']);`,
+      `Route::get('/${resourceNameFor(name)}', fn () => ['service' => '${name}', 'items' => []]);`,
       '',
     ].join('\n');
     files[`${folder}/bootstrap/app.php`] = [
@@ -583,7 +586,7 @@ function phpLaravelTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor):
       'use Illuminate\\Foundation\\Application;',
       '',
       'return Application::configure(basePath: dirname(__DIR__))',
-      "    ->withRouting(api: __DIR__ . '/../routes/api.php', apiPrefix: 'api', health: '/health')",
+      `    ->withRouting(api: __DIR__ . '/../routes/api.php', apiPrefix: '${API_PREFIX.slice(1)}', health: '/health')`,
       '    ->create();',
       '',
     ].join('\n');
@@ -715,7 +718,7 @@ function pythonTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
       `    return {"status": "ok", "service": "${name}", "version": "0.1.0"}`,
       '',
       '',
-      `@app.get("/${name}")`,
+      `@app.get("${API_PREFIX}/${resourceNameFor(name)}")`,
       `def ${module}() -> dict[str, str]:`,
       `    return {"service": "${name}"}`,
       '',
@@ -744,13 +747,40 @@ function pythonTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
 }
 
 /**
+ * Contracts for a tree plan: one entry per domain service, with the port the
+ * planners actually assign it. The gateway is excluded — it forwards the
+ * `/api/v1` prefix verbatim, so its public surface is the union of the others.
+ */
+function contractPlan(plan: MonorepoTreePlan): ContractPlan {
+  const services = orderedServices(plan)
+    .map((name, index) => ({ name, port: portFor(index, plan) }))
+    .filter((entry) => entry.name !== plan.gateway)
+    .map((entry) => ({
+      name: entry.name,
+      port: entry.port,
+      resource: resourceNameFor(entry.name),
+      events: defaultEventsFor(entry.name),
+    }));
+
+  return { projectName: plan.projectName, description: plan.description, services };
+}
+
+/**
  * Every file the monorepo layout needs for `stack`, as `path -> content`.
  *
  * `node-ts` deliberately has no planner here: its writer already exists and is
  * pinned by the phase-2 golden fixtures, so routing it through this map would
  * churn a tree that is already correct.
+ *
+ * The contract artifacts (`contracts/openapi/*.yaml`, `contracts/events/*.json`)
+ * are merged in for every stack, so a Python or Laravel monorepo is contract
+ * first in exactly the same sense a TypeScript one is.
  */
 export function planMonorepoTree(stack: MonorepoStackId, plan: MonorepoTreePlan): Record<string, string> {
+  return { ...stackTree(stack, plan), ...planContractFiles(contractPlan(plan)) };
+}
+
+function stackTree(stack: MonorepoStackId, plan: MonorepoTreePlan): Record<string, string> {
   switch (stack) {
     case 'dotnet':
       return dotnetTree(plan, monorepoStack('dotnet'));

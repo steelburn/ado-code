@@ -7,6 +7,7 @@ import { ProjectCreationService } from '../../../webview/ProjectCreationService'
 import { PROJECT_TEMPLATES, ProjectCreationRequest } from '../../../webview-ui/src/components/ProjectCreationWizard/types';
 import { cleanTempDir } from '../utils/cleanTempDir';
 import { makeScratchDir } from '../utils/scratchDir';
+import { defaultEventsFor, eventSchemaPath } from '../../../shared/contractArtifacts';
 
 // ProjectCreationService is vscode-free — this suite runs under plain mocha
 // (npx mocha --ui tdd out/test/suite/services/projectCreation.test.js) AND
@@ -502,12 +503,26 @@ suite('ProjectCreationService', () => {
       assert.ok(fs.existsSync(path.join(dir, 'services', name, 'src', 'index.ts')), `missing service ${name}`);
     }
     const gateway = fs.readFileSync(path.join(dir, 'services/gateway/src/index.ts'), 'utf8');
-    assert.ok(gateway.includes("'/users'"), 'gateway must route /users');
-    assert.ok(gateway.includes("'/billing'"), 'gateway must route /billing');
+    // CON-02: the gateway forwards the versioned prefix, not a bare service name.
+    assert.ok(gateway.includes("'/api/v1/users'"), 'gateway must route /api/v1/users');
+    assert.ok(gateway.includes("'/api/v1/billing'"), 'gateway must route /api/v1/billing');
     // Deterministic ports: gateway 4000, then one port per domain service.
     assert.ok(gateway.includes('http://localhost:4001'));
     assert.ok(gateway.includes('http://localhost:4002'));
     assert.ok(!fs.existsSync(path.join(dir, 'docker-compose.yml')), 'docker option was disabled');
+
+    // The contract exists for every domain service, and the gateway gets none:
+    // it has no surface of its own.
+    for (const name of ['users', 'billing']) {
+      const contract = fs.readFileSync(path.join(dir, 'contracts/openapi', `${name}.v1.yaml`), 'utf8');
+      assert.ok(contract.includes('openapi: 3.1.0'), `${name} contract is not OpenAPI 3.1`);
+      assert.ok(contract.includes(`/api/v1/${name}`), `${name} contract must describe the versioned path`);
+      const schema = JSON.parse(
+        fs.readFileSync(path.join(dir, eventSchemaPath(defaultEventsFor(name)[0])), 'utf8')
+      );
+      assert.strictEqual(schema.properties.eventType.const, defaultEventsFor(name)[0]);
+    }
+    assert.ok(!fs.existsSync(path.join(dir, 'contracts/openapi/gateway.v1.yaml')), 'the gateway has no contract');
   });
 
   test('monorepo-microservices sanitises service names (no path traversal)', async () => {

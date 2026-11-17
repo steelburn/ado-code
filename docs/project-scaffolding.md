@@ -600,18 +600,19 @@ Handbook rules become executable — emitted files, then a named preset, then th
 block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses get ids
 (`ZEN-STD-*`) so gates and evidence reports can cite them.
 
-**Phases (review §8).** **P1 container hardening — shipped (§14.1)** · P2 contract-first `contracts/` · P3 observability and lifecycle (`/metrics`, JSON
-PHP/Python) · P2 contract-first `contracts/` · P3 observability and lifecycle (`/metrics`, JSON
-logs, correlation id, `/healthz/live|ready`, SIGTERM drain) · P4 resilience kit · P5 CI gates,
-compose DB and k8s hardening · P6 `zen-microservices` preset plus the `AGENTS.md` managed block ·
-P7 ADR document type and clause-id traceability.
+**Phases (review §8).** **P1 container hardening — shipped (§14.1)** · **P2 contract-first
+`contracts/` — shipped (§14.2)** · P3 observability and lifecycle (`/metrics`, JSON logs,
+correlation id, `/healthz/live|ready`, SIGTERM drain) · P4 resilience kit · P5 CI gates, compose DB
+and k8s hardening · P6 `zen-microservices` preset plus the `AGENTS.md` managed block · P7 ADR
+document type and clause-id traceability.
 
 P1–P5 change what §2.3 and §13 describe, so they land before any further template work: a new
 template added first would have to be retrofitted through every one of them. None of P1–P7 changes
 the pipeline stages of §2.1 — they are writer-level changes, plus one preset row in P6.
 
-**Baseline score at the time of the review (`814f011`).** §4.2 runtime standards: 1 of 6 fully met (CON‑01, shipped in P1),
-3 partial, 2 unmet. §4.3 CI gates: 1 of 7 met, 2 partial, 4 unmet. Both are expected to reach "all
+**Clause score.** At the time of the review (`814f011`) §4.2 runtime standards stood at **0 of 6
+fully met**, 3 partial and 3 unmet; §4.3 CI gates at 1 of 7 met, 2 partial, 4 unmet. P1 moved CON‑01
+and P2 CON‑02 to met — **2 of 6** now. Both are expected to reach "all met" at the end of P5.
 
 ### 14.1 P1 — container hardening (shipped)
 
@@ -647,9 +648,53 @@ a `HEALTHCHECK` (except the console family), a full-patch base image with no `:l
 command; `monorepoStacks.test.ts` asserts against `BASE_IMAGES` so the pins cannot drift from the
 tests. `HEALTHCHECK` targets `/health` and moves to `/healthz/live` in P3 — named in one constant so
 the rename is a one-line change.
-met" at the end of P5.
 
 Suite evidence: **2581 passing, 0 failing** (2571 before P1 + 10 new), 2 pending. Measured
 per-directory on this machine — the `git` and `services` batches do real I/O and together exceed the
 runner's 20 s hook timeout when all 161 files share one mocha process, which fails the `gitService`
 suite rather than any assertion. Each batch is green; no test was changed to make it pass.
+
+### 14.2 P2 — contract-first (shipped)
+
+CON‑02 asked for a machine-checkable contract instead of types only TypeScript can read.
+`src/shared/contractArtifacts.ts` is now the single source for it: pure data plus pure functions,
+so every writer — the node monorepo writer and the Python/.NET/Laravel tree planners — consumes
+the same planner.
+
+| Artifact | Path | Content |
+|---|---|---|
+| OpenAPI document | `contracts/openapi/<service>.v1.yaml` | OpenAPI 3.1.0: list/create/read on `/api/v1/<resource>`, `GET /health`, `ApiError` + `HealthResponse` components, `x-publishes` per event |
+| Event envelope | `contracts/events/envelope.v1.json` | JSON Schema 2020‑12 — `eventId`, `eventType`, `timestamp`, `source`, `payload` required; `correlationId`, `version` optional |
+| Event schemas | `contracts/events/<event>.v1.json` | one self-contained schema per published event, `eventType` pinned with `const` |
+| Folder README | `contracts/README.md` | per-service/per-event table, the additive-change rule, the `redocly lint` gate |
+
+Four decisions worth recording:
+
+- **No YAML dependency.** The repo is zero-runtime-dependency, so `toYaml()` is a purpose-built
+  block-style writer for the subset an OpenAPI document needs. It quotes whatever YAML would
+  reinterpret (`'#/components/schemas/X'`, `'200'`, `'true'`, `'a: b'`) and is deterministic: the
+  same plan produces byte-identical output, which is what makes a golden fixture possible at all.
+- **Event schemas are self-contained.** Each restates the envelope rather than `$ref`-ing
+  `envelope.v1.json`, because cross-file `$ref` is resolved differently by every validator and
+  editor plugin. A test asserts every event schema's `required` list is exactly `ENVELOPE_REQUIRED`,
+  so the duplication cannot drift.
+- **The gateway gets no contract.** It forwards `/api/v1/*` verbatim to the owning service, so its
+  public surface is the union of the others; a document for it would duplicate every path.
+- **`/health` stays outside the prefix.** The Dockerfile `HEALTHCHECK` and the orchestrator probes
+  depend on it, and P3 renames it to `/healthz/live` in one place — `HEALTHCHECK_PATH`.
+
+`/api/v1` is now the only way in: the node service and gateway routes, plus the Python
+(`@app.get("/api/v1/…")`), .NET (`MapGet`) and Laravel (`apiPrefix: 'api/v1'`) writers.
+`/new-service` stamps the new service contract as well — an OpenAPI document for an `api`,
+event schemas for both kinds, none for a `worker` (it serves no HTTP surface). Existing files are
+never overwritten: a contract a team has since edited wins, and the command reports the collision
+as a warning.
+
+Protobuf is **not** emitted: the catalogue has no gRPC stack, so CON‑02 is met through OpenAPI
+plus JSON Schema only. Adding a gRPC stack is a P6-era decision, not contract plumbing.
+
+Tests: `contractArtifacts.test.ts` (27 tests) — YAML quoting and determinism, `$ref` resolution
+against the document's own components, envelope/event `required` parity, the naming helpers, and a
+walk over every monorepo stack asserting one contract per domain service and that no route file
+still serves the bare unprefixed service name. `projectCreation.test.ts` asserts the emitted paths
+and a pinned `eventType`; both golden fixtures were regenerated (11 and 8 contract files).

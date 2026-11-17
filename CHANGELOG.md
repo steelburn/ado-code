@@ -4,6 +4,22 @@ All notable changes to ADO Code will be documented in this file.
 
 ## [0.8.8]
 
+### Added
+
+- **Scaffolded projects are contract-first.** Every generated service ships machine-readable
+  contracts under `contracts/`, planned by `src/shared/contractArtifacts.ts` and emitted by the
+  monorepo writer, all three stack tree planners and `/new-service`: `contracts/openapi/
+  <service>.v1.yaml` (OpenAPI 3.1.0 over `/api/v1/<resource>`, with `ApiError` and
+  `HealthResponse` components) for services that serve HTTP, and
+  `contracts/events/envelope.v1.json` plus one JSON Schema 2020-12 file per published event.
+  Each event schema is self-contained — it restates the envelope and pins `eventType` with
+  `const` — because cross-file `$ref` resolves differently in every validator. `/new-service`
+  stamps the new service's contract and reports a collision instead of overwriting a contract
+  that already exists.
+- **`/api/v1` is the only route prefix** in generated services: the Node service, the gateway,
+  the Python app, the .NET `MapGet` routes and Laravel's `apiPrefix` all mount under it.
+- `contracts/README.md` documents the layout and how the files are produced.
+
 ### Changed
 
 - **Every scaffolded container is pinned, non-root and health-checked.** Generated Dockerfiles

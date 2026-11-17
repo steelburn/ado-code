@@ -36,6 +36,15 @@ import {
   serviceSupportsWorker,
   workerEntrypointFiles,
 } from '../shared/serviceScaffold';
+import {
+  API_PREFIX,
+  CONTRACTS_DIR,
+  defaultEventsFor,
+  eventKeyFor,
+  planContractFiles,
+  resourceNameFor,
+} from '../shared/contractArtifacts';
+import type { ServiceContract } from '../shared/contractArtifacts';
 import { planContainerFiles, supportsContainerization } from '../shared/containerization';
 import {
   isSuiteEnabled,
@@ -2412,6 +2421,11 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
     };
     const plan = this.monorepoPlan(request);
 
+    // CON-02: contract first. The OpenAPI document and the event schemas are
+    // written before any service body, because they are the source of truth
+    // the bodies are supposed to implement.
+    this.writeContractFiles(dir, plan);
+
     this.monorepoRoot(dir, context, plan);
     for (const service of plan.services) {
       this.serviceBody(dir, context, plan, service);
@@ -2730,12 +2744,18 @@ ${broker !== 'none' ? "export * from './broker';\n" : ''}`
       this.writeProjectFile(
         dir,
         'packages/shared/src/contracts.ts',
-        `/** Envelope every cross-service event travels in. */
+        `/** Envelope every cross-service event travels in.
+ *
+ * Mirrors contracts/events/envelope.v1.json: the JSON Schema is the norm, this
+ * interface is the TypeScript view of it. Keep the two in step.
+ */
 export interface EventEnvelope<T = unknown> {
-  id: string;
-  name: string;
-  occurredAt: string;
+  eventId: string;
+  eventType: EventName;
+  timestamp: string;
   source: string;
+  correlationId?: string;
+  version: number;
   payload: T;
 }
 
@@ -2746,10 +2766,12 @@ export interface ApiError {
   details?: unknown;
 }
 
+/** Every event this system publishes. Schemas live in contracts/events/. */
 export const eventNames = {
-  userCreated: 'user.created',
-  orderPlaced: 'order.placed',
-  notificationRequested: 'notification.requested',
+${plan.domainServices
+  .flatMap((serviceName) => defaultEventsFor(serviceName))
+  .map((event) => `  ${eventKeyFor(event)}: '${event}',`)
+  .join('\n')}
 } as const;
 
 export type EventName = (typeof eventNames)[keyof typeof eventNames];
@@ -2972,6 +2994,7 @@ Every service listens on its own port and exposes \`/health\` and \`/ready\`.
     const docker = ctx.containerization.dockerEnabled;
     const isGateway = service === gateway;
     const port = portOf(service);
+    const resource = resourceNameFor(service);
     const packageName = `@${scope}/${service}`;
     const serviceDependencies: Record<string, string> = withShared ? { [sharedName]: '*' } : {};
 
@@ -3025,7 +3048,7 @@ Every service listens on its own port and exposes \`/health\` and \`/ready\`.
       const routeLines = domainServices
         .map(
           (target) =>
-            `  '/${target}': process.env.${envVar(target)} ?? 'http://localhost:${portOf(target)}',`
+            `  '${API_PREFIX}/${resourceNameFor(target)}': process.env.${envVar(target)} ?? 'http://localhost:${portOf(target)}',`
         )
         .join('\n');
       this.writeProjectFile(
@@ -3104,6 +3127,18 @@ const server = createServer((req, res) => {
   if (url === '/health' || url === '/ready') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(${healthInline});
+    return;
+  }
+
+  if (url === '${API_PREFIX}/${resource}' || url.startsWith('${API_PREFIX}/${resource}/')) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        service: SERVICE,
+        items: [],
+        contract: 'contracts/openapi/${service}.v1.yaml',
+      })
+    );
     return;
   }
 
@@ -3693,6 +3728,33 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
       // no workflows folder — nothing to extend
     }
 
+    // 3. contracts — CON-02. A service is not real until its contract exists.
+    //    Only missing files are written: a contract a team has since edited is
+    //    never overwritten by a later `/new-service` run, and the folder README
+    //    is left alone because a single-service table would misdescribe it.
+    const contractFiles = planContractFiles({
+      projectName: service,
+      services: [
+        {
+          name: service,
+          port,
+          resource: resourceNameFor(service),
+          events: defaultEventsFor(service),
+        },
+      ],
+    });
+    for (const [relPath, content] of Object.entries(contractFiles)) {
+      if (relPath.endsWith('README.md')) continue;
+      // A worker has no HTTP surface, so an OpenAPI document would describe
+      // routes it does not serve. Its event schemas are still stamped.
+      if (kind === 'worker' && relPath.startsWith(`${CONTRACTS_DIR}/openapi/`)) continue;
+      if (fs.existsSync(`${root}/${relPath}`)) {
+        warnings.push(`contract ${relPath} already exists — left untouched; extend it by hand if ${service} adds to it.`);
+        continue;
+      }
+      writes.push({ relPath, content });
+    }
+
     let markerWritten = false;
     if (!target.marker) {
       const marker: ProjectMarker = { stack: target.stack, architecture: 'microservices', serviceKind: kind };
@@ -4001,6 +4063,32 @@ ${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
       // Older git: plain init, then move the unborn HEAD onto the branch.
       await this.run('git', ['init'], dir);
       await this.run('git', ['checkout', '-b', branch], dir).catch(() => undefined);
+    }
+  }
+
+  /**
+   * CON-02 — write the contract-first artifacts for a monorepo plan.
+   *
+   * One OpenAPI 3.1 document per domain service plus one JSON Schema per event,
+   * under `contracts/`. The gateway is excluded: it forwards the `/api/v1`
+   * prefix verbatim to the owning service, so its surface is their union.
+   */
+  private writeContractFiles(dir: string, plan: MonorepoPlan): void {
+    const services: ServiceContract[] = plan.domainServices.map((service) => ({
+      name: service,
+      port: plan.portOf(service),
+      resource: resourceNameFor(service),
+      events: defaultEventsFor(service),
+    }));
+
+    const files = planContractFiles({
+      projectName: plan.name,
+      description: plan.description,
+      services,
+    });
+
+    for (const [relativePath, content] of Object.entries(files)) {
+      this.writeProjectFile(dir, relativePath, content);
     }
   }
 
