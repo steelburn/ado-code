@@ -2,6 +2,16 @@
 
 All notable changes to ADO Code will be documented in this file.
 
+## [0.8.8]
+
+### Fixed
+
+- **The VSIX no longer ships the `tmp/` working directory.** `.vscodeignore` excluded `tmp-*`
+  and `tmp-*/**` but not `tmp/`, so any patch script left in `tmp/` during a build was packaged
+  into the extension. The published 0.8.7 build carries two harmless dev scripts
+  (`tmp/pack.js`, `tmp/verify-vsix.js`); Marketplace and Open VSX versions are immutable, so the
+  exclusion lands in 0.8.8.
+
 ## [0.8.7] - 2026-11-17
 
 ### Added

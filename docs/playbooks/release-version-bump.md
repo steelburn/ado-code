@@ -47,6 +47,10 @@ If branch protection is reconfigured, keep the `check:version` job
    `src/shared/version.ts` to the same value.
 2. Move the `## [Unreleased]` CHANGELOG entries under a new
    `## [x.y.z] - <date>` heading, leaving an empty `## [Unreleased]`.
+   The exception is a fix that only ships with the *next* release: it may
+   be folded forward into an undated `## [x.y.z]` section straight away (no
+   empty `## [Unreleased]` above it). At release time that section only
+   needs the date appended — the entries are already in place.
 3. `npm run compile && npm run bundle && npm run check:version` (or just `npm test`).
 4. `npx vsce package --allow-missing-repository` — the prepublish gate
    re-checks the pair as part of packaging.
