@@ -602,19 +602,19 @@ block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses
 
 **Phases (review §8).** **P1 container hardening — shipped (§14.1)** · **P2 contract-first
 `contracts/` — shipped (§14.2)** · **P3 observability and lifecycle — shipped (§14.3)** ·
-**P4 resilience kit — shipped (§14.4)** · P5 CI gates, compose DB
-and k8s hardening · P6 `zen-microservices` preset plus the `AGENTS.md` managed block · P7 ADR
-document type and clause-id traceability.
+**P4 resilience kit — shipped (§14.4)** · **P5 delivery gates — shipped (§14.5)** · P6
+`zen-microservices` preset plus the `AGENTS.md` managed block · P7 ADR document type and
+clause-id traceability.
 
 P1–P5 change what §2.3 and §13 describe, so they land before any further template work: a new
 template added first would have to be retrofitted through every one of them. None of P1–P7 changes
 the pipeline stages of §2.1 — they are writer-level changes, plus one preset row in P6.
 
 **Clause score.** At the time of the review (`814f011`) §4.2 runtime standards stood at **0 of 6
-fully met**, 3 partial and 3 unmet; §4.3 CI gates at 1 of 7 met, 2 partial, 4 unmet. P1 moved CON‑01
-and P2 CON‑02 to met, P3 moved CON‑04 to met and P4 moved CON‑06 for the node stack — **4 of 6**
-now, CON‑03 being partial only because no tracing is emitted and CON‑06's residual being the
-three non-node stacks (§14.4). The rest is expected to reach "all met" at the end of P5.
+fully met**, 3 partial and 3 unmet; §4.3 CI gates at 1 of 7 met, 2 partial, 4 unmet. P1 moved CON‑01,
+P2 CON‑02, P3 CON‑04 and P4 CON‑06 (node stack) to met — **4 of 6**, CON‑03 still partial because no
+tracer is emitted. P5 closed **all seven §4.3 gates**, and it did so for every stack, not just Node.
+Remaining: CON‑03 (tracing) and CON‑05 (application security) belong to P6.
 
 ### 14.1 P1 — container hardening (shipped)
 
@@ -784,3 +784,68 @@ concurrent duplicate resolves once. Batches: **shared 1315 passing**, **services
 no `packages/shared` (the kit is TypeScript), so those stacks still have the rule without the code.
 Queued as **P4b**: the same four primitives in each runtime under the same symbol names, so
 `ARCHITECTURE.md` can stay stack-neutral.
+
+
+### 14.5 P5 — delivery gates (shipped, all four stacks)
+
+Handbook §4.3 lists five mandatory, blocking CI gates plus two runtime requirements (a database per
+service, a hardened Kubernetes envelope). `src/shared/deliveryArtifacts.ts` renders all of it from one
+source, and `src/shared/deliveryFiles.ts` decides which files a tree receives, so a generated project
+cannot ship a CI file, a compose overlay and a manifest that disagree.
+
+**The five gates** — `CI_GATES` carries the ids (`GATE-01` … `GATE-05`) the docs and tests cite:
+
+| Gate | Job | What must pass |
+|---|---|---|
+| `GATE-01` | `gate-static` | the stack toolkit's lint + typecheck (`npm run build` per workspace, `ruff`, `dotnet format --verify-no-changes`, `pint --test`) |
+| `GATE-02` | `gate-security` | gitleaks secret scan and Semgrep `p/default` SAST, both from **pinned** images |
+| `GATE-03` | `gate-test` | the stack's tests, Redocly lint of `contracts/openapi.yaml`, `scripts/validate-event-schemas.mjs`, `c8 --check-coverage --lines 80` |
+| `GATE-04` | `gate-image` | `docker build` per service (folder resolved, so `services/Users` works) then Trivy `HIGH,CRITICAL` with `--ignore-unfixed` |
+| `GATE-05` | `gate-deploy` | `needs:` all four, `main` only, `environment: production` manual approval, then `kubectl apply -f deploy/k8s` |
+
+Two details worth stating. The deploy gate is the *only* job with an environment, so approval cannot
+be bypassed by re-running an earlier gate. And the coverage step is guarded by
+`if: ${{ hashFiles(...) != '' }}`: a scaffold with no tests yet does not fail for the wrong reason, but
+the moment a test exists the `80 %` line is enforced.
+
+**One database per service.** `planDatabaseOverlay()` emits `docker-compose.databases.yml` — an
+*overlay*, not an edit, so the base compose file stays database-free and `docker compose up` still
+works without one. Each domain service gets its own `postgres:16.4-alpine` container, its own role and
+database (`orders-api` → `orders_api`), its own volume, port `5433 + index`, a `pg_isready` healthcheck,
+and a `DATABASE_URL` pointing at *its own* container with `depends_on: service_healthy`. The gateway is
+excluded: it owns no store. Usage:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.databases.yml up
+```
+
+**The Kubernetes envelope.** `planK8sManifests()` replaces the old single-document Deployment with four
+objects: a `ConfigMap` (non-secret env), a `Secret` with `stringData: {}` — a manifest that shipped a
+placeholder would ship a credential — the `Deployment` (resource requests/limits, `runAsNonRoot` plus the
+per-family `runAsUser` the image actually uses, `readOnlyRootFilesystem`, `drop: ["ALL"]`, a writable
+`/tmp` emptyDir, `preStop` drain, `terminationGracePeriodSeconds: 30`), and a `ClusterIP` `Service` for
+APIs. Probes are generated from `OBSERVABILITY_PATHS`, so a probe cannot test a path the service does
+not serve: readiness `/healthz/ready`, liveness `/healthz/live`. Workers get no Service and no http
+probe — there is no endpoint to probe. Images are tagged with the project version, never `latest`.
+`deploy/k8s/README.md` documents the out-of-band `kubectl create secret` step.
+
+**Every stack, not just Node.** `planMonorepoTree()` merges `planDeliveryFiles()` into the `python`,
+`dotnet` and `php-laravel` trees too, so those stacks stopped being shipped without gates. Their gate
+commands come from `familyCommands()` (`pytest services`, `dotnet test`, `per-service composer install +
+php artisan test`), and the node writer passes tool-aware overrides so a pnpm/yarn/turbo/nx workspace
+runs its own scripts instead of npm's.
+
+**Tests.** `deliveryArtifacts.test.ts` — **35 passing**: five gates present, ordered, cited; deploy
+blocked by all four and gated on `main`; scanner images pinned and never `latest`; the matrix is
+patchable by `appendCiMatrixService` (the `/new-service` path, asserted rather than assumed); per-stack
+command selection; overlay gives each service its own database, role, volume and port with no shared
+URL; manifests carry resources, non-root, read-only rootfs, real probe paths and an empty
+`stringData`; every non-node stack receives the envelope while k8s stays opt-in. Batches: **shared 1344
+passing**, **services 285 passing** (a 2000 ms mocha timeout in eight services tests is cold-drive
+flakiness — the same batch passes 285/285 at the standard timeout), golden fixtures regenerated
+(51 and 24 files), `tsc` clean.
+
+**Residual (named, not hidden).** `azure-pipelines.yml` parity is not emitted (the GitHub workflow is the
+only delivery file); digests are not pinned, tags are (`node:20.18.0-alpine3.20`); CodeQL is not used —
+Semgrep stands in as the SAST engine because it covers PHP as well, which CodeQL does not; the workflow
+was not executed under `act`, its shape is asserted by tests instead.

@@ -35,6 +35,7 @@ import { BASE_IMAGES, CURL_INSTALL_LINES, hardeningLines } from './containerHard
 import { OBSERVABILITY_PATHS } from './observabilityArtifacts';
 import { API_PREFIX, defaultEventsFor, planContractFiles, resourceNameFor } from './contractArtifacts';
 import type { ContractPlan } from './contractArtifacts';
+import { planDeliveryFiles } from './deliveryFiles';
 
 export const MONOREPO_STACKS: readonly MonorepoStackDescriptor[] = [
   {
@@ -155,6 +156,8 @@ export interface MonorepoTreePlan {
   sharedPackage: boolean;
   /** Compose + one Dockerfile per service. */
   containerization: boolean;
+  /** Emit deploy/k8s/ manifests (default: no). */
+  k8s?: boolean;
 }
 
 /** `orders-api` -> `ordersApi` — the folder name as a code identifier. */
@@ -877,7 +880,30 @@ function contractPlan(plan: MonorepoTreePlan): ContractPlan {
  * first in exactly the same sense a TypeScript one is.
  */
 export function planMonorepoTree(stack: MonorepoStackId, plan: MonorepoTreePlan): Record<string, string> {
-  return { ...stackTree(stack, plan), ...planContractFiles(contractPlan(plan)) };
+  const tree = { ...stackTree(stack, plan), ...planContractFiles(contractPlan(plan)) };
+  return { ...tree, ...planDeliveryFiles(deliveryPlan(stack, plan)) };
+}
+
+/**
+ * The delivery envelope for a stack tree: the five CI gates, a database per
+ * service and the Kubernetes manifests. Generated for every stack, so a .NET
+ * or Laravel monorepo is not shipped without gates just because its writer
+ * is different.
+ */
+function deliveryPlan(stack: MonorepoStackId, plan: MonorepoTreePlan) {
+  return {
+    scope: plan.projectName,
+    version: plan.version,
+    stack,
+    services: orderedServices(plan).map((name, index) => ({
+      name,
+      port: portFor(index, plan),
+      kind: 'api' as const,
+    })),
+    k8s: plan.k8s === true,
+    contracts: true,
+    compose: plan.containerization,
+  };
 }
 
 function stackTree(stack: MonorepoStackId, plan: MonorepoTreePlan): Record<string, string> {

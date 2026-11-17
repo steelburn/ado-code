@@ -5,6 +5,7 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **Delivery gates (ZEN §4.3):** generated projects now ship five blocking CI gates (`GATE-01`…`GATE-05`: lint/typecheck, gitleaks + Semgrep, tests + contract lint + 80 % coverage, image build + Trivy scan, approved deploy), a `docker-compose.databases.yml` overlay with one database per service, and Kubernetes manifests with ConfigMap/Secret, resource limits, a non-root read-only container and observability-path probes — emitted for all four monorepo stacks.
 
 - **Scaffolded projects are contract-first.** Every generated service ships machine-readable
   contracts under `contracts/`, planned by `src/shared/contractArtifacts.ts` and emitted by the

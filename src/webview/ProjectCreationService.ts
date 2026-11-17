@@ -17,6 +17,17 @@ import {
   resolveMonorepoStack,
 } from '../shared/monorepoStacks';
 import {
+  planCiWorkflow,
+  planDatabaseOverlay,
+  planK8sManifests,
+  planK8sReadme,
+} from '../shared/deliveryArtifacts';
+import {
+  COMPOSE_DATABASE_PATH,
+  EVENT_SCHEMA_VALIDATOR,
+  EVENT_SCHEMA_VALIDATOR_PATH,
+} from '../shared/deliveryFiles';
+import {
   PROJECT_MARKER_FILE,
   ProjectMarker,
   ServiceKind,
@@ -2841,52 +2852,52 @@ export function createBroker(): MessageBroker {
 
     // ── CI, architecture and README ───────────────
     if (ci) {
-      const installStep = isPnpm
-        ? `      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - run: pnpm install --frozen-lockfile=false`
-        : tool === 'yarn'
-          ? '      - run: yarn install --immutable'
-          : '      - run: npm ci';
-      const buildStep = isPnpm
-        ? `pnpm --filter @${scope}/\${{ matrix.service }}... build`
-        : tool === 'yarn'
-          ? `yarn workspace @${scope}/\${{ matrix.service }} build`
-          : tool === 'turborepo'
-            ? `npx turbo run build --filter=@${scope}/\${{ matrix.service }}`
-            : tool === 'nx'
-              ? `npx nx run @${scope}/\${{ matrix.service }}:build`
-              : `npm run build --workspace @${scope}/\${{ matrix.service }}`;
+      // One shape of command per workspace tool: the gates must run the
+      // workspace's own scripts, not npm's, or a pnpm repo goes red.
+      const perWorkspace = (script: string): string =>
+        isPnpm
+          ? `pnpm -r ${script}`
+          : tool === 'yarn'
+            ? `yarn workspaces run ${script}`
+            : tool === 'turborepo'
+              ? `npx turbo run ${script}`
+              : tool === 'nx'
+                ? `npx nx run-many -t ${script}`
+                : `npm run ${script} --workspaces --if-present`;
       this.writeProjectFile(
         dir,
         '.github/workflows/ci.yml',
-        `name: ci
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [${services.join(', ')}]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: ${isPnpm ? 'pnpm' : tool === 'yarn' ? 'yarn' : 'npm'}
-${installStep}
-      - run: ${buildStep}
-      - name: Verify docker build
-        run: docker build -f services/$\{{ matrix.service }}/Dockerfile .
-`
+        planCiWorkflow({
+          family: 'node',
+          services,
+          k8s,
+          contractsDir: 'contracts',
+          setup: isPnpm
+            ? [
+                '      - uses: pnpm/action-setup@v4',
+                '        with:',
+                '          version: 9',
+                '      - uses: actions/setup-node@v4',
+                '        with:',
+                '          node-version: 20',
+                '          cache: pnpm',
+              ]
+            : [
+                '      - uses: actions/setup-node@v4',
+                '        with:',
+                '          node-version: 20',
+                `          cache: ${tool === 'yarn' ? 'yarn' : 'npm'}`,
+              ],
+          install: isPnpm
+            ? 'pnpm install --frozen-lockfile=false'
+            : tool === 'yarn'
+              ? 'yarn install --immutable'
+              : 'npm ci',
+          typecheck: [perWorkspace('build')],
+          test: [perWorkspace('test')],
+        })
       );
+      this.writeProjectFile(dir, EVENT_SCHEMA_VALIDATOR_PATH, EVENT_SCHEMA_VALIDATOR);
     }
 
     // Each handbook obligation is a row whose right-hand column is a real symbol, so a
@@ -3361,59 +3372,24 @@ CMD ["node", "dist/index.js"]
     }
 
     if (k8s) {
+      this.writeProjectFile(dir, 'deploy/k8s/README.md', planK8sReadme({ scope: plan.scope }));
       this.writeProjectFile(
         dir,
         `deploy/k8s/${service}.yaml`,
-        `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${service}
-  labels:
-    app.kubernetes.io/name: ${service}
-    app.kubernetes.io/part-of: ${scope}
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: ${service}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: ${service}
-        app.kubernetes.io/part-of: ${scope}
-    spec:
-      containers:
-        - name: ${service}
-          image: ${scope}/${service}:latest
-          ports:
-            - containerPort: ${port}
-          env:
-            - name: PORT
-              value: '${port}'
-${broker !== 'none' ? `            - name: BROKER_URL\n              value: '${brokerUrl}'\n` : ''}          readinessProbe:
-            httpGet:
-              path: ${OBSERVABILITY_PATHS.ready}
-              port: ${port}
-            initialDelaySeconds: 3
-          livenessProbe:
-            httpGet:
-              path: ${OBSERVABILITY_PATHS.live}
-              port: ${port}
-            initialDelaySeconds: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${service}
-  labels:
-    app.kubernetes.io/part-of: ${scope}
-spec:
-  selector:
-    app.kubernetes.io/name: ${service}
-  ports:
-    - port: ${port}
-      targetPort: ${port}
-`
+        planK8sManifests({
+          service,
+          scope,
+          port,
+          version: version || '0.1.0',
+          kind: 'api',
+          family: 'node',
+          env: [
+            { name: 'PORT', value: String(port) },
+            { name: 'LOG_LEVEL', value: 'info' },
+            ...(broker !== 'none' ? [{ name: 'BROKER_URL', value: brokerUrl }] : []),
+          ],
+          secretKeys: ['DATABASE_URL'],
+        })
       );
     }
   }
@@ -3478,6 +3454,12 @@ ${broker !== 'none' ? '    depends_on:\n      - broker\n' : ''}`;
 services:
 ${composeServices}${brokerBlock ? '\n' + brokerBlock : ''}`
       );
+    // ZEN-STD-4.3 — one database per service, as a compose overlay.
+    this.writeProjectFile(
+      dir,
+      COMPOSE_DATABASE_PATH,
+      planDatabaseOverlay({ services: domainServices })
+    );
       this.writeProjectFile(
         dir,
         '.dockerignore',

@@ -1,7 +1,7 @@
 # ZEN Engineering Handbook — Alignment Review
 
-> **Status: REVIEW COMPLETE — ALIGNMENT PHASES P1–P7, P1–P4 SHIPPED (CON‑01, CON‑02, CON‑04 MET, CON‑06
-> MET FOR THE NODE STACK; CON‑03 PARTIAL — NO TRACER).** This is the review of the external
+> **Status: REVIEW COMPLETE — ALIGNMENT PHASES P1–P5 SHIPPED (CON‑01, CON‑02, CON‑04 MET, CON‑06
+> MET FOR THE NODE STACK; CON‑03 PARTIAL — NO TRACER; ALL SEVEN §4.3 CI GATES MET).** This is the review of the external
 > standard *ZEN Computer Systems Internal Engineering Handbook: Microservices Architecture &
 > Governance, v1.0* against ADO Code's scaffolding templates and boilerplates. The outcome is a
 > decision record (§3) plus a phase plan (§8) that closes the gaps **in the boilerplates**, not in
@@ -96,13 +96,13 @@ jittered backoff, breaker, `Idempotency-Key`) in P4 — every one of them is now
 
 | # | Gate | Baseline (`ProjectCreationService.ts:2755-2810`, golden fixture) | Verdict | Phase |
 |---|---|---|---|---|
-| CI‑01 | lint / SAST / secret scan | absent (no eslint step, no CodeQL/Semgrep, no gitleaks) | **unmet** | P5 |
-| CI‑02 | unit + contract tests + coverage threshold | absent (the generated `ci.yml` runs `npm ci` then build) | **unmet** | P5 |
-| CI‑03 | build | present: matrix install → build → `docker build` | **met** | — |
-| CI‑04 | image scan | absent | **unmet** | P5 |
-| CI‑05 | deploy | absent (no environment/deploy job); `azure-pipelines.yml` exists only when `testAutomation.ci: 'azure'` | **partial** | P5 |
-| CI‑06 | one database per service | `docker-compose.yml` emits services + broker only (no DB container, no per-service schema/migrations dir) | **unmet** | P5 |
-| CI‑07 | k8s hardening | `replicas`, probes, labels present; `image: <app>/<svc>:latest`, no `resources`, no `securityContext`, no `ConfigMap`/`Secret` | **partial** | P5 |
+| CI‑01 | lint / typecheck + SAST + secret scan | **met** — `gate-static` (family lint + typecheck) and `gate-security` (gitleaks `v8.21.2` secret scan, Semgrep `1.90.0` `p/default` SAST, both pinned) | **met** | P5 ✔ |
+| CI‑02 | unit + contract tests + coverage threshold | **met** — `gate-test` runs the stack test command, Redocly lint of `contracts/openapi.yaml`, `scripts/validate-event-schemas.mjs`, and `c8 --check-coverage --lines 80` (guarded by `hashFiles` so an empty suite cannot silently pass) | **met** | P5 ✔ |
+| CI‑03 | build | **met** — `gate-image` builds every service image in a matrix, resolving the folder (`services/Users` vs `services/users`) instead of assuming it | **met** | P5 ✔ |
+| CI‑04 | image scan | **met** — Trivy `0.56.2` on the built image, `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1` | **met** | P5 ✔ |
+| CI‑05 | deploy | **met** — `gate-deploy` needs all four earlier jobs, runs only on `main`, sits behind `environment: production` (manual approval) and applies `deploy/k8s` when k8s is on | **met** | P5 ✔ |
+| CI‑06 | one database per service | **met** — `docker-compose.databases.yml` overlay: one pinned `postgres:16.4-alpine` per domain service, own role, own volume, own port (5433+index), `pg_isready` healthcheck, `DATABASE_URL` injected per service; the gateway is excluded | **met** | P5 ✔ |
+| CI‑07 | k8s hardening | **met** — `ConfigMap` + `Secret` (`stringData: {}`, values created out of band), `resources` requests/limits, `runAsNonRoot` + per-family `runAsUser`, `readOnlyRootFilesystem`, `drop: ["ALL"]`, `/tmp` emptyDir, `preStop` drain, tag = project version (never `latest`) | **met** | P5 ✔ |
 
 **Score at `814f011`:** of the 6 CON clauses, 0 fully met, 4 partial, 2 unmet; of the 7 CI clauses, 1 met, 2 partial,
 4 unmet. **Current count: 4 met** (CON‑01 in P1, CON‑02 in P2, CON‑04 in P3, CON‑06 for the node
@@ -201,7 +201,7 @@ traceable.
 | **P3 — observability & lifecycle ✅ shipped** | `packages/shared/src/logger.ts` (JSON lines + correlation id), `correlation.ts` middleware, `/metrics` (Prometheus text, dependency-free), `/healthz/live` + `/healthz/ready`, SIGTERM drain, JWT-verify hook in the gateway | shared package writers, service entrypoints, k8s probe paths, `ProjectCreationService.ts:3125` | new services emit JSON logs with the inbound `X-Correlation-ID`, serve `/metrics`, expose the new health paths, and drain on SIGTERM; k8s probes point at the new paths |
 | **P4 — resilience kit ✅ shipped (node stack)** | `packages/shared/src/resilience.ts`: `withTimeout` (aborts the signal it hands you), `retry`/`backoffDelay` (full jitter, 2500 ms, 3 attempts), `CircuitBreaker` (`closed`/`open`/`half-open` per dependency), `IdempotencyGuard` (replay, fingerprint conflict, concurrent duplicate awaits in-flight) | `resilienceArtifacts.ts`, shared-package writers, gateway, `ARCHITECTURE.md` rule table | 31 tests transpile and *run* the generated module: timeout fires and aborts, jitter stays in `[0, cap]` over 200 samples, all four breaker transitions, duplicate replays, conflicting key throws; every `ARCHITECTURE.md` rule names an exported symbol. **Non-node stacks pending as P4b.** |
 | **P4b — resilience for the non-node stacks** | the same four primitives in Python, C# and PHP under the same symbol names, so `ARCHITECTURE.md` stays stack-neutral | `monorepoStacks.ts` | each stack's generated kit passes the same behavioural tests as the TypeScript one |
-| **P5 — CI/CD gates + data** | `ci.yml`: lint/typecheck, unit + contract tests with coverage threshold, gitleaks, SAST, `docker build` + Trivy; deploy job environment; `azure-pipelines.yml` parity; compose DB service per service with a schema/migrations dir; k8s `resources`, `securityContext`, `ConfigMap`/`Secret`, digest image | `ProjectCreationService.ts:2755-2810` (ci.yml), `:3125` (k8s), `monorepoStacks.ts` compose, `testAutomationSuite.ts` | generated repo passes all five gates locally (`act`-free static test asserts the steps); compose brings up service + DB + broker; k8s manifest validates `kubectl --dry-run=client` shape in tests; image tag is not `latest` |
+| **P5 — delivery gates + data ✅ shipped** | `deliveryArtifacts.ts` renders three artifacts from one source: `ci.yml` with five blocking gates (GATE‑01…05), `docker-compose.databases.yml` (one database per service), and `deploy/k8s/<service>.yaml` (ConfigMap + Secret + Deployment + Service with resources, securityContext and observability probes). Emitted for **all four** stacks via `planMonorepoTree` and for the node writer via the host | `deliveryArtifacts.ts`, `deliveryFiles.ts`, `ProjectCreationService.ts`, `monorepoStacks.ts` | 35 tests: five gates present/ordered/cited by id, deploy blocked by all four and only from `main`, pinned scanners, matrix patchable by `/new-service`, per-stack commands, overlay one-DB-per-service with no shared URL, manifests carry resources + non-root + real probe paths and never `:latest`, k8s opt-in per tree. Residual: `azure-pipelines.yml` parity and digest pins not emitted — see §14.5 |
 | **P6 — preset + AGENTS.md** | named `zen-microservices` preset resolving the D3 option set; managed `AGENTS.md` block in scaffolded repos carrying the CON/CI rules | wizard preset table, `src/webview/agentsMd.ts` managed block, catalogue test | choosing the preset yields every P1–P5 artifact with zero manual steps; the scaffolded `AGENTS.md` names the clause ids; catalogue test fails if a new template forgets the block |
 | **P7 — traceability docs** | `ADR-###` document type in `doc-writer` (`01-design/adr/`), clause-id column in the RTM, KRiSA matrix entry | `docTemplates.ts`, register columns | `doc-writer` emits an ADR template traceable to `CR-###` and citable back to `ZEN-STD-*` |
 
