@@ -1,6 +1,7 @@
 # ZEN Engineering Handbook — Alignment Review
 
-> **Status: REVIEW COMPLETE — ALIGNMENT PHASES P1–P7, P1–P3 SHIPPED (CON‑01, CON‑02, CON‑04 MET; CON‑03 PARTIAL — NO TRACER).** This is the review of the external
+> **Status: REVIEW COMPLETE — ALIGNMENT PHASES P1–P7, P1–P4 SHIPPED (CON‑01, CON‑02, CON‑04 MET, CON‑06
+> MET FOR THE NODE STACK; CON‑03 PARTIAL — NO TRACER).** This is the review of the external
 > standard *ZEN Computer Systems Internal Engineering Handbook: Microservices Architecture &
 > Governance, v1.0* against ADO Code's scaffolding templates and boilerplates. The outcome is a
 > decision record (§3) plus a phase plan (§8) that closes the gaps **in the boilerplates**, not in
@@ -77,7 +78,8 @@ the handbook's layout clause applies to microservice repositories, which is what
 ## 5. Clause verdicts — §4.2 runtime standards and §4.3 CI gates
 
 Verified statements only; `USER`/`HEALTHCHECK`/`/metrics`/`SIGTERM`/`correlation-id`/`Idempotency`
-had **zero** occurrences in `src/shared/**` at `814f011`; P1 has since added `USER`, `HEALTHCHECK` and the base-image pins — `/metrics`, the SIGTERM drain, correlation ids and `Idempotency-Key` stay absent until P3/P4.
+had **zero** occurrences in `src/shared/**` at `814f011`; P1 has since added `USER`, `HEALTHCHECK` and the base-image pins — `/metrics`, the SIGTERM drain and correlation ids arrived in P3, and the resilience kit (timeouts,
+jittered backoff, breaker, `Idempotency-Key`) in P4 — every one of them is now emitted.
 
 ### 5.1 §4.2 — six mandatory runtime standards
 
@@ -88,7 +90,7 @@ had **zero** occurrences in `src/shared/**` at `814f011`; P1 has since added `US
 | CON‑03 | JSON logs to stdout, `/metrics`, OTel + `X-Correlation-ID` | **Partly met in P3.** `packages/shared/src/{logger,metrics,correlation}.ts` give JSON-per-line logs on stdout, a Prometheus endpoint and an `X-Correlation-ID` reused at every hop (bounded, echoed, forwarded — never re-minted mid-trace). No OpenTelemetry SDK is emitted, so the clause stays partial | **partial — 3 of 4** (tracing absent) | P3 ✅ |
 | CON‑04 | `/healthz/live`, `/healthz/ready`, graceful SIGTERM | **Became met in P3.** Every stack serves `/healthz/live` and `/healthz/ready` as separate handlers: Node through `installGracefulShutdown()` (withdraw readiness → drain in-flight → force-exit on timeout), .NET through `Lifetime.ApplicationStopping` (the host SIGTERM hook), Python and PHP through an `APP_DRAINING` marker. Readiness answers 503 while liveness keeps answering; the legacy `/health` stays served because the `HEALTHCHECK` probes it | **met** | P3 ✅ |
 | CON‑05 | JWT validation at the edge, secrets from env/Vault, crypto agility | `.env.example` only, zero hardcoded secrets; no auth path in the gateway | **partial — 1 of 3** | unassigned |
-| CON‑06 | 2–3 s timeouts, backoff with jitter, circuit breakers, `Idempotency-Key` | `ARCHITECTURE.md` states the rule in prose; no helper, no breaker, no idempotency guard | **unmet — policy only** | P4 |
+| CON‑06 | 2–3 s timeouts, backoff with jitter, circuit breakers, `Idempotency-Key` | **Became met in P4 for the node stack.** `src/shared/resilienceArtifacts.ts` emits `packages/shared/src/resilience.ts`: `withTimeout` (aborts the signal it hands you), `retry`/`backoffDelay` (full jitter, 2500 ms, 3 attempts, retrying only 5xx/network/timeout), `CircuitBreaker` (`closed` → `open` → `half-open`, per dependency) and `IdempotencyGuard` (replay, fingerprint conflict → `IdempotencyConflictError`, concurrent duplicate awaits the in-flight call). The gateway enforces `Idempotency-Key` on writes, wraps each upstream call in `withTimeout` and trips a breaker per route; the `ARCHITECTURE.md` rules are generated from `RESILIENCE_RULES`. **Residual:** `python`/`dotnet`/`php-laravel` trees carry no `packages/shared`, so for those stacks the rule is still documentation — queued as P4b. | **met (node stack) — residual on 3 stacks** | P4b |
 
 ### 5.2 §4.3 — five mandatory CI gates
 
@@ -103,9 +105,10 @@ had **zero** occurrences in `src/shared/**` at `814f011`; P1 has since added `US
 | CI‑07 | k8s hardening | `replicas`, probes, labels present; `image: <app>/<svc>:latest`, no `resources`, no `securityContext`, no `ConfigMap`/`Secret` | **partial** | P5 |
 
 **Score at `814f011`:** of the 6 CON clauses, 0 fully met, 4 partial, 2 unmet; of the 7 CI clauses, 1 met, 2 partial,
-4 unmet. **Current count: 3 met** (CON‑01 in P1, CON‑02 in P2, CON‑04 in P3), 2 partial
-(CON‑03 short only of its tracing half), 1 unmet. As published policy the handbook is coherent; as a standard the baseline could satisfy
-at `814f011` it was roughly 40 % realisable, and the two contract/container clauses now hold for
+4 unmet. **Current count: 4 met** (CON‑01 in P1, CON‑02 in P2, CON‑04 in P3, CON‑06 for the node
+stack in P4), 1 partial (CON‑03 short only of its tracing half), 1 unmet (CON‑05, security). As
+published policy the handbook is coherent; as a standard the baseline could satisfy
+at `814f011` it was roughly 40 % realisable, and the four clauses closed so far hold for
 every emitted project.
 
 ### 5.3 §4.4 — scaffolding mechanism
@@ -196,7 +199,8 @@ traceable.
 | **P1 — container hardening ✅ shipped** | non-root `USER` + group, `HEALTHCHECK`, full-patch pins, multi-stage PHP and Python — landed as `containerHardening.ts` (`BASE_IMAGES` + `hardeningLines`) plus every writer in `containerization.ts`, `monorepoStacks.ts` and `ProjectCreationService.ts`; golden fixtures regenerated | `containerization.ts`, `monorepoStacks.ts:44,66,77,450,596`, single-project Dockerfile writers | **met**: `containerHardening.test.ts` walks every stack and containerizable template and asserts build stage, non-root user, `HEALTHCHECK`, pinned base image and a start command; `monorepoStacks.test.ts` asserts against `BASE_IMAGES`, so the pins cannot drift from the tests |
 | **P2 — contract-first ✅ shipped** | `contracts/openapi/<service>.v1.yaml` per service (OpenAPI 3.1.0, generated from the service list), `contracts/events/envelope.v1.json` + `contracts/events/<event>.v1.json`, `/api/v1` route prefix in every stack, `ARCHITECTURE.md` links the contracts — landed as `src/shared/contractArtifacts.ts` (§14.2) | `contractArtifacts.ts` (new), `monorepoStacks.ts`, `ProjectCreationService.ts` monorepo writer, `serviceScaffold.ts` | 27 tests in `contractArtifacts.test.ts`; golden fixtures 11 contract files (defaults) / 8 (option-heavy); `/new-service` stamps the new service's contract and reports a collision instead of overwriting |
 | **P3 — observability & lifecycle ✅ shipped** | `packages/shared/src/logger.ts` (JSON lines + correlation id), `correlation.ts` middleware, `/metrics` (Prometheus text, dependency-free), `/healthz/live` + `/healthz/ready`, SIGTERM drain, JWT-verify hook in the gateway | shared package writers, service entrypoints, k8s probe paths, `ProjectCreationService.ts:3125` | new services emit JSON logs with the inbound `X-Correlation-ID`, serve `/metrics`, expose the new health paths, and drain on SIGTERM; k8s probes point at the new paths |
-| **P4 — resilience kit** | `packages/shared/src/resilience.ts`: `withTimeout`, `retry` with jitter, `CircuitBreaker`, idempotency guard | shared package writers + `ARCHITECTURE.md` rule table | each `ARCHITECTURE.md` rule maps to an exported symbol; unit tests cover timeout, jitter bounds, breaker open/half-open, duplicate `Idempotency-Key` |
+| **P4 — resilience kit ✅ shipped (node stack)** | `packages/shared/src/resilience.ts`: `withTimeout` (aborts the signal it hands you), `retry`/`backoffDelay` (full jitter, 2500 ms, 3 attempts), `CircuitBreaker` (`closed`/`open`/`half-open` per dependency), `IdempotencyGuard` (replay, fingerprint conflict, concurrent duplicate awaits in-flight) | `resilienceArtifacts.ts`, shared-package writers, gateway, `ARCHITECTURE.md` rule table | 31 tests transpile and *run* the generated module: timeout fires and aborts, jitter stays in `[0, cap]` over 200 samples, all four breaker transitions, duplicate replays, conflicting key throws; every `ARCHITECTURE.md` rule names an exported symbol. **Non-node stacks pending as P4b.** |
+| **P4b — resilience for the non-node stacks** | the same four primitives in Python, C# and PHP under the same symbol names, so `ARCHITECTURE.md` stays stack-neutral | `monorepoStacks.ts` | each stack's generated kit passes the same behavioural tests as the TypeScript one |
 | **P5 — CI/CD gates + data** | `ci.yml`: lint/typecheck, unit + contract tests with coverage threshold, gitleaks, SAST, `docker build` + Trivy; deploy job environment; `azure-pipelines.yml` parity; compose DB service per service with a schema/migrations dir; k8s `resources`, `securityContext`, `ConfigMap`/`Secret`, digest image | `ProjectCreationService.ts:2755-2810` (ci.yml), `:3125` (k8s), `monorepoStacks.ts` compose, `testAutomationSuite.ts` | generated repo passes all five gates locally (`act`-free static test asserts the steps); compose brings up service + DB + broker; k8s manifest validates `kubectl --dry-run=client` shape in tests; image tag is not `latest` |
 | **P6 — preset + AGENTS.md** | named `zen-microservices` preset resolving the D3 option set; managed `AGENTS.md` block in scaffolded repos carrying the CON/CI rules | wizard preset table, `src/webview/agentsMd.ts` managed block, catalogue test | choosing the preset yields every P1–P5 artifact with zero manual steps; the scaffolded `AGENTS.md` names the clause ids; catalogue test fails if a new template forgets the block |
 | **P7 — traceability docs** | `ADR-###` document type in `doc-writer` (`01-design/adr/`), clause-id column in the RTM, KRiSA matrix entry | `docTemplates.ts`, register columns | `doc-writer` emits an ADR template traceable to `CR-###` and citable back to `ZEN-STD-*` |

@@ -45,6 +45,11 @@ import {
   resourceNameFor,
 } from '../shared/contractArtifacts';
 import {
+  planResilienceFiles,
+  resilienceArchitectureRows,
+  sharedResilienceBarrelLines,
+} from '../shared/resilienceArtifacts';
+import {
   OBSERVABILITY_PATHS,
   planObservabilityFiles,
   sharedObservabilityBarrelLines,
@@ -2744,6 +2749,7 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
         'packages/shared/src/index.ts',
         `export * from './contracts';
 ${sharedObservabilityBarrelLines().join('\n')}
+${sharedResilienceBarrelLines().join('\n')}
 ${broker !== 'none' ? "export * from './broker';\n" : ''}`
       );
       this.writeProjectFile(
@@ -2786,6 +2792,11 @@ export type EventName = (typeof eventNames)[keyof typeof eventNames];
       // /metrics and the /healthz/{live,ready} split with a SIGTERM drain live in the
       // shared package so every service reports the same shape.
       for (const file of planObservabilityFiles()) {
+        this.writeProjectFile(dir, file.path, file.content);
+      }
+      // Resilience (§4.2 — CON-06): bounded timeouts, jittered backoff, a breaker per
+      // dependency and an Idempotency-Key guard, in one module the services import.
+      for (const file of planResilienceFiles()) {
         this.writeProjectFile(dir, file.path, file.content);
       }
       if (broker !== 'none') {
@@ -2878,6 +2889,21 @@ ${installStep}
       );
     }
 
+    // Each handbook obligation is a row whose right-hand column is a real symbol, so a
+    // rule without an implementation is visible as a gap instead of reading as policy.
+    const resilienceRulesDoc = withShared
+      ? [
+          '## Resilience rules',
+          '',
+          'Every obligation below is implemented in `packages/shared/src/resilience.ts` — import',
+          'it from the shared package; do not hand-roll a timeout or a retry loop.',
+          '',
+          '| Obligation | Symbol |',
+          '| --- | --- |',
+          ...resilienceArchitectureRows(),
+          '',
+        ].join('\n')
+      : '';
     this.writeProjectFile(
       dir,
       'ARCHITECTURE.md',
@@ -2910,9 +2936,11 @@ versioned with the repo and consumed as a workspace dependency — never copy ty
 2. **Data ownership.** Each service owns its store; no shared database schema.
 3. **Contracts first.** Change \`${sharedName}\` before changing producers/consumers, and keep events backward compatible.
 4. **Failure isolation.** Every service exposes liveness (\`/healthz/live\`), readiness
-   (\`/healthz/ready\`) and a Prometheus \`/metrics\` endpoint; callers set timeouts
-   and degrade gracefully.
+   (\`/healthz/ready\`) and a Prometheus \`/metrics\` endpoint. Every outbound call goes
+   through the shared resilience kit - never an inline \`setTimeout\` or a bare \`await\`
+   on a network call. The rule table below names the symbol behind each obligation.
 ${broker !== 'none' ? `5. **Async by default.** Use the ${broker} broker for side effects (notifications, projections) and HTTP only for request/response.\n` : ''}${gateway ? `${broker !== 'none' ? '6' : '5'}. **Single entry point.** Clients talk to \`${gateway}\` only; it maps \`${API_PREFIX}/<service>\` prefixes to service URLs (see \`services/${gateway}/src/index.ts\`).\n` : ''}
+${resilienceRulesDoc}
 ## Local development
 
 \`\`\`bash
@@ -3124,11 +3152,85 @@ Every service listens on its own port and exposes \`${OBSERVABILITY_PATHS.live}\
             `  '${API_PREFIX}/${resourceNameFor(target)}': process.env.${envVar(target)} ?? 'http://localhost:${portOf(target)}',`
         )
         .join('\n');
+      // Resilience (§4.2 — CON-06). The kit lives in the shared package, so the gateway
+      // only imports it when that package is emitted; without it the proxy keeps its plain
+      // pass-through behaviour rather than pretending to enforce a rule it cannot.
+      // One import block from the shared package: the gateway needs the breaker, the
+      // idempotency key guard and the timeout constant beside the observability names.
+      const resilienceNames = [
+        'CircuitBreaker',
+        'IDEMPOTENCY_HEADER',
+        'RESILIENCE_DEFAULTS',
+        'idempotencyKeyOf',
+      ].join(',\n  ');
+      const gatewayImport = withShared
+        ? [
+            'import {',
+            '  ' + observabilityNames + ',\n  ' + resilienceNames + ',',
+            "} from '" + sharedName + "';",
+          ].join('\n')
+        : '';
+      const breakerPrelude = withShared
+        ? [
+            '',
+            '/** One breaker per upstream prefix: a sick dependency is cut off, not queued',
+            ' * against. */',
+            'const breakers = new Map<string, CircuitBreaker>();',
+            'const breakerFor = (prefix: string): CircuitBreaker => {',
+            '  let breaker = breakers.get(prefix);',
+            '  if (!breaker) {',
+            '    breaker = new CircuitBreaker(prefix);',
+            '    breakers.set(prefix, breaker);',
+            '  }',
+            '  return breaker;',
+            '};',
+          ].join('\n')
+        : '';
+      // A POST without a key cannot be retried safely, so the gateway refuses it rather
+      // than let a client retry duplicate the effect further down the chain.
+      const keyGuard = withShared
+        ? [
+            "  if (req.method === 'POST' && !idempotencyKeyOf(req.headers)) {",
+            "    res.writeHead(400, { 'content-type': 'application/json' });",
+            "    res.end(JSON.stringify({ error: IDEMPOTENCY_HEADER + ' header is required for POST' }));",
+            '    return;',
+            '  }',
+            '',
+          ].join('\n')
+        : '';
+      const breakerAcquire = withShared
+        ? [
+            '  const breaker = breakerFor(prefix);',
+            "  if (breaker.state === 'open') {",
+            "    res.writeHead(503, { 'content-type': 'application/json' });",
+            "    res.end(JSON.stringify({ error: 'upstream ' + prefix + ' unavailable', reason: 'circuit-open' }));",
+            '    return;',
+            '  }',
+            '',
+          ].join('\n')
+        : '';
+      const breakerObserve = withShared
+        ? [
+            '      // The body streams straight through, so the breaker is told the outcome',
+            '      // directly instead of wrapping the whole exchange in one promise.',
+            '      if ((upstreamRes.statusCode ?? 502) >= 500) breaker.recordFailure();',
+            '      else breaker.recordSuccess();',
+          ].join('\n')
+        : '';
+      const breakerFailure = withShared ? '    breaker.recordFailure();' : '';
+      // A hung upstream would otherwise hold the socket until the client gave up.
+      const upstreamTimeout = withShared
+        ? [
+            '  upstream.setTimeout(RESILIENCE_DEFAULTS.timeoutMs, () => {',
+            "    upstream.destroy(new Error('upstream ' + prefix + ' timed out'));",
+            '  });',
+          ].join('\n')
+        : '';
       this.writeProjectFile(
         dir,
         `services/${service}/src/index.ts`,
         `import { createServer, request } from 'node:http';
-${healthImport}
+${gatewayImport}
 
 const SERVICE = 'gateway';
 const VERSION = '${version || '0.1.0'}';
@@ -3138,6 +3240,7 @@ const PORT = Number(process.env.PORT ?? ${port});${obsPrelude}
 const routes: Record<string, string> = {
 ${routeLines}
 };
+${breakerPrelude}
 
 const server = createServer((req, res) => {
   const url = (req.url ?? '/').split('?')[0];${obsRouter}
@@ -3149,6 +3252,8 @@ ${legacyHealth}
     return;
   }
 
+${keyGuard}
+${breakerAcquire}
   const target = new URL(routes[prefix] + url);
   const upstream = request(
     {
@@ -3161,12 +3266,15 @@ ${legacyHealth}
     (upstreamRes) => {
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
       upstreamRes.pipe(res);
+${breakerObserve}
     }
   );
   upstream.on('error', (error) => {
     res.writeHead(502, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'upstream ' + prefix + ' unavailable', detail: String(error) }));
+${breakerFailure}
   });
+${upstreamTimeout}
   req.pipe(upstream);
 });
 

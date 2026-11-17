@@ -602,7 +602,7 @@ block; the free-text scaffolding prompts are demoted to a fallback. (D4) Clauses
 
 **Phases (review §8).** **P1 container hardening — shipped (§14.1)** · **P2 contract-first
 `contracts/` — shipped (§14.2)** · **P3 observability and lifecycle — shipped (§14.3)** ·
-P4 resilience kit · P5 CI gates, compose DB
+**P4 resilience kit — shipped (§14.4)** · P5 CI gates, compose DB
 and k8s hardening · P6 `zen-microservices` preset plus the `AGENTS.md` managed block · P7 ADR
 document type and clause-id traceability.
 
@@ -612,8 +612,9 @@ the pipeline stages of §2.1 — they are writer-level changes, plus one preset 
 
 **Clause score.** At the time of the review (`814f011`) §4.2 runtime standards stood at **0 of 6
 fully met**, 3 partial and 3 unmet; §4.3 CI gates at 1 of 7 met, 2 partial, 4 unmet. P1 moved CON‑01
-and P2 CON‑02 to met, and P3 moved CON‑04 to met — **3 of 6** now, CON‑03 being partial only
-because no tracing is emitted. The rest is expected to reach "all met" at the end of P5.
+and P2 CON‑02 to met, P3 moved CON‑04 to met and P4 moved CON‑06 for the node stack — **4 of 6**
+now, CON‑03 being partial only because no tracing is emitted and CON‑06's residual being the
+three non-node stacks (§14.4). The rest is expected to reach "all met" at the end of P5.
 
 ### 14.1 P1 — container hardening (shipped)
 
@@ -747,3 +748,39 @@ that readiness can answer 503 without touching liveness, that the legacy route i
 probes is still served, and that business routes sit under `/api/v1`. Shared batch **1284 passing**,
 services batch **284 passing** (one `react-native` test exceeds the 30 s batch timeout cold and passes
 in isolation at 828 ms), golden fixtures **6/6**, `tsc` clean.
+
+### 14.4 P4 — resilience kit (shipped, node stack)
+
+CON‑06 asks four things of every outbound call: a 2–3 s timeout, bounded exponential backoff **with
+jitter**, a circuit breaker per dependency, and an `Idempotency-Key` on non-idempotent writes. Until
+P4 `ARCHITECTURE.md` stated all four in prose and no code backed them, so each scaffolded service
+either re-invented them or skipped them.
+
+`src/shared/resilienceArtifacts.ts` is now the single source for the generated
+`packages/shared/src/resilience.ts`:
+
+| Export | Contract |
+|---|---|
+| `withTimeout(fn, ms)` | hands the operation an `AbortSignal` and **aborts** it on expiry, after rejecting — so a timed-out call stops consuming the socket instead of finishing into a dead promise |
+| `retry(fn, opts)` / `backoffDelay(attempt)` | bounded attempts, exponential ceiling, **full jitter** (`random() * ceiling`), retrying only 5xx / network / timeout — never a 4xx, never a tripped breaker, never an idempotency conflict |
+| `CircuitBreaker` | per dependency, `closed` → `open` after N consecutive failures, `open` → `half-open` after a cooldown, one trial request, `half-open` → `closed` on success |
+| `IdempotencyGuard` | one effect per `Idempotency-Key`: replays the stored reply, throws `IdempotencyConflictError` when a key returns with a different payload fingerprint, and makes a concurrent duplicate await the in-flight call instead of double-writing |
+
+Defaults live in `RESILIENCE_DEFAULTS` (2500 ms, 3 attempts, 100 ms base, 2000 ms ceiling) so a
+service tunes one object instead of scattering constants. Wiring: the barrel exports the module, the
+gateway enforces `Idempotency-Key` on writes, wraps every upstream call in `withTimeout` and trips a
+breaker per route, and `ARCHITECTURE.md`'s rule table is generated from `RESILIENCE_RULES` — one row
+per rule naming the exported symbol. A test asserts each named symbol exists in the transpiled
+module, so that table cannot drift from the code.
+
+Tests: `resilienceArtifacts.test.ts` — **31 passing**. The generated module is transpiled with
+`typescript.transpileModule` and **executed** in a `vm` context rather than string-matched: the
+timeout fires and aborts its signal, jitter stays inside `[0, cap]` across 200 sampled delays, the
+breaker walks all four transitions, a duplicate key replays while a conflicting one throws, and a
+concurrent duplicate resolves once. Batches: **shared 1315 passing**, **services 285 passing**,
+**root 8 passing**; golden fixtures unchanged in shape (**6/6**), `tsc` clean.
+
+**Residual — met for the node stack only.** `python`, `dotnet` and `php-laravel` monorepo trees carry
+no `packages/shared` (the kit is TypeScript), so those stacks still have the rule without the code.
+Queued as **P4b**: the same four primitives in each runtime under the same symbol names, so
+`ARCHITECTURE.md` can stay stack-neutral.

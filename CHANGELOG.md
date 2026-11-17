@@ -32,6 +32,17 @@ All notable changes to ADO Code will be documented in this file.
   serve `/healthz/live`, `/healthz/ready` and `/metrics`; readiness can answer 503 while liveness
   keeps answering, which is what stops a draining pod from being restarted or from holding traffic.
 
+- **Outbound calls get timeouts, jittered backoff, a circuit breaker and idempotency keys.**
+  `src/shared/resilienceArtifacts.ts` emits `packages/shared/src/resilience.ts`: `withTimeout()`
+  (a bounded wait that aborts the signal it hands you, so a timed-out call stops consuming the
+  socket), `retry()`/`backoffDelay()` (bounded attempts with full jitter — 2500 ms default
+  timeout, 3 attempts, retrying only 5xx/network/timeout, never a 4xx), `CircuitBreaker` (per
+  dependency, `closed` → `open` → `half-open` with one trial request) and `IdempotencyGuard` (one
+  effect per `Idempotency-Key`: replays the stored reply, rejects a key reused with a different
+  payload fingerprint, and lets a concurrent duplicate await the in-flight call). The gateway
+  enforces `Idempotency-Key` on writes, wraps each upstream call in `withTimeout()` and trips a
+  breaker per route; the `ARCHITECTURE.md` resilience rules are generated from
+  `RESILIENCE_RULES`, one row per rule naming an exported symbol.
 ### Changed
 
 - **Every scaffolded container is pinned, non-root and health-checked.** Generated Dockerfiles
