@@ -95,6 +95,18 @@ All notable changes to ADO Code will be documented in this file.
   unprivileged process cannot bind a privileged port.
 
 ### Fixed
+- **Remote Access: a reply typed on the phone is acknowledged, not waited on.** `POST /chat`
+  awaited the entire agentic turn, so the request stayed open for minutes — past the point where
+  the edge in front of a tunnel gives up (Cloudflare answers 524 after ~100 s). That is why a
+  message the machine had already received *and answered* came back to the phone as "send failed",
+  with the send button spinning for the length of the turn. `remoteSendMessage` now races the turn
+  against a 1.5 s window (`REMOTE_CHAT_ACK_GRACE_MS` / `settlesWithin` in `remoteProtocol.ts`): a
+  fast refusal still returns its real 409/500 reason, anything slower is accepted with
+  `202 { accepted: true, running: true }` and its output arrives over SSE as before. The console
+  bounds its own wait (`CHAT_CONFIRM_TIMEOUT_MS` + `AbortController`) and reports a send that gets
+  no answer at all as *unconfirmed* rather than refused, so it neither refills the composer nor
+  invites a second POST.
+
 - **The CI contract gate no longer skips itself.** `gate-test` was guarded by
   `hashFiles('contracts/openapi.yaml')` and linted the same literal, but the planner emits
   `contracts/openapi/<service>.v1.yaml` — a guard that never matches skips the step instead of

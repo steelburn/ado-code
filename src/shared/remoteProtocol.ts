@@ -28,6 +28,41 @@ export const MAX_REQUEST_ID_LENGTH = 128;
 /** Largest upstream body we will buffer (bytes) before rejecting with 413/400. */
 export const MAX_UPSTREAM_BODY_BYTES = 16 * 1024;
 
+/**
+ * How long `POST /chat` may wait for the turn it started to SETTLE before the
+ * host answers `202 { accepted: true, running: true }` instead.
+ *
+ * A turn streams for minutes, and the turn is not what the POST asks about: it
+ * asks whether the reply was ACCEPTED. Holding the request open until the turn
+ * ends is what made the phone report slow or failed sends — the edge in front of
+ * a tunnel answers 524 after ~100 s, and the send button spun for the length of
+ * the turn. Long enough to still report a fast refusal, far below any edge
+ * timeout.
+ */
+export const REMOTE_CHAT_ACK_GRACE_MS = 1500;
+
+/**
+ * `promise`'s value if it settles within `ms`, otherwise `null`.
+ *
+ * The acknowledgement needs "was this refused already?" without ever waiting for
+ * a multi-minute turn.
+ */
+export function settlesWithin<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
 /** Consent scopes — parity with the webview's `consentResponse.scope`. */
 export type RemoteConsentScope = 'once' | 'session' | 'permanent';
 

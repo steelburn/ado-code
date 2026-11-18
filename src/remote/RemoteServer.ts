@@ -89,7 +89,16 @@ export interface RemoteServerOptions {
    * console that opens later has missed them.
    */
   filesSnapshot?: () => unknown;
-  /** A message typed on the phone. Absent = read-only console (501). */
+  /**
+   * A message typed on the phone. Absent = read-only console (501).
+   *
+   * CONTRACT: answer whether the reply was ACCEPTED, never wait for the turn it
+   * starts — a turn streams for minutes, and this is an HTTP request over a
+   * possibly tunnelled connection whose edge gives up long before that (a 524
+   * the phone then reports as "send failed" for a message the host did process).
+   * `202 { accepted: true, running: true }` is the expected answer once the turn
+   * is under way; its output follows on the SSE stream like any other event.
+   */
   onChat?: (text: string, choiceRequestId?: string) => Promise<{ status: number; body?: unknown }>;
   onConfirm?: (payload: { requestId: string; value?: string; approved?: boolean }) => Promise<{ status: number; body?: unknown }>;
   onCancel?: () => Promise<{ status: number; body?: unknown }>;

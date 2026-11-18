@@ -1399,20 +1399,51 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       .catch(function () { /* the stream still delivers new messages */ });
   }
 
+  /**
+   * How long a send waits for the host to answer at all.
+   *
+   * The host ACKNOWLEDGES a reply (202) instead of running the whole turn
+   * inside the request, so a healthy console hears back in milliseconds. A send
+   * that gets no answer at all therefore means the tunnel is gone — not that
+   * the machine is busy — and saying so beats a spinner that never stops.
+   */
+  var CHAT_CONFIRM_TIMEOUT_MS = 20000;
+
   /** POST text to the host — a tapped choice, or a typed reply. */
   function sendChat(text, done, choiceRequestId) {
+    var settled = false;
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    function settle(ok, payload) {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      done(ok, payload || {});
+    }
+    var timer = setTimeout(function () {
+      if (controller) {
+        try { controller.abort(); } catch (error) { /* the request already ended */ }
+      }
+      // Unconfirmed, NOT refused: the POST may well have landed and its turn be
+      // running right now, so the banner must not invite a second send.
+      settle(false, {
+        error: 'No answer from VS Code — the reply may still have arrived. Check the thread before resending.',
+        unconfirmed: true
+      });
+    }, CHAT_CONFIRM_TIMEOUT_MS);
     fetch('/chat', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller ? controller.signal : undefined,
       body: JSON.stringify({ text: text, choiceRequestId: choiceRequestId })
     })
       .then(function (response) {
+        // 202 = accepted and now running on the machine: a success like any other.
         return response.json().catch(function () { return {}; }).then(function (payload) {
-          done(response.ok, payload || {});
+          settle(response.ok, payload);
         });
       })
-      .catch(function () { done(false, {}); });
+      .catch(function () { settle(false, {}); });
   }
 
   function loadPending() {
@@ -1469,6 +1500,14 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       setSendState('sending');
       sendChat(text, function (ok, payload) {
         if (ok) { setSendState('sent'); return; }
+        if (payload && payload.unconfirmed) {
+          // Nothing came back, but nothing says it did not land either: keep the
+          // composer empty and the button neutral so a blind retry cannot post
+          // the same reply twice.
+          setSendState('idle');
+          showBanner(payload.error, true);
+          return;
+        }
         setSendState('failed');
         if (!composerInput.value) { composerInput.value = text; }
         showBanner((payload && payload.error) || 'VS Code refused that message.', true);
