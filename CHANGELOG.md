@@ -145,6 +145,14 @@ All notable changes to ADO Code will be documented in this file.
   unprivileged process cannot bind a privileged port.
 
 ### Fixed
+- **`gate-test` no longer goes red on a freshly scaffolded python repo.** Only the coverage step
+  carried the `hashFiles` guard, so a brand-new python monorepo ran `pytest services -q` with
+  nothing to collect — and pytest exits 5 on an empty run, so the repo failed its own first push
+  for the wrong reason. The other stacks were green only by accident: `node --test`,
+  `dotnet test --no-build` and `artisan test` all report success with nothing to run. The test
+  step and the coverage step now share one guard built from `TEST_FILE_GLOBS`, so an empty
+  scaffold skips both while a real test file (`services/<x>/tests/test_fail.py`) still runs and
+  still fails the job. `docs/project-scaffolding.md` and the golden tree fixture follow.
 - **Remote Access: a decision taken on the phone is no longer refused.** The approval cards
   built their buttons by concatenating a raw attribute fragment and escaping the whole fragment,
   so `data-value="update"` shipped as `data-value=&quot;update&quot;` and the browser read it back
