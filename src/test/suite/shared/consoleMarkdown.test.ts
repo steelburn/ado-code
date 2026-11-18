@@ -85,4 +85,17 @@ suite('remote/consolePage markdown', () => {
         // <br> only survives if the body is not laid out with pre-wrap.
         assert.match(CONSOLE_HTML, /\.msg-body\.md\s*\{[^}]*white-space:\s*normal/);
     });
+
+    test('a run card renders its live delta through the same renderer', () => {
+        // The delta used to land in a <pre>: a markdown table or a line break an
+        // external agent streamed arrived as flat monospaced text.
+        assert.match(
+            CONSOLE_HTML,
+            /class="msg-body md run-delta">' \+ renderMarkdown\(run\.delta\) \+ '<\/div>/,
+            'the live delta goes through the renderer',
+        );
+        assert.ok(!CONSOLE_HTML.includes('<pre class="delta">'), 'and no longer as raw text');
+        // It keeps its own capped box, or a long run would grow the card without end.
+        assert.match(CONSOLE_HTML, /\.run-delta\s*\{[^}]*max-height:\s*180px/);
+    });
 });

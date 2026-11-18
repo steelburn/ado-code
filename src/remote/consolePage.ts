@@ -137,12 +137,16 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
   .status.succeeded { color: var(--ok); }
   .status.failed, .status.error { color: var(--error); }
   .status.queued, .status.cancelled { color: var(--warn); }
-  .delta {
+  /* A run's live delta is the agent's own streaming text, so it goes through
+     the same md-lite subset as the transcript (a table or a line break in it
+     used to arrive as flat monospace). The card keeps its own scrolling box. */
+  .run-delta {
     margin: 8px 0 0; padding: 8px 10px; max-height: 180px; overflow: auto;
     background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    white-space: pre-wrap; word-break: break-word;
+    word-break: break-word;
   }
+  .run-delta.msg-body { font-size: 13px; }
+  .run-delta .md-p:last-child, .run-delta .md-list:last-child { margin-bottom: 0; }
   .summary { margin: 8px 0 0; white-space: pre-wrap; }
   .prompt {
     margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid var(--warn);
@@ -615,8 +619,9 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  /* md-lite:start — the transcript's markdown. A test extracts this block
-     verbatim (esc included) and runs it, so keep it self-contained.
+  /* md-lite:start — the page's markdown (transcript bodies and run deltas).
+     A test extracts this block verbatim (esc included) and runs it, so keep
+     it self-contained.
 
      The desktop renders answers with a full markdown component; the phone has
      none (this page ships no dependencies), so an answer used to arrive as raw
@@ -993,7 +998,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
         '</div>' +
         '<div class="run-agent">' + esc(run.agent || '') + (run.workdir ? ' · ' + esc(run.workdir) : '') + '</div>' +
         (run.summary ? '<p class="summary">' + esc(run.summary) + '</p>' : '') +
-        (run.delta ? '<pre class="delta">' + esc(run.delta) + '</pre>' : '') +
+        (run.delta ? '<div class="msg-body md run-delta">' + renderMarkdown(run.delta) + '</div>' : '') +
         (run.prompt ? '<div class="prompt">' + esc(run.prompt) + '</div>' : '') +
       '</section>';
     }

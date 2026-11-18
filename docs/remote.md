@@ -165,8 +165,12 @@ the device: a single line break stays a line break, a blank line starts a paragr
 pipe table becomes a real table that scrolls sideways inside its own box, so a wide row
 cannot push the thread off-screen. Fenced code, headings, lists, quotes and inline emphasis
 are rendered too, and every leaf is escaped before it is emitted — a cell containing raw HTML
-shows as text, and a link whose URL is not http(s) is left as plain text. Run cards and the
-delta stream keep their raw monospaced output; the renderer covers the mirrored conversation.
+shows as text, and a link whose URL is not http(s) is left as plain text.
+
+A run card's live **delta** goes through the same renderer instead of a `<pre>` of raw text, so an
+external agent that streams a markdown table, a list or a fenced block shows up as one on the
+phone rather than as a wall of syntax. The card keeps its box: the delta still scrolls inside its
+own height cap, so a long run cannot push the rest of the card off-screen.
 
 A text box under the thread takes a free-form reply — the answer to a question the assistant asked
 in prose, or a new instruction. Sending from the phone is not a separate code path: the text goes

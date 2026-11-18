@@ -149,8 +149,10 @@ All notable changes to ADO Code will be documented in this file.
   a delimited renderer that keeps a single line break, starts a paragraph on a blank line and
   turns a pipe table into a real table (alignment honoured, wide rows scrolling inside their own
   box) — plus fenced code, headings, lists, quotes and inline emphasis, each leaf escaped before
-  it is emitted. New `consoleMarkdown` suite extracts and runs the block; the `remoteConsole`
-  escaping scan now skips it and allowlists `renderMarkdown` as an escaping path.
+  it is emitted. A run card's live delta is rendered by the same block instead of a `<pre>` of
+  raw text, so an external agent streaming a table or a list shows as one (its box keeps its own
+  height cap and scroll). New `consoleMarkdown` suite extracts and runs the block; the
+  `remoteConsole` escaping scan now skips it and allowlists `renderMarkdown` as an escaping path.
 - **Remote Access: a reply typed on the phone is acknowledged, not waited on.** `POST /chat`
   awaited the entire agentic turn, so the request stayed open for minutes — past the point where
   the edge in front of a tunnel gives up (Cloudflare answers 524 after ~100 s). That is why a
