@@ -14,6 +14,7 @@ import {
 } from '../../../llm/tool-approval-ui';
 import { makeScratchDir } from '../utils/scratchDir';
 import type { Session } from '../../../shared/messages';
+import { WorkItemDraftQueue } from '../../../shared/draftQueue';
 
 /** Fake ExtensionContext whose workspaceState backs a Map (like the real one). */
 function makeSessionContext(): any {
@@ -505,6 +506,69 @@ suite('ChatViewProvider proposed-tasks parsing', () => {
     assert.strictEqual(r.tasks.length, 1);
     assert.strictEqual(r.tasks[0].title, 'T1');
     assert.ok(r.analysis.includes('Breakdown'));
+  });
+
+test('parseProposedTasks carries localId/parentLocalId from the model JSON', () => {
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
+    const text = '## PROPOSED_TASKS\n```json\n' + JSON.stringify([
+      { localId: 's1', workItemType: 'User Story', title: 'Export', description: '',
+        acceptanceCriteria: '', assignedTo: '', tags: '' },
+      { localId: 't1', parentLocalId: 's1', workItemType: 'Task', title: 'Wire print CSS',
+        description: '', acceptanceCriteria: '', assignedTo: '', tags: '' },
+    ]) + '\n```';
+    const r = (provider as any).parseProposedTasks(text);
+    assert.ok(r, 'nested breakdown must parse');
+    assert.strictEqual(r.tasks[0].localId, 's1');
+    assert.strictEqual(r.tasks[1].localId, 't1');
+    assert.strictEqual(r.tasks[1].parentLocalId, 's1', 'parentLocalId must survive parsing');
+  });
+
+  test('a parsed parentLocalId child reaches the queue as a draft parent', () => {
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
+    const text = '## PROPOSED_TASKS\n```json\n' + JSON.stringify([
+      { localId: 's1', workItemType: 'User Story', title: 'Export', description: '',
+        acceptanceCriteria: '', assignedTo: '', tags: '' },
+      { localId: 't1', parentLocalId: 's1', workItemType: 'Task', title: 'Wire print CSS',
+        description: '', acceptanceCriteria: '', assignedTo: '', tags: '' },
+    ]) + '\n```';
+    const parsed = (provider as any).parseProposedTasks(text);
+
+    // The mapping createProposedTasksFromEditor performs — the wire under test.
+    const queue = new WorkItemDraftQueue(() => {
+      throw new Error('executor must not run: this test only enqueues');
+    });
+    const rows = queue.enqueueMany(parsed.tasks.map((task: any) => ({
+      workItemType: task.workItemType,
+      title: task.title,
+      description: task.description,
+      acceptanceCriteria: task.acceptanceCriteria,
+      assignedTo: task.assignedTo,
+      tags: task.tags,
+      parentWorkItemId: 4242,
+      localId: task.localId,
+      parentLocalId: task.parentLocalId,
+      origin: 'breakdown' as const,
+    })));
+
+    assert.strictEqual(rows.length, 2);
+    assert.deepStrictEqual(rows[0].parentRef, { kind: 'ado', id: 4242 },
+      'an entry without parentLocalId hangs off the active work item');
+    assert.deepStrictEqual(rows[1].parentRef, { kind: 'draft', id: rows[0].id },
+      'the child must point at the drafted parent, not be flattened onto 4242');
+  });
+
+  test('nesting survives the staged-markdown round trip', () => {
+    const provider = new ChatViewProvider({} as any, makeServices(), {} as any);
+    const blank = { description: '', acceptanceCriteria: '', assignedTo: '', tags: '' };
+    const md = (provider as any).formatTasksForEditor(4242, 'Export story', [
+      { localId: 's1', workItemType: 'Task', title: 'Parent task', ...blank },
+      { localId: 't1', parentLocalId: 's1', workItemType: 'Task', title: 'Child task', ...blank },
+    ]);
+    const back = (provider as any).parseCheckedTasks(md);
+    assert.strictEqual(back.length, 2);
+    assert.strictEqual(back[0].localId, 's1');
+    assert.strictEqual(back[1].parentLocalId, 's1', 'parentLocalId must round-trip through the editor');
+    assert.strictEqual(back[1].tags, '', 'the nesting bullets must not leak into Tags');
   });
 
   test('parseProposedTasks falls back to a numbered list when the model skips JSON', () => {

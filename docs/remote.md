@@ -152,6 +152,26 @@ one surface while the other has already answered it. And it stays closed: the ho
 answer by request id, so a re-render, a webview reload or a second phone connecting cannot bring
 an answered block back as if it were still waiting.
 
+Only **answers** reach the phone, not the reasoning that precedes a tool call. An agentic
+iteration narrates itself while it decides what to do next — a frame like *let me check the
+parser* — and those frames used to be mirrored into the transcript, so a trace ran straight
+into the next answer with no separation and the answer read as though it had changed subject.
+The console drops them: it mirrors answers, not traces, which is why the phone thread can be
+shorter than the chat on the machine.
+
+Answers are rendered, not echoed. The page ships no dependencies, so a small renderer
+(`md-lite`, a delimited block in `consolePage.ts`) turns the answer markdown into markup on
+the device: a single line break stays a line break, a blank line starts a paragraph, and a
+pipe table becomes a real table that scrolls sideways inside its own box, so a wide row
+cannot push the thread off-screen. Fenced code, headings, lists, quotes and inline emphasis
+are rendered too, and every leaf is escaped before it is emitted — a cell containing raw HTML
+shows as text, and a link whose URL is not http(s) is left as plain text.
+
+A run card's live **delta** goes through the same renderer instead of a `<pre>` of raw text, so an
+external agent that streams a markdown table, a list or a fenced block shows up as one on the
+phone rather than as a wall of syntax. The card keeps its box: the delta still scrolls inside its
+own height cap, so a long run cannot push the rest of the card off-screen.
+
 A text box under the thread takes a free-form reply — the answer to a question the assistant asked
 in prose, or a new instruction. Sending from the phone is not a separate code path: the text goes
 through the same handler the webview uses, so tools, approvals and steering behave identically, and

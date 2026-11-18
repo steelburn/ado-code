@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from './webview/chatEditorSerializer';
+import { DRAFT_QUEUE_VIEW_TYPE, createDraftQueueSerializer } from './webview/draftQueueSerializer';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
 import { defaultRunCommitMessage, runAdoRef } from './shared/delegationPlan';
 import { DeferredStartup } from './shared/deferredStartup';
@@ -141,6 +142,9 @@ export async function activate(context: vscode.ExtensionContext) {
       treeProvider?.refresh(items);
     }
   );
+  // Review queue survives a reload: hydrate now, save on every change (28010).
+  chatProvider.attachDraftQueuePersistence(context.workspaceState);
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
@@ -157,6 +161,17 @@ export async function activate(context: vscode.ExtensionContext) {
   // (crash, killed window, laptop powering off): register the pre-shutdown hooks.
   context.subscriptions.push(...chatProvider.registerSaveStateFlush());
 
+  // Restore the Work Item Drafts page after a window reload or IDE restart. Same
+  // rule as the chat tab above: an editor webview tab is only revived when its
+  // view type has a registered serializer. Must stay synchronous inside activate()
+  // — VS Code calls deserializeWebviewPanel as soon as activation resolves.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(
+      DRAFT_QUEUE_VIEW_TYPE,
+      createDraftQueueSerializer(chatProvider),
+    ),
+  );
+
   // Restore the editor-area chat tab ("ADO Code Chat") after a window reload or
   // IDE restart. VS Code only revives webview editor tabs whose view type has a
   // registered serializer, so registering here is what keeps the tab alive.
@@ -166,6 +181,24 @@ export async function activate(context: vscode.ExtensionContext) {
       createChatEditorSerializer(chatProvider)
     )
   );
+
+  // Open the Work Item Drafts page by itself, without taking the keyboard, in
+  // the two cases where queued rows would otherwise stay invisible: a queue
+  // restored from an earlier window that still holds undecided rows, and a draft
+  // an agent queues while the page is closed. Nothing here awaits and the reveal
+  // is guarded, so a webview hiccup cannot take activation or a tool call down.
+  const autoOpenWorkItemDrafts = (): void => {
+    try {
+      chatProvider.revealWorkItemDrafts({ preserveFocus: true });
+    } catch {
+      // No webview available (headless host, disposed panel) — the command still works.
+    }
+  };
+  context.subscriptions.push(chatProvider.onDidDraftWorkItem(autoOpenWorkItemDrafts));
+  if (chatProvider.hasPendingWorkItemDrafts()) {
+    // Deferred: creating a webview is not worth delaying activation for.
+    setTimeout(autoOpenWorkItemDrafts, 0);
+  }
 
   // Status Panel: tree view showing mode, memory, MCP, and agent status.
   const statusProvider = new StatusPanelProvider(services);
@@ -709,9 +742,20 @@ IMPORTANT: Do NOT use the create_work_item tool. Instead, output a JSON block un
 \`\`\`json
 [
   {
+    "localId": "t1",
     "workItemType": "Task",
     "title": "Task title",
     "description": "Detailed description",
+    "acceptanceCriteria": "Criteria",
+    "assignedTo": "",
+    "tags": ""
+  },
+  {
+    "localId": "t2",
+    "parentLocalId": "t1",
+    "workItemType": "Task",
+    "title": "A subtask of t1",
+    "description": "Only if the work genuinely nests",
     "acceptanceCriteria": "Criteria",
     "assignedTo": "",
     "tags": ""
@@ -719,7 +763,9 @@ IMPORTANT: Do NOT use the create_work_item tool. Instead, output a JSON block un
 ]
 \`\`\`
 
-First analyze the user story and explain your breakdown reasoning, then output the PROPOSED_TASKS JSON block. The user will review and select which tasks to create.`;
+First analyze the user story and explain your breakdown reasoning, then output the PROPOSED_TASKS JSON block. Every entry MUST carry a unique localId. Set parentLocalId to another entry localId ONLY when that item is a genuine child of it; entries with no parentLocalId become direct children of the active user story. Keep the breakdown flat unless nesting is meaningful — the user reviews every row.
+
+The user will review and select which tasks to create.`;
       chatProvider.injectChatMessage(msg);
     })
   );
@@ -843,7 +889,8 @@ Generate ONLY the commit message, nothing else.`;
     vscode.commands.registerCommand('adoCode.rerunWizard', () => chatProvider.rerunWizard()),
     vscode.commands.registerCommand('adoCode.openSettings', () => chatProvider.openSettings()),
     vscode.commands.registerCommand('adoCode.moveChatToEditor', () => chatProvider.openChatInEditor()),
-    vscode.commands.registerCommand('adoCode.moveChatToSidebar', () => chatProvider.moveChatToSidebar())
+    vscode.commands.registerCommand('adoCode.moveChatToSidebar', () => chatProvider.moveChatToSidebar()),
+    vscode.commands.registerCommand('adoCode.showWorkItemDrafts', () => chatProvider.revealWorkItemDrafts())
   );
 
   // ── Task 3.1+3.2: memory commands ────────────────────────────────

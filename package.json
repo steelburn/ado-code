@@ -34,6 +34,7 @@
   ],
   "activationEvents": [
     "onWebviewPanel:adoCode.chatEditor",
+    "onWebviewPanel:adoCode.draftQueuePage",
     "onView:adoCode.chat",
     "onView:adoCode.workItems",
     "onCommand:adoCode.chat.focus",
@@ -88,6 +89,7 @@
     "onCommand:adoCode.openSettings",
     "onCommand:adoCode.showChangelog",
     "onCommand:adoCode.showLog",
+    "onCommand:adoCode.showWorkItemDrafts",
     "onCommand:adoCode.moveChatToEditor",
     "onCommand:adoCode.moveChatToSidebar",
     "onView:adoCode.todos",
@@ -192,6 +194,12 @@
         "title": "Move Chat into Editor Area",
         "icon": "$(link-external)",
         "category": "ADO Code"
+      },
+{
+        "command": "adoCode.showWorkItemDrafts",
+        "title": "Show Work Item Drafts",
+        "category": "ADO Code",
+        "icon": "$(checklist)"
       },
       {
         "command": "adoCode.moveChatToSidebar",
@@ -696,6 +704,11 @@
           "command": "adoCode.worktreeRejectAllPick",
           "when": "view == adoCode.worktrees && adoCode.worktrees.hasWorktrees",
           "group": "navigation@2"
+        },
+        {
+          "command": "adoCode.showWorkItemDrafts",
+          "when": "view == adoCode.workItems",
+          "group": "navigation@0"
         },
         {
           "command": "adoCode.todos.setGoal",
@@ -1641,6 +1654,7 @@
     "test:host": "node ./out/test/runTest.js",
     "test:unit": "node node_modules/mocha/bin/mocha.js --ui tdd --require ./scripts/vscode-stub.js \"out/test/suite/shared/**/*.test.js\" out/test/suite/services.lazy.test.js",
     "publish:open-vsx": "node scripts/publish-open-vsx.js",
+    "package:vsix": "node scripts/package.js",
     "prepare": "husky"
   },
   "lint-staged": {

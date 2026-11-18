@@ -455,8 +455,15 @@ export function createToolExecutor(
     onCreatePullRequest?: (runId: string, title?: string, description?: string) => Promise<{ pullRequestId: number; url: string; mergeStatus?: string }>;
     /** Conflict surfacing: fetch conflicted files (base/our/their) for a run's PR. */
     onResolvePrConflicts?: (runId: string) => Promise<Array<{ path: string; worktreePath: string; base?: string; ours?: string; theirs?: string; truncated?: boolean }>>;
-    /** Create work item with editor-tab preview + confirmation before ADO write. */
-    onCreateWorkItem?: (args: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; assignedTo?: string; tags?: string; parentWorkItemId?: number }) => Promise<{ id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] } | null>;
+    /**
+     * Draft a work item. Three outcomes: created inline, QUEUED for the user's
+     * review (draft queue panel), or cancelled by the user (null).
+     */
+    onCreateWorkItem?: (args: { workItemType: string; title: string; description?: string; acceptanceCriteria?: string; assignedTo?: string; tags?: string; parentWorkItemId?: number }) => Promise<
+      | { id: number; url: string; warning?: string; tagsApplied?: string; droppedTags?: string[] }
+      | { queued: true; draftId: string }
+      | null
+    >;
     /**
      * Chat session that owns the to-do list. Read lazily per call so the tool
      * always writes the CURRENT session's list, even after the user switches.
@@ -1109,6 +1116,20 @@ export function createToolExecutor(
             });
             if (!result) {
               return JSON.stringify({ cancelled: true, message: 'Work item creation cancelled by user' });
+            }
+            if ('queued' in result) {
+              // The row is NOT created yet: the user accepts or rejects it in the
+              // draft queue panel, in any order. Saying so explicitly keeps the
+              // model from "helpfully" calling create_work_item again.
+              return JSON.stringify({
+                ok: true,
+                queued: true,
+                draftId: result.draftId,
+                status: 'pending user review',
+                message: 'Drafted and added to the work item review queue. The user accepts or rejects it (possibly later, possibly in bulk) — do NOT call create_work_item again for this item, and do not report an ADO id yet.',
+                acceptanceCriteriaField: createdContent.acceptanceCriteria ? 'filled' : 'empty',
+                acceptanceCriteriaMovedOutOfDescription: acMoved,
+              });
             }
             return JSON.stringify({
               ok: true,

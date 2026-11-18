@@ -8,6 +8,7 @@ import {
   databaseName,
   databasePasswordEnv,
   databasePort,
+  TEST_FILE_GLOBS,
   familyCommands,
   k8sImage,
   planCiWorkflow,
@@ -111,6 +112,54 @@ suite('Delivery artifacts — the five CI gates', () => {
     const ci = workflow();
     assert.ok(ci.includes(`--check-coverage --lines ${COVERAGE_THRESHOLD}`));
     assert.ok(ci.includes("hashFiles('**/test/**/*.test.*'"), 'the coverage gate is unconditional');
+  });
+
+  test('an empty python scaffold skips gate-test instead of going red on pytest exit 5', () => {
+    const ci = planCiWorkflow({ family: 'python', services: ['gateway', 'users'], k8s: true });
+    const guard = `if: \${{ hashFiles(${TEST_FILE_GLOBS.map((glob) => `'${glob}'`).join(', ')}) != '' }}`;
+    const gate = ci.slice(ci.indexOf('\n  gate-test:'), ci.indexOf('\n  gate-image:'));
+
+    // pytest exits 5 when it collects nothing, so an unguarded step made a
+    // freshly scaffolded python repo fail its own first push.
+    assert.ok(
+      gate.includes(`      - name: Run tests\n        ${guard}\n        run: pytest services -q`),
+      'the python test step is unguarded: pytest exits 5 on an empty run',
+    );
+    assert.strictEqual(
+      gate.split(guard).length - 1,
+      2,
+      'the test step and the coverage step must share one guard',
+    );
+    assert.ok(!gate.includes('|| true'), 'the fix swallows real failures');
+    assert.ok(!gate.includes('continue-on-error'), 'the fix swallows real failures');
+
+    // The other direction: a real test file matches the guard, so a genuine
+    // failure still fails the job. This matcher mirrors the hashFiles globs, so
+    // it cannot drift into a parallel rule.
+    const toRegExp = (glob: string): RegExp => {
+      let source = '^';
+      for (let i = 0; i < glob.length; i += 1) {
+        if (glob.startsWith('**/', i)) {
+          source += '(?:.*/)?';
+          i += 2;
+        } else if (glob[i] === '*') {
+          source += '[^/]*';
+        } else if (glob[i] === '.') {
+          source += '\\.';
+        } else {
+          source += glob[i].replace(/[+^${}()|[\]\\]/g, '\\$&');
+        }
+      }
+      return new RegExp(`${source}$`);
+    };
+    const matches = (file: string): boolean =>
+      TEST_FILE_GLOBS.some((glob) => toRegExp(glob).test(file));
+
+    assert.ok(
+      matches('services/users/tests/test_fail.py'),
+      'a real python test must match the guard, or the fix hides its failure',
+    );
+    assert.ok(!matches('services/users/app/main.py'), 'the guard matched a non-test file');
   });
 
   test('contract gates appear only for a project that has contracts', () => {

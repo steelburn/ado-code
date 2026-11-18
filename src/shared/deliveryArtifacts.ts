@@ -71,6 +71,30 @@ export const CI_GATES: readonly CiGate[] = [
 /** Line coverage a scaffolded repo must hold (`c8 --check-coverage`). */
 export const COVERAGE_THRESHOLD = 80;
 
+/**
+ * Globs that prove the tree holds at least one test file. The test step and its
+ * coverage step read this single list, so the two gates cannot disagree about
+ * what "the tree has tests" means.
+ */
+export const TEST_FILE_GLOBS: readonly string[] = ['**/test/**/*.test.*', '**/tests/**/*.py'];
+
+/**
+ * The `if:` line that skips a step while the tree holds no test file yet.
+ *
+ * Required, not cosmetic: `pytest` exits 5 when it collects zero tests, so an
+ * unguarded python scaffold went red on its own first push for the wrong
+ * reason. The other families are green only by accident — `node --test`,
+ * `dotnet test --no-build` and `artisan test` all report success with nothing
+ * to run — and this guard makes that green deliberate instead.
+ *
+ * It costs nothing in safety: a real test file matches the globs, so a genuine
+ * failure still fails the job.
+ */
+function testsExistStep(): string {
+  const globs = TEST_FILE_GLOBS.map((glob) => `'${glob}'`).join(', ');
+  return `        if: \${{ hashFiles(${globs}) != '' }}`;
+}
+
 /** Node version for the JS toolchain steps (contract lint, coverage). */
 export const CI_NODE_VERSION = '20';
 
@@ -301,10 +325,18 @@ export function planCiWorkflow(plan: CiWorkflowPlan): string {
       '        run: node scripts/validate-event-schemas.mjs',
     );
   }
+  /* The test step is guarded exactly like the coverage step below: a scaffold
+   * that ships no tests yet skips both instead of failing for the wrong
+   * reason (pytest exits 5 on an empty run). One step per command, because a
+   * step carries a single `run:` line. */
   lines.push(
-    ...commands.test.map((run) => `      - run: ${run}`),
+    ...commands.test.flatMap((run, index) => [
+      `      - name: ${commands.test.length > 1 ? `Run tests #${index + 1}` : 'Run tests'}`,
+      testsExistStep(),
+      `        run: ${run}`,
+    ]),
     '      - name: Coverage threshold',
-    "        if: ${{ hashFiles('**/test/**/*.test.*', '**/tests/**/*.py') != '' }}",
+    testsExistStep(),
     `        run: npx --yes c8@10.1.3 --check-coverage --lines ${COVERAGE_THRESHOLD} --reporter=text-summary ${commands.test[0]}`,
   );
 

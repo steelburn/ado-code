@@ -5,6 +5,56 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **The Work Item Drafts page opens itself when there is something to review.** It was
+  invisible until the command was run: a queue restored from an earlier window, and a draft an
+  agent had just queued, both waited behind a page nobody opened. Activation now opens it when
+  the restored queue holds rows that are not `created` yet, and a `create_work_item` draft (or a
+  task breakdown) opens it as the row lands. Automatic opens use `preserveFocus`, so the tab
+  appears without pulling the keyboard out of the chat; the explicit command still takes focus.
+- **The Work Item Drafts page survives a window reload or IDE restart.** The queue already
+  persisted in workspaceState, but no `WebviewPanelSerializer` was registered for
+  `adoCode.draftQueuePage`, so VS Code dropped the tab on reload and the restored rows had no
+  surface until the command was run again. `DraftQueuePage.restore()` re-adopts the panel VS Code
+  hands back: same HTML, webview options re-applied (a deserialized panel starts script-less and
+  without local roots), wired to the same queue instance the chat provider owns, so the rows that
+  survived are on screen. Restoring never steals focus, and a second restore disposes the duplicate
+  instead of opening two tabs over one queue.
+- **Work item drafting no longer stops the turn: a draft queue with reversible decisions.**
+  `create_work_item` used to stage a Markdown preview, open an editor and wait for one
+  confirmation card, so a turn that drafted several items could only be reviewed one at a time,
+  in generation order. It now appends a `WorkItemDraft` row to a queue (`src/shared/draftQueue.ts`)
+  and returns `{ queued: true, draftId }` immediately. Review happens on a dedicated editor
+  page (`DraftQueuePage`, command **ADO Code: Show Work Item Drafts**, entry point in the
+  **Work Items** view title) instead of inside the chat transcript, so the queue is
+  reachable with no chat open and is not lost when the panel is dismissed.
+  `DraftQueuePanel`
+  accepts, edits, retries or rejects rows in any order, singly or in bulk. Drafting performs no
+  ADO call — and neither does accepting. A decision is STAGED (`accepted` / `rejected`, the row
+  kept in the list, struck through and still selectable) and `undo` takes it back, so the review
+  stays reversible until one explicit `finalize()` commits it: staged rejects are dropped, staged
+  accepts run through one serial pump (order-free clicks, one write at a time). `creating` claims
+  a row so an in-flight create cannot be edited or rejected. A decided row collapses to Undo only,
+  so accept/edit/reject disappear until the decision is taken back. A reload that strands a row
+  mid-write restores it as `failed` rather than inviting a duplicate work item. Ancestry is a
+  `ParentRef`: flat children of an existing ADO item today, local draft parents behind the same model.
+  Duplicate drafts (same type + title + parent) are flagged, never blocked, so a bulk accept
+  cannot quietly create the same work item twice; a rejected row is never treated as the original
+  a live row collides with. "Clear created" removes completed rows only, keeping failed ones (and
+  their errors) in the queue until they are explicitly rejected and finalized. The review header counts `blocked` rows like every other status, so a draft waiting on its parent appears in the "N waiting" tally and in the Finalize total instead of rendering as `NaN`.
+- **Draft queue persistence is versioned and self-healing.** workspaceState now holds
+  `{ v: 2, drafts: [...] }` rather than a bare array, so a blob written by a different build is
+  recognised instead of coerced — a newer schema (`v > 2`) is left untouched and never downgraded
+  into rows that look plausible and behave wrongly, while a version 1 bare array still restores and
+  is migrated on the next load. Hydration also saves the NORMALISED result (the `creating`→`failed`
+  demotion, the `blocked`→`accepted` reset, dropped malformed rows) instead of leaving the raw blob
+  on disk for every reload to re-derive — which is what let a stale snapshot survive indefinitely.
+- **Row selection survives the reload too.** A checkbox on the Work Item Drafts page is view
+  state, so it lives in its own store beside the queue (`adoCode.workItemDraftSelection`, same
+  `workspaceState` scope) instead of inside it — a ticked row can never be mistaken for a staged
+  decision, and the queue stays correct with no page open. The host attaches it with the queue and
+  sends it with every snapshot, so a reload lands on the rows you had ticked rather than an empty
+  selection; a hand-edited or truncated blob degrades to "nothing ticked" (strings only, deduped,
+  capped at 500) instead of wedging the page.
 - Application security (ZEN `CON-05`), the last unmet runtime clause. The node stack emits
   `packages/shared/src/auth.ts` + `secrets.ts`: JWT verification on `node:crypto`, an algorithm
   allowlist applied *before* the signature, a `kid` keyring with JWKS refresh and a rollover window,
@@ -95,6 +145,37 @@ All notable changes to ADO Code will be documented in this file.
   unprivileged process cannot bind a privileged port.
 
 ### Fixed
+- **`gate-test` no longer goes red on a freshly scaffolded python repo.** Only the coverage step
+  carried the `hashFiles` guard, so a brand-new python monorepo ran `pytest services -q` with
+  nothing to collect — and pytest exits 5 on an empty run, so the repo failed its own first push
+  for the wrong reason. The other stacks were green only by accident: `node --test`,
+  `dotnet test --no-build` and `artisan test` all report success with nothing to run. The test
+  step and the coverage step now share one guard built from `TEST_FILE_GLOBS`, so an empty
+  scaffold skips both while a real test file (`services/<x>/tests/test_fail.py`) still runs and
+  still fails the job. `docs/project-scaffolding.md` and the golden tree fixture follow.
+- **Remote Access: a decision taken on the phone is no longer refused.** The approval cards
+  built their buttons by concatenating a raw attribute fragment and escaping the whole fragment,
+  so `data-value="update"` shipped as `data-value=&quot;update&quot;` and the browser read it back
+  as `"update"`, quotes included. The host compares the posted value with the pending option list
+  exactly, so *every* remote decision — the AGENTS.md sync prompt, every in-chat confirmation and
+  each consent button — came back as 400 `unknown option value` and the console reported *VS Code
+  refused that decision*. `decisionButton()` now takes its attributes as name → value pairs and
+  escapes each value, which also restores the `data-kind` / `data-approved` / `data-scope` reads the
+  consent path switches on. Covered by rendering the page's own builder in `remoteConsole.test.ts`.
+- **Remote Access: the phone thread is markdown, and no longer mixes in the agent reasoning.**
+  An agentic iteration narrates itself before it calls a tool, and those frames were mirrored
+  into the transcript, so a pre-tool sentence like *let me check the file* ran straight into the
+  answer that followed and read as part of it. `TranscriptMirror.noteAssistant()` now takes
+  `{ thinking: true }` — forwarded by `ChatViewProvider.mirrorTranscript()` — and drops those
+  frames: the phone mirrors answers, not traces. The thread also collapsed every answer into one
+  paragraph of raw markdown. The page ships no dependencies, so `consolePage.ts` gained md-lite,
+  a delimited renderer that keeps a single line break, starts a paragraph on a blank line and
+  turns a pipe table into a real table (alignment honoured, wide rows scrolling inside their own
+  box) — plus fenced code, headings, lists, quotes and inline emphasis, each leaf escaped before
+  it is emitted. A run card's live delta is rendered by the same block instead of a `<pre>` of
+  raw text, so an external agent streaming a table or a list shows as one (its box keeps its own
+  height cap and scroll). New `consoleMarkdown` suite extracts and runs the block; the
+  `remoteConsole` escaping scan now skips it and allowlists `renderMarkdown` as an escaping path.
 - **Remote Access: a reply typed on the phone is acknowledged, not waited on.** `POST /chat`
   awaited the entire agentic turn, so the request stayed open for minutes — past the point where
   the edge in front of a tunnel gives up (Cloudflare answers 524 after ~100 s). That is why a
@@ -1012,3 +1093,12 @@ All notable changes to ADO Code will be documented in this file.
 - Consent card for inline-mode mutating tools
 - Project switcher in chat header
 - CHANGELOG auto-update on task completion
+
+## [Unreleased]
+- Closed [ADO-28025](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28025): gate-test fails on a fresh python scaffold — pytest exits 5 when no tests are collected (2026-11-18) — `feat/work-item-draft-queue @ f1b187c`
+- Closed [ADO-28007](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28007): Breakdown schema — localId / parentLocalId so the model can express nesting (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28009](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28009): Validate the ADO type hierarchy before accept, not during bulk create (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28008](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28008): Reject and reparent rules for nested drafts (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28006](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28006): Case B — nested draft parents: blocked state and dependency-ordered pump (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+
+- Closed [ADO-28010](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28010): Persist the draft queue across window reloads (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`

@@ -806,9 +806,12 @@ cannot ship a CI file, a compose overlay and a manifest that disagree.
 | `GATE-05` | `gate-deploy` | `needs:` all four, `main` only, `environment: production` manual approval, then `kubectl apply -f deploy/k8s` |
 
 Two details worth stating. The deploy gate is the *only* job with an environment, so approval cannot
-be bypassed by re-running an earlier gate. And the coverage step is guarded by
-`if: ${{ hashFiles(...) != '' }}`: a scaffold with no tests yet does not fail for the wrong reason, but
-the moment a test exists the `80 %` line is enforced.
+be bypassed by re-running an earlier gate. And the test step *and* its coverage step share one guard,
+`if: ${{ hashFiles('**/test/**/*.test.*', '**/tests/**/*.py') != '' }}`: a scaffold with no tests yet
+does not fail for the wrong reason, but the moment a test exists both run and the `80 %` line is
+enforced. The guard is not cosmetic — `pytest` exits 5 when it collects zero tests, so an unguarded
+python scaffold went red on its very first push, while `node --test`, `dotnet test --no-build` and
+`artisan test` were green only because they report success with nothing to run.
 
 **One database per service.** `planDatabaseOverlay()` emits `docker-compose.databases.yml` — an
 *overlay*, not an edit, so the base compose file stays database-free and `docker compose up` still

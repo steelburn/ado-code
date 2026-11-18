@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as nodeFs from 'fs';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
+import { DRAFT_QUEUE_SCHEMA_VERSION, WorkItemDraftQueue, encodeDraftQueue } from '../../../shared/draftQueue';
 import { makeScratchDir } from '../utils/scratchDir';
 
 function tick(ms = 10): Promise<void> {
@@ -46,7 +47,7 @@ function makeServices(): any {
   };
 }
 
-suite('ChatViewProvider — task-draft concurrency', () => {
+suite('ChatViewProvider — draft queue', () => {
   let tmp: string;
   let savedFolders: any;
   let savedOpen: any;
@@ -84,68 +85,197 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     try { nodeFs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
   });
 
-  test('concurrent create_work_item calls present one draft card at a time', async () => {
+  test('concurrent create_work_item calls append rows instead of blocking on cards', async () => {
     const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
-    provider._view = { webview: { postMessage: () => { /* noop */ } } };
+    const posted: any[] = [];
+    provider._view = { webview: { postMessage: (m: any) => { posted.push(m); } } };
 
-    const cards: string[] = [];
-    const resolvers: Array<(value: any) => void> = [];
-    provider.requestConfirmation = (title: string) => {
-      cards.push(title);
-      return new Promise((resolve) => resolvers.push(resolve));
-    };
+    // Swap in a deterministic executor: this test is about ROUTING, not ADO.
+    const created: string[] = [];
+    provider.workItemDrafts = new WorkItemDraftQueue(async (draft: any) => {
+      created.push(draft.title);
+      return { id: 100 + created.length, url: 'https://example.test/' + created.length };
+    });
 
-    // Three create_work_item calls dispatched in ONE agentic iteration — the
-    // loop runs auto-approved calls concurrently, so all three land at once.
-    const first = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-1' });
-    const second = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-2' });
-    const third = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-3' });
+    let cards = 0;
+    provider.requestConfirmation = async () => { cards += 1; return null; };
 
-    await waitFor(() => cards.length >= 1, 'the first draft card');
-    await tick(50); // give any wrongly-concurrent flow a chance to surface
-    assert.strictEqual(cards.length, 1, 'only the first draft card may be shown');
-    assert.strictEqual(resolvers.length, 1);
+    // Three create_work_item calls dispatched in ONE agentic iteration. Each used
+    // to await its own confirmation card; now they only append a row and return.
+    const a = provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'R-1', parentWorkItemId: 4242 });
+    const b = provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'R-2', parentWorkItemId: 4242 });
+    const c = provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'R-3', parentWorkItemId: 4242 });
+    await tick(1);
 
-    // User cancels the first card. The second must surface only now, and must
-    // NOT have been pre-emptively cancelled by the first one's supersede.
-    resolvers[0]!(null);
-    assert.strictEqual(await first, null);
-    await waitFor(() => cards.length >= 2, 'the second draft card');
-    assert.strictEqual(cards.length, 2, 'second card appears only after the first settled');
+    assert.deepStrictEqual(
+      [a, b, c].map((r) => r.draftId),
+      ['draft-1', 'draft-2', 'draft-3'],
+      'each call returns its queued draft id to the tool'
+    );
+    assert.strictEqual(provider.workItemDrafts.list().length, 3, 'all three rows coexist');
+    assert.ok(provider.workItemDrafts.list().every((d: any) => d.status === 'pending'));
+    assert.strictEqual(cards, 0, 'no blocking confirmation card is raised');
+    assert.strictEqual(created.length, 0, 'drafting must not touch ADO');
 
-    resolvers[1]!(null);
-    assert.strictEqual(await second, null);
-    await waitFor(() => cards.length >= 3, 'the third draft card');
-    assert.strictEqual(cards.length, 3, 'third card appears last');
-
-    resolvers[2]!(null);
-    assert.strictEqual(await third, null);
+    // The queue is its own page now (src/webview/draftQueuePage.ts): the chat
+    // webview is deliberately NOT mirrored, so it must not receive a snapshot.
+    assert.strictEqual(
+      posted.filter((m) => m.type === 'draftQueue').length,
+      0,
+      'the chat webview no longer mirrors the queue — the dedicated page does',
+    );
   });
 
-  test('drafts share one fixed staging file and it is removed once the flow settles', async () => {
+  test('case A — rows keep their existing ADO parent and accept in any order', async () => {
     const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     provider._view = { webview: { postMessage: () => { /* noop */ } } };
 
-    // Every card is cancelled, so each flow must clean up after itself.
-    provider.requestConfirmation = async () => null;
-    const opened: string[] = [];
-    (vscode.workspace as any).openTextDocument = async (uri: any) => {
-      opened.push(uri.fsPath ?? String(uri));
-      return { uri };
+    const created: Array<{ title: string; parent?: number }> = [];
+    provider.workItemDrafts = new WorkItemDraftQueue(async (draft: any, ctx: any) => {
+      created.push({ title: draft.title, parent: ctx.parentAdoId });
+      return { id: 200 + created.length, url: 'https://example.test/' + created.length };
+    });
+
+    const queue = provider.workItemDrafts;
+    const ids = ['R-1', 'R-2', 'R-3'].map((title: string) =>
+      queue.enqueue({ workItemType: 'Task', title, parentWorkItemId: 4242 } as any).id);
+    assert.ok(
+      queue.list().every((d: any) => d.parentRef && d.parentRef.kind === 'ado' && d.parentRef.id === 4242),
+      'a flat ADO parent normalises to a canonical ado ParentRef'
+    );
+
+    // Click the LAST row first: with an existing ADO parent nothing is blocked.
+    assert.strictEqual(queue.accept([ids[2]]), 1);
+    queue.finalize();
+    await waitFor(() => queue.get(ids[2])?.status === 'created', 'the third row to be created');
+    assert.strictEqual(queue.get(ids[0])?.status, 'pending', 'untouched rows stay pending');
+
+    assert.strictEqual(queue.accept([ids[0], ids[1]]), 2);
+    queue.finalize();
+    await waitFor(() => queue.counts().created === 3, 'all three rows to be created');
+    assert.deepStrictEqual(
+      created.map((row) => row.parent),
+      [4242, 4242, 4242],
+      'every child is created under the existing ADO parent'
+    );
+  });
+
+  test('queue mutations persist as a versioned envelope and restore in a new provider', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
     };
 
-    await Promise.all([
-      provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'A' }),
-      provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'B' }),
-      provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'C' }),
+    const first: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    first.attachDraftQueuePersistence(memento);
+    first.enqueueWorkItemDraft({ workItemType: 'Task', title: 'Survives a reload' });
+
+    const saved = store.get('adoCode.workItemDrafts');
+    assert.strictEqual(saved?.v, DRAFT_QUEUE_SCHEMA_VERSION, 'the stored blob must be self-describing');
+    assert.ok(Array.isArray(saved.drafts), 'every queue change must be written to workspaceState');
+    assert.strictEqual(saved.drafts.length, 1);
+
+    // A fresh provider plus the same memento is what a window reload does.
+    const second: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    second.attachDraftQueuePersistence(memento);
+    const rows = second.workItemDrafts.list();
+    assert.strictEqual(rows.length, 1, 'the queued row must come back after a reload');
+    assert.strictEqual(rows[0].title, 'Survives a reload');
+    assert.strictEqual(rows[0].status, 'pending');
+  });
+
+  test('hydrating writes the normalised rows back, not the raw ones', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    // What a reload leaves behind: a row caught mid-POST.
+    store.set('adoCode.workItemDrafts', encodeDraftQueue([
+      {
+        id: 'draft-1', workItemType: 'Task', title: 'Caught mid-POST',
+        status: 'creating', origin: 'tool', createdAt: 1, updatedAt: 2,
+      } as any,
+    ]));
+
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider.attachDraftQueuePersistence(memento);
+
+    const saved = store.get('adoCode.workItemDrafts');
+    assert.strictEqual(saved.drafts[0].status, 'failed', 'the demotion must reach disk, not just memory');
+    assert.ok(saved.drafts[0].error, 'the check-ADO warning must persist with the row');
+    assert.strictEqual(provider.workItemDrafts.list()[0].status, 'failed');
+  });
+
+  test('a legacy bare-array snapshot is migrated to the envelope', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    store.set('adoCode.workItemDrafts', [
+      {
+        id: 'draft-1', workItemType: 'Task', title: 'Written before the envelope',
+        status: 'pending', origin: 'tool', createdAt: 1, updatedAt: 2,
+      },
     ]);
 
-    assert.strictEqual(opened.length, 3, 'each flow still stages a draft');
-    assert.strictEqual(new Set(opened).size, 1, 'drafts share ONE fixed staging slot, not per-call files');
-    assert.ok(
-      opened[0].replace(/\\/g, '/').endsWith('.ado-code/task-draft.md'),
-      `draft must live in the ephemeral staging slot, got ${opened[0]}`,
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider.attachDraftQueuePersistence(memento);
+
+    assert.strictEqual(provider.workItemDrafts.list()[0]?.title, 'Written before the envelope');
+    const saved = store.get('adoCode.workItemDrafts');
+    assert.ok(!Array.isArray(saved), 'the bare array must be rewritten as an envelope');
+    assert.strictEqual(saved.v, DRAFT_QUEUE_SCHEMA_VERSION);
+    assert.strictEqual(saved.drafts.length, 1);
+  });
+
+  test('a snapshot from a newer build is neither hydrated nor overwritten', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    const future = { v: DRAFT_QUEUE_SCHEMA_VERSION + 1, drafts: [{ id: 'draft-1', title: 'From the future' }] };
+    store.set('adoCode.workItemDrafts', future);
+
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider.attachDraftQueuePersistence(memento);
+
+    assert.deepStrictEqual(provider.workItemDrafts.list(), [], 'an unreadable shape must not become rows');
+    assert.deepStrictEqual(store.get('adoCode.workItemDrafts'), future, 'a downgrade must not overwrite it');
+  });
+
+});
+
+suite('ChatViewProvider — the drafts page opens itself', () => {
+  test('queueing a row fires the open hook once; reviewing it does not fire again', async () => {
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider._view = { webview: { postMessage: () => { /* noop */ } } };
+    provider.workItemDrafts = new WorkItemDraftQueue(async () => ({ id: 7, url: 'https://example.test/7' }));
+
+    let fired = 0;
+    provider.onDidDraftWorkItem(() => { fired += 1; });
+
+    assert.strictEqual(provider.hasPendingWorkItemDrafts(), false, 'an empty queue opens nothing');
+
+    await provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'Draft me' });
+    assert.strictEqual(fired, 1, 'the host is told to open the page for a NEW draft');
+    assert.strictEqual(provider.hasPendingWorkItemDrafts(), true);
+
+    const id = provider.workItemDrafts.list()[0].id;
+    provider.workItemDrafts.accept([id]);
+    provider.workItemDrafts.finalize();
+    await waitFor(
+      () => provider.workItemDrafts.list().every((draft: any) => draft.status === 'created'),
+      'the row to be created',
     );
-    assert.ok(!nodeFs.existsSync(opened[0]), 'the draft file must not survive the flow');
+
+    assert.strictEqual(provider.hasPendingWorkItemDrafts(), false, 'a created row no longer needs the page');
+    assert.strictEqual(fired, 1, 'accept / finalize must not re-open the page');
   });
 });

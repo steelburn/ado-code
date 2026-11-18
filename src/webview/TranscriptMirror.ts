@@ -86,8 +86,21 @@ export class TranscriptMirror {
    * `id` is the webview's card id when the host posts one (review cards); a
    * plain streamed answer has none, so one id is minted for the whole message
    * and reused by every delta — that is what lets the phone append in place.
+   *
+   * `thinking` marks an agentic iteration's PRE-TOOL text: reasoning, not the
+   * answer (R-P1-09 — the phone mirrors answers, not traces). Mirroring it put
+   * the reasoning INSIDE the answer's bubble, so "…till I check the file" ran on
+   * into the sentence that followed it.
    */
-  noteAssistant(id: string | undefined, content: string, done: boolean): void {
+  noteAssistant(
+    id: string | undefined,
+    content: string,
+    done: boolean,
+    options: { thinking?: boolean } = {},
+  ): void {
+    if (options.thinking) {
+      return;
+    }
     const key = id ?? (this.liveKey ??= `a${++this.sequence}`);
     // Assistant text arrived in this turn: later tool calls hang under it.
     this.turnKey = key;
