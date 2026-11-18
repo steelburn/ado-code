@@ -291,9 +291,14 @@ suite('Context budgets (epic 27351)', () => {
       path.join(__dirname, '../../../../src/webview/ChatViewProvider.ts'),
       'utf8'
     );
+    // The proposed-tasks review still stages one file the user edits and
+    // confirms, so that slot must stay fixed.
+    assert.ok(source.includes('proposed-tasks.md'), 'the proposed-tasks slot keeps its fixed name');
+    // create_work_item no longer stages anything: drafting only appends a row
+    // to the draft queue, so the per-item staging file must not come back.
     assert.ok(
-      source.includes('task-draft.md') && source.includes('proposed-tasks.md'),
-      'both staging slots must keep their fixed names'
+      !source.includes('task-draft.md'),
+      'create_work_item must not stage a per-item file — the draft queue replaced it'
     );
     assert.ok(
       !/task-draft-\$\{/.test(source) && !/proposed-tasks-\$\{/.test(source),

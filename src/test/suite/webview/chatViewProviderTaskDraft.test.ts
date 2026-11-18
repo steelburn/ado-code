@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as nodeFs from 'fs';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
+import { WorkItemDraftQueue } from '../../../shared/draftQueue';
 import { makeScratchDir } from '../utils/scratchDir';
 
 function tick(ms = 10): Promise<void> {
@@ -46,7 +47,7 @@ function makeServices(): any {
   };
 }
 
-suite('ChatViewProvider — task-draft concurrency', () => {
+suite('ChatViewProvider — draft queue', () => {
   let tmp: string;
   let savedFolders: any;
   let savedOpen: any;
@@ -84,68 +85,78 @@ suite('ChatViewProvider — task-draft concurrency', () => {
     try { nodeFs.rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
   });
 
-  test('concurrent create_work_item calls present one draft card at a time', async () => {
+  test('concurrent create_work_item calls append rows instead of blocking on cards', async () => {
     const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
-    provider._view = { webview: { postMessage: () => { /* noop */ } } };
+    const posted: any[] = [];
+    provider._view = { webview: { postMessage: (m: any) => { posted.push(m); } } };
 
-    const cards: string[] = [];
-    const resolvers: Array<(value: any) => void> = [];
-    provider.requestConfirmation = (title: string) => {
-      cards.push(title);
-      return new Promise((resolve) => resolvers.push(resolve));
-    };
+    // Swap in a deterministic executor: this test is about ROUTING, not ADO.
+    const created: string[] = [];
+    provider.workItemDrafts = new WorkItemDraftQueue(async (draft: any) => {
+      created.push(draft.title);
+      return { id: 100 + created.length, url: 'https://example.test/' + created.length };
+    });
 
-    // Three create_work_item calls dispatched in ONE agentic iteration — the
-    // loop runs auto-approved calls concurrently, so all three land at once.
-    const first = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-1' });
-    const second = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-2' });
-    const third = provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'R-3' });
+    let cards = 0;
+    provider.requestConfirmation = async () => { cards += 1; return null; };
 
-    await waitFor(() => cards.length >= 1, 'the first draft card');
-    await tick(50); // give any wrongly-concurrent flow a chance to surface
-    assert.strictEqual(cards.length, 1, 'only the first draft card may be shown');
-    assert.strictEqual(resolvers.length, 1);
+    // Three create_work_item calls dispatched in ONE agentic iteration. Each used
+    // to await its own confirmation card; now they only append a row and return.
+    const a = provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'R-1', parentWorkItemId: 4242 });
+    const b = provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'R-2', parentWorkItemId: 4242 });
+    const c = provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'R-3', parentWorkItemId: 4242 });
+    await tick(1);
 
-    // User cancels the first card. The second must surface only now, and must
-    // NOT have been pre-emptively cancelled by the first one's supersede.
-    resolvers[0]!(null);
-    assert.strictEqual(await first, null);
-    await waitFor(() => cards.length >= 2, 'the second draft card');
-    assert.strictEqual(cards.length, 2, 'second card appears only after the first settled');
+    assert.deepStrictEqual(
+      [a, b, c].map((r) => r.draftId),
+      ['draft-1', 'draft-2', 'draft-3'],
+      'each call returns its queued draft id to the tool'
+    );
+    assert.strictEqual(provider.workItemDrafts.list().length, 3, 'all three rows coexist');
+    assert.ok(provider.workItemDrafts.list().every((d: any) => d.status === 'pending'));
+    assert.strictEqual(cards, 0, 'no blocking confirmation card is raised');
+    assert.strictEqual(created.length, 0, 'drafting must not touch ADO');
 
-    resolvers[1]!(null);
-    assert.strictEqual(await second, null);
-    await waitFor(() => cards.length >= 3, 'the third draft card');
-    assert.strictEqual(cards.length, 3, 'third card appears last');
-
-    resolvers[2]!(null);
-    assert.strictEqual(await third, null);
+    // The queue is its own page now (src/webview/draftQueuePage.ts): the chat
+    // webview is deliberately NOT mirrored, so it must not receive a snapshot.
+    assert.strictEqual(
+      posted.filter((m) => m.type === 'draftQueue').length,
+      0,
+      'the chat webview no longer mirrors the queue — the dedicated page does',
+    );
   });
 
-  test('drafts share one fixed staging file and it is removed once the flow settles', async () => {
+  test('case A — rows keep their existing ADO parent and accept in any order', async () => {
     const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
     provider._view = { webview: { postMessage: () => { /* noop */ } } };
 
-    // Every card is cancelled, so each flow must clean up after itself.
-    provider.requestConfirmation = async () => null;
-    const opened: string[] = [];
-    (vscode.workspace as any).openTextDocument = async (uri: any) => {
-      opened.push(uri.fsPath ?? String(uri));
-      return { uri };
-    };
+    const created: Array<{ title: string; parent?: number }> = [];
+    provider.workItemDrafts = new WorkItemDraftQueue(async (draft: any, ctx: any) => {
+      created.push({ title: draft.title, parent: ctx.parentAdoId });
+      return { id: 200 + created.length, url: 'https://example.test/' + created.length };
+    });
 
-    await Promise.all([
-      provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'A' }),
-      provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'B' }),
-      provider.showTaskDraftInEditor({ workItemType: 'Task', title: 'C' }),
-    ]);
-
-    assert.strictEqual(opened.length, 3, 'each flow still stages a draft');
-    assert.strictEqual(new Set(opened).size, 1, 'drafts share ONE fixed staging slot, not per-call files');
+    const queue = provider.workItemDrafts;
+    const ids = ['R-1', 'R-2', 'R-3'].map((title: string) =>
+      queue.enqueue({ workItemType: 'Task', title, parentWorkItemId: 4242 } as any).id);
     assert.ok(
-      opened[0].replace(/\\/g, '/').endsWith('.ado-code/task-draft.md'),
-      `draft must live in the ephemeral staging slot, got ${opened[0]}`,
+      queue.list().every((d: any) => d.parentRef && d.parentRef.kind === 'ado' && d.parentRef.id === 4242),
+      'a flat ADO parent normalises to a canonical ado ParentRef'
     );
-    assert.ok(!nodeFs.existsSync(opened[0]), 'the draft file must not survive the flow');
+
+    // Click the LAST row first: with an existing ADO parent nothing is blocked.
+    assert.strictEqual(queue.accept([ids[2]]), 1);
+    queue.finalize();
+    await waitFor(() => queue.get(ids[2])?.status === 'created', 'the third row to be created');
+    assert.strictEqual(queue.get(ids[0])?.status, 'pending', 'untouched rows stay pending');
+
+    assert.strictEqual(queue.accept([ids[0], ids[1]]), 2);
+    queue.finalize();
+    await waitFor(() => queue.counts().created === 3, 'all three rows to be created');
+    assert.deepStrictEqual(
+      created.map((row) => row.parent),
+      [4242, 4242, 4242],
+      'every child is created under the existing ADO parent'
+    );
   });
 });

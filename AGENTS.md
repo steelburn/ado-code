@@ -5,18 +5,23 @@
 AI coding assistant with Azure DevOps integration
 
 ## Build & Test
-- `npm run compile` — TypeScript compilation
+- Tier 1 — every edit: `npm run compile` (seconds, and a handful of lines of output)
+- Tier 2 — while iterating (default): `npm run test:changed` (seconds, and only the suites you broke print anything)
+- Tier 3 — before commit: `npm test` (minutes, and the whole reporter output is billed to the user)
+- Tier 4 — on request only: `npm run test:host` (minutes or more, and the loudest output of all: GUI, browser or host download)
+- Default: run the cheapest tier that can fail because of your change; escalate one tier at a time and name the tier you ran.
+- Testing is billed to the user in tokens: quote only the failing test and the head of its error, prefer one file or a `--grep <name>` filter over the whole suite, and never paste a full test log.
+- A red run already names the failing tests: read that block instead of re-running the suite to see the failure.
 - `npm run build:all` — Full build
-- `npm test` — Run test suite
 - `npm run lint` — Linting
 
 ## Project Structure
 - `dist/` — project directory
-- `docs/` — supporting documentation
+- `docs/` — project directory
 - `out/` — project directory
-- `resources/` — static resources
-- `scripts/` — build, version check, Open VSX publish, and VS Code stub for unit tests
-- `src/` — extension source and webview UI
+- `resources/` — project directory
+- `scripts/` — compile/bundle/test/version/publish automation
+- `src/` — extension logic (LLM, prompts, ADO client, tools, commands)
 - `webview-ui-dist/` — project directory
 
 ## Documentation Conventions
@@ -32,32 +37,26 @@ AI coding assistant with Azure DevOps integration
 > The managed sections above and this digest are rewritten when ADO Code syncs
 > AGENTS.md — everything outside the managed block is preserved.
 
-# ADO Code — Repository Map
+# ADO Code — Repository Guide
 
-Repo root: `d:\Development\vscode\ado-code`  
-Branch: `main` · HEAD: `a6dae09` · Remote: `https://github.com/steelburn/ado-code.git`
+VS Code extension: AI coding assistant with Azure DevOps work-item integration.
 
-### Structure & docs
+### Layout
 
 ```
-.github/
-docs/
-resources/
-scripts/
-src/
-  webview-ui/        # separate webview build target
-AGENTS.md
-README.md
+.github/        GitHub metadata
+docs/           Documentation
+resources/      Extension assets
+scripts/        Build/test/version/publish tooling
+src/            Extension source
+src/webview-ui/ Separate webview UI (own npm build)
+AGENTS.md       Agent/contributor conventions (authoritative)
+README.md       Features and usage
 CHANGELOG.md
-package.json
-tsconfig.json
-.eslintrc.json
+package.json    Manifest, scripts, devDependencies
+tsconfig.json   TypeScript config
+.eslintrc.json  Lint config
 ```
-
-Documentation lives in:
-- `README.md` — feature overview and behavior.
-- `AGENTS.md` — conventions, constraints, “What NOT to Do.”
-- `docs/` — supporting documentation.
 
 _…digest cut at 600 characters._
 > Full map: `.ado-code/understanding/repo.md` — read the line ranges you need instead of copying it here.

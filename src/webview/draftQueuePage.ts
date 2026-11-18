@@ -1,0 +1,125 @@
+import * as vscode from 'vscode';
+import { WorkItemDraft, WorkItemDraftQueue, WorkItemDraftSnapshot } from '../shared/draftQueue';
+import { buildWebviewHtml } from './webviewHtml';
+
+/**
+ * View type of the dedicated draft-queue page. Keep in sync with the first
+ * argument of `createWebviewPanel()` below — when the two drift, VS Code drops
+ * the tab on reload instead of restoring it.
+ */
+export const DRAFT_QUEUE_VIEW_TYPE = 'adoCode.draftQueuePage';
+
+/**
+ * The draft review queue as its own editor-area page.
+ *
+ * Why a page and not an inline Chat section: reviewing drafts is a list task with
+ * a commit step (`finalize`), not a conversational one. In the chat webview the
+ * queue competed with the transcript for vertical space, and it vanished with the
+ * conversation — the host only mirrored it while the Chat view was resolved, so a
+ * queue filled in an earlier window simply had nowhere to show up. A real tab
+ * also keeps the selection and scroll position while the user reads a work item
+ * elsewhere, and gives the review one obvious primary action.
+ *
+ * The panel OWNS nothing: the queue lives in ChatViewProvider and is passed in,
+ * so every surface sees the same rows.
+ */
+export class DraftQueuePage {
+  private static current: DraftQueuePage | undefined;
+
+  private readonly disposables: vscode.Disposable[] = [];
+  private unsubscribe: (() => void) | undefined;
+
+  private constructor(
+    private readonly panel: vscode.WebviewPanel,
+    private readonly queue: WorkItemDraftQueue,
+    extensionUri: vscode.Uri,
+  ) {
+    panel.webview.html = buildWebviewHtml(
+      panel.webview,
+      extensionUri,
+      'draftQueue',
+      'ADO Code — Work Item Drafts',
+    );
+
+    panel.onDidDispose(() => this.dispose(), null, this.disposables);
+
+    panel.webview.onDidReceiveMessage(
+      (message: unknown) => this.handleMessage(message as Record<string, any>),
+      null,
+      this.disposables,
+    );
+
+    // Every queue mutation streams to the page; the store emits once per
+    // operation, so no extra throttling is needed here.
+    this.unsubscribe = queue.onChange((snapshot) => this.postSnapshot(snapshot));
+
+    this.panel.reveal(undefined, false);
+  }
+
+  static show(extensionUri: vscode.Uri, queue: WorkItemDraftQueue): void {
+    if (DraftQueuePage.current) {
+      DraftQueuePage.current.panel.reveal(undefined, false);
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      DRAFT_QUEUE_VIEW_TYPE,
+      'Work Item Drafts',
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      {
+        enableScripts: true,
+        // Keep the tab alive while it is hidden: the page holds a selection and a
+        // scroll position that must survive reading a work item in another tab.
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'webview-ui-dist')],
+      },
+    );
+
+    DraftQueuePage.current = new DraftQueuePage(panel, queue, extensionUri);
+  }
+
+  private postSnapshot(snapshot: WorkItemDraftSnapshot): void {
+    void this.panel.webview.postMessage({ type: 'draftQueue', drafts: snapshot });
+  }
+
+  private handleMessage(message: Record<string, any>): void {
+    switch (message.type) {
+      case 'draftQueueGet':
+        this.postSnapshot(this.queue.list());
+        break;
+      case 'draftQueueUpdate':
+        this.queue.update(message.id as string, message.patch);
+        break;
+      case 'draftQueueAction': {
+        // accept/reject/undo only STAGE a decision (see WorkItemDraftQueue);
+        // finalize is the single write path to ADO.
+        const ids = (message.ids ?? []) as string[];
+        if (message.action === 'accept' || message.action === 'retry') {
+          this.queue.accept(ids);
+        } else if (message.action === 'reject') {
+          this.queue.reject(ids);
+        } else if (message.action === 'undo') {
+          this.queue.undo(ids);
+        } else if (message.action === 'finalize') {
+          this.queue.finalize();
+        } else {
+          this.queue.clearCreated();
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  private dispose(): void {
+    DraftQueuePage.current = undefined;
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    for (const disposable of this.disposables) disposable.dispose();
+    this.disposables.length = 0;
+  }
+}
+
+/** Re-exported so callers do not need the queue's shape to open the page. */
+export type DraftQueuePageRow = WorkItemDraft;

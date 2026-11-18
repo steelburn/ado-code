@@ -10,6 +10,7 @@ import { DependencyReport } from './projectDependencies';
 import { ChatDensity } from './chatDensity';
 import { SessionRunInfo } from './sessionRun';
 import { Skill, SkillExecutionRequest, SkillExecutionResult } from './skillTypes';
+import { DraftPatch, WorkItemDraftSnapshot } from './draftQueue';
 
 /** A tool call surfaced by the agentic loop — live (running → completed) or
  *  recorded in a finished turn's trace. */
@@ -155,7 +156,11 @@ export type WebviewToExtensionMessage =
   // the file with docx/fflate/mermaid, and saves it via `saveBinary` below.
   | { type: 'exportDocumentation'; requestId: string; request: DocumentationExportRequest }
   // Mermaid SVG export
-  | { type: 'saveSvg'; content: string; defaultName?: string };
+  | { type: 'saveSvg'; content: string; defaultName?: string }
+  // Work item draft queue (bulk, order-independent review of drafted items).
+  | { type: 'draftQueueAction'; action: 'accept' | 'reject' | 'undo' | 'finalize' | 'retry' | 'edit' | 'clearCreated'; ids: string[] }
+  | { type: 'draftQueueUpdate'; id: string; patch: DraftPatch }
+  | { type: 'draftQueueGet' };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -312,7 +317,11 @@ export type ExtensionToWebviewMessage =
   // Right-click context menu: insert text into chat draft
   | { type: 'insertText'; text: string }
   // Chat moved to/from editor area notification for sidebar placeholder
-  | { type: 'chatMovedToEditor'; inEditor: boolean };
+  | { type: 'chatMovedToEditor'; inEditor: boolean }
+  // Work item draft queue: full snapshot after every queue change. Consumed by
+  // the dedicated draft-queue page (src/webview/draftQueuePage.ts) — the chat
+  // webview no longer mirrors the queue.
+  | { type: 'draftQueue'; drafts: WorkItemDraftSnapshot };
 
 // Shared types
 export interface MessageContext {

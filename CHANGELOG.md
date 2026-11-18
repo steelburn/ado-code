@@ -5,6 +5,28 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **Work item drafting no longer stops the turn: a draft queue with reversible decisions.**
+  `create_work_item` used to stage a Markdown preview, open an editor and wait for one
+  confirmation card, so a turn that drafted several items could only be reviewed one at a time,
+  in generation order. It now appends a `WorkItemDraft` row to a queue (`src/shared/draftQueue.ts`)
+  and returns `{ queued: true, draftId }` immediately. Review happens on a dedicated editor
+  page (`DraftQueuePage`, command **ADO Code: Show Work Item Drafts**, entry point in the
+  **Work Items** view title) instead of inside the chat transcript, so the queue is
+  reachable with no chat open and is not lost when the panel is dismissed.
+  `DraftQueuePanel`
+  accepts, edits, retries or rejects rows in any order, singly or in bulk. Drafting performs no
+  ADO call — and neither does accepting. A decision is STAGED (`accepted` / `rejected`, the row
+  kept in the list, struck through and still selectable) and `undo` takes it back, so the review
+  stays reversible until one explicit `finalize()` commits it: staged rejects are dropped, staged
+  accepts run through one serial pump (order-free clicks, one write at a time). `creating` claims
+  a row so an in-flight create cannot be edited or rejected, editing a decided row clears the
+  decision, and a reload that strands a row mid-write restores it as `failed` rather than inviting
+  a duplicate work item. Ancestry is a `ParentRef`: flat children of an existing ADO item today,
+  local draft parents behind the same model.
+  Duplicate drafts (same type + title + parent) are flagged, never blocked, so a bulk accept
+  cannot quietly create the same work item twice; a rejected row is never treated as the original
+  a live row collides with. "Clear created" removes completed rows only, keeping failed ones (and
+  their errors) in the queue until they are explicitly rejected and finalized.
 - Application security (ZEN `CON-05`), the last unmet runtime clause. The node stack emits
   `packages/shared/src/auth.ts` + `secrets.ts`: JWT verification on `node:crypto`, an algorithm
   allowlist applied *before* the signature, a `kid` keyring with JWKS refresh and a rollover window,

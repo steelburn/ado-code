@@ -141,6 +141,9 @@ export async function activate(context: vscode.ExtensionContext) {
       treeProvider?.refresh(items);
     }
   );
+  // Review queue survives a reload: hydrate now, save on every change (28010).
+  chatProvider.attachDraftQueuePersistence(context.workspaceState);
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
@@ -709,9 +712,20 @@ IMPORTANT: Do NOT use the create_work_item tool. Instead, output a JSON block un
 \`\`\`json
 [
   {
+    "localId": "t1",
     "workItemType": "Task",
     "title": "Task title",
     "description": "Detailed description",
+    "acceptanceCriteria": "Criteria",
+    "assignedTo": "",
+    "tags": ""
+  },
+  {
+    "localId": "t2",
+    "parentLocalId": "t1",
+    "workItemType": "Task",
+    "title": "A subtask of t1",
+    "description": "Only if the work genuinely nests",
     "acceptanceCriteria": "Criteria",
     "assignedTo": "",
     "tags": ""
@@ -719,7 +733,9 @@ IMPORTANT: Do NOT use the create_work_item tool. Instead, output a JSON block un
 ]
 \`\`\`
 
-First analyze the user story and explain your breakdown reasoning, then output the PROPOSED_TASKS JSON block. The user will review and select which tasks to create.`;
+First analyze the user story and explain your breakdown reasoning, then output the PROPOSED_TASKS JSON block. Every entry MUST carry a unique localId. Set parentLocalId to another entry localId ONLY when that item is a genuine child of it; entries with no parentLocalId become direct children of the active user story. Keep the breakdown flat unless nesting is meaningful — the user reviews every row.
+
+The user will review and select which tasks to create.`;
       chatProvider.injectChatMessage(msg);
     })
   );
@@ -843,7 +859,8 @@ Generate ONLY the commit message, nothing else.`;
     vscode.commands.registerCommand('adoCode.rerunWizard', () => chatProvider.rerunWizard()),
     vscode.commands.registerCommand('adoCode.openSettings', () => chatProvider.openSettings()),
     vscode.commands.registerCommand('adoCode.moveChatToEditor', () => chatProvider.openChatInEditor()),
-    vscode.commands.registerCommand('adoCode.moveChatToSidebar', () => chatProvider.moveChatToSidebar())
+    vscode.commands.registerCommand('adoCode.moveChatToSidebar', () => chatProvider.moveChatToSidebar()),
+    vscode.commands.registerCommand('adoCode.showWorkItemDrafts', () => chatProvider.revealWorkItemDrafts())
   );
 
   // ── Task 3.1+3.2: memory commands ────────────────────────────────

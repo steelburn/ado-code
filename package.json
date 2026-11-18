@@ -34,6 +34,7 @@
   ],
   "activationEvents": [
     "onWebviewPanel:adoCode.chatEditor",
+    "onWebviewPanel:adoCode.draftQueuePage",
     "onView:adoCode.chat",
     "onView:adoCode.workItems",
     "onCommand:adoCode.chat.focus",
@@ -88,6 +89,7 @@
     "onCommand:adoCode.openSettings",
     "onCommand:adoCode.showChangelog",
     "onCommand:adoCode.showLog",
+    "onCommand:adoCode.showWorkItemDrafts",
     "onCommand:adoCode.moveChatToEditor",
     "onCommand:adoCode.moveChatToSidebar",
     "onView:adoCode.todos",
@@ -192,6 +194,12 @@
         "title": "Move Chat into Editor Area",
         "icon": "$(link-external)",
         "category": "ADO Code"
+      },
+{
+        "command": "adoCode.showWorkItemDrafts",
+        "title": "Show Work Item Drafts",
+        "category": "ADO Code",
+        "icon": "$(checklist)"
       },
       {
         "command": "adoCode.moveChatToSidebar",
@@ -696,6 +704,11 @@
           "command": "adoCode.worktreeRejectAllPick",
           "when": "view == adoCode.worktrees && adoCode.worktrees.hasWorktrees",
           "group": "navigation@2"
+        },
+        {
+          "command": "adoCode.showWorkItemDrafts",
+          "when": "view == adoCode.workItems",
+          "group": "navigation@0"
         },
         {
           "command": "adoCode.todos.setGoal",

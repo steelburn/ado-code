@@ -55,7 +55,50 @@ calls are *rendered* in chat is a single persisted setting
 (`adoCode.chat.showToolCalls`) with the host echoing state and the webview gating
 every tool-card path on one derived prop. That is a small thing done right: the
 toggle has one source of truth, so the transcript cannot disagree with itself
-half-way down a run.
+### Deferred consent: the draft review queue
+
+A single mutating tool can invert the usual consent shape. `create_work_item`
+used to be *inline* consent — stage a Markdown preview, post a confirmation
+card, await that one decision — which serialised an entire turn: n drafted
+items meant n blocking review steps in generation order, and the host needed a
+`SerialQueue` purely to keep the single staging slot sane.
+
+It is now *deferred* consent. `create_work_item` appends a `WorkItemDraft` row
+to a queue (`src/shared/draftQueue.ts`) and returns `{ queued: true, draftId }`
+immediately. Review happens on a dedicated editor page
+(`src/webview/draftQueuePage.ts`), opened from the **Work Items** view title —
+not inside the chat transcript, so the queue is reachable with no chat open and
+is never lost to a dismissed panel. Rows are accepted or rejected in any order,
+singly or in bulk. Four properties make that work:
+
+- **Drafting is side-effect free.** No editor, no await, no ADO call — so
+  several calls in one agentic iteration cannot block each other.
+- **Execution is serialised; decisions are not.** Every accept goes through one
+  internal `SerialQueue`: clicks are order-free, but ADO writes happen one at a
+  time, because parallel creates earn a rate-limit storm and a half-finished
+  batch.
+- **`creating` is a claim.** While a row is mid-write, edits and rejects are
+  refused, so a title cannot change under an in-flight create. A reload that
+  strands a row in `creating` restores it as `failed` ("check ADO before
+  retrying") rather than `pending` — the write may have landed, and inviting a
+  retry would duplicate a work item.
+- **Decisions are staged, not final.** Accept and reject only *stage* a
+  decision: a rejected row stays in the list until the queue is finalized, and
+  an accepted row can still be reverted while it is mid-flight. One explicit
+  `finalize()` step is the only place rows are dropped, so a stray click in a
+  review UI never destroys a draft.
+
+Ancestry is a `ParentRef`: `{ kind: 'ado', id }` for a parent that already
+exists, `{ kind: 'draft', id }` for one that is still a row. Today only the
+first is reachable — `generate-tasks` and `create_work_item` both attach flat
+children to the active work item, whose ADO id is already known, so accept
+order stays completely free. The second is the hook for nested drafts (a child
+waits on its parent's `createdWorkItemId`) and is deliberately unimplemented
+until the tool schema can express local nesting.
+
+The general lesson: when a tool's approval is expensive but its *effects* are
+independent, do not make the model wait. Queue the intent and let the user
+front-load the decisions.
 
 ### Gaps
 
