@@ -228,3 +228,57 @@ suite('DraftQueuePage — row selection survives a reload', () => {
     }
   });
 });
+
+suite('DraftQueuePage — an automatic open keeps the keyboard where it was', () => {
+  /** Swap vscode.window.createWebviewPanel for a recorder; returns a restore(). */
+  function recordCreate(panel: any, calls: any[]): () => void {
+    const win: any = vscode.window;
+    const saved = win.createWebviewPanel;
+    win.createWebviewPanel = (viewType: string, title: string, column: any, options: any) => {
+      calls.push({ viewType, title, column, options });
+      return panel;
+    };
+    return () => { win.createWebviewPanel = saved; };
+  }
+
+  test('show({ preserveFocus: true }) creates the tab without taking focus', () => {
+    const queue = new WorkItemDraftQueue(stubExecutor);
+    queue.enqueue({ workItemType: 'Task', title: 'Queued by an agent' });
+    const fake = makePanel();
+    const calls: any[] = [];
+    const restore = recordCreate(fake.panel, calls);
+    try {
+      DraftQueuePage.show(EXT_URI, queue, { preserveFocus: true });
+      assert.strictEqual(calls.length, 1, 'the page is created exactly once');
+      assert.deepStrictEqual(
+        calls[0].column,
+        { viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
+        'createWebviewPanel must be told to preserve focus',
+      );
+      assert.strictEqual(fake.revealCalls, 0, 'the constructor must not grab focus either');
+    } finally {
+      fake.panel.dispose(); // clears the cached page so later suites start clean
+      restore();
+    }
+  });
+
+  test('the explicit command still takes focus', () => {
+    const queue = new WorkItemDraftQueue(stubExecutor);
+    queue.enqueue({ workItemType: 'Task', title: 'Queued by an agent' });
+    const fake = makePanel();
+    const calls: any[] = [];
+    const restore = recordCreate(fake.panel, calls);
+    try {
+      DraftQueuePage.show(EXT_URI, queue);
+      assert.deepStrictEqual(
+        calls[0].column,
+        { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+        'a requested open is allowed to take the keyboard',
+      );
+      assert.strictEqual(fake.revealCalls, 1, 'the constructor reveals the new tab');
+    } finally {
+      fake.panel.dispose();
+      restore();
+    }
+  });
+});

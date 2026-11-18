@@ -7,6 +7,7 @@ import {
   DRAFT_QUEUE_SCHEMA_VERSION,
   encodeDraftQueue,
   decodeDraftQueue,
+  hasPendingDrafts,
 } from '../../../shared/draftQueue';
 
 function tick(ms = 0): Promise<void> {
@@ -759,5 +760,25 @@ suite('shared/draftQueue — Case B nesting', () => {
       assert.strictEqual(restored.list()[0].title, 'Restored from disk');
       assert.strictEqual(restored.list()[0].status, 'pending');
     });
+  });
+});
+
+suite('draftQueue — hasPendingDrafts (does anything still need the user?)', () => {
+  const row = (status: string): WorkItemDraft => ({ id: `draft-${status}`, status } as WorkItemDraft);
+
+  test('an empty queue asks for nothing', () => {
+    assert.strictEqual(hasPendingDrafts([]), false);
+  });
+
+  test('every status but created still owes the user something', () => {
+    for (const status of ['pending', 'accepted', 'rejected', 'creating', 'blocked', 'failed']) {
+      assert.strictEqual(hasPendingDrafts([row(status)]), true, `${status} must surface the page`);
+    }
+    assert.strictEqual(hasPendingDrafts([row('created')]), false, 'a created row is done');
+  });
+
+  test('one open row among committed ones is enough to surface the page', () => {
+    assert.strictEqual(hasPendingDrafts([row('created'), row('created'), row('pending')]), true);
+    assert.strictEqual(hasPendingDrafts([row('created'), row('created')]), false);
   });
 });

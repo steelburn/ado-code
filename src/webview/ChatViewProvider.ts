@@ -40,7 +40,7 @@ import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
-import { WorkItemDraft, DraftCreateContext, DraftCreateResult, WorkItemDraftQueue, WorkItemDraftSnapshot, encodeDraftQueue, decodeDraftQueue } from '../shared/draftQueue';
+import { WorkItemDraft, DraftCreateContext, DraftCreateResult, WorkItemDraftQueue, WorkItemDraftSnapshot, hasPendingDrafts, encodeDraftQueue, decodeDraftQueue } from '../shared/draftQueue';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals, terminalCommandKey, terminalCommandList } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/types';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -481,6 +481,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private draftsPersistenceAttached = false;
+
+  /**
+   * Fires when a NEW row is queued — never on accept / reject / finalize. The
+   * host listens so the Work Item Drafts page can open itself: a row in a page
+   * nobody opened is a row nobody reviews.
+   */
+  private readonly draftQueuedEmitter = new vscode.EventEmitter<void>();
+  /** See `draftQueuedEmitter`. */
+  readonly onDidDraftWorkItem = this.draftQueuedEmitter.event;
 
   private readonly workItemDrafts = new WorkItemDraftQueue(
     (draft, ctx) => this.createDraftInAdo(draft, ctx),
@@ -1280,6 +1289,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         parentLocalId: task.parentLocalId,
         origin: 'breakdown' as const,
       })));
+      if (queued.length > 0) this.draftQueuedEmitter.fire();
 
       // Rows go to the draft queue — nothing is created yet. The user reviews
       // them out of order on the Work Item Drafts page.
@@ -1288,7 +1298,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const flagged = queued.filter((draft) => draft.duplicateOf).length;
       let message = `📝 Queued ${queued.length} draft${queued.length === 1 ? '' : 's'} for review${suffix}.\n\n`
         + queued.map((draft) => `- ${draft.title}`).join('\n')
-        + '\n\nOpen **Work Item Drafts** from the Work Items title bar to accept, edit or reject them.';
+        + '\n\nThe **Work Item Drafts** page is open — accept, edit or reject them there.';
       if (flagged > 0) {
         message += `\n\n⚠️ ${flagged} draft${flagged === 1 ? '' : 's'} duplicate an existing child — check the flagged row before accepting.`;
       }
@@ -1387,9 +1397,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       parentWorkItemId: args.parentWorkItemId ? Number(args.parentWorkItemId) : undefined,
       origin: 'tool',
     });
+    this.draftQueuedEmitter.fire();
     this.postMessage({
       type: 'assistantMessage',
-      content: `📝 Drafted ${args.workItemType} **${args.title}** — open the Work Item Drafts panel to accept or reject it.`,
+      content: `📝 Drafted ${args.workItemType} **${args.title}** — the Work Item Drafts page is open for review.`,
       done: true,
       id: `wi-draft:${draft.id}`,
     });
@@ -6545,8 +6556,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     DraftQueuePage.restore(panel, this._extensionUri, this.workItemDrafts);
   }
 
-  public revealWorkItemDrafts(): void {
-    DraftQueuePage.show(this._extensionUri, this.workItemDrafts);
+  public revealWorkItemDrafts(options: { preserveFocus?: boolean } = {}): void {
+    DraftQueuePage.show(this._extensionUri, this.workItemDrafts, options);
+  }
+
+  /**
+   * True when the queue still holds rows that need a decision or a commit — the
+   * question the host asks once on activation before opening the page.
+   */
+  hasPendingWorkItemDrafts(): boolean {
+    return hasPendingDrafts(this.workItemDrafts.list());
   }
 
   public moveChatToSidebar(): void {

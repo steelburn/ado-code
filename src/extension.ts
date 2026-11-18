@@ -182,6 +182,24 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Open the Work Item Drafts page by itself, without taking the keyboard, in
+  // the two cases where queued rows would otherwise stay invisible: a queue
+  // restored from an earlier window that still holds undecided rows, and a draft
+  // an agent queues while the page is closed. Nothing here awaits and the reveal
+  // is guarded, so a webview hiccup cannot take activation or a tool call down.
+  const autoOpenWorkItemDrafts = (): void => {
+    try {
+      chatProvider.revealWorkItemDrafts({ preserveFocus: true });
+    } catch {
+      // No webview available (headless host, disposed panel) — the command still works.
+    }
+  };
+  context.subscriptions.push(chatProvider.onDidDraftWorkItem(autoOpenWorkItemDrafts));
+  if (chatProvider.hasPendingWorkItemDrafts()) {
+    // Deferred: creating a webview is not worth delaying activation for.
+    setTimeout(autoOpenWorkItemDrafts, 0);
+  }
+
   // Status Panel: tree view showing mode, memory, MCP, and agent status.
   const statusProvider = new StatusPanelProvider(services);
   context.subscriptions.push(

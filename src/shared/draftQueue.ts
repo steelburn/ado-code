@@ -300,6 +300,19 @@ export function normalizeBreakdownParents(
   });
 }
 
+/**
+ * True when at least one row still owes the user something — every status but
+ * `created`: `pending` needs a decision, `accepted` / `rejected` need a commit,
+ * `failed` needs a retry and `blocked` waits for its parent to exist in ADO.
+ *
+ * Pure and vscode-free so "should the Work Item Drafts page open itself?" is a
+ * one-line question with a unit test behind it, instead of a guess made at the
+ * call sites.
+ */
+export function hasPendingDrafts(drafts: readonly WorkItemDraft[]): boolean {
+  return drafts.some((draft) => draft.status !== 'created');
+}
+
 export class WorkItemDraftQueue {
   private drafts: WorkItemDraft[] = [];
   /** Monotonic suffix behind `draft-N` ids; restored from the snapshot. */

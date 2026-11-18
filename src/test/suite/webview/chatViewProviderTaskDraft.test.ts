@@ -251,3 +251,31 @@ suite('ChatViewProvider — draft queue', () => {
   });
 
 });
+
+suite('ChatViewProvider — the drafts page opens itself', () => {
+  test('queueing a row fires the open hook once; reviewing it does not fire again', async () => {
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider._view = { webview: { postMessage: () => { /* noop */ } } };
+    provider.workItemDrafts = new WorkItemDraftQueue(async () => ({ id: 7, url: 'https://example.test/7' }));
+
+    let fired = 0;
+    provider.onDidDraftWorkItem(() => { fired += 1; });
+
+    assert.strictEqual(provider.hasPendingWorkItemDrafts(), false, 'an empty queue opens nothing');
+
+    await provider.enqueueWorkItemDraft({ workItemType: 'Task', title: 'Draft me' });
+    assert.strictEqual(fired, 1, 'the host is told to open the page for a NEW draft');
+    assert.strictEqual(provider.hasPendingWorkItemDrafts(), true);
+
+    const id = provider.workItemDrafts.list()[0].id;
+    provider.workItemDrafts.accept([id]);
+    provider.workItemDrafts.finalize();
+    await waitFor(
+      () => provider.workItemDrafts.list().every((draft: any) => draft.status === 'created'),
+      'the row to be created',
+    );
+
+    assert.strictEqual(provider.hasPendingWorkItemDrafts(), false, 'a created row no longer needs the page');
+    assert.strictEqual(fired, 1, 'accept / finalize must not re-open the page');
+  });
+});

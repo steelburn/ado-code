@@ -34,7 +34,10 @@ export class DraftQueuePage {
     private readonly panel: vscode.WebviewPanel,
     private readonly queue: WorkItemDraftQueue,
     extensionUri: vscode.Uri,
-    /** false when adopting a panel VS Code restored: a reload must not steal focus. */
+    /**
+     * Reveal on construction. False for an adopted (restored) panel and for an
+     * automatic open: neither may pull the keyboard out of the active editor.
+     */
     reveal = true,
   ) {
     // A deserialized panel (restore()) starts with default options — no scripts,
@@ -67,16 +70,29 @@ export class DraftQueuePage {
     if (reveal) this.panel.reveal(undefined, false);
   }
 
-  static show(extensionUri: vscode.Uri, queue: WorkItemDraftQueue): void {
+  /**
+   * Show the page, or bring it forward when it is already open.
+   *
+   * `preserveFocus` exists for the AUTOMATIC opens — a draft a tool just queued,
+   * or a restored queue with rows still undecided. Those have to appear without
+   * pulling the keyboard out of whatever the user is typing in; the explicit
+   * command keeps the default, where taking focus IS the point.
+   */
+  static show(
+    extensionUri: vscode.Uri,
+    queue: WorkItemDraftQueue,
+    options: { preserveFocus?: boolean } = {},
+  ): void {
+    const preserveFocus = options.preserveFocus === true;
     if (DraftQueuePage.current) {
-      DraftQueuePage.current.panel.reveal(undefined, false);
+      DraftQueuePage.current.panel.reveal(undefined, preserveFocus);
       return;
     }
 
     const panel = vscode.window.createWebviewPanel(
       DRAFT_QUEUE_VIEW_TYPE,
       'Work Item Drafts',
-      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus },
       {
         enableScripts: true,
         // Keep the tab alive while it is hidden: the page holds a selection and a
@@ -86,7 +102,9 @@ export class DraftQueuePage {
       },
     );
 
-    DraftQueuePage.current = new DraftQueuePage(panel, queue, extensionUri);
+    // A freshly created panel is already the visible tab, so only an open that
+    // is allowed to take focus needs the constructor's extra reveal().
+    DraftQueuePage.current = new DraftQueuePage(panel, queue, extensionUri, !preserveFocus);
   }
 
   /**

@@ -5,6 +5,12 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **The Work Item Drafts page opens itself when there is something to review.** It was
+  invisible until the command was run: a queue restored from an earlier window, and a draft an
+  agent had just queued, both waited behind a page nobody opened. Activation now opens it when
+  the restored queue holds rows that are not `created` yet, and a `create_work_item` draft (or a
+  task breakdown) opens it as the row lands. Automatic opens use `preserveFocus`, so the tab
+  appears without pulling the keyboard out of the chat; the explicit command still takes focus.
 - **The Work Item Drafts page survives a window reload or IDE restart.** The queue already
   persisted in workspaceState, but no `WebviewPanelSerializer` was registered for
   `adoCode.draftQueuePage`, so VS Code dropped the tab on reload and the restored rows had no

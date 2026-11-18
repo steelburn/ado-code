@@ -68,8 +68,13 @@ to a queue (`src/shared/draftQueue.ts`) and returns `{ queued: true, draftId }`
 immediately. Review happens on a dedicated editor page
 (`src/webview/draftQueuePage.ts`), opened from the **Work Items** view title —
 not inside the chat transcript, so the queue is reachable with no chat open and
-is never lost to a dismissed panel. Rows are accepted or rejected in any order,
-singly or in bulk. Five properties make that work:
+is never lost to a dismissed panel. It also **opens itself** in the two cases
+where rows would otherwise stay invisible: on activation, when the restored queue
+still holds rows that are not `created`, and the moment a draft is queued
+(`hasPendingWorkItemDrafts()` / `onDidDraftWorkItem`, wired in `activate()`).
+Automatic opens pass `preserveFocus`, so the tab appears without pulling the
+keyboard out of the editor; the command path still focuses it. Rows are accepted
+or rejected in any order, singly or in bulk. Five properties make that work:
 
 - **Drafting is side-effect free.** No editor, no await, no ADO call — so
   several calls in one agentic iteration cannot block each other.
