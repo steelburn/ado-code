@@ -3700,6 +3700,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         typeof message.id === 'string' ? message.id : undefined,
         message.content,
         message.done === true,
+        { thinking: message.isThinking === true },
       );
       return;
     }

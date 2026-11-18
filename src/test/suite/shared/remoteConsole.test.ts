@@ -171,8 +171,19 @@ suite('remote/consolePage', () => {
         assert.match(CONSOLE_HTML, /&lt;/);
         // Every interpolation into markup goes through esc().
         const interpolations = [...CONSOLE_HTML.matchAll(/\+\s*([A-Za-z0-9_.]+(?:\([^)]*\))?)\s*\+/g)]
+            // The md-lite block is the one exception: its table/code/list
+            // builders concatenate helpers (mdInline, mdCells, mdAlign) that
+            // esc() each leaf themselves, so the scan skips that region and
+            // consoleMarkdown.test.ts proves the escaping by running it.
+            .filter((match) => {
+                const start = CONSOLE_HTML.indexOf('md-lite:start');
+                const end = CONSOLE_HTML.indexOf('md-lite:end');
+                return match.index === undefined || match.index < start || match.index > end;
+            })
             .map((m) => m[1]!)
-            .filter((expression) => !/^(esc|'|")/.test(expression));
+            // renderMarkdown is the other escaping path: it esc()s every leaf it
+            // emits, which is what consoleMarkdown.test.ts asserts by running it.
+            .filter((expression) => !/^(esc|renderMarkdown|'|")/.test(expression));
         assert.deepStrictEqual(interpolations, [], `unescaped interpolation(s): ${interpolations.join(', ')}`);
     });
 

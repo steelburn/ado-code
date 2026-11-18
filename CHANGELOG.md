@@ -139,6 +139,18 @@ All notable changes to ADO Code will be documented in this file.
   unprivileged process cannot bind a privileged port.
 
 ### Fixed
+- **Remote Access: the phone thread is markdown, and no longer mixes in the agent reasoning.**
+  An agentic iteration narrates itself before it calls a tool, and those frames were mirrored
+  into the transcript, so a pre-tool sentence like *let me check the file* ran straight into the
+  answer that followed and read as part of it. `TranscriptMirror.noteAssistant()` now takes
+  `{ thinking: true }` — forwarded by `ChatViewProvider.mirrorTranscript()` — and drops those
+  frames: the phone mirrors answers, not traces. The thread also collapsed every answer into one
+  paragraph of raw markdown. The page ships no dependencies, so `consolePage.ts` gained md-lite,
+  a delimited renderer that keeps a single line break, starts a paragraph on a blank line and
+  turns a pipe table into a real table (alignment honoured, wide rows scrolling inside their own
+  box) — plus fenced code, headings, lists, quotes and inline emphasis, each leaf escaped before
+  it is emitted. New `consoleMarkdown` suite extracts and runs the block; the `remoteConsole`
+  escaping scan now skips it and allowlists `renderMarkdown` as an escaping path.
 - **Remote Access: a reply typed on the phone is acknowledged, not waited on.** `POST /chat`
   awaited the entire agentic turn, so the request stayed open for minutes — past the point where
   the edge in front of a tunnel gives up (Cloudflare answers 524 after ~100 s). That is why a

@@ -196,9 +196,10 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       margin: 0 0 10px;
       background: rgba(201, 162, 39, 0.10);
     }
-    /* Mirrored conversation (R-P1-09). Plain text on purpose: the desktop's
-       markdown renderer is not shipped to the phone, so a fence or a table
-       degrades to readable text instead of broken markup. */
+    /* Mirrored conversation (R-P1-09). The body is rendered by the md-lite
+       block below: the desktop's markdown component is not shipped to the
+       phone, so a compact subset keeps paragraphs, line breaks, tables and
+       fenced code readable on a device instead of leaking as syntax. */
     .thread-head { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; opacity: .6; margin: 0 0 8px; }
     .msg { margin: 0 0 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); }
     .msg.user { background: rgba(56, 139, 253, 0.13); border-color: rgba(56, 139, 253, 0.35); }
@@ -230,6 +231,36 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     .msg.tool-only .msg-tools { margin-top: 0; padding-top: 0; border-top: 0; }
     .msg-sr { position: absolute; width: 1px; height: 1px; overflow: hidden;
       clip: rect(0 0 0 0); white-space: nowrap; }
+    /* md-lite output (see renderMarkdown). Sizes are set for a phone held at
+       arm's length, and a table scrolls inside its own box so a wide row can
+       never push the whole conversation sideways. */
+    .msg-body.md { white-space: normal; }
+    .msg-body.md a { color: var(--accent); }
+    .md-p { margin: 0 0 8px; }
+    .md-h { font-weight: 600; margin: 12px 0 6px; }
+    .md-h1 { font-size: 16px; }
+    .md-h2 { font-size: 15px; }
+    .md-h3, .md-h4, .md-h5, .md-h6 { font-size: 14px; }
+    .md-list { margin: 0 0 8px; padding-left: 20px; }
+    .md-list li { margin: 0 0 3px; }
+    .md-quote { margin: 0 0 8px; padding: 2px 0 2px 10px; border-left: 3px solid var(--border); opacity: .85; }
+    .md-hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+    .md-scroll { margin: 0 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .md-table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+    .md-table th, .md-table td {
+      border: 1px solid var(--border); padding: 5px 8px; text-align: left;
+      vertical-align: top; word-break: break-word;
+    }
+    .md-table th { font-weight: 600; background: rgba(128, 128, 128, .16); }
+    .md-table .md-mid { text-align: center; }
+    .md-table .md-end { text-align: right; }
+    .msg-body.md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12.5px; padding: 1px 4px; border-radius: 4px; background: rgba(128, 128, 128, .22); }
+    .md-code { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; overflow-x: auto;
+      background: rgba(128, 128, 128, .16); }
+    .msg-body.md .md-code code { display: block; padding: 0; background: none; white-space: pre;
+      line-height: 1.45; }
+    .md-del { opacity: .7; }
     .choice { margin: 10px 0 2px; display: flex; flex-direction: column; gap: 6px; }
     .choice-q { font-weight: 600; font-size: 13px; opacity: .85; }
     .choice-opt { text-align: left; }
@@ -583,6 +614,214 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
+
+  /* md-lite:start — the transcript's markdown. A test extracts this block
+     verbatim (esc included) and runs it, so keep it self-contained.
+
+     The desktop renders answers with a full markdown component; the phone has
+     none (this page ships no dependencies), so an answer used to arrive as raw
+     syntax with its line breaks collapsed into one paragraph — and a table came
+     out as a row of pipes. This is the subset a chat answer actually contains:
+     blank lines separate paragraphs, a single newline stays a line break, and
+     pipe tables, fenced code, lists, quotes, headings and the usual inline
+     marks render instead of leaking.
+
+     Contract: every function here takes RAW text and escapes it itself before
+     writing a single tag, so nothing mirrored can inject markup. The
+     concatenation guard above skips this block because it is a markup builder;
+     the escaping cases in remoteConsole.test are what hold it to that contract.
+
+     NOTE: the page is one big template literal, so a literal backtick cannot be
+     typed here (MD_TICK is built from its character code) and every regex
+     escape is doubled in this source. */
+  var MD_TICK = String.fromCharCode(96);
+  var MD_HOLD = String.fromCharCode(0xE000);
+  var MD_RE_CODE = new RegExp(MD_TICK + '([^' + MD_TICK + ']+)' + MD_TICK, 'g');
+  var MD_RE_FENCE = new RegExp('^(' + MD_TICK + '{3,}|~{3,})(.*)$');
+  var MD_RE_FENCE_END = new RegExp('^(' + MD_TICK + '{3,}|~{3,})$');
+  var MD_RE_HEADING = /^(#{1,6}) (.*)$/;
+  var MD_RE_BULLET = /^[-*+] /;
+  var MD_RE_NUMBER = /^[0-9]+[.)] /;
+  var MD_RE_RULE = /^[-*_]{3,}$/;
+  var MD_RE_DIVIDER_CELL = /^:?-+:?$/;
+  var MD_RE_QUOTE = /^> ?/;
+  var MD_RE_LINK = /\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g;
+  var MD_RE_BOLD = /\\*\\*([^*]+)\\*\\*/g;
+  var MD_RE_ITALIC = /(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g;
+  var MD_RE_STRIKE = /~~([^~]+)~~/g;
+  var MD_RE_SAFE_URL = /^(?:https?|mailto):/i;
+
+  /** Only the schemes a phone can follow are linkified: anything else
+      (javascript:, data:) keeps its label and stays plain text. */
+  function mdUrl(href) {
+    var value = String(href == null ? '' : href).trim();
+    if (!value) { return ''; }
+    if (value.charAt(0) === '#') { return value; }
+    return MD_RE_SAFE_URL.test(value) ? value : '';
+  }
+
+  /** Inline marks. It escapes first and formats the ESCAPED text, so a mark
+      can never put markup back. Code spans are held aside so nothing inside
+      them is re-formatted. */
+  function mdInline(text) {
+    var held = [];
+    var out = esc(text).replace(MD_RE_CODE, function (all, code) {
+      held.push('<code>' + code + '</code>');
+      return MD_HOLD + (held.length - 1) + MD_HOLD;
+    });
+    out = out.replace(MD_RE_LINK, function (all, label, href) {
+      var url = mdUrl(href);
+      return url
+        ? '<a href="' + url + '" target="_blank" rel="noreferrer noopener">' + label + '</a>'
+        : label;
+    });
+    out = out.replace(MD_RE_BOLD, '<strong>$1</strong>');
+    out = out.replace(MD_RE_ITALIC, '$1<em>$2</em>');
+    out = out.replace(MD_RE_STRIKE, '<del>$1</del>');
+    for (var index = 0; index < held.length; index++) {
+      out = out.split(MD_HOLD + index + MD_HOLD).join(held[index]);
+    }
+    return out;
+  }
+
+  /** The cells of one pipe-table row, outer pipes dropped. Raw text. */
+  function mdCells(line) {
+    var text = String(line).trim();
+    if (text.charAt(0) === '|') { text = text.slice(1); }
+    if (text.charAt(text.length - 1) === '|') { text = text.slice(0, -1); }
+    var cells = text.split('|');
+    for (var index = 0; index < cells.length; index++) { cells[index] = cells[index].trim(); }
+    return cells;
+  }
+
+  /** |---|:---:|---:| — the divider that turns the line above it into a header. */
+  function mdIsDivider(line) {
+    var cells = mdCells(line);
+    if (!cells.length) { return false; }
+    for (var index = 0; index < cells.length; index++) {
+      if (!MD_RE_DIVIDER_CELL.test(cells[index])) { return false; }
+    }
+    return true;
+  }
+
+  /** Alignment of one column, from the colon(s) in its divider cell. */
+  function mdAlign(cell) {
+    var left = cell.charAt(0) === ':';
+    var right = cell.charAt(cell.length - 1) === ':';
+    if (left && right) { return ' class="md-mid"'; }
+    return right ? ' class="md-end"' : '';
+  }
+
+  function mdTable(header, aligns, rows) {
+    var html = '<div class="md-scroll"><table class="md-table"><thead><tr>';
+    for (var head = 0; head < header.length; head++) {
+      html += '<th' + mdAlign(aligns[head] || '') + '>' + mdInline(header[head]) + '</th>';
+    }
+    html += '</tr></thead><tbody>';
+    for (var row = 0; row < rows.length; row++) {
+      html += '<tr>';
+      for (var cell = 0; cell < header.length; cell++) {
+        html += '<td' + mdAlign(aligns[cell] || '') + '>' + mdInline(rows[row][cell] || '') + '</td>';
+      }
+      html += '</tr>';
+    }
+    return html + '</tbody></table></div>';
+  }
+
+  /** Mirrored message text (RAW) → HTML. Line breaks are kept: a single
+      newline inside a paragraph is a line break, a blank line a new paragraph. */
+  function renderMarkdown(text) {
+    var lines = String(text == null ? '' : text).replace(/\\r\\n?/g, '\\n').split('\\n');
+    var html = '';
+    var para = [];
+
+    function flush() {
+      if (!para.length) { return; }
+      html += '<p class="md-p">' + para.join('<br>') + '</p>';
+      para = [];
+    }
+
+    for (var index = 0; index < lines.length; index++) {
+      var line = lines[index].trim();
+      if (!line) { flush(); continue; }
+
+      // Fenced code: everything up to the closing fence is literal text.
+      var fence = MD_RE_FENCE.exec(line);
+      if (fence) {
+        flush();
+        var body = [];
+        for (index++; index < lines.length; index++) {
+          if (MD_RE_FENCE_END.test(lines[index].trim())) { break; }
+          body.push(lines[index]);
+        }
+        var lang = fence[2].trim();
+        html += '<pre class="md-code"' + (lang ? ' data-lang="' + esc(lang) + '"' : '') +
+          '><code>' + esc(body.join('\\n')) + '</code></pre>';
+        continue;
+      }
+
+      // Pipe table: a header row, its divider, then body rows.
+      if (line.indexOf('|') !== -1 && index + 1 < lines.length && mdIsDivider(lines[index + 1])) {
+        flush();
+        var header = mdCells(line);
+        var aligns = mdCells(lines[index + 1]);
+        var rows = [];
+        for (index += 2; index < lines.length; index++) {
+          if (!lines[index].trim() || lines[index].indexOf('|') === -1) { index--; break; }
+          rows.push(mdCells(lines[index]));
+        }
+        html += mdTable(header, aligns, rows);
+        continue;
+      }
+
+      if (MD_RE_RULE.test(line.split(' ').join(''))) {
+        flush();
+        html += '<hr class="md-hr">';
+        continue;
+      }
+
+      var heading = MD_RE_HEADING.exec(line);
+      if (heading) {
+        flush();
+        var level = heading[1].length;
+        html += '<div class="md-h md-h' + level + '">' + mdInline(heading[2]) + '</div>';
+        continue;
+      }
+
+      if (line.charAt(0) === '>') {
+        flush();
+        var quotes = [];
+        for (; index < lines.length; index++) {
+          var quoted = lines[index].trim();
+          if (quoted.charAt(0) !== '>') { index--; break; }
+          quotes.push(mdInline(quoted.replace(MD_RE_QUOTE, '')));
+        }
+        html += '<div class="md-quote">' + quotes.join('<br>') + '</div>';
+        continue;
+      }
+
+      var bullet = MD_RE_BULLET.test(line);
+      if (bullet || MD_RE_NUMBER.test(line)) {
+        flush();
+        var items = [];
+        var itemRe = bullet ? MD_RE_BULLET : MD_RE_NUMBER;
+        for (; index < lines.length; index++) {
+          var item = lines[index].trim();
+          if (!itemRe.test(item)) { index--; break; }
+          items.push('<li>' + mdInline(item.replace(itemRe, '')) + '</li>');
+        }
+        var tag = bullet ? 'ul' : 'ol';
+        html += '<' + tag + ' class="md-list">' + items.join('') + '</' + tag + '>';
+        continue;
+      }
+
+      para.push(mdInline(line));
+    }
+
+    flush();
+    return html;
+  }
+  /* md-lite:end */
 
   function titleFor(run) {
     if (!run) { return 'Agent run'; }
@@ -1202,7 +1441,7 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
       if (toolOnly) { roleLabel = 'Tool run'; }
       html += '<article class="msg ' + esc(roleClass) + (toolOnly ? ' tool-only' : '') + '">';
       html += '<div class="msg-role">' + esc(roleLabel) + '</div>';
-      html += '<div class="msg-body">' + esc(message.content || '') + '</div>';
+      html += '<div class="msg-body md">' + renderMarkdown(message.content) + '</div>';
       html += choiceHtml(message);
       html += inlineTools(message);
       html += '</article>';

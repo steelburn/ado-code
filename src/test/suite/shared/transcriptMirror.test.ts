@@ -49,6 +49,21 @@ suite('webview/TranscriptMirror', () => {
         assert.notStrictEqual(messages[0].id, messages[1].id);
     });
 
+    test('pre-tool thinking is never mirrored, and the answer after it still streams', () => {
+        const { mirror, events } = make();
+        // An agentic iteration narrates itself before it calls a tool. That
+        // text is reasoning, not the answer, and used to land inside the
+        // answer's own bubble.
+        mirror.noteAssistant(undefined, 'Let me read the file first.', false, { thinking: true });
+        mirror.noteAssistant(undefined, '', true, { thinking: true });
+        assert.strictEqual(events.length, 0, 'reasoning never reaches the phone');
+
+        mirror.noteAssistant(undefined, 'The answer.', false);
+        mirror.noteAssistant(undefined, '', true);
+        assert.deepStrictEqual(mirror.snapshot().messages.map(message => message.content), ['The answer.']);
+        assert.ok(events.some(event => event.type === 'transcriptMessage'), 'the answer still mirrors');
+    });
+
     test('a choice fence becomes structured options and leaves the text', () => {
         const { mirror } = make();
         const fence = '```choice\n' +
