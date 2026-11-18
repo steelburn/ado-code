@@ -855,7 +855,7 @@ was not executed under `act`, its shape is asserted by tests instead.
 ### 14.6 P6 — `zen-microservices` preset and the standards `AGENTS.md` (shipped)
 
 P1–P5 made the clauses true in the emitted files; P6 makes them the **default** and tells the agent
-that works in the generated repository about them.
+that works in the generated repository about them — and P8 makes the last runtime clause true for every stack.
 
 **The preset** (`src/shared/wizardPresets.ts`) is one row per catalogue stack, `zen-microservices`
 being the `node-ts` one:
@@ -905,7 +905,7 @@ id appearing in the generated `AGENTS.md`. Golden fixtures: 52 and 25 files.
 fixture stayed at 24 files while the default one moved to 52, which is what exposed it. The write is
 now unconditional.
 
-**Residual.** No OpenTelemetry SDK and no JWT middleware are emitted (CON‑03 partial, CON‑05 unmet),
+**Residual.** No OpenTelemetry SDK and no JWT middleware are emitted (CON‑03 partial, CON‑05 met),
 and the preset is not yet reachable from `/new-project` when the wizard is opened with an existing
 folder — it applies at project-creation time only.
 
@@ -972,3 +972,52 @@ emits rather than asserting the string is present.
 carries the governance trail (decision → clause → evidence), and KRiSA mapping stays opt-in via
 `krisaCompliance`. `ADR-###` is not a standalone `list_doc_templates` type; it is emitted as part of
 `doc-writer`.
+
+
+### 14.8 P8 — application security, the last unmet runtime clause (shipped)
+
+CON-05 is the clause that was *unmet* rather than partial: `.env.example` held placeholders and no
+credential was hardcoded, but no emitted service validated a token, so a generated service accepted
+any caller that could reach it. P8 closes it in the two shapes the catalogue actually needs.
+
+**The node stack — `src/shared/securityArtifacts.ts`.** `packages/shared/src/auth.ts` verifies a JWT
+on `node:crypto` only: RS/PS/ES/HS, a `kid`-selected keyring, `exp`/`nbf`/`iat`/`iss`/`aud`/`sub`
+with a 30 s skew, and JWKS refresh on an unknown `kid`. The algorithm allowlist runs **before any key
+is touched**, so the classic confusion attack — an HS256 token whose HMAC key is the service's own
+public key — is refused instead of being handed to the RSA keyring. Rotation works without a
+restart: the previous HMAC secret stays valid for the rollover window. `secrets.ts` holds
+`requireSecret()` (no default fallback, a placeholder is not a value, and boot fails listing *every*
+missing name) and `redactHeaders()` for logs. The gateway validates and stamps the identity it
+verified; each service verifies that stamp and **fails closed** — `EDGE_AUTH_REQUIRED` unset means
+required, so a service reachable without the gateway refuses rather than serves.
+
+**The other three stacks — `src/shared/securityEdgeGuards.ts`.** Python, .NET and PHP carry no
+`packages/shared`, which is why CON-06 stayed a named residual (P4b). Security is different: refusing
+an unauthenticated caller does not need the TypeScript kit, only twenty lines in the language's own
+standard library. P8 therefore emits a per-service guard — `app/security.py`,
+`Security/EdgeAuthMiddleware.cs`, `app/Http/Middleware/VerifyEdgeIdentity.php` — that computes the
+**same** HMAC-SHA256 over the **same** canonical `subject|scopes|issuer|issuedAt`, compares it in
+constant time (`hmac.compare_digest` / `CryptographicOperations.FixedTimeEquals` / `hash_equals`),
+enforces the same 300 s freshness window and the same fail-closed default. A test asserts the four
+families agree on the header names, the canonical form and the error vocabulary, because a guard that
+joins fields in a different order verifies nothing and rejects every stamped request.
+
+**Pipeline wiring, not just files.** The guard is registered in each entrypoint —
+`app.middleware("http")(edge_auth_middleware)`, `app.UseMiddleware<EdgeAuthMiddleware>()`,
+`$middleware->api(prepend: [VerifyEdgeIdentity::class])` — and the platform probes
+(`/health`, `/healthz/live`, `/healthz/ready`, `/metrics`) are exempt, so a liveness check never needs
+a token. `.env.example` carries an empty `EDGE_AUTH_SHARED_SECRET`; `docker-compose.yml` interpolates
+it with `${EDGE_AUTH_SHARED_SECRET:?…}` so a stack started without the secret aborts instead of
+running open; the k8s Secret keeps `stringData: {}` because a placeholder value is a credential.
+`securityArtifacts.test.ts` (36 tests) executes the generated module against real crypto — a genuine
+RSA keypair, a real ES256 signature, a real HS256 forgery, a tampered scope, a replayed stamp and a
+rotation — and `securityEdgeGuards.test.ts` (15 tests) checks the three guards against that contract
+and against the trees they ship in.
+
+**Clause score: 5 of 6 runtime clauses met** (CON-01, CON-02, CON-04, CON-05, CON-06 — the last for
+the node stack only); CON-03 stays partial because no tracer is emitted.
+
+**Residuals.** No OpenTelemetry SDK (CON-03), so tracing is still `X-Correlation-ID` only. The
+`azure-pipelines.yml` parity gate and digest-pinned base images remain open from P5. A Vault/Secret
+Manager client is not emitted: secrets come from the environment, which the clause accepts but does
+not maximise.

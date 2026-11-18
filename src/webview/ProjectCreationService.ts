@@ -66,6 +66,12 @@ import {
   planObservabilityFiles,
   sharedObservabilityBarrelLines,
 } from '../shared/observabilityArtifacts';
+import {
+  planSecurityFiles,
+  securityConfigEnv,
+  securityEnvLines,
+  sharedSecurityBarrelLines,
+} from '../shared/securityArtifacts';
 import type { ServiceContract } from '../shared/contractArtifacts';
 import { planContainerFiles, supportsContainerization } from '../shared/containerization';
 import {
@@ -2762,6 +2768,7 @@ ${mvvm ? '| `ViewModels/MainViewModel.cs` | CommunityToolkit.Mvvm view model |\n
         `export * from './contracts';
 ${sharedObservabilityBarrelLines().join('\n')}
 ${sharedResilienceBarrelLines().join('\n')}
+${sharedSecurityBarrelLines().join('\n')}
 ${broker !== 'none' ? "export * from './broker';\n" : ''}`
       );
       this.writeProjectFile(
@@ -2809,6 +2816,12 @@ export type EventName = (typeof eventNames)[keyof typeof eventNames];
       // Resilience (§4.2 — CON-06): bounded timeouts, jittered backoff, a breaker per
       // dependency and an Idempotency-Key guard, in one module the services import.
       for (const file of planResilienceFiles()) {
+        this.writeProjectFile(dir, file.path, file.content);
+      }
+      // Application security (§4.2 — CON-05): edge token validation with an
+      // algorithm allowlist and a rotating keyring, plus env-only secrets that
+      // stop the process instead of defaulting.
+      for (const file of planSecurityFiles()) {
         this.writeProjectFile(dir, file.path, file.content);
       }
       if (broker !== 'none') {
@@ -3108,6 +3121,14 @@ Every service listens on its own port and exposes \`${OBSERVABILITY_PATHS.live}\
     const healthImport = withShared
       ? 'import {' + '\n  ' + observabilityNames + ',\n' + "} from '" + sharedName + "';"
       : '';
+    const securityServiceNames = [
+        'AuthError',
+        'identityFromEdge',
+        'isPublicPath',
+      ].join(',\n  ');
+    const authServiceImport = withShared
+      ? 'import {' + '\n  ' + securityServiceNames + ',\n' + "} from '" + sharedName + "';"
+      : '';
     const healthInline = withShared
       ? 'JSON.stringify(healthResponse(SERVICE, VERSION))'
       : "JSON.stringify({ status: 'ok', service: SERVICE, version: VERSION })";
@@ -3116,6 +3137,53 @@ Every service listens on its own port and exposes \`${OBSERVABILITY_PATHS.live}\
           '',
           'const logger = createLogger({ service: SERVICE, version: VERSION });',
           'processStartTimeSeconds.set(Math.round(Date.now() / 1000 - process.uptime()));',
+        ].join('\n')
+      : '';
+    const securityPrelude = withShared
+      ? [
+          '',
+          "const EDGE_SECRET = process.env.EDGE_AUTH_SHARED_SECRET ?? '';",
+          'const security = securityConfigFromEnv(process.env);',
+          "logger.info('security.configured', { issuer: security.issuer, audience: security.audience, algorithms: security.algorithms, keyCount: security.keys.length });",
+          "logger.info('security.secrets', { state: describeSecrets(process.env, [EDGE_SHARED_SECRET_ENV, EDGE_SHARED_SECRET_PREVIOUS_ENV]) });",
+        ].join('\n')
+      : '';
+    const gatewayAuth = withShared
+      ? [
+          '  if (!isPublicPath(url)) {',
+          '    let principal;',
+          '    try {',
+          '      principal = authenticateRequest(req.headers, security);',
+          '    } catch (error) {',
+          '      const rejection = error as AuthError;',
+          "      logger.warn('auth.rejected', { code: rejection.code, path: url });",
+          '      res.writeHead(rejection.status ?? 401, {',
+          "        'content-type': 'application/json',",
+          "        'www-authenticate': rejection.wwwAuthenticate ?? 'Bearer',",
+          '      });',
+          '      res.end(JSON.stringify({ error: rejection.code }));',
+          '      return;',
+          '    }',
+          '    // The services never see the bearer token, only this identity.',
+          '    Object.assign(req.headers, stampedIdentityHeaders(principal, EDGE_SECRET));',
+          '  }',
+          '',
+        ].join('\n')
+      : '';
+    const serviceAuth = withShared
+      ? [
+          '  if (!isPublicPath(url)) {',
+          '    try {',
+          '      identityFromEdge(req.headers, process.env);',
+          '    } catch (error) {',
+          '      const rejection = error as AuthError;',
+          "      logger.warn('auth.rejected', { code: rejection.code, path: url });",
+          '      res.writeHead(401, { \'content-type\': \'application/json\' });',
+          '      res.end(JSON.stringify({ error: rejection.code }));',
+          '      return;',
+          '    }',
+          '  }',
+          '',
         ].join('\n')
       : '';
     const obsRouter = withShared
@@ -3190,10 +3258,20 @@ Every service listens on its own port and exposes \`${OBSERVABILITY_PATHS.live}\
         'RESILIENCE_DEFAULTS',
         'idempotencyKeyOf',
       ].join(',\n  ');
+      const securityGatewayNames = [
+        'AuthError',
+        'authenticateRequest',
+        'describeSecrets',
+        'isPublicPath',
+        'securityConfigFromEnv',
+        'stampedIdentityHeaders',
+        'EDGE_SHARED_SECRET_ENV',
+        'EDGE_SHARED_SECRET_PREVIOUS_ENV',
+      ].join(',\n  ');
       const gatewayImport = withShared
         ? [
             'import {',
-            '  ' + observabilityNames + ',\n  ' + resilienceNames + ',',
+            '  ' + observabilityNames + ',\n  ' + resilienceNames + ',\n  ' + securityGatewayNames + ',',
             "} from '" + sharedName + "';",
           ].join('\n')
         : '';
@@ -3261,7 +3339,7 @@ ${gatewayImport}
 
 const SERVICE = 'gateway';
 const VERSION = '${version || '0.1.0'}';
-const PORT = Number(process.env.PORT ?? ${port});${obsPrelude}
+const PORT = Number(process.env.PORT ?? ${port});${obsPrelude}${securityPrelude}
 
 /** Path prefix → upstream service base URL. */
 const routes: Record<string, string> = {
@@ -3271,7 +3349,7 @@ ${breakerPrelude}
 
 const server = createServer((req, res) => {
   const url = (req.url ?? '/').split('?')[0];${obsRouter}
-${legacyHealth}
+${legacyHealth}${gatewayAuth}
   const prefix = Object.keys(routes).find((key) => url === key || url.startsWith(key + '/'));
   if (!prefix) {
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -3317,6 +3395,7 @@ ${obsShutdown}server.listen(PORT, () => {
         `services/${service}/src/index.ts`,
         `import { createServer } from 'node:http';
 ${healthImport}
+${authServiceImport}
 
 const SERVICE = '${service}';
 const VERSION = '${version || '0.1.0'}';
@@ -3324,7 +3403,7 @@ const PORT = Number(process.env.PORT ?? ${port});${obsPrelude}
 ${broker !== 'none' ? `const BROKER_URL = process.env.BROKER_URL ?? '${brokerUrl}';\n` : ''}
 const server = createServer((req, res) => {
   const url = (req.url ?? '/').split('?')[0];${obsRouter}
-${legacyHealth}
+${legacyHealth}${serviceAuth}
   if (url === '${API_PREFIX}/${resource}' || url.startsWith('${API_PREFIX}/${resource}/')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
@@ -3402,6 +3481,7 @@ CMD ["node", "dist/index.js"]
           env: [
             { name: 'PORT', value: String(port) },
             { name: 'LOG_LEVEL', value: 'info' },
+            ...securityConfigEnv(),
             ...(broker !== 'none' ? [{ name: 'BROKER_URL', value: brokerUrl }] : []),
           ],
           secretKeys: ['DATABASE_URL'],
@@ -3496,7 +3576,10 @@ ${services
   .map((service) => `PORT_${service.replace(/-/g, '_').toUpperCase()}=${portOf(service)}`)
   .join('\n')}
 ${domainServices.map((service) => `${envVar(service)}=http://localhost:${portOf(service)}`).join('\n')}
-${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}`
+${broker !== 'none' ? `BROKER_URL=${brokerUrl}\n` : ''}
+# Application security (ZEN-STD-CON-05) — placeholders only; real values live in
+# the secret store, and the service refuses to start on a placeholder.
+${securityEnvLines().join('\n')}`
     );
   }
 

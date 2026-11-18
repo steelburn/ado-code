@@ -77,7 +77,16 @@ suite('zenTraceability — status is honest per stack', () => {
 
   test('a clause that ships in part is never reported as met', () => {
     assert.strictEqual(clauseStatus(CLAUSE_IDS.observability, 'node'), 'Partial');
-    assert.strictEqual(clauseStatus(CLAUSE_IDS.security, 'node'), 'Partial');
+  });
+
+  test('application security is met on every stack, in that stack own artifact', () => {
+    for (const family of ['node', 'python', 'dotnet', 'php'] as const) {
+      assert.strictEqual(
+        clauseStatus(CLAUSE_IDS.security, family),
+        'Met',
+        `${family} verifies the edge identity, so CON-05 cannot report partial`,
+      );
+    }
   });
 
   test('stacks without the shared kit report the resilience clause as not scaffolded', () => {
@@ -111,7 +120,8 @@ suite('zenTraceability — status is honest per stack', () => {
 
   test('deviations are exactly the clauses that need an ADR', () => {
     const ids = complianceDeviations('node').map((c) => c.id);
-    assert.deepStrictEqual(ids.sort(), [CLAUSE_IDS.observability, CLAUSE_IDS.security].sort());
+    assert.deepStrictEqual(ids.sort(), [CLAUSE_IDS.observability].sort());
+    assert.ok(!ids.includes(CLAUSE_IDS.security), 'CON-05 ships for every stack and needs no ADR');
     assert.ok(!ids.includes(CLAUSE_IDS.resilience), 'CON-06 ships for node');
     assert.ok(
       complianceDeviations('python').map((c) => c.id).includes(CLAUSE_IDS.resilience),

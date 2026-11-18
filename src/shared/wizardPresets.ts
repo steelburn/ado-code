@@ -54,7 +54,7 @@ export interface WizardPreset {
   /**
    * Clause ids the preset is expected to leave satisfied — asserted against the
    * emitted tree in `wizardPresets.test.ts`. Clauses the scaffold does not yet
-   * enforce (`ZEN-STD-CON-05`, and `CON-06` outside the node stack) are absent on
+   * enforce (`CON-06` outside the node stack) are absent on
    * purpose: a preset that claims them would be advertising a guarantee it cannot
    * keep.
    */
@@ -67,7 +67,9 @@ const DEFAULT_SERVICES = 'gateway,users,orders';
 /**
  * Runtime clauses every stack satisfies, plus the ones the node stack closes on
  * top (`CON-06` needs `packages/shared/src/resilience.ts`, which only the
- * TypeScript stack emits).
+ * TypeScript stack emits). `CON-05` is shared: the node stack validates the JWT in
+ * `packages/shared/src/auth.ts`, the other three re-verify the edge stamp with
+ * their own standard library (`securityEdgeGuards.ts`).
  */
 function satisfiedClauses(stack: MonorepoStackId): readonly string[] {
   const shared: readonly string[] = [
@@ -75,6 +77,7 @@ function satisfiedClauses(stack: MonorepoStackId): readonly string[] {
     CLAUSE_IDS.contract,
     CLAUSE_IDS.observability,
     CLAUSE_IDS.lifecycle,
+    CLAUSE_IDS.security,
   ];
   const resilience = stack === 'node-ts' ? [CLAUSE_IDS.resilience] : [];
   const gates: readonly string[] = [

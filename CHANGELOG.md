@@ -5,6 +5,16 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- Application security (ZEN `CON-05`), the last unmet runtime clause. The node stack emits
+  `packages/shared/src/auth.ts` + `secrets.ts`: JWT verification on `node:crypto`, an algorithm
+  allowlist applied *before* the signature, a `kid` keyring with JWKS refresh and a rollover window,
+  and secrets that refuse to boot on a missing or placeholder value. The gateway validates and stamps
+  the identity; every service verifies the stamp and fails closed. `python`, `dotnet` and
+  `php-laravel` monorepos get the equivalent guard in their own standard library
+  (`securityEdgeGuards.ts`) over the same canonical message, constant-time comparison included.
+  `.env.example` stays empty, compose fails loudly when the secret is unset, and the k8s Secret
+  keeps `stringData: {}`.
+
 - **The standard becomes citable: `ADR-###` decision records and a `ZEN-STD-*` compliance matrix.**
   `src/shared/documentation/zenTraceability.ts` renders the clause catalogue into matrix rows, so
   `doc-writer` now emits `01-design/adr/README.md` (the decision log, with a generated deviations
@@ -25,7 +35,7 @@ All notable changes to ADO Code will be documented in this file.
   `ZEN-STD-CI-01`…`07` — inside a `<!-- zen-standards:begin -->` block that is deliberately
   *not* ADO Code's own managed markers, since the understanding sync would rewrite those. Each
   rule is paired with the artifact that satisfies it in that stack, and the per-stack
-  `satisfies` lists leave out `CON-05` everywhere and `CON-06` outside Node rather than
+  `satisfies` lists leave out `CON-06` outside Node and `CON-06` outside Node rather than
   claim coverage the stack does not have. `/new-service` appends the new service to the
   managed block and preserves the prose around it.
 

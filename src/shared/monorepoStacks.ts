@@ -35,6 +35,7 @@ import { BASE_IMAGES, CURL_INSTALL_LINES, hardeningLines } from './containerHard
 import { OBSERVABILITY_PATHS } from './observabilityArtifacts';
 import { API_PREFIX, defaultEventsFor, planContractFiles, resourceNameFor } from './contractArtifacts';
 import type { ContractPlan } from './contractArtifacts';
+import { dotnetEdgeGuardFiles, phpEdgeGuardFiles, pythonEdgeGuardFiles } from './securityEdgeGuards';
 import { planDeliveryFiles } from './deliveryFiles';
 import { planStandardsAgentsMd } from './standardsArtifacts';
 
@@ -274,6 +275,12 @@ function composeFile(
   const lines: string[] = ['# Local microservices stack — `docker compose up --build`', 'services:'];
   orderedServices(plan).forEach((name, index) => {
     const entry = serviceEntry(name, index);
+    // §4.2 CON-05: every service verifies the edge stamp, so every service needs
+    // the shared secret. Compose interpolates it from .env and fails loudly when it
+    // is missing; a literal here would be the credential leak the clause forbids.
+    entry.environment.EDGE_AUTH_REQUIRED = '1';
+    entry.environment.EDGE_AUTH_SHARED_SECRET =
+      '${EDGE_AUTH_SHARED_SECRET:?set EDGE_AUTH_SHARED_SECRET in .env}';
     lines.push(`  ${name}:`);
     lines.push(`    build:`);
     lines.push(`      context: ${entry.context}`);
@@ -323,6 +330,10 @@ function envExample(plan: MonorepoTreePlan): string {
   const lines = [
     '# Copy to .env and adjust for your machine — docker compose reads it.',
     `COMPOSE_PROJECT_NAME=${camel(plan.projectName)}`,
+    '# §4.2 CON-05: the gateway signs the identity it forwards with this secret.',
+    '# Left empty, the services refuse to serve — a placeholder is not a value.',
+    'EDGE_AUTH_REQUIRED=1',
+    'EDGE_AUTH_SHARED_SECRET=',
   ];
   if (plan.broker !== 'none') {
     lines.push(`BROKER_URL=${brokerUrl(plan.broker)}`);
@@ -426,14 +437,19 @@ function dotnetTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
       '</Project>',
       '',
     ].join('\n');
+    // §4.2 CON-05: the service refuses an unstamped caller instead of serving it.
+    Object.assign(files, dotnetEdgeGuardFiles(folder, type, name));
     files[`${folder}/Program.cs`] = [
       'using Contracts;',
+      `using ${type}.Security;`,
       '',
       `var builder = WebApplication.CreateBuilder(args);`,
       'builder.Services.AddEndpointsApiExplorer();',
       'builder.Services.AddSwaggerGen();',
       '',
       'var app = builder.Build();',
+      // §4.2 CON-05: registered before any route is mapped.
+      'app.UseMiddleware<EdgeAuthMiddleware>();',
       'app.UseSwagger();',
       'app.UseSwaggerUI();',
       '',
@@ -602,6 +618,8 @@ function phpLaravelTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor):
       null,
       2
     );
+    // §4.2 CON-05: the api group verifies the edge stamp before any route runs.
+    Object.assign(files, phpEdgeGuardFiles(folder, name));
     files[`${folder}/routes/api.php`] = [
       '<?php',
       '',
@@ -619,6 +637,10 @@ function phpLaravelTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor):
 'use Illuminate\\Support\\Facades\\Route;',
       '',
       'return Application::configure(basePath: dirname(__DIR__))',
+      // §4.2 CON-05: prepended to the api group, so no route can opt out of it.
+      '    ->withMiddleware(function (\\Illuminate\\Foundation\\Configuration\\Middleware $middleware): void {',
+      '        $middleware->api(prepend: [\\App\\Http\\Middleware\\VerifyEdgeIdentity::class]);',
+      '    })',
       `    ->withRouting(`,
       `        api: __DIR__ . '/../routes/api.php',`,
       `        apiPrefix: '${API_PREFIX.slice(1)}',`,
@@ -768,13 +790,17 @@ function pythonTree(plan: MonorepoTreePlan, stack: MonorepoStackDescriptor): Rec
       '',
     ].join('\n');
     files[`${folder}/app/__init__.py`] = '';
+    // §4.2 CON-05: the edge guard refuses an unstamped caller before routing.
+    Object.assign(files, pythonEdgeGuardFiles(folder, name));
     files[`${folder}/app/main.py`] = [
       'import os',
 
       'from fastapi import FastAPI, Response',
+      'from app.security import edge_auth_middleware',
       'from fastapi.responses import JSONResponse',
       '',
       `app = FastAPI(title="${name}")`,
+      'app.middleware("http")(edge_auth_middleware)',
       '',
       '',
       // §4.2 CON-03/CON-04: liveness, readiness and a Prometheus endpoint, then the

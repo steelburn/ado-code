@@ -104,9 +104,13 @@ suite('wizardPresets', () => {
       for (const id of preset.satisfies) {
         assert.ok(all.includes(id), `${preset.id} claims an unknown clause ${id}`);
       }
-      // CON-05 (JWT validation at the edge) has no scaffolded artifact yet — a
-      // preset that claimed it would be advertising a guarantee it cannot keep.
-      assert.ok(!preset.satisfies.includes(CLAUSE_IDS.security), `${preset.id} claims CON-05`);
+      // CON-05 is claimed by every stack: node ships `packages/shared/src/auth.ts`,
+      // the other three ship a stdlib edge guard (`securityEdgeGuards.ts`). The
+      // guards are asserted end to end in `securityEdgeGuards.test.ts`.
+      assert.ok(
+        preset.satisfies.includes(CLAUSE_IDS.security),
+        `${preset.id}: CON-05 is scaffolded for every stack and must be claimed`
+      );
       const expectsResilience = preset.options.stack === 'node-ts';
       assert.strictEqual(
         preset.satisfies.includes(CLAUSE_IDS.resilience),

@@ -66,6 +66,19 @@ export interface StandardsClause {
  * resolve to reusable modules — claiming otherwise in the other three would be the
  * kind of documentation that rots the moment someone looks.
  */
+/**
+ * CON-05 is the one clause whose artifact differs by more than a file name: the
+ * node stack validates the JWT in the shared package, while python, .NET and PHP
+ * re-verify the edge stamp with their own standard library (securityEdgeGuards.ts).
+ * All four fail closed — an unset EDGE_AUTH_REQUIRED means required.
+ */
+const SECURITY_HOME: Record<RuntimeFamily, string> = {
+  node: '`packages/shared/src/auth.ts`, `secrets.ts`; `deploy/k8s/*.yaml` Secret (empty `stringData`)',
+  python: '`services/*/app/security.py`; `.env.example` placeholders only',
+  dotnet: '`services/*/Security/EdgeAuthMiddleware.cs`; `.env.example` placeholders only',
+  php: '`services/*/app/Http/Middleware/VerifyEdgeIdentity.php`; `.env.example` placeholders only',
+};
+
 const OBSERVABILITY_HOME: Record<RuntimeFamily, string> = {
   node: '`packages/shared/src/logger.ts`, `correlation.ts`, `metrics.ts`',
   python: '`services/<name>/app/main.py` (structured log lines, `/metrics` counter)',
@@ -118,7 +131,7 @@ export function runtimeClauses(family: RuntimeFamily): readonly StandardsClause[
       id: CLAUSE_IDS.security,
       rule:
         'JWTs are validated at the edge, secrets come from the environment or a secret store, and nothing credential-shaped is committed.',
-      home: '`.env.example` (placeholders only), `deploy/k8s/*-secrets.yaml` (empty `stringData`)',
+      home: SECURITY_HOME[family],
     },
     {
       id: CLAUSE_IDS.resilience,

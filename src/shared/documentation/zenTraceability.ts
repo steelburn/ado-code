@@ -64,7 +64,10 @@ export const CLAUSE_EVIDENCE: Readonly<Record<string, ClauseEvidence>> = {
   [CLAUSE_IDS.contract]: { doc: '`' + openApiPath('<service>') + '`, `' + envelopeSchemaPath() + '`', ref: 'CON-02' },
   [CLAUSE_IDS.observability]: { doc: '`packages/shared/src/logger.ts`, `correlation.ts`, `metrics.ts`', ref: 'CON-03' },
   [CLAUSE_IDS.lifecycle]: { doc: '`packages/shared/src/health.ts`, `lifecycle.ts`', ref: 'CON-04' },
-  [CLAUSE_IDS.security]: { doc: '`.env.example`, `deploy/k8s/<service>.yaml` Secret object', ref: 'CON-05' },
+  [CLAUSE_IDS.security]: {
+    doc: '`packages/shared/src/auth.ts` (node) · `app/security.py` (python) · `Security/EdgeAuthMiddleware.cs` (dotnet) · `app/Http/Middleware/VerifyEdgeIdentity.php` (php)',
+    ref: 'CON-05',
+  },
   [CLAUSE_IDS.resilience]: { doc: '`packages/shared/src/resilience.ts`', ref: 'CON-06' },
   [CLAUSE_IDS.ciStatic]: { doc: '`06-evidence/security-test-report.md` (SAST + secret scan)', ref: 'EVD-STR' },
   [CLAUSE_IDS.ciTest]: { doc: '`06-evidence/test-summary-report.md`', ref: 'EVD-TSR' },
@@ -81,7 +84,7 @@ const STACK_LIMITS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /** Clauses the catalogue ships only in part, whatever the stack. */
-const PARTIAL: readonly string[] = [CLAUSE_IDS.observability, CLAUSE_IDS.security];
+const PARTIAL: readonly string[] = [CLAUSE_IDS.observability];
 
 /** Portability warning: `CLAUSE_IDS` may not yet carry a key for a clause. */
 function idOr(key: string, fallback: string): string {
