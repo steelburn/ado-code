@@ -13,6 +13,7 @@
  * behind a "Met" that nobody can evidence with a document.
  */
 import { type RuntimeFamily } from '../deliveryArtifacts';
+import { envelopeSchemaPath, openApiPath } from '../contractArtifacts';
 import { CLAUSE_IDS, ciClauses, runtimeClauses, type StandardsClause } from '../standardsArtifacts';
 
 /** ADR folder and id prefix — `ADR-###` is the ADR's own identity. */
@@ -60,10 +61,10 @@ export interface ClauseEvidence {
 export const CLAUSE_EVIDENCE: Readonly<Record<string, ClauseEvidence>> = {
   [CLAUSE_IDS.repo]: { doc: 'repository root (`services/`, `packages/shared/`, `contracts/`)', ref: 'REPO-01' },
   [CLAUSE_IDS.container]: { doc: '`services/<name>/Dockerfile`', ref: 'CON-01' },
-  [CLAUSE_IDS.contract]: { doc: '`contracts/openapi.yaml`, `contracts/events/*.schema.json`', ref: 'CON-02' },
+  [CLAUSE_IDS.contract]: { doc: '`' + openApiPath('<service>') + '`, `' + envelopeSchemaPath() + '`', ref: 'CON-02' },
   [CLAUSE_IDS.observability]: { doc: '`packages/shared/src/logger.ts`, `correlation.ts`, `metrics.ts`', ref: 'CON-03' },
   [CLAUSE_IDS.lifecycle]: { doc: '`packages/shared/src/health.ts`, `lifecycle.ts`', ref: 'CON-04' },
-  [CLAUSE_IDS.security]: { doc: '`.env.example`, `deploy/k8s/*.yaml` Secret objects', ref: 'CON-05' },
+  [CLAUSE_IDS.security]: { doc: '`.env.example`, `deploy/k8s/<service>.yaml` Secret object', ref: 'CON-05' },
   [CLAUSE_IDS.resilience]: { doc: '`packages/shared/src/resilience.ts`', ref: 'CON-06' },
   [CLAUSE_IDS.ciStatic]: { doc: '`06-evidence/security-test-report.md` (SAST + secret scan)', ref: 'EVD-STR' },
   [CLAUSE_IDS.ciTest]: { doc: '`06-evidence/test-summary-report.md`', ref: 'EVD-TSR' },

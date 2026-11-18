@@ -17,6 +17,7 @@ import {
   runtimeFamily,
   runtimeUid,
 } from '../../../shared/deliveryArtifacts';
+import { eventSchemaGlob, openApiGlob } from '../../../shared/contractArtifacts';
 import {
   COMPOSE_DATABASE_PATH,
   CI_WORKFLOW_PATH,
@@ -349,5 +350,53 @@ suite('Delivery artifacts — the tree every stack receives', () => {
     const tree = planMonorepoTree('python', base);
     assert.ok(!Object.keys(tree).some((path) => path.startsWith('deploy/k8s/')), 'k8s leaked in');
     assert.ok(tree[CI_WORKFLOW_PATH], 'CI should not depend on k8s');
+  });
+});
+
+suite('Delivery artifacts — the contract gate lints what the planner emits', () => {
+  const monoBase = {
+    projectName: 'zen-orders',
+    description: 'Orders platform',
+    version: '1.2.0',
+    services: ['users', 'orders'],
+    gateway: 'gateway',
+    broker: 'rabbitmq',
+    sharedPackage: true,
+    containerization: true,
+  };
+
+  test('the guard and the lint target are the emitted glob, never a literal filename', () => {
+    const tree = planMonorepoTree('python', { ...monoBase, k8s: true });
+    const ci = tree[CI_WORKFLOW_PATH];
+    assert.ok(ci, 'no CI workflow was planned');
+    const glob = openApiGlob();
+    const prefix = glob.split('*')[0];
+    const emitted = Object.keys(tree).filter(
+      (p) => p.startsWith(prefix) && p.endsWith('.v1.yaml'),
+    );
+    assert.ok(emitted.length > 0, 'no OpenAPI document was planned');
+    assert.ok(ci.includes('lint ' + glob), 'redocly lints a path the planner never writes');
+    assert.ok(
+      ci.includes("hashFiles('" + glob + "')"),
+      'the guard hashes a path the planner never writes',
+    );
+    for (const p of emitted) {
+      assert.ok(p.startsWith(prefix), p + ' is not covered by ' + glob);
+    }
+    assert.ok(
+      !ci.includes("contracts/openapi.yaml"),
+      'a literal guard that never matches skips the gate without failing it',
+    );
+  });
+
+  test('the event-schema guard matches the schemas the planner emits', () => {
+    const tree = planMonorepoTree('python', { ...monoBase, k8s: true });
+    const ci = tree[CI_WORKFLOW_PATH];
+    const glob = eventSchemaGlob();
+    const emitted = Object.keys(tree).filter(
+      (p) => p.startsWith(glob.split('*')[0]) && p.endsWith('.json'),
+    );
+    assert.ok(emitted.length > 0, 'no event schema was planned');
+    assert.ok(ci.includes("hashFiles('" + glob + "')"));
   });
 });

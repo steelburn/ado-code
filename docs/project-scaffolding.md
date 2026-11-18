@@ -801,7 +801,7 @@ cannot ship a CI file, a compose overlay and a manifest that disagree.
 |---|---|---|
 | `GATE-01` | `gate-static` | the stack toolkit's lint + typecheck (`npm run build` per workspace, `ruff`, `dotnet format --verify-no-changes`, `pint --test`) |
 | `GATE-02` | `gate-security` | gitleaks secret scan and Semgrep `p/default` SAST, both from **pinned** images |
-| `GATE-03` | `gate-test` | the stack's tests, Redocly lint of `contracts/openapi.yaml`, `scripts/validate-event-schemas.mjs`, `c8 --check-coverage --lines 80` |
+| `GATE-03` | `gate-test` | the stack's tests, Redocly lint of `contracts/openapi/*.v1.yaml`, `scripts/validate-event-schemas.mjs`, `c8 --check-coverage --lines 80` |
 | `GATE-04` | `gate-image` | `docker build` per service (folder resolved, so `services/Users` works) then Trivy `HIGH,CRITICAL` with `--ignore-unfixed` |
 | `GATE-05` | `gate-deploy` | `needs:` all four, `main` only, `environment: production` manual approval, then `kubectl apply -f deploy/k8s` |
 
@@ -958,6 +958,15 @@ carrying no number, **doc-type uniqueness across the writer set** (the `<PROJECT
 id would collide on a duplicate), option gating, the rendered matrix citing only catalogue ids and
 every catalogue id, and the deviation rows pointing at an ADR. `docTemplates.test.ts` and
 `docProjectScaffold.test.ts` pass unchanged (65 passing across the three suites).
+
+**Defect found while wiring the matrix back to the boilerplate.** The matrix has to cite paths
+that exist, and checking them exposed a P5 bug: the CI contract gate was guarded by
+`hashFiles('contracts/openapi.yaml')` and linted the same literal, but the P2 planner writes
+`contracts/openapi/<service>.v1.yaml`. A `hashFiles` guard that never matches does not fail the
+step, it **skips** it — so `GATE-03` reported green while never linting a contract. Fixed by deriving
+both the guard and the lint target from `openApiGlob()` / `eventSchemaGlob()` in
+`contractArtifacts.ts`, and by two tests that assert the glob matches the files the planner actually
+emits rather than asserting the string is present.
 
 **Residuals.** The KRiSA matrix entry named in the original phase plan was not added: the ADR log
 carries the governance trail (decision → clause → evidence), and KRiSA mapping stays opt-in via

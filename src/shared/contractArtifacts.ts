@@ -71,6 +71,21 @@ export interface ContractPlan {
 // ── path helpers ────────────────────────────────────────────────────────────
 
 /** `contracts/openapi/orders-api.v1.yaml` */
+/**
+ * The glob a CI gate must lint. It is derived from the same directory and
+ * version the planner writes, because a literal `contracts/openapi.yaml` never
+ * matches the emitted `contracts/openapi/<service>.v1.yaml` — and a `hashFiles`
+ * guard that never matches skips the gate without failing it.
+ */
+export function openApiGlob(contractsDir: string = CONTRACTS_DIR): string {
+  return `${contractsDir}/openapi/*.v${CONTRACT_VERSION}.yaml`;
+}
+
+/** The event-schema glob, for the JSON Schema validation step. */
+export function eventSchemaGlob(contractsDir: string = CONTRACTS_DIR): string {
+  return `${contractsDir}/events/*.json`;
+}
+
 export function openApiPath(service: string, version: number = CONTRACT_VERSION): string {
   return `${CONTRACTS_DIR}/openapi/${service}.v${version}.yaml`;
 }

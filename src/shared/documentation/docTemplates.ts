@@ -1644,7 +1644,7 @@ function adrDocs(): DocFileSpec[] {
             'Raise an ADR before the change, not after it: the decision record is the review artefact.',
             'An Accepted ADR is immutable. To change course, write a new ADR and set Supersedes on it.',
             'Name the clause id the decision affects (ZEN-STD-*). A decision with no clause is still valid, it is just not compliance evidence.',
-            'Link the change request (CR-###) and the contract it alters (contracts/openapi.yaml).',
+            'Link the change request (CR-###) and the contract it alters (contracts/openapi/<service>.v1.yaml).',
             'A deviation from a Met clause is only acceptable with an Accepted ADR that states the residual risk.',
           ],
         },
@@ -1840,7 +1840,7 @@ function adrDocs(): DocFileSpec[] {
             header: ['CLAUSE-ID', 'EFFECT', 'EVIDENCE'],
             rows: [
               ['ZEN-STD-REPO-01', 'Amends (root layout)', 'ARCHITECTURE.md'],
-              ['ZEN-STD-CON-02', 'Satisfies', 'contracts/openapi.yaml'],
+              ['ZEN-STD-CON-02', 'Satisfies', 'contracts/openapi/users.v1.yaml'],
               ['ZEN-STD-CI-01 to ZEN-STD-CI-07', 'Satisfies', '.github/workflows/ci.yml'],
             ],
           },

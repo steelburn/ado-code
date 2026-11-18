@@ -85,6 +85,12 @@ All notable changes to ADO Code will be documented in this file.
   unprivileged process cannot bind a privileged port.
 
 ### Fixed
+- **The CI contract gate no longer skips itself.** `gate-test` was guarded by
+  `hashFiles('contracts/openapi.yaml')` and linted the same literal, but the planner emits
+  `contracts/openapi/<service>.v1.yaml` — a guard that never matches skips the step instead of
+  failing it, so the gate was green without linting a contract. Both the guard and the Redocly
+  target now come from `openApiGlob()` / `eventSchemaGlob()` in `contractArtifacts.ts`, with two
+  tests that assert the glob matches what the planner writes.
 
 - **Generated PHP, Python and .NET services shipped without a start command.** The monorepo
   writer's PHP and Python Dockerfiles had no `CMD` at all, and the .NET one lost its

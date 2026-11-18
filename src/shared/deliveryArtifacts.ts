@@ -12,6 +12,7 @@
  * deterministic output so the golden fixtures can pin it byte for byte.
  */
 
+import { eventSchemaGlob, openApiGlob } from './contractArtifacts';
 import { OBSERVABILITY_PATHS } from './observabilityArtifacts';
 
 /* -------------------------------------------------------------------------- */
@@ -293,10 +294,10 @@ export function planCiWorkflow(plan: CiWorkflowPlan): string {
   if (plan.contractsDir) {
     lines.push(
       '      - name: Contract lint (OpenAPI 3.1)',
-      `        if: \${{ hashFiles('${plan.contractsDir}/openapi.yaml') != '' }}`,
-      `        run: npx --yes @redocly/cli@${REDOCLY_VERSION} lint ${plan.contractsDir}/openapi.yaml`,
+      `        if: \${{ hashFiles('${openApiGlob(plan.contractsDir)}') != '' }}`,
+      `        run: npx --yes @redocly/cli@${REDOCLY_VERSION} lint ${openApiGlob(plan.contractsDir)}`,
       '      - name: Event schemas are valid JSON Schema',
-      `        if: \${{ hashFiles('${plan.contractsDir}/events/*.json') != '' }}`,
+      `        if: \${{ hashFiles('${eventSchemaGlob(plan.contractsDir)}') != '' }}`,
       '        run: node scripts/validate-event-schemas.mjs',
     );
   }
