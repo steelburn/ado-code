@@ -13,6 +13,7 @@ AI coding assistant with Azure DevOps integration
 - Testing is billed to the user in tokens: quote only the failing test and the head of its error, prefer one file or a `--grep <name>` filter over the whole suite, and never paste a full test log.
 - A red run already names the failing tests: read that block instead of re-running the suite to see the failure.
 - `npm run build:all` — Full build
+- `npm run package:vsix` — Builds and packages the `.vsix` (stages the shipped file set, `webview-ui-dist/` included, then asserts both bundles are inside it)
 - `npm run lint` — Linting
 
 ## Project Structure

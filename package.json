@@ -1654,6 +1654,7 @@
     "test:host": "node ./out/test/runTest.js",
     "test:unit": "node node_modules/mocha/bin/mocha.js --ui tdd --require ./scripts/vscode-stub.js \"out/test/suite/shared/**/*.test.js\" out/test/suite/services.lazy.test.js",
     "publish:open-vsx": "node scripts/publish-open-vsx.js",
+    "package:vsix": "node scripts/package.js",
     "prepare": "husky"
   },
   "lint-staged": {
