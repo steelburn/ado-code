@@ -1036,6 +1036,7 @@ All notable changes to ADO Code will be documented in this file.
 - CHANGELOG auto-update on task completion
 
 ## [Unreleased]
+- Closed [ADO-28007](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28007): Breakdown schema — localId / parentLocalId so the model can express nesting (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
 - Closed [ADO-28009](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28009): Validate the ADO type hierarchy before accept, not during bulk create (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
 - Closed [ADO-28008](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28008): Reject and reparent rules for nested drafts (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
 - Closed [ADO-28006](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28006): Case B — nested draft parents: blocked state and dependency-ordered pump (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
