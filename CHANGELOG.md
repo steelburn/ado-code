@@ -2,7 +2,7 @@
 
 All notable changes to ADO Code will be documented in this file.
 
-## [0.8.8]
+## [0.8.8] - 2026-11-19
 
 ### Added
 - **The Work Item Drafts page opens itself when there is something to review.** It was
@@ -220,6 +220,15 @@ All notable changes to ADO Code will be documented in this file.
 - **`/metrics` output was not exposition-clean**: the body had no trailing newline and `_sum` leaked
   float noise (`1.5000000000000002`). Both fixed, and the serializer emits labels sorted so the body
   is diff-stable.
+
+### Work items closed
+
+- Closed [ADO-28025](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28025): gate-test fails on a fresh python scaffold — pytest exits 5 when no tests are collected (2026-11-18) — `feat/work-item-draft-queue @ f1b187c`
+- Closed [ADO-28007](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28007): Breakdown schema — localId / parentLocalId so the model can express nesting (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28009](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28009): Validate the ADO type hierarchy before accept, not during bulk create (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28008](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28008): Reject and reparent rules for nested drafts (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28006](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28006): Case B — nested draft parents: blocked state and dependency-ordered pump (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
+- Closed [ADO-28010](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28010): Persist the draft queue across window reloads (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
 
 ## [0.8.7] - 2026-11-17
 
@@ -1093,12 +1102,3 @@ All notable changes to ADO Code will be documented in this file.
 - Consent card for inline-mode mutating tools
 - Project switcher in chat header
 - CHANGELOG auto-update on task completion
-
-## [Unreleased]
-- Closed [ADO-28025](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28025): gate-test fails on a fresh python scaffold — pytest exits 5 when no tests are collected (2026-11-18) — `feat/work-item-draft-queue @ f1b187c`
-- Closed [ADO-28007](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28007): Breakdown schema — localId / parentLocalId so the model can express nesting (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
-- Closed [ADO-28009](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28009): Validate the ADO type hierarchy before accept, not during bulk create (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
-- Closed [ADO-28008](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28008): Reject and reparent rules for nested drafts (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
-- Closed [ADO-28006](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28006): Case B — nested draft parents: blocked state and dependency-ordered pump (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`
-
-- Closed [ADO-28010](https://dev.azure.com/zencomputersystems/Internal%20-%20ADO%20Code/_workitems/edit/28010): Persist the draft queue across window reloads (2026-11-18) — `feat/work-item-draft-queue @ 8d8dfcb`

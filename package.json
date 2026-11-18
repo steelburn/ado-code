@@ -2,7 +2,7 @@
   "name": "ado-code",
   "displayName": "ADO Code",
   "description": "AI coding assistant with Azure DevOps integration",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "license": "MIT",
   "publisher": "steelburn",
   "repository": {
