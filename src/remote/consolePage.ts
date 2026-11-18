@@ -1166,9 +1166,25 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     renderApprovals();
   }
 
+  /**
+   * The attribute list of a decision button, one escaped value per entry.
+   * Escaping the whole fragment instead emitted data-value=&quot;update&quot;,
+   * which the browser reads back as "update" — quotes included — so the host
+   * rejected every decision taken on the phone.
+   */
+  function escAttrs(attrs) {
+    var out = '';
+    for (var name in attrs) {
+      if (Object.prototype.hasOwnProperty.call(attrs, name)) {
+        out += ' ' + esc(name) + '="' + esc(attrs[name]) + '"';
+      }
+    }
+    return out;
+  }
+
   function decisionButton(card, label, attrs, className) {
     var disabled = card.sent ? ' disabled' : '';
-    return '<button class="act ' + esc(className) + '" data-id="' + esc(card.requestId) + '" ' + esc(attrs) + esc(disabled) + '>' + esc(label) + '</button>';
+    return '<button class="act ' + esc(className) + '" data-id="' + esc(card.requestId) + '"' + escAttrs(attrs) + esc(disabled) + '>' + esc(label) + '</button>';
   }
 
   function cardHtml(card) {
@@ -1183,14 +1199,14 @@ export const CONSOLE_HTML = `<!DOCTYPE html>
     }
     html += '<div class="ap-actions">';
     if (card.kind === 'consent') {
-      html += decisionButton(card, 'Allow once', 'data-kind="consent" data-approved="1" data-scope="once"', 'go');
-      html += decisionButton(card, 'Allow for session', 'data-kind="consent" data-approved="1" data-scope="session"', '');
-      html += decisionButton(card, 'Deny', 'data-kind="consent" data-approved="0"', 'danger');
+      html += decisionButton(card, 'Allow once', { 'data-kind': 'consent', 'data-approved': '1', 'data-scope': 'once' }, 'go');
+      html += decisionButton(card, 'Allow for session', { 'data-kind': 'consent', 'data-approved': '1', 'data-scope': 'session' }, '');
+      html += decisionButton(card, 'Deny', { 'data-kind': 'consent', 'data-approved': '0' }, 'danger');
     } else {
       for (var i = 0; i < card.options.length; i++) {
         var option = card.options[i] || {};
         html += decisionButton(card, String(option.label || option.value || 'OK'),
-          'data-kind="confirm" data-value="' + esc(String(option.value || '')) + '"',
+          { 'data-kind': 'confirm', 'data-value': String(option.value || '') },
           option.isDangerous ? 'danger' : '');
       }
     }

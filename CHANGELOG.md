@@ -139,6 +139,15 @@ All notable changes to ADO Code will be documented in this file.
   unprivileged process cannot bind a privileged port.
 
 ### Fixed
+- **Remote Access: a decision taken on the phone is no longer refused.** The approval cards
+  built their buttons by concatenating a raw attribute fragment and escaping the whole fragment,
+  so `data-value="update"` shipped as `data-value=&quot;update&quot;` and the browser read it back
+  as `"update"`, quotes included. The host compares the posted value with the pending option list
+  exactly, so *every* remote decision — the AGENTS.md sync prompt, every in-chat confirmation and
+  each consent button — came back as 400 `unknown option value` and the console reported *VS Code
+  refused that decision*. `decisionButton()` now takes its attributes as name → value pairs and
+  escapes each value, which also restores the `data-kind` / `data-approved` / `data-scope` reads the
+  consent path switches on. Covered by rendering the page's own builder in `remoteConsole.test.ts`.
 - **Remote Access: the phone thread is markdown, and no longer mixes in the agent reasoning.**
   An agentic iteration narrates itself before it calls a tool, and those frames were mirrored
   into the transcript, so a pre-tool sentence like *let me check the file* ran straight into the

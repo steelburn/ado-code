@@ -361,4 +361,72 @@ suite('remote/consolePage', () => {
         );
         assert.ok(CONSOLE_HTML.includes('Retry'), 'a failure invites a second attempt');
     });
+
+    /**
+     * Pull one function declaration out of the shipped page bytes by brace
+     * matching, so the assertions below run the real code instead of a copy.
+     */
+    function pageFunction(name: string): string {
+        const start = CONSOLE_HTML.indexOf('function ' + name + '(');
+        assert.ok(start >= 0, `function ${name} is present in the console page`);
+        let depth = 0;
+        for (let i = CONSOLE_HTML.indexOf('{', start); i < CONSOLE_HTML.length; i++) {
+            const ch = CONSOLE_HTML[i];
+            if (ch === '{') depth++;
+            else if (ch === '}' && --depth === 0) return CONSOLE_HTML.slice(start, i + 1);
+        }
+        throw new Error(`unbalanced body for ${name}`);
+    }
+
+    /** Render one decision button with the page's own builder. */
+    function renderDecisionButton(
+        card: { requestId: string; sent: boolean },
+        label: string,
+        attrs: Record<string, string>,
+        className: string
+    ): string {
+        const source = [pageFunction('esc'), pageFunction('escAttrs'), pageFunction('decisionButton'), 'return decisionButton;'].join('\n');
+        const build = new Function(source)() as typeof renderDecisionButton;
+        return build(card, label, attrs, className);
+    }
+
+    test('a decision button carries the attribute values the host matches on', () => {
+        // Escaping the whole attribute fragment turned `data-value="update"`
+        // into `data-value=&quot;update&quot;`, which the browser hands back as
+        // `"update"` — quotes included. The host compares the posted value with
+        // the pending option list exactly, so every decision taken on the phone
+        // was rejected with 400 `unknown option value` and the console said
+        // "VS Code refused that decision".
+        const consent = renderDecisionButton(
+            { requestId: 'req-1', sent: false },'Allow once',
+            { 'data-kind': 'consent', 'data-approved': '1', 'data-scope': 'once' }, 'go'
+        );
+        assert.match(consent, / data-kind="consent"/);
+        assert.match(consent, / data-approved="1"/);
+        assert.match(consent, / data-scope="once"/);
+        const confirm = renderDecisionButton(
+            { requestId: 'req-2', sent: false }, 'Update',
+            { 'data-kind': 'confirm', 'data-value': 'update' }, ''
+        );
+        assert.match(confirm, / data-id="req-2"/);
+        assert.match(confirm, / data-kind="confirm"/);
+        assert.match(confirm, / data-value="update"/);
+    });
+
+    test('a decision button still escapes the values that need it', () => {
+        const html = renderDecisionButton(
+            { requestId: 'req"3', sent: false }, 'Go',
+            { 'data-value': 'a"b<c' }, ''
+        );
+        assert.match(html, / data-id="req&quot;3"/);
+        assert.match(html, / data-value="a&quot;b&lt;c"/);
+    });
+
+    test('a decision already sent cannot be tapped twice', () => {
+        const html = renderDecisionButton(
+            { requestId: 'req-4', sent: true }, 'Update',
+            { 'data-value': 'update' }, ''
+        );
+        assert.match(html, /<button class="act " data-id="req-4" data-value="update" disabled>/);
+    });
 });
