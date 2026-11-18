@@ -4,6 +4,9 @@ import {
   WorkItemDraft,
   DraftCreateResult,
   normalizeParentRef,
+  DRAFT_QUEUE_SCHEMA_VERSION,
+  encodeDraftQueue,
+  decodeDraftQueue,
 } from '../../../shared/draftQueue';
 
 function tick(ms = 0): Promise<void> {
@@ -694,5 +697,67 @@ suite('shared/draftQueue — Case B nesting', () => {
     ]);
 
     assert.deepStrictEqual(rows[2].parentRef, { kind: 'draft', id: rows[1].id });
+  });
+
+  suite('persisted snapshot codec', () => {
+    const row = (id: string): WorkItemDraft => ({
+      id,
+      workItemType: 'Task',
+      title: 'Row',
+      status: 'pending',
+      origin: 'tool',
+      createdAt: 1,
+      updatedAt: 2,
+    });
+
+    test('a queue round-trips through encode/decode unchanged', () => {
+      const queue = new WorkItemDraftQueue(recordingExecutor([]));
+      queue.enqueue({ workItemType: 'Task', title: 'Persisted' });
+
+      const encoded = encodeDraftQueue(queue.list());
+      assert.strictEqual(encoded.v, DRAFT_QUEUE_SCHEMA_VERSION);
+
+      const decoded = decodeDraftQueue(JSON.parse(JSON.stringify(encoded)));
+      assert.strictEqual(decoded.kind, 'ok');
+      if (decoded.kind !== 'ok') return;
+      assert.strictEqual(decoded.needsRewrite, false);
+      // workspaceState serialises to JSON, so explicit `undefined` fields do not
+      // survive — compare against the same round trip, not the live rows.
+      assert.deepStrictEqual(decoded.items, JSON.parse(JSON.stringify(queue.list())));
+    });
+
+    test('a bare array is read as version 1 and flagged for rewrite', () => {
+      const decoded = decodeDraftQueue([row('draft-1')]);
+      assert.strictEqual(decoded.kind, 'ok');
+      if (decoded.kind !== 'ok') return;
+      assert.strictEqual(decoded.version, 1);
+      assert.strictEqual(decoded.needsRewrite, true);
+      assert.strictEqual(decoded.items.length, 1);
+    });
+
+    test('a newer schema is refused instead of coerced', () => {
+      const decoded = decodeDraftQueue({ v: DRAFT_QUEUE_SCHEMA_VERSION + 1, drafts: [row('draft-1')] });
+      assert.deepStrictEqual(decoded, { kind: 'unsupported', version: DRAFT_QUEUE_SCHEMA_VERSION + 1 });
+    });
+
+    test('unrecognised or missing storage reads as empty', () => {
+      for (const raw of [undefined, null, 42, 'nope', {}, { v: 2 }, { v: 2, drafts: 'nope' }]) {
+        assert.deepStrictEqual(decodeDraftQueue(raw), { kind: 'empty' }, `raw=${JSON.stringify(raw)}`);
+      }
+    });
+
+    test('a decoded snapshot hydrates a fresh queue', () => {
+      const source = new WorkItemDraftQueue(recordingExecutor([]));
+      source.enqueue({ workItemType: 'Bug', title: 'Restored from disk' });
+
+      const decoded = decodeDraftQueue(encodeDraftQueue(source.list()));
+      assert.strictEqual(decoded.kind, 'ok');
+      if (decoded.kind !== 'ok') return;
+
+      const restored = new WorkItemDraftQueue(recordingExecutor([]));
+      restored.hydrate(decoded.items);
+      assert.strictEqual(restored.list()[0].title, 'Restored from disk');
+      assert.strictEqual(restored.list()[0].status, 'pending');
+    });
   });
 });

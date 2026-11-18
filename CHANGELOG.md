@@ -5,6 +5,14 @@ All notable changes to ADO Code will be documented in this file.
 ## [0.8.8]
 
 ### Added
+- **The Work Item Drafts page survives a window reload or IDE restart.** The queue already
+  persisted in workspaceState, but no `WebviewPanelSerializer` was registered for
+  `adoCode.draftQueuePage`, so VS Code dropped the tab on reload and the restored rows had no
+  surface until the command was run again. `DraftQueuePage.restore()` re-adopts the panel VS Code
+  hands back: same HTML, webview options re-applied (a deserialized panel starts script-less and
+  without local roots), wired to the same queue instance the chat provider owns, so the rows that
+  survived are on screen. Restoring never steals focus, and a second restore disposes the duplicate
+  instead of opening two tabs over one queue.
 - **Work item drafting no longer stops the turn: a draft queue with reversible decisions.**
   `create_work_item` used to stage a Markdown preview, open an editor and wait for one
   confirmation card, so a turn that drafted several items could only be reviewed one at a time,
@@ -19,14 +27,28 @@ All notable changes to ADO Code will be documented in this file.
   kept in the list, struck through and still selectable) and `undo` takes it back, so the review
   stays reversible until one explicit `finalize()` commits it: staged rejects are dropped, staged
   accepts run through one serial pump (order-free clicks, one write at a time). `creating` claims
-  a row so an in-flight create cannot be edited or rejected, editing a decided row clears the
-  decision, and a reload that strands a row mid-write restores it as `failed` rather than inviting
-  a duplicate work item. Ancestry is a `ParentRef`: flat children of an existing ADO item today,
-  local draft parents behind the same model.
+  a row so an in-flight create cannot be edited or rejected. A decided row collapses to Undo only,
+  so accept/edit/reject disappear until the decision is taken back. A reload that strands a row
+  mid-write restores it as `failed` rather than inviting a duplicate work item. Ancestry is a
+  `ParentRef`: flat children of an existing ADO item today, local draft parents behind the same model.
   Duplicate drafts (same type + title + parent) are flagged, never blocked, so a bulk accept
   cannot quietly create the same work item twice; a rejected row is never treated as the original
   a live row collides with. "Clear created" removes completed rows only, keeping failed ones (and
-  their errors) in the queue until they are explicitly rejected and finalized.
+  their errors) in the queue until they are explicitly rejected and finalized. The review header counts `blocked` rows like every other status, so a draft waiting on its parent appears in the "N waiting" tally and in the Finalize total instead of rendering as `NaN`.
+- **Draft queue persistence is versioned and self-healing.** workspaceState now holds
+  `{ v: 2, drafts: [...] }` rather than a bare array, so a blob written by a different build is
+  recognised instead of coerced — a newer schema (`v > 2`) is left untouched and never downgraded
+  into rows that look plausible and behave wrongly, while a version 1 bare array still restores and
+  is migrated on the next load. Hydration also saves the NORMALISED result (the `creating`→`failed`
+  demotion, the `blocked`→`accepted` reset, dropped malformed rows) instead of leaving the raw blob
+  on disk for every reload to re-derive — which is what let a stale snapshot survive indefinitely.
+- **Row selection survives the reload too.** A checkbox on the Work Item Drafts page is view
+  state, so it lives in its own store beside the queue (`adoCode.workItemDraftSelection`, same
+  `workspaceState` scope) instead of inside it — a ticked row can never be mistaken for a staged
+  decision, and the queue stays correct with no page open. The host attaches it with the queue and
+  sends it with every snapshot, so a reload lands on the rows you had ticked rather than an empty
+  selection; a hand-edited or truncated blob degrades to "nothing ticked" (strings only, deduped,
+  capped at 500) instead of wedging the page.
 - Application security (ZEN `CON-05`), the last unmet runtime clause. The node stack emits
   `packages/shared/src/auth.ts` + `secrets.ts`: JWT verification on `node:crypto`, an algorithm
   allowlist applied *before* the signature, a `kid` keyring with JWKS refresh and a rollover window,

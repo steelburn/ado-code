@@ -140,6 +140,69 @@ export interface DraftCreateResult {
 export type DraftExecutor =
   (draft: WorkItemDraft, ctx: DraftCreateContext) => Promise<DraftCreateResult>;
 
+/**
+ * Persisted envelope for the draft queue.
+ *
+ * The queue used to be stored as a bare `WorkItemDraft[]`, which made the
+ * stored blob indistinguishable from any other array: a release that changes
+ * the row shape could only be detected by guessing row by row. The envelope
+ * carries an explicit version, so a reader can say "this is not mine" instead
+ * of coercing garbage into rows that look plausible and behave wrongly.
+ *
+ * Version history:
+ *   1 — bare `WorkItemDraftSnapshot` (no envelope)
+ *   2 — `{ v: 2, drafts: WorkItemDraftSnapshot }`
+ */
+export const DRAFT_QUEUE_SCHEMA_VERSION = 2;
+
+export interface PersistedDraftQueue {
+  v: number;
+  drafts: WorkItemDraftSnapshot;
+}
+
+export type DecodedDraftQueue =
+  /** Nothing stored (or nothing recognisable) — start empty. */
+  | { kind: 'empty' }
+  /** Rows to restore; `needsRewrite` asks the host to store them in the current shape. */
+  | { kind: 'ok'; items: WorkItemDraftSnapshot; version: number; needsRewrite: boolean }
+  /** Written by a NEWER build — readable or not, it must not be overwritten. */
+  | { kind: 'unsupported'; version: number };
+
+export function encodeDraftQueue(snapshot: WorkItemDraftSnapshot): PersistedDraftQueue {
+  return { v: DRAFT_QUEUE_SCHEMA_VERSION, drafts: snapshot };
+}
+
+/**
+ * Read whatever is in workspaceState. Never throws and never mutates: the caller
+ * decides whether to hydrate and whether to rewrite.
+ */
+export function decodeDraftQueue(raw: unknown): DecodedDraftQueue {
+  if (raw === undefined || raw === null) return { kind: 'empty' };
+
+  // Version 1: a bare array.
+  if (Array.isArray(raw)) {
+    return { kind: 'ok', items: raw as WorkItemDraftSnapshot, version: 1, needsRewrite: true };
+  }
+  if (typeof raw !== 'object') return { kind: 'empty' };
+
+  const record = raw as { v?: unknown; drafts?: unknown };
+  const version = typeof record.v === 'number' && Number.isFinite(record.v) ? record.v : 0;
+
+  if (version > DRAFT_QUEUE_SCHEMA_VERSION) {
+    // A newer build owns this key. Downgrading it would lose fields this build
+    // cannot name, so the caller leaves it untouched instead of rewriting it.
+    return { kind: 'unsupported', version };
+  }
+  if (version < 2 || !Array.isArray(record.drafts)) return { kind: 'empty' };
+
+  return {
+    kind: 'ok',
+    items: record.drafts as WorkItemDraftSnapshot,
+    version,
+    needsRewrite: version !== DRAFT_QUEUE_SCHEMA_VERSION,
+  };
+}
+
 export interface WorkItemDraftCounts {
   pending: number;
   /** Decided yes, not yet written to ADO — still revocable. */

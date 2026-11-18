@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as nodeFs from 'fs';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../../webview/ChatViewProvider';
-import { WorkItemDraftQueue } from '../../../shared/draftQueue';
+import { DRAFT_QUEUE_SCHEMA_VERSION, WorkItemDraftQueue, encodeDraftQueue } from '../../../shared/draftQueue';
 import { makeScratchDir } from '../utils/scratchDir';
 
 function tick(ms = 10): Promise<void> {
@@ -159,4 +159,95 @@ suite('ChatViewProvider — draft queue', () => {
       'every child is created under the existing ADO parent'
     );
   });
+
+  test('queue mutations persist as a versioned envelope and restore in a new provider', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    const first: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    first.attachDraftQueuePersistence(memento);
+    first.enqueueWorkItemDraft({ workItemType: 'Task', title: 'Survives a reload' });
+
+    const saved = store.get('adoCode.workItemDrafts');
+    assert.strictEqual(saved?.v, DRAFT_QUEUE_SCHEMA_VERSION, 'the stored blob must be self-describing');
+    assert.ok(Array.isArray(saved.drafts), 'every queue change must be written to workspaceState');
+    assert.strictEqual(saved.drafts.length, 1);
+
+    // A fresh provider plus the same memento is what a window reload does.
+    const second: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    second.attachDraftQueuePersistence(memento);
+    const rows = second.workItemDrafts.list();
+    assert.strictEqual(rows.length, 1, 'the queued row must come back after a reload');
+    assert.strictEqual(rows[0].title, 'Survives a reload');
+    assert.strictEqual(rows[0].status, 'pending');
+  });
+
+  test('hydrating writes the normalised rows back, not the raw ones', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    // What a reload leaves behind: a row caught mid-POST.
+    store.set('adoCode.workItemDrafts', encodeDraftQueue([
+      {
+        id: 'draft-1', workItemType: 'Task', title: 'Caught mid-POST',
+        status: 'creating', origin: 'tool', createdAt: 1, updatedAt: 2,
+      } as any,
+    ]));
+
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider.attachDraftQueuePersistence(memento);
+
+    const saved = store.get('adoCode.workItemDrafts');
+    assert.strictEqual(saved.drafts[0].status, 'failed', 'the demotion must reach disk, not just memory');
+    assert.ok(saved.drafts[0].error, 'the check-ADO warning must persist with the row');
+    assert.strictEqual(provider.workItemDrafts.list()[0].status, 'failed');
+  });
+
+  test('a legacy bare-array snapshot is migrated to the envelope', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    store.set('adoCode.workItemDrafts', [
+      {
+        id: 'draft-1', workItemType: 'Task', title: 'Written before the envelope',
+        status: 'pending', origin: 'tool', createdAt: 1, updatedAt: 2,
+      },
+    ]);
+
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider.attachDraftQueuePersistence(memento);
+
+    assert.strictEqual(provider.workItemDrafts.list()[0]?.title, 'Written before the envelope');
+    const saved = store.get('adoCode.workItemDrafts');
+    assert.ok(!Array.isArray(saved), 'the bare array must be rewritten as an envelope');
+    assert.strictEqual(saved.v, DRAFT_QUEUE_SCHEMA_VERSION);
+    assert.strictEqual(saved.drafts.length, 1);
+  });
+
+  test('a snapshot from a newer build is neither hydrated nor overwritten', () => {
+    const store = new Map<string, any>();
+    const memento: any = {
+      get: (key: string, fallback?: any) => (store.has(key) ? store.get(key) : fallback),
+      update: async (key: string, value: any) => { store.set(key, value); },
+    };
+
+    const future = { v: DRAFT_QUEUE_SCHEMA_VERSION + 1, drafts: [{ id: 'draft-1', title: 'From the future' }] };
+    store.set('adoCode.workItemDrafts', future);
+
+    const provider: any = new ChatViewProvider({} as any, makeServices(), makeSessionContext());
+    provider.attachDraftQueuePersistence(memento);
+
+    assert.deepStrictEqual(provider.workItemDrafts.list(), [], 'an unreadable shape must not become rows');
+    assert.deepStrictEqual(store.get('adoCode.workItemDrafts'), future, 'a downgrade must not overwrite it');
+  });
+
 });

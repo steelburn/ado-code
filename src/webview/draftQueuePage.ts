@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { WorkItemDraft, WorkItemDraftQueue, WorkItemDraftSnapshot } from '../shared/draftQueue';
 import { buildWebviewHtml } from './webviewHtml';
+import { getDraftSelectionStore } from './draftQueueSelection';
 
 /**
  * View type of the dedicated draft-queue page. Keep in sync with the first
@@ -33,7 +34,17 @@ export class DraftQueuePage {
     private readonly panel: vscode.WebviewPanel,
     private readonly queue: WorkItemDraftQueue,
     extensionUri: vscode.Uri,
+    /** false when adopting a panel VS Code restored: a reload must not steal focus. */
+    reveal = true,
   ) {
+    // A deserialized panel (restore()) starts with default options — no scripts,
+    // no local roots — because createWebviewPanel() was never called for it. Set
+    // them here so the create and restore paths cannot drift apart.
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'webview-ui-dist')],
+    };
+
     panel.webview.html = buildWebviewHtml(
       panel.webview,
       extensionUri,
@@ -53,7 +64,7 @@ export class DraftQueuePage {
     // operation, so no extra throttling is needed here.
     this.unsubscribe = queue.onChange((snapshot) => this.postSnapshot(snapshot));
 
-    this.panel.reveal(undefined, false);
+    if (reveal) this.panel.reveal(undefined, false);
   }
 
   static show(extensionUri: vscode.Uri, queue: WorkItemDraftQueue): void {
@@ -78,11 +89,48 @@ export class DraftQueuePage {
     DraftQueuePage.current = new DraftQueuePage(panel, queue, extensionUri);
   }
 
+  /**
+   * Re-adopt the Work Item Drafts tab that VS Code restored after a window reload
+   * or IDE restart (see createDraftQueueSerializer and
+   * registerWebviewPanelSerializer in extension.ts).
+   *
+   * VS Code only revives an editor webview tab whose view type has a registered
+   * serializer, so without this the tab was dropped on reload and the queue —
+   * which survives in workspaceState — had no surface until the command was run
+   * again. The restored panel is a brand-new webview, so it is wired exactly like
+   * a freshly created one; only createWebviewPanel() and the focus grab are
+   * skipped.
+   */
+  static restore(
+    panel: vscode.WebviewPanel,
+    extensionUri: vscode.Uri,
+    queue: WorkItemDraftQueue,
+  ): void {
+    if (DraftQueuePage.current) {
+      // Two tabs over one queue would both drive Finalize; keep the open one and
+      // let VS Code drop the duplicate it was about to restore.
+      panel.dispose();
+      return;
+    }
+    DraftQueuePage.current = new DraftQueuePage(panel, queue, extensionUri, false);
+  }
+
   private postSnapshot(snapshot: WorkItemDraftSnapshot): void {
-    void this.panel.webview.postMessage({ type: 'draftQueue', drafts: snapshot });
+    void this.panel.webview.postMessage({
+      type: 'draftQueue',
+      drafts: snapshot,
+      // Sent with every snapshot: the webview adopts it, so a reload lands
+      // on the rows the reviewer had ticked instead of an empty selection.
+      selectedIds: getDraftSelectionStore().load(),
+    });
   }
 
   private handleMessage(message: Record<string, any>): void {
+    // Selection is view state the host owns, so it never reaches the queue.
+    if (message.type === 'draftQueueSelection') {
+      getDraftSelectionStore().save(message.ids);
+      return;
+    }
     switch (message.type) {
       case 'draftQueueGet':
         this.postSnapshot(this.queue.list());

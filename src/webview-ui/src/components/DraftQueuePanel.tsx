@@ -11,7 +11,7 @@
  * host owns the queue, the claim state and the one-at-a-time ADO writes, so a
  * row that is `creating` cannot be edited or rejected from here either.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import type { DraftPatch, WorkItemDraft, WorkItemDraftStatus } from '../../../shared/draftQueue';
 
 export type DraftQueueBulkAction =
@@ -20,6 +20,9 @@ export type DraftQueueBulkAction =
 export interface DraftQueuePanelProps {
   drafts: WorkItemDraft[];
   onAction: (action: DraftQueueBulkAction, ids: string[]) => void;
+  /** Controlled selection — the page owns it so it survives a reload. */
+  selectedIds?: string[];
+  onSelectionChange?: (ids: string[]) => void;
   onUpdate: (id: string, patch: DraftPatch) => void;
   onDismiss: () => void;
   /**
@@ -104,15 +107,32 @@ function isSelectable(draft: WorkItemDraft): boolean {
 }
 
 export const DraftQueuePanel: React.FC<DraftQueuePanelProps> = ({
-  drafts, onAction, onUpdate, onDismiss, standalone = false,
+  drafts, onAction, onUpdate, onDismiss, standalone = false, selectedIds, onSelectionChange,
 }) => {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
+  // Controlled when the page passes `selectedIds`, uncontrolled otherwise.
+  // The uncontrolled path stays because a panel with no host still has to
+  // select — it just forgets on unmount.
+  const selected = useMemo(
+    () => (selectedIds ? new Set(selectedIds) : internalSelected),
+    [selectedIds, internalSelected],
+  );
+  const setSelected = useCallback(
+    (next: Set<string> | ((current: Set<string>) => Set<string>)) => {
+      const resolved = typeof next === 'function' ? next(selected) : next;
+      if (!selectedIds) setInternalSelected(resolved);
+      onSelectionChange?.([...resolved]);
+    },
+    [selected, selectedIds, onSelectionChange],
+  );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
   const counts = useMemo(() => {
-    const result = { pending: 0, accepted: 0, rejected: 0, creating: 0, created: 0, failed: 0 };
+    const result = {
+      pending: 0, accepted: 0, rejected: 0, blocked: 0, creating: 0, created: 0, failed: 0,
+    };
     for (const draft of drafts) result[draft.status] += 1;
     return result;
   }, [drafts]);
@@ -125,6 +145,23 @@ export const DraftQueuePanel: React.FC<DraftQueuePanelProps> = ({
   const liveSelection = useMemo(
     () => selectableIds.filter((id) => selected.has(id)),
     [selectableIds, selected],
+  );
+  // A row that was accepted or rejected offers only Undo, so the bulk bar must
+  // not re-decide it either: "Accept selected" would otherwise silently overrule
+  // a staged reject that the row itself no longer lets you flip.
+  const partition = useMemo(() => {
+    const undecided: string[] = [];
+    const decided: string[] = [];
+    for (const id of liveSelection) {
+      const draft = drafts.find((candidate) => candidate.id === id);
+      if (!draft) continue;
+      (isDecided(draft) ? decided : undecided).push(id);
+    }
+    return { undecided, decided };
+  }, [liveSelection, drafts]);
+  const undecidedIds = useMemo(
+    () => drafts.filter((draft) => isSelectable(draft) && !isDecided(draft)).map((draft) => draft.id),
+    [drafts],
   );
 
   const toggle = (id: string) => {
@@ -258,27 +295,27 @@ export const DraftQueuePanel: React.FC<DraftQueuePanelProps> = ({
             <button
               type="button"
               style={actionStyle(true)}
-              disabled={liveSelection.length === 0}
-              onClick={() => run('accept', liveSelection)}
+              disabled={partition.undecided.length === 0}
+              onClick={() => run('accept', partition.undecided)}
             >
-              Accept selected ({liveSelection.length})
+              Accept selected ({partition.undecided.length})
             </button>
             <button
               type="button"
               style={actionStyle()}
-              disabled={liveSelection.length === 0}
-              onClick={() => run('reject', liveSelection)}
+              disabled={partition.undecided.length === 0}
+              onClick={() => run('reject', partition.undecided)}
             >
               Reject selected
             </button>
             <button
               type="button"
               style={actionStyle()}
-              disabled={liveSelection.length === 0}
-              onClick={() => run('undo', liveSelection)}
+              disabled={partition.decided.length === 0}
+              onClick={() => run('undo', partition.decided)}
               title="Take the staged accept/reject back — only possible before finalize"
             >
-              Undo selected
+              Undo selected ({partition.decided.length})
             </button>
             <span style={{ flex: 1 }} />
             <button
@@ -294,8 +331,8 @@ export const DraftQueuePanel: React.FC<DraftQueuePanelProps> = ({
             <button
               type="button"
               style={actionStyle()}
-              disabled={selectableIds.length === 0}
-              onClick={() => run('accept', selectableIds)}
+              disabled={undecidedIds.length === 0}
+              onClick={() => run('accept', undecidedIds)}
               title="Accept every pending and failed draft — one ADO write at a time"
             >
               Accept all pending
@@ -475,7 +512,7 @@ export const DraftQueuePanel: React.FC<DraftQueuePanelProps> = ({
                         Undo
                       </button>
                     )}
-                    {isSelectable(draft) && (
+                    {isSelectable(draft) && !isDecided(draft) && (
                       <>
                         <button
                           type="button"

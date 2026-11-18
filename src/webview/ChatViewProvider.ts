@@ -40,7 +40,7 @@ import { capSkillContent, readSkillBudget } from '../shared/skillBudget';
 import { extractSkillArchive, findSkillMd, findSkillJson, collectFiles, cleanupTempDir } from '../shared/extractSkillArchive';
 import { createConsentBroker } from '../llm/consent';
 import { createConfirmationBroker, ConfirmationOption } from '../llm/confirmation';
-import { WorkItemDraft, DraftCreateContext, DraftCreateResult, WorkItemDraftQueue, WorkItemDraftSnapshot } from '../shared/draftQueue';
+import { WorkItemDraft, DraftCreateContext, DraftCreateResult, WorkItemDraftQueue, WorkItemDraftSnapshot, encodeDraftQueue, decodeDraftQueue } from '../shared/draftQueue';
 import { isCommandSessionApproved, isSessionAutoApproved, addSessionCommandApproval, addSessionToolApproval, addToTerminalAllowlist, clearSessionAutoApprovals, terminalCommandKey, terminalCommandList } from '../llm/tool-approval-ui';
 import type { ContentBlockParam } from '../llm/types';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -55,6 +55,7 @@ import { DOT_ADO_CODE, IGNORE_DISMISS_KEY, ensureEntryInIgnoreFile, missingIgnor
 import { AgentSummaryPanel } from './AgentSummaryPanel';
 import { CHAT_EDITOR_VIEW_TYPE } from './chatEditorSerializer';
 import { DraftQueuePage } from './draftQueuePage';
+import { createWorkspaceSelectionStore, setDraftSelectionStore } from './draftQueueSelection';
 import { buildWebviewHtml } from './webviewHtml';
 import { AgentProgressPanel } from './AgentProgressPanel';
 import { promptAndSaveSvg } from './svgExport';
@@ -436,16 +437,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Persist the review queue across window reloads (28010). Hydration happens
    * here rather than in the field initialiser because the snapshot lives in the
    * extension context, which the provider does not own.
+   *
+   * Storage is a versioned envelope (`{ v, drafts }`) so a blob written by a
+   * different build is recognised as such instead of being coerced into rows
+   * that look plausible and behave wrongly. Version 1 was a bare array.
    */
   attachDraftQueuePersistence(state: vscode.Memento, key = 'adoCode.workItemDrafts'): void {
+    // The queue and its selection share a scope and a lifetime, so they are
+    // attached together — a restored queue with a lost selection would show
+    // rows the reviewer had ticked as unticked.
+    setDraftSelectionStore(createWorkspaceSelectionStore(state, key + 'Selection'));
     if (this.draftsPersistenceAttached) return;
     this.draftsPersistenceAttached = true;
-    const saved = state.get<WorkItemDraftSnapshot>(key);
-    if (Array.isArray(saved)) this.workItemDrafts.hydrate(saved);
-    this.workItemDrafts.onChange((snapshot) => {
+
+    const persist = (snapshot: WorkItemDraftSnapshot): void => {
       // Fire-and-forget: a failed save must never break the review flow.
-      void Promise.resolve(state.update(key, snapshot)).catch(() => undefined);
-    });
+      void Promise.resolve(state.update(key, encodeDraftQueue(snapshot))).catch(() => undefined);
+    };
+
+    const stored = decodeDraftQueue(state.get<unknown>(key));
+
+    if (stored.kind === 'ok') {
+      // hydrate() normalises: a `creating` row becomes `failed` (the reload may
+      // have killed an in-flight POST), a `blocked` row returns to `accepted`
+      // (its dependency is re-decided on the next pump), malformed rows are
+      // dropped. Saving the RESULT is what makes storage converge — writing the
+      // raw rows back instead left every reload re-deriving the same demotions
+      // from a blob that never changed.
+      this.workItemDrafts.hydrate(stored.items);
+      // hydrate() early-returns on an empty input, so a stored blob that
+      // restores to zero rows would otherwise linger forever.
+      persist(this.workItemDrafts.list());
+    }
+
+    // A newer build owns the key: leave it exactly as found rather than
+    // downgrading it into this build's row shape. Nothing is saved until a
+    // later release writes the queue again.
+    if (stored.kind === 'unsupported') return;
+
+    // Subscribe AFTER the hydrate save above, so a restored queue is written
+    // exactly once and later mutations persist as they happen.
+    this.workItemDrafts.onChange(persist);
   }
 
   private draftsPersistenceAttached = false;
@@ -6501,6 +6533,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * with a commit step, so it needs its own tab instead of competing with the
    * transcript. The page reads the SAME queue instance, so nothing is copied.
    */
+  /**
+   * Re-adopt the Work Item Drafts tab that VS Code restored after a window reload
+   * or IDE restart (see createDraftQueueSerializer /
+   * registerWebviewPanelSerializer in extension.ts). The page reads the SAME queue
+   * instance this provider owns, so a restored tab paints the rows that survived
+   * in workspaceState — nothing is copied and no second queue is created.
+   */
+  public restoreDraftQueuePage(panel: vscode.WebviewPanel): void {
+    DraftQueuePage.restore(panel, this._extensionUri, this.workItemDrafts);
+  }
+
   public revealWorkItemDrafts(): void {
     DraftQueuePage.show(this._extensionUri, this.workItemDrafts);
   }

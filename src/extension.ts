@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { createChatEditorSerializer, CHAT_EDITOR_VIEW_TYPE } from './webview/chatEditorSerializer';
+import { DRAFT_QUEUE_VIEW_TYPE, createDraftQueueSerializer } from './webview/draftQueueSerializer';
 import { WORK_ITEMS_MODES } from './shared/workItemsMode';
 import { defaultRunCommitMessage, runAdoRef } from './shared/delegationPlan';
 import { DeferredStartup } from './shared/deferredStartup';
@@ -159,6 +160,17 @@ export async function activate(context: vscode.ExtensionContext) {
   // Session state also has to survive a teardown that never reaches deactivate()
   // (crash, killed window, laptop powering off): register the pre-shutdown hooks.
   context.subscriptions.push(...chatProvider.registerSaveStateFlush());
+
+  // Restore the Work Item Drafts page after a window reload or IDE restart. Same
+  // rule as the chat tab above: an editor webview tab is only revived when its
+  // view type has a registered serializer. Must stay synchronous inside activate()
+  // — VS Code calls deserializeWebviewPanel as soon as activation resolves.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(
+      DRAFT_QUEUE_VIEW_TYPE,
+      createDraftQueueSerializer(chatProvider),
+    ),
+  );
 
   // Restore the editor-area chat tab ("ADO Code Chat") after a window reload or
   // IDE restart. VS Code only revives webview editor tabs whose view type has a

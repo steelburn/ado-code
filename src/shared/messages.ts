@@ -160,7 +160,10 @@ export type WebviewToExtensionMessage =
   // Work item draft queue (bulk, order-independent review of drafted items).
   | { type: 'draftQueueAction'; action: 'accept' | 'reject' | 'undo' | 'finalize' | 'retry' | 'edit' | 'clearCreated'; ids: string[] }
   | { type: 'draftQueueUpdate'; id: string; patch: DraftPatch }
-  | { type: 'draftQueueGet' };
+  | { type: 'draftQueueGet' }
+  // Row checkboxes are view state, not draft state: the webview reports them
+  // and the host persists them so a reload restores the review selection.
+  | { type: 'draftQueueSelection'; ids: string[] };
 
 // Messages from Extension Host → Webview
 export type ExtensionToWebviewMessage =
@@ -321,7 +324,7 @@ export type ExtensionToWebviewMessage =
   // Work item draft queue: full snapshot after every queue change. Consumed by
   // the dedicated draft-queue page (src/webview/draftQueuePage.ts) — the chat
   // webview no longer mirrors the queue.
-  | { type: 'draftQueue'; drafts: WorkItemDraftSnapshot };
+  | { type: 'draftQueue'; drafts: WorkItemDraftSnapshot; selectedIds?: string[] };
 
 // Shared types
 export interface MessageContext {

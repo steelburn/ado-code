@@ -69,7 +69,7 @@ immediately. Review happens on a dedicated editor page
 (`src/webview/draftQueuePage.ts`), opened from the **Work Items** view title —
 not inside the chat transcript, so the queue is reachable with no chat open and
 is never lost to a dismissed panel. Rows are accepted or rejected in any order,
-singly or in bulk. Four properties make that work:
+singly or in bulk. Five properties make that work:
 
 - **Drafting is side-effect free.** No editor, no await, no ADO call — so
   several calls in one agentic iteration cannot block each other.
@@ -87,6 +87,15 @@ singly or in bulk. Four properties make that work:
   an accepted row can still be reverted while it is mid-flight. One explicit
   `finalize()` step is the only place rows are dropped, so a stray click in a
   review UI never destroys a draft.
+
+- **The queue outlives the window.** It is stored in `workspaceState` (per
+  folder, not per machine) as a versioned envelope `{ v: 2, drafts }`: a blob
+  written by a newer build is recognised and left untouched rather than
+  downgraded into rows that look plausible, and a version 1 bare array is
+  migrated on load. Hydration then persists the *normalised* result — the
+  `creating`→`failed` demotion, the `blocked`→`accepted` reset, dropped
+  malformed rows — so storage converges instead of every reload re-deriving
+  the same demotions from a blob that never changed.
 
 Ancestry is a `ParentRef`: `{ kind: 'ado', id }` for a parent that already
 exists, `{ kind: 'draft', id }` for one that is still a row. Today only the
